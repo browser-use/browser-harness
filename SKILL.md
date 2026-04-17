@@ -1,19 +1,19 @@
 ---
-name: harnesless
+name: bu
 description: Direct browser control via CDP. Use when the user wants to automate, scrape, test, or interact with web pages. Connects to the user's already-running Chrome.
 allowed-tools: Bash, Read, Edit, Write
 ---
 
-# Harnesless
+# bu
 
-Project: `/Users/greg/Documents/browser-use/hackathons/harnesless/`
+Project: `/Users/greg/Documents/browser-use/hackathons/bu/`
 
 **Read `helpers.py` first.** ~260 lines, one tool call. The code is the doc.
 
 ## Tool call shape
 
 ```bash
-cd /Users/greg/Documents/browser-use/hackathons/harnesless && uv run run.py <<'PY'
+cd /Users/greg/Documents/browser-use/hackathons/bu && uv run run.py <<'PY'
 # any python. helpers pre-imported. daemon auto-starts.
 PY
 ```
@@ -28,7 +28,7 @@ PY
 
 ## Parallel / remote
 
-`BU_NAME` picks the daemon (default `default`). Each name = independent socket `/tmp/harnesless-<NAME>.sock`, independent daemon. Remote:
+`BU_NAME` picks the daemon (default `default`). Each name = independent socket `/tmp/bu-<NAME>.sock`, independent daemon. Remote:
 
 ```bash
 uv run python -c "from helpers import start_remote_daemon; print(start_remote_daemon('work'))"

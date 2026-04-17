@@ -1,4 +1,4 @@
-# harnesless
+# bu
 
 LLM-first browser control via CDP. No CLI, no wrappers, just Python and CDP.
 
@@ -35,11 +35,11 @@ Read `SKILL.md` for the full LLM workflow. Read `AGENTS.md` if you're an agent w
 
 ## Files
 
-- `daemon.py` — holds the WebSocket, listens on `/tmp/harnesless.sock`
+- `daemon.py` — holds the WebSocket, listens on `/tmp/bu-<name>.sock`
 - `helpers.py` — ~250 lines of transparent helpers
 - `run.py` — 3 lines: `from helpers import *; exec(stdin)`
-- `SKILL.md` — how an agent *uses* harnesless to drive a browser
-- `AGENTS.md` — how an agent *modifies* harnesless (code structure, extension points)
+- `SKILL.md` — how an agent *uses* bu to drive a browser
+- `AGENTS.md` — how an agent *modifies* bu (code structure, extension points)
 
 ## Stop
 
@@ -47,5 +47,5 @@ Read `SKILL.md` for the full LLM workflow. Read `AGENTS.md` if you're an agent w
 uv run python -c "from helpers import kill_daemon; kill_daemon()"        # default daemon
 uv run python -c "from helpers import kill_daemon; kill_daemon('work')"  # named daemon (also stops remote browser)
 # or
-pkill -f harnesless/daemon.py
+pkill -f bu/daemon.py
 ```

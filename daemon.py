@@ -17,9 +17,9 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/harnesless-{NAME}.sock"
-LOG = f"/tmp/harnesless-{NAME}.log"
-PID = f"/tmp/harnesless-{NAME}.pid"
+SOCK = f"/tmp/bu-{NAME}.sock"
+LOG = f"/tmp/bu-{NAME}.log"
+PID = f"/tmp/bu-{NAME}.pid"
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",

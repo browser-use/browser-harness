@@ -14,8 +14,8 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/harnesless-{NAME}.sock"
-PID = f"/tmp/harnesless-{NAME}.pid"
+SOCK = f"/tmp/bu-{NAME}.sock"
+PID = f"/tmp/bu-{NAME}.pid"
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
 
@@ -47,7 +47,7 @@ def shutdown():      return _send({"meta": "shutdown"})
 
 
 # --- daemon lifecycle (socket IS the lock; one per BU_NAME) ---
-def _paths(name): n = name or NAME; return f"/tmp/harnesless-{n}.sock", f"/tmp/harnesless-{n}.pid"
+def _paths(name): n = name or NAME; return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
 
 def daemon_alive(name=None):
     try:
@@ -67,7 +67,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     while time.time() < deadline:
         if daemon_alive(name): return
         time.sleep(0.2)
-    raise RuntimeError(f"daemon {name or NAME} didn't come up — check /tmp/harnesless-{name or NAME}.log")
+    raise RuntimeError(f"daemon {name or NAME} didn't come up — check /tmp/bu-{name or NAME}.log")
 
 def kill_daemon(name=None):
     """Graceful shutdown, wait up to 15s for finally-block cleanup (remote stop), then SIGTERM."""

@@ -1,5 +1,5 @@
 [project]
-name = "harnesless"
+name = "bu"
 version = "0.1.0"
 description = "LLM-first browser control via CDP"
 requires-python = ">=3.11"

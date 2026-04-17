@@ -1,15 +1,15 @@
 # AGENTS.md
 
-For agents **modifying** harnesless. For using it, see SKILL.md.
+For agents **modifying** bu. For using it, see SKILL.md.
 
 ## Philosophy
 
-Both agent-browser (60+ verbs) and browser-use (~20 verbs) are walled gardens. Harnesless inverts this: few helpers, LLM edits them at runtime. Every design decision flows from that.
+Both agent-browser (60+ verbs) and browser-use (~20 verbs) are walled gardens. bu inverts this: few helpers, LLM edits them at runtime. Every design decision flows from that.
 
 ## Architecture
 
 ```
-Chrome / Browser Use cloud ── CDP WS ─▶ daemon.py ── /tmp/harnesless-<NAME>.sock ─▶ run.py
+Chrome / Browser Use cloud ── CDP WS ─▶ daemon.py ── /tmp/bu-<NAME>.sock ─▶ run.py
 ```
 
 Protocol: one JSON line per direction. Request: `{method, params, session_id}` (CDP passthrough) or `{meta: ...}`. Response: `{result}` / `{error}` / `{events}` / `{session_id}`.
