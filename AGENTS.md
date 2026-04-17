@@ -16,7 +16,7 @@ Protocol: one JSON line per direction. Request: `{method, params, session_id}` (
 
 Daemon attaches to the first real page at startup, buffers events in `deque(maxlen=500)`.
 
-`HARNESLESS_NAME` (default `default`) suffixes socket/pid/log — multiple daemons coexist, no supervisor. `HARNESLESS_CDP_WS` overrides the local DevToolsActivePort lookup (remote via `start_remote_daemon()`). `HARNESLESS_REMOTE_BROWSER_ID` + `BROWSER_USE_API_KEY` → daemon stops the cloud browser on shutdown.
+`BU_NAME` (default `default`) suffixes socket/pid/log — multiple daemons coexist, no supervisor. `BU_CDP_WS` overrides the local DevToolsActivePort lookup (remote via `start_remote_daemon()`). `BU_BROWSER_ID` + `BROWSER_USE_API_KEY` → daemon stops the cloud browser on shutdown.
 
 ## Design decisions worth preserving
 
@@ -30,7 +30,7 @@ Daemon attaches to the first real page at startup, buffers events in `deque(maxl
 
 - Helpers ≤ 15 lines. No classes. No deps beyond stdlib + cdp-use + websockets.
 - Don't add meta verbs lightly; if it can be a helper calling `cdp()`, it's a helper.
-- Never add: CLI argparse, tests, logging framework, config files, session manager, retries, daemon supervisor. Multiple daemons are fine (one per `HARNESLESS_NAME`) — just don't build a thing that manages them.
+- Never add: CLI argparse, tests, logging framework, config files, session manager, retries, daemon supervisor. Multiple daemons are fine (one per `BU_NAME`) — just don't build a thing that manages them.
 - Taste test: could the LLM rewrite this from scratch after reading it once?
 
 ## Known gotchas

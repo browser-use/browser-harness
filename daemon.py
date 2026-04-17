@@ -1,4 +1,4 @@
-"""CDP WS holder + Unix socket relay. One daemon per HARNESLESS_NAME."""
+"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
 import asyncio, json, os, socket, sys, urllib.request
 from collections import deque
 from pathlib import Path
@@ -16,7 +16,7 @@ def _load_env():
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 _load_env()
 
-NAME = os.environ.get("HARNESLESS_NAME", "default")
+NAME = os.environ.get("BU_NAME", "default")
 SOCK = f"/tmp/harnesless-{NAME}.sock"
 LOG = f"/tmp/harnesless-{NAME}.log"
 PID = f"/tmp/harnesless-{NAME}.pid"
@@ -28,7 +28,7 @@ PROFILES = [
 ]
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
-REMOTE_ID = os.environ.get("HARNESLESS_REMOTE_BROWSER_ID")
+REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
@@ -37,7 +37,7 @@ def log(msg):
 
 
 def get_ws_url():
-    if url := os.environ.get("HARNESLESS_CDP_WS"):
+    if url := os.environ.get("BU_CDP_WS"):
         return url
     for base in PROFILES:
         try:
@@ -45,7 +45,7 @@ def get_ws_url():
         except (FileNotFoundError, NotADirectoryError):
             continue
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set HARNESLESS_CDP_WS for a remote browser")
+    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
 def stop_remote():

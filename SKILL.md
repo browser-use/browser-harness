@@ -28,11 +28,11 @@ PY
 
 ## Parallel / remote
 
-`HARNESLESS_NAME` picks the daemon (default `default`). Each name = independent socket `/tmp/harnesless-<NAME>.sock`, independent daemon. Remote:
+`BU_NAME` picks the daemon (default `default`). Each name = independent socket `/tmp/harnesless-<NAME>.sock`, independent daemon. Remote:
 
 ```bash
 uv run python -c "from helpers import start_remote_daemon; print(start_remote_daemon('work'))"
-HARNESLESS_NAME=work uv run run.py <<'PY' ... PY
+BU_NAME=work uv run run.py <<'PY' ... PY
 uv run python -c "from helpers import kill_daemon; kill_daemon('work')"  # stops cloud browser too
 ```
 

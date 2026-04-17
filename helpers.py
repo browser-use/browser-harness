@@ -13,7 +13,7 @@ def _load_env():
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 _load_env()
 
-NAME = os.environ.get("HARNESLESS_NAME", "default")
+NAME = os.environ.get("BU_NAME", "default")
 SOCK = f"/tmp/harnesless-{NAME}.sock"
 PID = f"/tmp/harnesless-{NAME}.pid"
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
@@ -46,7 +46,7 @@ def set_session(s):  return _send({"meta": "set_session", "session_id": s})
 def shutdown():      return _send({"meta": "shutdown"})
 
 
-# --- daemon lifecycle (socket IS the lock; one per HARNESLESS_NAME) ---
+# --- daemon lifecycle (socket IS the lock; one per BU_NAME) ---
 def _paths(name): n = name or NAME; return f"/tmp/harnesless-{n}.sock", f"/tmp/harnesless-{n}.pid"
 
 def daemon_alive(name=None):
@@ -60,7 +60,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     """Idempotent. `env` is merged into the child process env."""
     if daemon_alive(name): return
     import subprocess
-    e = {**os.environ, **({"HARNESLESS_NAME": name} if name else {}), **(env or {})}
+    e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
     subprocess.Popen(["uv", "run", "daemon.py"], cwd=os.path.dirname(os.path.abspath(__file__)),
                      env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     deadline = time.time() + wait
@@ -113,8 +113,8 @@ def cdp_ws_from_url(cdp_url):
 def start_remote_daemon(name="remote", **create_kwargs):
     if daemon_alive(name): raise RuntimeError(f"daemon {name!r} already alive — kill_daemon({name!r}) first")
     b = browser_use_create(**create_kwargs)
-    ensure_daemon(name=name, env={"HARNESLESS_CDP_WS": cdp_ws_from_url(b["cdpUrl"]),
-                                  "HARNESLESS_REMOTE_BROWSER_ID": b["id"]})
+    ensure_daemon(name=name, env={"BU_CDP_WS": cdp_ws_from_url(b["cdpUrl"]),
+                                  "BU_BROWSER_ID": b["id"]})
     return b
 
 

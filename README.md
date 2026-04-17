@@ -29,7 +29,7 @@ print(page_info())
 PY
 ```
 
-Parallel agents / remote browsers: `HARNESLESS_NAME=<n> uv run run.py`. See `SKILL.md`.
+Parallel agents / remote browsers: `BU_NAME=<n> uv run run.py`. See `SKILL.md`.
 
 Read `SKILL.md` for the full LLM workflow. Read `AGENTS.md` if you're an agent working ON this codebase (extending helpers, debugging the daemon). Read `helpers.py` for every function — they're all ~5 lines each and you can edit any of them.
 
