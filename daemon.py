@@ -1,18 +1,25 @@
-"""Long-running CDP WebSocket holder + Unix socket relay.
-
-Chrome 144+: reads ws URL from <profile>/DevToolsActivePort (written when user
-enables chrome://inspect/#remote-debugging). Avoids the per-connect "Allow?"
-dialog that the classic /json/version endpoint would trigger.
-"""
-import asyncio, json, os, socket, sys
+"""CDP WS holder + Unix socket relay. One daemon per HARNESLESS_NAME."""
+import asyncio, json, os, socket, sys, urllib.request
 from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
 
-SOCK = "/tmp/harnesless.sock"
-LOG = "/tmp/harnesless.log"
-PID = "/tmp/harnesless.pid"
+
+def _load_env():
+    p = Path(__file__).parent / ".env"
+    if not p.exists(): return
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line: continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+_load_env()
+
+NAME = os.environ.get("HARNESLESS_NAME", "default")
+SOCK = f"/tmp/harnesless-{NAME}.sock"
+LOG = f"/tmp/harnesless-{NAME}.log"
+PID = f"/tmp/harnesless-{NAME}.pid"
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -20,6 +27,9 @@ PROFILES = [
     Path.home() / "AppData/Local/Google/Chrome/User Data",
 ]
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+BU_API = "https://api.browser-use.com/api/v3"
+REMOTE_ID = os.environ.get("HARNESLESS_REMOTE_BROWSER_ID")
+API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
 def log(msg):
@@ -27,13 +37,30 @@ def log(msg):
 
 
 def get_ws_url():
+    if url := os.environ.get("HARNESLESS_CDP_WS"):
+        return url
     for base in PROFILES:
         try:
             port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
         except (FileNotFoundError, NotADirectoryError):
             continue
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging")
+    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set HARNESLESS_CDP_WS for a remote browser")
+
+
+def stop_remote():
+    if not REMOTE_ID or not API_KEY: return
+    try:
+        req = urllib.request.Request(
+            f"{BU_API}/browsers/{REMOTE_ID}",
+            data=json.dumps({"action": "stop"}).encode(),
+            method="PATCH",
+            headers={"X-Browser-Use-API-Key": API_KEY, "Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+        log(f"stopped remote browser {REMOTE_ID}")
+    except Exception as e:
+        log(f"stop_remote failed ({REMOTE_ID}): {e}")
 
 
 def is_real_page(t):
@@ -45,6 +72,7 @@ class Daemon:
         self.cdp = None
         self.session = None
         self.events = deque(maxlen=BUF)
+        self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -65,6 +93,7 @@ class Daemon:
         return pages[0]
 
     async def start(self):
+        self.stop = asyncio.Event()
         url = get_ws_url()
         log(f"connecting to {url}")
         self.cdp = CDPClient(url)
@@ -92,7 +121,7 @@ class Daemon:
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
         if meta == "set_session": self.session = req.get("session_id"); return {"session_id": self.session}
-        if meta == "shutdown":    return {"ok": True, "_shutdown": True}
+        if meta == "shutdown":    self.stop.set(); return {"ok": True}
 
         method = req["method"]
         params = req.get("params") or {}
@@ -121,8 +150,6 @@ async def serve(d):
             resp = await d.handle(json.loads(line))
             writer.write((json.dumps(resp, default=str) + "\n").encode())
             await writer.drain()
-            if resp.get("_shutdown"):
-                asyncio.get_event_loop().stop()
         except Exception as e:
             log(f"conn: {e}")
             try:
@@ -135,9 +162,9 @@ async def serve(d):
 
     server = await asyncio.start_unix_server(handler, path=SOCK)
     os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK}")
+    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
-        await server.serve_forever()
+        await d.stop.wait()
 
 
 async def main():
@@ -168,5 +195,6 @@ if __name__ == "__main__":
         log(f"fatal: {e}")
         sys.exit(1)
     finally:
+        stop_remote()
         try: os.unlink(PID)
         except FileNotFoundError: pass

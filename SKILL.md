@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Edit, Write
 
 Project: `/Users/greg/Documents/browser-use/hackathons/harnesless/`
 
-**Read `helpers.py` first.** ~150 lines, one tool call. The code is the doc.
+**Read `helpers.py` first.** ~260 lines, one tool call. The code is the doc.
 
 ## Tool call shape
 
@@ -20,19 +20,23 @@ PY
 
 `run.py` calls `ensure_daemon()` before `exec` — you never start/stop manually unless you want to.
 
-## Setup (once per machine)
+## Setup
 
-`uv sync`. User enables `chrome://inspect/#remote-debugging` in their Chrome.
+`uv sync`. Enable `chrome://inspect/#remote-debugging`. Remote browsers: `cp .env.example .env` + fill `BROWSER_USE_API_KEY`.
 
-**First daemon start of a session may hang** on the CDP WebSocket handshake — Chrome shows a native "Allow debugging connections" dialog the user has to click. Be patient (give ~15s), then retry. Don't surface an error on the first timeout.
+**First local daemon start may hang** on Chrome's "Allow debugging" dialog. Give ~15s, then retry.
 
-## Daemon management
+## Parallel / remote
 
-- Socket at `/tmp/harnesless.sock` IS the lock.
-- `ensure_daemon()` — idempotent, starts if not alive.
-- `kill_daemon()` — graceful shutdown + pkill fallback.
-- Starting the daemon twice is safe: the second one exits on seeing the socket.
-- Logs: `/tmp/harnesless.log`.
+`HARNESLESS_NAME` picks the daemon (default `default`). Each name = independent socket `/tmp/harnesless-<NAME>.sock`, independent daemon. Remote:
+
+```bash
+uv run python -c "from helpers import start_remote_daemon; print(start_remote_daemon('work'))"
+HARNESLESS_NAME=work uv run run.py <<'PY' ... PY
+uv run python -c "from helpers import kill_daemon; kill_daemon('work')"  # stops cloud browser too
+```
+
+Leaving a remote daemon running bills until the session timeout.
 
 ## Post-task ritual (self-improving harness)
 
