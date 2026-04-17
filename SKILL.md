@@ -8,17 +8,28 @@ allowed-tools: Bash, Read, Edit, Write
 
 Project: `/Users/greg/Documents/browser-use/hackathons/harnesless/`
 
-Every action is one Bash call:
+**Read `helpers.py` first.** ~120 lines, one tool call. The code is the doc.
+
+**Fix as you go.** If a helper's missing or broken, edit `helpers.py` right now. Same for `daemon.py` if startup's flaky (then `pkill -f harnesless/daemon.py && uv run daemon.py &`).
+
+## Tool call shape
+
 ```bash
 cd /Users/greg/Documents/browser-use/hackathons/harnesless && uv run run.py <<'PY'
 # any python. helpers pre-imported.
 PY
 ```
 
-Setup (if daemon not running): user enables `chrome://inspect/#remote-debugging` → `uv sync` → `uv run daemon.py &`. Errors in `/tmp/harnesless.log`.
+## Setup if daemon not running
 
-**The code is the documentation.** To see what helpers exist: `Read helpers.py` or `grep '^def ' helpers.py`. To see what the daemon speaks: `Read daemon.py`. To see design rationale: `Read AGENTS.md`. Don't guess — read.
+`uv sync` → `uv run daemon.py &`. User must enable `chrome://inspect/#remote-debugging` once. Errors in `/tmp/harnesless.log`.
 
-You can edit `helpers.py` at any time. Adding a helper is expected, not exceptional.
+## What actually works
 
-Default workflow: screenshot → `click(x,y)`. For forms: `get_dom()` → `click_element(id)` / `type_in(id, text)`. For anything else: `cdp("Domain.method", ...)`.
+- **Scraping**: `js("...custom query...")`. Bespoke selectors beat generic DOM helpers every time.
+- **Clicking**: `screenshot()` → look → `click(x, y)`. Passes through iframes/shadow/cross-origin.
+- **Bulk HTTP**: `http_get(url)` + `ThreadPoolExecutor`. No browser needed for static pages (249 Netflix pages in 2.8s).
+- **After goto**: `wait_for_load()` not `wait(5)`.
+- **Wrong tab**: `ensure_real_tab()`.
+- **Auth wall**: if redirected to login, stop and ask user — don't try to type credentials.
+- **Raw CDP** for anything helpers don't cover: `cdp("Domain.method", **params)`.

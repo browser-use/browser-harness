@@ -1,117 +1,106 @@
-"""Background CDP WebSocket holder. Listens on Unix socket for commands.
+"""Long-running CDP WebSocket holder + Unix socket relay.
 
-Run: python3 daemon.py &
-Stop: pkill -f harnesless/daemon.py  (or send {"meta": "shutdown"})
-
-The daemon owns ONE persistent WebSocket to Chrome. Short-lived helper
-processes connect to the Unix socket, send one JSON request, get one
-JSON response. WebSocket stays alive across all of them.
+Chrome 144+: reads ws URL from <profile>/DevToolsActivePort (written when user
+enables chrome://inspect/#remote-debugging). Avoids the per-connect "Allow?"
+dialog that the classic /json/version endpoint would trigger.
 """
-import asyncio
-import json
-import os
-import sys
-import urllib.request
+import asyncio, json, os, sys
 from collections import deque
+from pathlib import Path
 
 from cdp_use.client import CDPClient
 
-SOCK_PATH = "/tmp/harnesless.sock"
-LOG_PATH = "/tmp/harnesless.log"
-CDP_HTTP = "http://127.0.0.1:9222"
-EVENT_BUFFER_MAX = 500
+SOCK = "/tmp/harnesless.sock"
+LOG = "/tmp/harnesless.log"
+BUF = 500
+PROFILES = [
+    Path.home() / "Library/Application Support/Google/Chrome",  # macOS
+    Path.home() / ".config/google-chrome",                       # Linux
+    Path.home() / "AppData/Local/Google/Chrome/User Data",       # Windows
+]
+INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 def log(msg):
-    with open(LOG_PATH, "a") as f:
-        f.write(f"{msg}\n")
+    open(LOG, "a").write(f"{msg}\n")
 
 
-def get_browser_ws_url():
-    with urllib.request.urlopen(f"{CDP_HTTP}/json/version", timeout=3) as r:
-        return json.loads(r.read())["webSocketDebuggerUrl"]
+def get_ws_url():
+    for base in PROFILES:
+        try:
+            port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging")
+
+
+def is_real_page(t):
+    return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
 class Daemon:
     def __init__(self):
-        self.cdp: CDPClient | None = None
-        self.default_session: str | None = None
-        self.events: deque = deque(maxlen=EVENT_BUFFER_MAX)
+        self.cdp = None
+        self.session = None
+        self.events = deque(maxlen=BUF)
 
     async def start(self):
-        url = get_browser_ws_url()
+        url = get_ws_url()
         log(f"connecting to {url}")
         self.cdp = CDPClient(url)
         await self.cdp.start()
 
-        # Attach to the first page target so helpers have a default session.
-        targets = await self.cdp.send_raw("Target.getTargets")
-        pages = [t for t in targets["targetInfos"] if t["type"] == "page"]
+        targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        pages = [t for t in targets if is_real_page(t)] or [t for t in targets if t["type"] == "page"]
         if pages:
-            attach = await self.cdp.send_raw(
-                "Target.attachToTarget",
-                {"targetId": pages[0]["targetId"], "flatten": True},
-            )
-            self.default_session = attach["sessionId"]
-            log(f"attached to {pages[0]['targetId']} session={self.default_session}")
-            # Enable common domains so events flow.
+            self.session = (await self.cdp.send_raw(
+                "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
+            ))["sessionId"]
+            log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
             for d in ("Page", "DOM", "Runtime", "Network"):
                 try:
-                    await self.cdp.send_raw(f"{d}.enable", session_id=self.default_session)
+                    await self.cdp.send_raw(f"{d}.enable", session_id=self.session)
                 except Exception as e:
-                    log(f"enable {d} failed: {e}")
+                    log(f"enable {d}: {e}")
 
-        # Buffer every event we see.
-        original = self.cdp._event_registry.handle_event
-
+        orig = self.cdp._event_registry.handle_event
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
-            return await original(method, params, session_id)
-
+            return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
-    async def handle(self, req: dict) -> dict:
+    async def handle(self, req):
         meta = req.get("meta")
         if meta == "drain_events":
-            out = list(self.events)
-            self.events.clear()
+            out = list(self.events); self.events.clear()
             return {"events": out}
-        if meta == "session":
-            return {"session_id": self.default_session}
-        if meta == "set_session":
-            self.default_session = req.get("session_id")
-            return {"session_id": self.default_session}
-        if meta == "shutdown":
-            return {"ok": True, "_shutdown": True}
-
-        method = req["method"]
-        params = req.get("params") or {}
-        session_id = req.get("session_id") or self.default_session
+        if meta == "session":        return {"session_id": self.session}
+        if meta == "set_session":    self.session = req.get("session_id"); return {"session_id": self.session}
+        if meta == "shutdown":       return {"ok": True, "_shutdown": True}
         try:
-            result = await self.cdp.send_raw(method, params, session_id=session_id)
-            return {"result": result}
+            r = await self.cdp.send_raw(req["method"], req.get("params") or {}, session_id=req.get("session_id") or self.session)
+            return {"result": r}
         except Exception as e:
             return {"error": str(e)}
 
 
-async def serve(daemon: Daemon):
-    if os.path.exists(SOCK_PATH):
-        os.unlink(SOCK_PATH)
+async def serve(d):
+    if os.path.exists(SOCK):
+        os.unlink(SOCK)
 
-    async def on_conn(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def handler(reader, writer):
         try:
             line = await reader.readline()
-            if not line:
-                return
-            req = json.loads(line)
-            resp = await daemon.handle(req)
+            if not line: return
+            resp = await d.handle(json.loads(line))
             writer.write((json.dumps(resp, default=str) + "\n").encode())
             await writer.drain()
             if resp.get("_shutdown"):
                 log("shutdown requested")
                 asyncio.get_event_loop().stop()
         except Exception as e:
-            log(f"conn error: {e}")
+            log(f"conn: {e}")
             try:
                 writer.write((json.dumps({"error": str(e)}) + "\n").encode())
                 await writer.drain()
@@ -120,9 +109,9 @@ async def serve(daemon: Daemon):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(on_conn, path=SOCK_PATH)
-    os.chmod(SOCK_PATH, 0o600)
-    log(f"listening on {SOCK_PATH}")
+    server = await asyncio.start_unix_server(handler, path=SOCK)
+    os.chmod(SOCK, 0o600)
+    log(f"listening on {SOCK}")
     async with server:
         await server.serve_forever()
 
@@ -134,7 +123,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    open(LOG_PATH, "w").close()
+    open(LOG, "w").close()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

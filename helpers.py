@@ -1,257 +1,125 @@
-"""Helpers for controlling the browser. Read me. Edit me. Add new functions.
+"""Browser control via CDP. Read, edit, extend — this file is yours."""
+import base64, json, socket, time
 
-Every function is a thin wrapper around CDP. If a pattern is repetitive,
-add a new helper here — this file is yours.
-
-The only function that isn't a direct CDP call is `cdp()` itself, which
-talks to the daemon over a Unix socket. The daemon forwards to Chrome.
-"""
-import base64
-import json
-import socket
-import time
-
-SOCK_PATH = "/tmp/harnesless.sock"
+SOCK = "/tmp/harnesless.sock"
+INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
-# ----- transport -----
-def _send(req: dict) -> dict:
+def _send(req):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK_PATH)
+    s.connect(SOCK)
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
-    while True:
+    while not data.endswith(b"\n"):
         chunk = s.recv(1 << 20)
-        if not chunk:
-            break
+        if not chunk: break
         data += chunk
-        if data.endswith(b"\n"):
-            break
     s.close()
-    resp = json.loads(data.decode())
-    if "error" in resp:
-        raise RuntimeError(resp["error"])
-    return resp
+    r = json.loads(data)
+    if "error" in r: raise RuntimeError(r["error"])
+    return r
 
 
-def cdp(method: str, session_id: str | None = None, **params):
-    """Raw CDP call. Examples:
-        cdp("Page.navigate", url="https://example.com")
-        cdp("DOM.getDocument", depth=-1, pierce=True)
-    """
+def cdp(method, session_id=None, **params):
+    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
     return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
 
 
-def drain_events():
-    """Return all CDP events since last call, then clear the buffer."""
-    return _send({"meta": "drain_events"})["events"]
+def drain_events():  return _send({"meta": "drain_events"})["events"]
+def get_session():   return _send({"meta": "session"})["session_id"]
+def set_session(s):  return _send({"meta": "set_session", "session_id": s})
+def shutdown():      return _send({"meta": "shutdown"})
 
 
-def get_session():
-    return _send({"meta": "session"})["session_id"]
-
-
-def set_session(session_id: str):
-    return _send({"meta": "set_session", "session_id": session_id})
-
-
-def shutdown():
-    return _send({"meta": "shutdown"})
-
-
-# ----- navigation -----
-def goto(url: str):
-    return cdp("Page.navigate", url=url)
-
-
-def reload():
-    return cdp("Page.reload")
-
-
-def back():
-    h = cdp("Page.getNavigationHistory")
-    i = h["currentIndex"]
-    if i > 0:
-        cdp("Page.navigateToHistoryEntry", entryId=h["entries"][i - 1]["id"])
-
+# --- navigation / page ---
+def goto(url):  return cdp("Page.navigate", url=url)
 
 def page_info():
-    """url, title, viewport, scroll position."""
-    r = cdp(
-        "Runtime.evaluate",
-        expression="JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})",
-        returnByValue=True,
-    )
+    """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size."""
+    r = cdp("Runtime.evaluate",
+            expression="JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})",
+            returnByValue=True)
     return json.loads(r["result"]["value"])
 
 
-# ----- input -----
-def click(x: float, y: float, button: str = "left", clicks: int = 1):
+# --- input ---
+def click(x, y, button="left", clicks=1):
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
 
-
-def double_click(x: float, y: float):
-    click(x, y, clicks=2)
-
-
-def right_click(x: float, y: float):
-    click(x, y, button="right")
-
-
-def move_mouse(x: float, y: float):
-    cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
-
-
-def type_text(text: str):
-    """Insert text at the current focus. Simple unicode, no special keys."""
+def type_text(text):
     cdp("Input.insertText", text=text)
 
-
-def press_key(key: str, modifiers: int = 0):
-    """Key is a KeyboardEvent.key string like 'Enter', 'Tab', 'ArrowDown', 'a'.
-    Modifiers: 1=Alt, 2=Ctrl, 4=Meta, 8=Shift (bitfield, sum them).
-    """
+def press_key(key, modifiers=0):
+    """Modifiers bitfield: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift."""
     cdp("Input.dispatchKeyEvent", type="keyDown", key=key, modifiers=modifiers)
     cdp("Input.dispatchKeyEvent", type="keyUp", key=key, modifiers=modifiers)
 
-
-def scroll(x: float, y: float, dy: float = -300, dx: float = 0):
+def scroll(x, y, dy=-300, dx=0):
     cdp("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=dx, deltaY=dy)
 
 
-# ----- visual -----
-def screenshot(path: str = "/tmp/shot.png", fmt: str = "png"):
-    r = cdp("Page.captureScreenshot", format=fmt)
-    with open(path, "wb") as f:
-        f.write(base64.b64decode(r["data"]))
+# --- visual ---
+def screenshot(path="/tmp/shot.png", full=False):
+    r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
+    open(path, "wb").write(base64.b64decode(r["data"]))
     return path
 
 
-def screenshot_full(path: str = "/tmp/full.png"):
-    r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=True)
-    with open(path, "wb") as f:
-        f.write(base64.b64decode(r["data"]))
-    return path
-
-
-# ----- DOM (for forms, scraping, element targeting) -----
-_INTERACTIVE_TAGS = {"a", "button", "input", "select", "textarea", "label", "option", "summary"}
-_INTERACTIVE_ATTRS = {"onclick", "role", "tabindex", "contenteditable", "aria-label"}
-
-
-def get_dom(max_chars: int = 20000):
-    """Flattened DOM filtered to interactive + text-bearing elements.
-    Returns: list of "[backendNodeId] <tag attr=val ...> text" strings.
-    Use click_element(id) / type_in(id, text) to act on them, or raw CDP.
-    """
-    doc = cdp("DOM.getFlattenedDocument", depth=-1, pierce=True)
+# --- tabs ---
+def list_tabs(include_chrome=False):
     out = []
-    total = 0
-    for n in doc["nodes"]:
-        if n.get("nodeType") != 1:
-            continue
-        tag = (n.get("nodeName") or "").lower()
-        attrs = dict(zip(n.get("attributes", [])[::2], n.get("attributes", [])[1::2]))
-        interactive = tag in _INTERACTIVE_TAGS or any(a in attrs for a in _INTERACTIVE_ATTRS)
-        if not interactive:
-            continue
-        text = (n.get("nodeValue") or "")[:80].replace("\n", " ").strip()
-        # Pull one level of inner text for buttons/links.
-        if not text and n.get("children"):
-            for c in n["children"]:
-                if c.get("nodeType") == 3 and c.get("nodeValue"):
-                    text = c["nodeValue"][:80].replace("\n", " ").strip()
-                    break
-        attr_str = " ".join(f'{k}="{v[:40]}"' for k, v in attrs.items() if k in ("id", "name", "type", "placeholder", "aria-label", "href", "value", "role"))
-        line = f"[{n['backendNodeId']}] <{tag} {attr_str}> {text}".rstrip()
-        total += len(line) + 1
-        if total > max_chars:
-            out.append(f"... (truncated, raise max_chars)")
-            break
-        out.append(line)
+    for t in cdp("Target.getTargets")["targetInfos"]:
+        if t["type"] != "page": continue
+        url = t.get("url", "")
+        if not include_chrome and url.startswith(INTERNAL): continue
+        out.append({"targetId": t["targetId"], "title": t.get("title", ""), "url": url})
     return out
 
+def current_tab():
+    t = cdp("Target.getTargetInfo").get("targetInfo", {})
+    return {"targetId": t.get("targetId"), "url": t.get("url", ""), "title": t.get("title", "")}
 
-def element_pos(backend_node_id: int):
-    """Return (center_x, center_y) for an element. Scrolls into view first."""
-    cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend_node_id)
-    box = cdp("DOM.getBoxModel", backendNodeId=backend_node_id)
-    q = box["model"]["content"]  # [x1,y1,x2,y2,x3,y3,x4,y4]
-    return (q[0] + q[4]) / 2, (q[1] + q[5]) / 2
+def switch_tab(target_id):
+    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
+    set_session(sid)
+    return sid
 
-
-def click_element(backend_node_id: int):
-    x, y = element_pos(backend_node_id)
-    click(x, y)
-    return x, y
-
-
-def type_in(backend_node_id: int, text: str, clear: bool = True):
-    click_element(backend_node_id)
-    if clear:
-        press_key("a", modifiers=4)  # Cmd+A (macOS); change to 2 for Ctrl+A
-        press_key("Backspace")
-    type_text(text)
+def ensure_real_tab():
+    """Re-attach to a real user tab if current is chrome:// or internal."""
+    cur = current_tab()
+    if cur["url"] and not cur["url"].startswith(INTERNAL):
+        return cur
+    tabs = list_tabs()
+    if tabs:
+        switch_tab(tabs[0]["targetId"])
+        return tabs[0]
+    return None
 
 
-# ----- tabs -----
-def list_tabs():
-    r = cdp("Target.getTargets")
-    return [
-        {"targetId": t["targetId"], "title": t.get("title", ""), "url": t.get("url", "")}
-        for t in r["targetInfos"]
-        if t["type"] == "page"
-    ]
-
-
-def switch_tab(target_id: str):
-    r = cdp("Target.attachToTarget", targetId=target_id, flatten=True)
-    set_session(r["sessionId"])
-    return r["sessionId"]
-
-
-def new_tab(url: str = "about:blank"):
-    r = cdp("Target.createTarget", url=url)
-    switch_tab(r["targetId"])
-    return r["targetId"]
-
-
-def close_tab(target_id: str):
-    cdp("Target.closeTarget", targetId=target_id)
-
-
-# ----- dialogs -----
-def handle_dialog(accept: bool = True, text: str = ""):
-    cdp("Page.handleJavaScriptDialog", accept=accept, promptText=text)
-
-
-# ----- state -----
-def save_cookies(path: str):
-    cookies = cdp("Network.getCookies")["cookies"]
-    with open(path, "w") as f:
-        json.dump(cookies, f, indent=2)
-    return len(cookies)
-
-
-def load_cookies(path: str):
-    with open(path) as f:
-        cookies = json.load(f)
-    cdp("Network.setCookies", cookies=cookies)
-    return len(cookies)
-
-
-# ----- emulation -----
-def set_viewport(w: int, h: int, scale: float = 1.0, mobile: bool = False):
-    cdp("Emulation.setDeviceMetricsOverride", width=w, height=h, deviceScaleFactor=scale, mobile=mobile)
-
-
-# ----- utility -----
-def wait(seconds: float = 1.0):
+# --- utility ---
+def wait(seconds=1.0):
     time.sleep(seconds)
 
+def wait_for_load(timeout=15.0):
+    """Poll document.readyState == 'complete' or timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if js("document.readyState") == "complete": return True
+        time.sleep(0.3)
+    return False
 
-def js(expression: str):
-    """Run JavaScript, return the value (JSON-serialized)."""
+def js(expression):
+    """Run JS, return JSON-serialized value."""
     r = cdp("Runtime.evaluate", expression=expression, returnByValue=True, awaitPromise=True)
     return r.get("result", {}).get("value")
+
+def http_get(url, headers=None, timeout=20.0):
+    """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk."""
+    import urllib.request, gzip
+    h = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
+    if headers: h.update(headers)
+    with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:
+        data = r.read()
+        if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
+        return data.decode()
