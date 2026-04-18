@@ -93,7 +93,17 @@ After every browser task, extract ONE generalizable friction point from the inte
 
 Commit with the task. The skill gets sharper every use. Skip only if nothing was surprising.
 
-If you solve a specific website and learn a lot, create a PR to this repo with reusable learnings in `domain-skills/` or `interaction-skills/` — no secrets, no user data, no overfit recipes, just how the site works, what to wait for, and what patterns matter.
+If you spend a couple of corrective steps on one site figuring out a page-specific rule that the agent should know next time, treat that as a reusable domain learning, not just a one-off fix.
+
+When that happens:
+- create or update a domain skill under `domain-skills/<domain>/`
+- create the `<domain>/` directory if it does not exist yet
+- save the learning as a Markdown file with a descriptive name
+- write only reusable mechanics: how the site behaves, what to wait for, what selectors or interaction patterns worked, and what traps matter
+- strip all personal information, secrets, account-specific values, and user-specific content because `domain-skills/` is shared across users
+- open a PR to this public repo contributing the new or updated domain skill
+
+Use `interaction-skills/` instead only when the learning is genuinely cross-site and not specific to one domain.
 
 ## What actually works
 
@@ -156,3 +166,4 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 
 - `interaction-skills/` holds reusable UI mechanics such as dialogs, tabs, dropdowns, iframes, and uploads.
 - `domain-skills/` holds site-specific workflows and should be updated when you discover reusable patterns for a website.
+- If the agent had to struggle for a few steps on a page to learn a durable site-specific fact, capture it in `domain-skills/` before ending the task and send it back as a PR.
