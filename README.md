@@ -4,11 +4,7 @@
 
 The simplest, thinnest, and most powerful harness to control your real browser with your agent.
 
-This repo makes you never use your browser again.
-
 ## Setup prompt
-
-Paste this into Claude Code or Codex:
 
 ```text
 Set up https://github.com/browser-use/browser-harness for me.
