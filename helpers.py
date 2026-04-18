@@ -135,37 +135,25 @@ def click(x, y, button="left", clicks=1):
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
 
 def type_text(text):
-    """Raw Input.insertText — inserts at the caret of the focused element. Fires `input`
-    events (so most framework onChange/v-model handlers see it) but NOT keydown/keyup.
-    For form fields prefer `fill(selector, value)` which focuses + types + blurs."""
+    """Inserts at the caret of the focused element. Fires `input` but not keydown/keyup — for form fields prefer `fill`."""
     cdp("Input.insertText", text=text)
 
 def fill(selector, value):
-    """Focus the element, bulk-insert `value` (fires native beforeinput/input events so
-    React/Vue/Angular/Formik onChange all see it), then Tab to blur (fires change). Fast:
-    ~4 CDP calls regardless of value length. Does NOT reliably work on `<input type="date">`
-    — those parse keystrokes segment-by-segment and reject bulk text."""
+    """Focus, bulk-insert, Tab to blur. Fires native input/change so React/Vue/Angular see it. Unreliable on `<input type="date">`."""
     ok = js(f"(() => {{const el = document.querySelector({json.dumps(selector)}); if (!el) return false; el.focus(); return document.activeElement === el;}})()")
     if not ok: raise RuntimeError(f"couldn't focus {selector}")
     cdp("Input.insertText", text=value)
     press_key("Tab")
 
 
-# --- page inspection: composable pieces of what other tools bundle into "state" ---
+# --- page inspection ---
 
-# Default selector for "things a user can interact with". Override via the `selector` arg
-# on clickables() when a site uses custom [data-*] patterns.
 CLICKABLE_SELECTOR = "button,input,select,textarea,a[href],[role=button],[role=link],[role=menuitem],[role=checkbox],[role=combobox],[role=tab],[onclick],[contenteditable=true]"
-
-# Input types → canonical format string. "What does this browser-native widget expect to
-# be typed". Extend for site-specific widgets (e.g. jQuery datepicker mm/dd/yyyy).
 FORMAT_HINTS = {"date":"YYYY-MM-DD", "time":"HH:MM", "datetime-local":"YYYY-MM-DDTHH:MM",
                 "month":"YYYY-MM", "week":"YYYY-Www"}
 
 def clickables(selector=None, scope="document", visible_only=True):
-    """Interactive elements as [{i, tag, type, id, name, role, text}]. Cheaper than
-    screenshot+Read for seeing what to click. `selector` overrides CLICKABLE_SELECTOR;
-    `scope` is any JS root expression; `visible_only=False` includes `display:none` els."""
+    """Interactive elements as [{i, tag, type, id, name, role, text}]. Override CLICKABLE_SELECTOR via `selector`."""
     sel = selector or CLICKABLE_SELECTOR
     vis = "(el.offsetParent !== null || el.tagName === 'INPUT')" if visible_only else "true"
     return json.loads(js(f"""JSON.stringify(Array.from({scope}.querySelectorAll({json.dumps(sel)})).filter(el => {vis}).map((el, i) => ({{
@@ -175,9 +163,7 @@ def clickables(selector=None, scope="document", visible_only=True):
     }})))""") or "[]")
 
 def field_info(selector, format_hints=None):
-    """Everything to fill one input correctly: value, validation attrs, format hint for
-    date/time, live validity. `format_hints` overrides FORMAT_HINTS (pass custom map for
-    site-specific widgets like jQuery datepicker)."""
+    """Value, validation attrs, format hint for date/time, live validity. Override FORMAT_HINTS via `format_hints`."""
     fmt = json.dumps(format_hints or FORMAT_HINTS)
     return json.loads(js(f"""(() => {{const el=document.querySelector({json.dumps(selector)}); if(!el) return 'null';
       const fmt = ({fmt})[el.type] || el.getAttribute('data-date-format') || el.getAttribute('pattern') || '';
@@ -196,19 +182,13 @@ _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "PageUp": (33, "PageUp", ""), "PageDown": (34, "PageDown", ""),
 }
 def press_key(key, modifiers=0):
-    """Modifiers bitfield: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift.
-    Printable chars send rawKeyDown + char (single insertion); control keys (Enter, Tab,
-    Arrow*, Backspace, etc.) send keyDown + keyUp carrying their virtual key codes so
-    listeners checking e.keyCode / e.key all fire."""
+    """Modifiers bitfield: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift. Control keys (Enter, Tab, Arrow*, Backspace, etc.) carry virtual key codes."""
     vk, code, text = _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
     if text and len(text) == 1 and key not in _KEYS:
-        # Printable character: rawKeyDown (no text) + char (with text) → one insertion.
-        # Previously sent keyDown with text AND char with text, which double-inserted.
         cdp("Input.dispatchKeyEvent", type="rawKeyDown", **base)
         cdp("Input.dispatchKeyEvent", type="char", text=text, **base)
     else:
-        # Control key (Enter, Tab, arrows, etc.): keyDown carries text if it has one.
         cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
