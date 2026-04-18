@@ -16,11 +16,13 @@ Read `SKILL.md` and follow its instructions to install and connect this repo to 
 After it is installed, if I am already logged in to GitHub, star this repository as a small verification task.
 ```
 
+
 ## Example task
 
 ```text
 Star this repository.
 ```
+
 
 ## How It Works
 
@@ -29,9 +31,11 @@ Star this repository.
 - `helpers.py` (~260 lines) holds the primitives the agent calls and constantly modifies to sharpen its own harness.
 - `daemon.py` (~200 lines) keeps the CDP websocket and socket bridge alive.
 
+
 ## Get inspiration
 
 See [domain-skills/](domain-skills/) for examples on other websites.
+
 
 ## Optional: Remote browsers
 
