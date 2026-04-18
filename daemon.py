@@ -108,7 +108,10 @@ class Daemon:
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         for d in ("Page", "DOM", "Runtime", "Network"):
             try:
-                await self.cdp.send_raw(f"{d}.enable", session_id=self.session)
+                await asyncio.wait_for(
+                    self.cdp.send_raw(f"{d}.enable", session_id=self.session),
+                    timeout=5
+                )
             except Exception as e:
                 log(f"enable {d}: {e}")
         return pages[0]
