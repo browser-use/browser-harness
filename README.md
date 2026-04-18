@@ -11,7 +11,7 @@ Paste this into Claude Code or Codex:
 ```text
 Set up https://github.com/browser-use/harnessless for me.
 
-Read `SKILL.md` and follow its instructions to install and connect this repo to my real browser.
+Read `install.md` first to install and connect this repo to my real browser. Then read `SKILL.md` for normal usage. Always read `helpers.py` because that is where the functions are. When you open a setup or verification tab, activate it so I can see the active browser tab.
 
 After it is installed, if I am already logged in to GitHub, star this repository as a small verification task.
 
@@ -30,7 +30,8 @@ See [domain-skills/](domain-skills/) for examples on other websites.
 
 ## How It Works
 
-- `SKILL.md` (~100 lines) explains how the harness should be used.
+- `install.md` explains first-time install and browser bootstrap.
+- `SKILL.md` explains day-to-day browser harness usage.
 - `run.py` (~4 lines) executes plain Python with helpers preloaded.
 - `helpers.py` (~260 lines) holds the primitives the agent calls and constantly modifies to sharpen its own harness.
 - `daemon.py` (~200 lines) keeps the CDP websocket and socket bridge alive.

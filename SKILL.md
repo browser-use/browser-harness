@@ -6,6 +6,8 @@ allowed-tools: Bash, Read, Edit, Write
 
 # browser-harness
 
+For first-time install or reconnect/bootstrap, read `install.md` first. For normal use, stay in this file. **Read `helpers.py` first.** The code is the doc.
+
 Available interaction skills:
 - `cookies.md`
 - `cross-origin-iframes.md`
@@ -26,8 +28,6 @@ Available interaction skills:
 Available domain skills:
 - `tiktok/upload.md`
 
-**Read `helpers.py` first.** The code is the doc.
-
 ## Tool call shape
 
 ```bash
@@ -37,85 +37,6 @@ PY
 ```
 
 `run.py` calls `ensure_daemon()` before `exec` — you never start/stop manually unless you want to.
-
-## Setup
-
-### Best everyday setup
-
-Clone the repo once, then install it as an editable tool so `bh` works from any directory:
-
-```bash
-git clone https://github.com/browser-use/harnessless
-cd harnessless
-uv tool install -e .
-command -v bh
-```
-
-That keeps the command global while still pointing at the real repo checkout, so when the agent edits `helpers.py` the next `bh` run uses the new code immediately. `browser-harness` is the readable alias for the same command.
-
-Default to this global setup. Use the local-only flow below only for quick testing inside the repo.
-
-### Make it global for the current agent
-
-After the repo is installed, register this repo's `SKILL.md` with the agent you are using:
-
-- **Codex**: add this file as a global skill at `$CODEX_HOME/skills/browser-harness/SKILL.md` (often `~/.codex/skills/browser-harness/SKILL.md`). A symlink to this repo's `SKILL.md` is fine.
-- **Claude Code**: add an import to `~/.claude/CLAUDE.md` that points at this repo's `SKILL.md`, for example `@~/src/harnessless/SKILL.md`.
-
-That makes new Codex or Claude Code sessions in other folders load the browser harness instructions automatically.
-
-To confirm the memory/instructions are loaded:
-
-- **Codex**: start a new session and check that `browser-harness` appears in the available skills.
-- **Claude Code**: run `/memory` and confirm that `~/.claude/CLAUDE.md` and its import are listed.
-
-### Simplest local setup
-
-1. Run `uv sync`.
-2. First try the harness directly. If this works, skip setup entirely:
-
-```bash
-uv run bh <<'PY'
-ensure_real_tab()
-print(page_info())
-PY
-```
-
-3. If that fails and Chrome is already running, open `chrome://inspect/#remote-debugging` in the existing Chrome profile instead of launching a fresh Chrome process.
-   On macOS:
-
-```bash
-osascript -e 'tell application "Google Chrome" to activate' \
-          -e 'tell application "Google Chrome" to open location "chrome://inspect/#remote-debugging"'
-```
-
-   On Linux: use the already-running Chrome window and open that URL manually.
-4. If Chrome is not running, start Chrome first and let the user choose their normal profile if Chrome opens the profile picker. Only after that, open `chrome://inspect/#remote-debugging`.
-   On macOS: `open -a "Google Chrome"`
-5. Tell the user to tick the remote-debugging checkbox. If Chrome shows `Allow`, tell the user to click it once.
-6. Do not ask the user to say "continue". Poll every few seconds and retry the same connect attempt once the permission flow finishes.
-7. If setup still lands on the profile picker, have the user choose their normal profile, then open `chrome://inspect/#remote-debugging` in that profile and keep polling instead of restarting the explanation.
-8. Verify with:
-
-```bash
-uv run bh <<'PY'
-ensure_real_tab()
-if not current_tab()["url"] or current_tab()["url"].startswith(INTERNAL):
-    new_tab("about:blank")
-print(page_info())
-PY
-```
-
-If that fails with a stale websocket or stale socket, restart the daemon once and retry:
-
-Run this from the repo root:
-
-```bash
-uv run python - <<'PY'
-from helpers import kill_daemon
-kill_daemon()
-PY
-```
 
 ### Remote browsers
 

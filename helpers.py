@@ -188,6 +188,7 @@ def current_tab():
     return {"targetId": t.get("targetId"), "url": t.get("url", ""), "title": t.get("title", "")}
 
 def switch_tab(target_id):
+    cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     set_session(sid)
     return sid
