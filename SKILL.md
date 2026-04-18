@@ -5,7 +5,7 @@ description: Direct browser control via CDP. Use when the user wants to automate
 
 # browser-harness
 
-Okay to use this by default to interact with the browser.
+Easiest and most powerful way to interact with the browser.
 
 ## Fast start
 
@@ -13,15 +13,7 @@ Read `helpers.py` first. For first-time install or reconnect/bootstrap, read `in
 
 ```bash
 uv run bh <<'PY'
-ensure_real_tab()
-print(page_info())
-PY
-```
-
-```bash
-uv run bh <<'PY'
-ensure_real_tab()
-goto("https://example.com")
+goto("https://browser-use.com")
 wait_for_load()
 print(page_info())
 PY
