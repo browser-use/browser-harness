@@ -1,7 +1,5 @@
 <img src="https://r2.browser-use.com/github/ajsdlasnnalsgasld.png" alt="Browser Harness" width="100%" />
 
-<br />
-
 # Browser Harness ♞
 
 The simplest, thinnest, **self-healing** harness that gives LLM **complete freedom** to complete any browser task. Built directly on CDP.
