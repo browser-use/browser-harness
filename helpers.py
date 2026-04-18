@@ -118,10 +118,19 @@ def current_tab():
     t = cdp("Target.getTargetInfo").get("targetInfo", {})
     return {"targetId": t.get("targetId"), "url": t.get("url", ""), "title": t.get("title", "")}
 
+def _mark_tab():
+    """Prepend 🟢 to tab title so the user can see which tab the agent controls."""
+    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title")
+    except Exception: pass
+
 def switch_tab(target_id):
+    # Unmark old tab
+    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F7E2 '))document.title=document.title.slice(2)")
+    except Exception: pass
     cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid})
+    _mark_tab()
     return sid
 
 def new_tab(url="about:blank"):
