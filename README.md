@@ -16,7 +16,7 @@ When this page appears tick the checkbox so the agent can connect to the real br
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
-<br><br><br>
+<br><br>
 
 ## Example task
 
@@ -26,7 +26,7 @@ Star this repository.
 
 See [domain-skills/](domain-skills/) for examples on other websites.
 
-<br><br><br>
+<br><br>
 
 ## Code Structure
 
@@ -37,7 +37,7 @@ See [domain-skills/](domain-skills/) for examples on other websites.
 - `admin.py` (~139 lines) holds daemon bootstrap and optional remote-browser helpers.
 - `daemon.py` (~220 lines) keeps the CDP websocket and socket bridge alive.
 
-<br><br><br>
+<br><br>
 
 ## Optional: Remote browsers
 
