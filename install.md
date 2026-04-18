@@ -41,6 +41,8 @@ That makes new Codex or Claude Code sessions in other folders load the runtime b
 
 ## Browser bootstrap
 
+The steps below use Chrome. Microsoft Edge works the same way — the daemon reads `DevToolsActivePort` from Edge's profile dir automatically, and `chrome://inspect/#remote-debugging` resolves inside Edge too. Substitute `Microsoft Edge` for the app name in `open -a` and AppleScript `tell application`; everything else is identical.
+
 1. Run `uv sync`.
    If `browser-harness` is still missing after that, run `command -v browser-harness >/dev/null || uv tool install -e .`.
 2. First try the harness directly. If this works, skip manual browser setup:

@@ -27,8 +27,11 @@ PID = f"/tmp/bu-{NAME}.pid"
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
+    Path.home() / "Library/Application Support/Microsoft Edge",
     Path.home() / ".config/google-chrome",
+    Path.home() / ".config/microsoft-edge",
     Path.home() / "AppData/Local/Google/Chrome/User Data",
+    Path.home() / "AppData/Local/Microsoft/Edge/User Data",
 ]
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
