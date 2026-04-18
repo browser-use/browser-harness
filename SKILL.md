@@ -6,14 +6,12 @@ allowed-tools: Bash, Read, Edit, Write
 
 # bu
 
-Project: `/Users/greg/Documents/browser-use/hackathons/bu/`
-
-**Read `helpers.py` first.** ~260 lines, one tool call. The code is the doc.
+**Read `helpers.py` first.** The code is the doc.
 
 ## Tool call shape
 
 ```bash
-cd /Users/greg/Documents/browser-use/hackathons/bu && uv run run.py <<'PY'
+cd /path/to/harnessless && uv run run.py <<'PY'
 # any python. helpers pre-imported. daemon auto-starts.
 PY
 ```
@@ -22,18 +20,42 @@ PY
 
 ## Setup
 
-`uv sync`. Enable `chrome://inspect/#remote-debugging`. Remote browsers: `cp .env.example .env` + fill `BROWSER_USE_API_KEY`.
+### Simplest local setup
 
-**First local daemon start may hang** on Chrome's "Allow debugging" dialog. Give ~15s, then retry.
+1. Run `uv sync`.
+2. If Chrome is closed, open it first.
+3. Open `chrome://inspect/#remote-debugging`.
+   On macOS: `open -a "Google Chrome" "chrome://inspect/#remote-debugging"`
+4. Tell the user to tick the remote-debugging checkbox and click Chrome's "Allow" button if it appears.
+5. Verify with:
 
-## Parallel / remote
+```bash
+uv run run.py <<'PY'
+ensure_real_tab()
+print(page_info())
+PY
+```
 
-`BU_NAME` picks the daemon (default `default`). Each name = independent socket `/tmp/bu-<NAME>.sock`, independent daemon. Remote:
+If that fails with a stale websocket or stale socket, restart the daemon once and retry:
+
+```bash
+uv run python - <<'PY'
+from helpers import kill_daemon
+kill_daemon()
+PY
+```
+
+### Remote browsers
+
+Remote is optional. Use it for parallel agents, sub-agents, or deployment.
+
+Create `.env` from `.env.example` and set `BROWSER_USE_API_KEY`, then:
 
 ```bash
 uv run python -c "from helpers import start_remote_daemon; print(start_remote_daemon('work'))"
-BU_NAME=work uv run run.py <<'PY' ... PY
-uv run python -c "from helpers import kill_daemon; kill_daemon('work')"  # stops cloud browser too
+BU_NAME=work uv run run.py <<'PY'
+print(page_info())
+PY
 ```
 
 Leaving a remote daemon running bills until the session timeout.
@@ -54,6 +76,7 @@ Commit with the task. The skill gets sharper every use. Skip only if nothing was
 - **Bulk HTTP**: `http_get(url)` + `ThreadPoolExecutor`. No browser for static pages (249 Netflix pages in 2.8s).
 - **After goto**: `wait_for_load()`.
 - **Wrong/stale tab**: `ensure_real_tab()`. Daemon also auto-recovers from stale sessions on next call.
+- **Verification**: `ensure_real_tab(); print(page_info())` is the simplest "is this alive?" check.
 - **Iframe sites** (Azure blades, Salesforce): `click(x, y)` passes through; for DOM use `js(expr, target_id=iframe_target("sandbox"))`. Iframe rects are iframe-local — add the host iframe's offset for page coords.
 - **Auth wall**: redirected to login → stop and ask the user. Don't type credentials from screenshots.
 - **Raw CDP** for anything helpers don't cover: `cdp("Domain.method", **params)`.
@@ -83,9 +106,11 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 ## Gotchas (field-tested)
 
 - **Chrome 144+ `chrome://inspect/#remote-debugging` does NOT serve `/json/version`.** Read `DevToolsActivePort` instead.
+- **The first connect may block on Chrome's Allow dialog.** If setup hangs, ask the user to click Allow, then retry once.
 - **Omnibox popups are fake `page` targets.** Filter `chrome://omnibox-popup...` and other internals when you need a real tab.
 - **CDP target order != Chrome's visible tab-strip order.** Use UI automation when the user means "the first/second tab I can see"; `Target.activateTarget` only shows a known target.
 - **Default daemon sessions can go stale.** `ensure_real_tab()` re-attaches to a real page.
+- **`no close frame received or sent` usually means a stale daemon / websocket.** Kill the daemon once and retry before assuming setup is wrong.
 - **Keep the two `INTERNAL` tuples in sync.** `daemon.py` and `helpers.py` each define one.
 - **Browser Use API is camelCase on the wire.** `cdpUrl`, `proxyCountryCode`, etc.
 - **Remote `cdpUrl` is HTTPS, not ws.** Resolve the websocket URL via `/json/version`.
