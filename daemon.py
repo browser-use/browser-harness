@@ -91,6 +91,7 @@ class Daemon:
         self.cdp = None
         self.session = None
         self.events = deque(maxlen=BUF)
+        self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self):
@@ -133,6 +134,10 @@ class Daemon:
         orig = self.cdp._event_registry.handle_event
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
+            if method == "Page.javascriptDialogOpening":
+                self.dialog = params
+            elif method == "Page.javascriptDialogClosed":
+                self.dialog = None
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
@@ -143,6 +148,7 @@ class Daemon:
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
         if meta == "set_session": self.session = req.get("session_id"); return {"session_id": self.session}
+        if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
 
         method = req["method"]

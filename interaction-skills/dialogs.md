@@ -2,6 +2,10 @@
 
 Browser dialogs (`alert`, `confirm`, `prompt`, `beforeunload`) freeze the JS thread. Two approaches depending on timing.
 
+## Detection
+
+`page_info()` auto-surfaces any open dialog: if one is pending it returns `{"dialog": {"type", "message", ...}}` instead of the usual viewport dict (because the page's JS is frozen anyway). So if you call `page_info()` after an action and see a `dialog` key, handle it before doing anything else.
+
 ## Reactive: dismiss via CDP (preferred)
 
 Works even when JS is frozen. Handles all dialog types including `beforeunload`.

@@ -53,7 +53,14 @@ def goto(url):
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
 
 def page_info():
-    """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size."""
+    """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
+
+    If a native dialog (alert/confirm/prompt/beforeunload) is open, returns
+    {dialog: {type, message, ...}} instead — the page's JS thread is frozen
+    until the dialog is handled (see interaction-skills/dialogs.md)."""
+    dialog = _send({"meta": "pending_dialog"}).get("dialog")
+    if dialog:
+        return {"dialog": dialog}
     r = cdp("Runtime.evaluate",
             expression="JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})",
             returnByValue=True)
