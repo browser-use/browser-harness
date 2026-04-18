@@ -21,6 +21,9 @@ PY
 
 The code is the doc.
 
+Available interaction skills:
+- `interaction-skills/connection.md` — startup sequence, tab visibility, omnibox popup fix
+
 Available domain skills:
 - `tiktok/upload.md`
 
