@@ -49,6 +49,10 @@ Commit with the task. The skill gets sharper every use. Skip only if nothing was
 
 ## What actually works
 
+- **Form fields**: `fill(selector, value)` — focuses the element, bulk-inserts via `Input.insertText`, then Tabs to blur. Fires native beforeinput/input/change/blur so framework-controlled inputs (React, Vue, Angular, Formik) all register the value. Prefer over `type_text()` (which doesn't fire keyboard DOM events). Doesn't reliably work on `<input type="date">` — those parse keystrokes segment-by-segment and reject bulk text.
+- **Understanding a page cheaply** (alternative to `screenshot()` + Read for verification):
+  - `clickables()` → indexed interactive elements `[{i, tag, type, id, name, role, text}]`. Override the default selector via `clickables(selector='[data-cy]')` for site-specific patterns.
+  - `field_info(selector)` → validation attrs + format hint for date/time + live `valid`/`error`. **Call before typing into a field you don't know — saves turns on wrong-format retries.** `format_hints={...}` overrides for custom widgets (e.g. jQuery datepicker `mm/dd/yyyy`).
 - **Scraping**: `js("...custom query...")`. Bespoke selectors beat generic DOM helpers.
 - **Clicking**: `screenshot()` → look → `click(x, y)`. Passes through iframes/shadow/cross-origin at the compositor level.
 - **Bulk HTTP**: `http_get(url)` + `ThreadPoolExecutor`. No browser for static pages (249 Netflix pages in 2.8s).
@@ -70,3 +74,5 @@ Commit with the task. The skill gets sharper every use. Skip only if nothing was
 - **Shadow DOM**: `document.querySelector` doesn't pierce shadow roots. Walk via `element.shadowRoot.querySelectorAll` (and recurse).
 - **Submitting forms**: the "Submit" button isn't always the first `button[type=submit]` — on React Native Web etc. contact-method buttons share that type. Prefer the button whose text matches `/submit/i`, fall back to `form.requestSubmit()`.
 - **Form success signals vary**: visible `#success-message`, captured `alert()` text, console log, or body text change. Check all sources — don't assume one convention.
+- **Text beats screenshots for verification.** After an action, `js("document.body.innerText")` or a scoped `element.textContent` is cheaper than a screenshot and easier to pattern-match. Save screenshots for what genuinely needs pixels (coordinate clicks, visual layout, CAPTCHA).
+- **Library widgets keep state outside `.value`.** `field_info()` and `el.value` only see native DOM state. jQuery datepicker, Select2, MUI pickers etc. store the selected value in library-internal objects — they'll report `value: ''` even when the widget visually shows a value. If you see that mismatch, fall back to the library's API: `$('#x').datepicker('setDate', ...)`, `$('#x').val(v).trigger('change')`, or component-specific calls.
