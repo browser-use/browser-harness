@@ -37,7 +37,7 @@ Codex command:
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness" && ln -sf "$PWD/SKILL.md" "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness/SKILL.md"
 ```
 
-That makes new Codex or Claude Code sessions in other folders load the runtime browser harness instructions automatically.
+That makes new Codex or Claude Code sessions in other folders load the runtime browser harness instructions automatically. An empty `~/.codex/skills/browser-harness/` directory is fine; the symlink command above populates it.
 
 ## Browser bootstrap
 
@@ -84,8 +84,8 @@ If that fails with a stale websocket or stale socket, restart the daemon once an
 
 ```bash
 uv run python - <<'PY'
-from admin import restart_daemon
-restart_daemon()
+from helpers import kill_daemon
+kill_daemon()
 PY
 ```
 
@@ -96,6 +96,7 @@ PY
 - Try attaching before asking the user to change anything.
 - The first connect may block on Chrome's `Allow` dialog, and Chrome may also stop first on the profile picker.
 - `DevToolsActivePort` can exist before the port is actually listening. Treat connection refused as "still enabling" and keep polling briefly.
+- If the port is listening but `/json/version` returns `404`, treat that as expected on newer Chrome builds and retry `bh`.
 - If attach is blocked on macOS, open `chrome://inspect/#remote-debugging` in the current Chrome profile and explicitly tell the user to click `Allow` if Chrome shows it.
 - Chrome may open the profile picker before any real tab exists.
 - On macOS, prefer AppleScript `open location` over `open -a ... URL` when Chrome is already running.
