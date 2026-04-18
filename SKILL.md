@@ -89,7 +89,7 @@ rg -n "tiktok|upload" domain-skills
 
 ## Always contribute back
 
-**If you learned anything non-obvious about how a site works, open a PR to `domain-skills/<site>/` before you finish. Default to contributing.** The harness gets better only because agents file what they learn. If you hesitated for a few steps while figuring something out, the next run should not have to hesitate.
+**If you learned anything non-obvious about how a site works, open a PR to `domain-skills/<site>/` before you finish. Default to contributing.** The harness gets better only because agents file what they learn. If figuring something out cost you a few steps, the next run should not pay the same tax.
 
 Examples of what's worth a PR:
 
