@@ -1,6 +1,7 @@
 """Browser control via CDP. Read, edit, extend -- this file is yours."""
 import base64, json, os, socket, time, urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _load_env():
@@ -54,6 +55,39 @@ def page_info():
             expression="JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})",
             returnByValue=True)
     return json.loads(r["result"]["value"])
+
+
+def _domain_skill_candidates(hostname):
+    host = (hostname or "").lower().strip(".")
+    if not host:
+        return []
+    parts = [p for p in host.split(".") if p and p != "www"]
+    if not parts:
+        return []
+    seen, out = set(), []
+    for i in range(len(parts) - 1):
+        candidate = ".".join(parts[i:])
+        if candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+    leaf = parts[0]
+    if leaf not in seen:
+        out.append(leaf)
+    return out
+
+
+def domain_skill_names(url=None, limit=10):
+    """Return up to `limit` Markdown filenames for the current page's matching domain skill directory."""
+    target = url or page_info().get("url", "")
+    host = urlparse(target).hostname
+    root = Path(__file__).parent / "domain-skills"
+    for candidate in _domain_skill_candidates(host):
+        folder = root / candidate
+        if not folder.is_dir():
+            continue
+        files = sorted(p.name for p in folder.rglob("*.md") if p.is_file())
+        return files[:limit]
+    return []
 
 
 # --- input ---
