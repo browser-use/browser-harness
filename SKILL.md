@@ -21,23 +21,6 @@ PY
 
 The code is the doc.
 
-Available interaction skills:
-- `cookies.md`
-- `cross-origin-iframes.md`
-- `dialogs.md`
-- `downloads.md`
-- `drag-and-drop.md`
-- `dropdowns.md`
-- `iframes.md`
-- `network-requests.md`
-- `print-as-pdf.md`
-- `screenshots.md`
-- `scrolling.md`
-- `shadow-dom.md`
-- `tabs.md`
-- `uploads.md`
-- `viewport.md`
-
 Available domain skills:
 - `tiktok/upload.md`
 
@@ -75,35 +58,46 @@ Parallel agents should use distinct `BU_NAME`s and can share the same `helpers.p
 
 ## Search first
 
-After cloning the repo, search `interaction-skills/` for reusable UI mechanics and `domain-skills/` for site-specific workflows before inventing a new approach.
+After cloning the repo, search `domain-skills/` first for the domain you are working on before inventing a new approach.
+
+Only if you start struggling with a specific mechanic while navigating, look in `interaction-skills/` for helpers. The available interaction skills are:
+- `cookies.md`
+- `cross-origin-iframes.md`
+- `dialogs.md`
+- `downloads.md`
+- `drag-and-drop.md`
+- `dropdowns.md`
+- `iframes.md`
+- `network-requests.md`
+- `print-as-pdf.md`
+- `screenshots.md`
+- `scrolling.md`
+- `shadow-dom.md`
+- `tabs.md`
+- `uploads.md`
+- `viewport.md`
 
 Useful commands:
 
 ```bash
-rg --files interaction-skills domain-skills
-rg -n "dropdown|iframe|upload|tiktok" interaction-skills domain-skills
+rg --files domain-skills
+rg -n "tiktok|upload" domain-skills
 ```
 
 ## Post-task ritual (self-improving harness)
 
-After every browser task, extract ONE generalizable friction point from the interaction (a failed selector strategy, a slow pattern, a missing helper, a confusing result) and make the **simplest possible** improvement:
-- a 2-line helper in `helpers.py`, OR
-- a one-line gotcha in this file, OR
-- a correction to a wrong recipe here.
-
-Commit with the task. The skill gets sharper every use. Skip only if nothing was surprising.
+If needed, modify your own helper functions to fix tools that do not work well on a task, make repeated actions more efficient, or fix recurring browser-interaction problems.
 
 If you spend a couple of corrective steps learning things you would want to know on the next similar task for the same domain, add or update a Markdown skill under `domain-skills/<domain>/` (create the directory if needed) with all reusable learnings that would speed up the next run, such as where to wait for network requests, which interaction patterns worked, and what traps matter. `domain-skills/` is shared across users, so include only sanitized, reusable guidance and never include sensitive data, secrets, or user-specific details. Then open a PR to this public repo.
 
 ## What actually works
 
-- **Screenshots first**: use `screenshot()` to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation.
-- **Clicking**: `screenshot()` → look → `click(x, y)` → `screenshot()` again to verify the result. Coordinate clicks pass through iframes/shadow/cross-origin at the compositor level.
+- **Clicking**: `screenshot()` → look → `click(x, y)`. Passes through iframes/shadow/cross-origin at the compositor level.
 - **Bulk HTTP**: `http_get(url)` + `ThreadPoolExecutor`. No browser for static pages (249 Netflix pages in 2.8s).
 - **After goto**: `wait_for_load()`.
 - **Wrong/stale tab**: `ensure_real_tab()`. Use it when the current tab is stale or internal; the daemon also auto-recovers from stale sessions on the next call.
-- **Verification**: `print(page_info())` is the simplest "is this alive?" check, but screenshots are the default way to verify whether a visible action actually worked.
-- **DOM reads**: use `js(...)` for inspection and extraction when the screenshot shows that coordinates are the wrong tool.
+- **Verification**: `print(page_info())` is the simplest "is this alive?" check.
+- **DOM reads**: use `js(...)` for inspection and extraction when coordinates are the wrong tool.
 - **Iframe sites** (Azure blades, Salesforce): `click(x, y)` passes through; only drop to iframe DOM work when coordinate clicks are the wrong tool.
 - **Auth wall**: redirected to login → stop and ask the user. Don't type credentials from screenshots.
 - **Raw CDP** for anything helpers don't cover: `cdp("Domain.method", **params)`.
@@ -150,8 +144,6 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 - **Browser Use API is camelCase on the wire.** `cdpUrl`, `proxyCountryCode`, etc.
 - **Remote `cdpUrl` is HTTPS, not ws.** Resolve the websocket URL via `/json/version`.
 - **Stop cloud browsers with `PATCH /browsers/{id}` + `{\"action\":\"stop\"}`.**
-- **After every meaningful action, re-screenshot before assuming it worked.** Use the image to verify changed state, open menus, navigation, visible errors, and whether the page is in the state you expected.
-- **Use screenshots to drive exploration.** They are often the fastest way to find the next click target, notice hidden blockers, and decide if a selector is even worth writing.
 - **Prefer compositor-level actions over framework hacks.** Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.
 - **If you need framework-specific DOM tricks, check `interaction-skills/` first.** That is where dropdown, dialog, iframe, shadow DOM, and form-specific guidance belongs.
 
