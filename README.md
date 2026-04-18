@@ -1,6 +1,8 @@
 # Browser Harness
 
-The simplest, thinnest, and most powerful browser agent harness.
+The simplest, thinnest, and most powerful harness to control your real browser with your agent.
+
+This repo makes you never use your browser again.
 
 ## Setup prompt
 
