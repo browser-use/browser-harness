@@ -6,12 +6,32 @@ allowed-tools: Bash, Read, Edit, Write
 
 # bu
 
+Available interaction skills:
+- `cookies.md`
+- `cross-origin-iframes.md`
+- `dialogs.md`
+- `downloads.md`
+- `drag-and-drop.md`
+- `dropdowns.md`
+- `iframes.md`
+- `network-requests.md`
+- `print-as-pdf.md`
+- `screenshots.md`
+- `scrolling.md`
+- `shadow-dom.md`
+- `tabs.md`
+- `uploads.md`
+- `viewport.md`
+
+Available domain skills:
+- `tiktok/upload.md`
+
 **Read `helpers.py` first.** The code is the doc.
 
 ## Tool call shape
 
 ```bash
-cd /path/to/harnessless && uv run run.py <<'PY'
+bu <<'PY'
 # any python. helpers pre-imported. daemon auto-starts.
 PY
 ```
@@ -19,6 +39,18 @@ PY
 `run.py` calls `ensure_daemon()` before `exec` — you never start/stop manually unless you want to.
 
 ## Setup
+
+### Best everyday setup
+
+Clone the repo once, then install it as an editable tool so `bu` works from any directory:
+
+```bash
+git clone https://github.com/browser-use/harnessless
+cd harnessless
+uv tool install -e .
+```
+
+That keeps the command global while still pointing at the real repo checkout, so when the agent edits `helpers.py` the next `bu` run uses the new code immediately.
 
 ### Simplest local setup
 
@@ -30,7 +62,7 @@ PY
 5. Verify with:
 
 ```bash
-uv run run.py <<'PY'
+bu <<'PY'
 ensure_real_tab()
 print(page_info())
 PY
@@ -53,12 +85,25 @@ Create `.env` from `.env.example` and set `BROWSER_USE_API_KEY`, then:
 
 ```bash
 uv run python -c "from helpers import start_remote_daemon; print(start_remote_daemon('work'))"
-BU_NAME=work uv run run.py <<'PY'
+BU_NAME=work bu <<'PY'
 print(page_info())
 PY
 ```
 
 Leaving a remote daemon running bills until the session timeout.
+
+Parallel agents should use distinct `BU_NAME`s and can share the same `helpers.py`; shared improvements are expected, and changes should stay general enough that other agents benefit rather than break.
+
+## Search first
+
+After cloning the repo, search `interaction-skills/` for reusable UI mechanics and `domain-skills/` for site-specific workflows before inventing a new approach.
+
+Useful commands:
+
+```bash
+rg --files interaction-skills domain-skills
+rg -n "dropdown|iframe|upload|tiktok" interaction-skills domain-skills
+```
 
 ## Post-task ritual (self-improving harness)
 
@@ -68,6 +113,8 @@ After every browser task, extract ONE generalizable friction point from the inte
 - a correction to a wrong recipe here.
 
 Commit with the task. The skill gets sharper every use. Skip only if nothing was surprising.
+
+If you solve a specific website and learn a lot, create a PR to this repo with reusable learnings in `domain-skills/` or `interaction-skills/` — no secrets, no user data, no overfit recipes, just how the site works, what to wait for, and what patterns matter.
 
 ## What actually works
 
@@ -129,4 +176,4 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 ## Interaction notes
 
 - `interaction-skills/` holds reusable UI mechanics such as dialogs, tabs, dropdowns, iframes, and uploads.
-- `domain-skills/` holds site-specific workflows.
+- `domain-skills/` holds site-specific workflows and should be updated when you discover reusable patterns for a website.

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "bu"
 version = "0.1.0"
@@ -7,3 +11,9 @@ dependencies = [
     "cdp-use>=1.4.5",
     "websockets>=16.0",
 ]
+
+[project.scripts]
+bu = "run:main"
+
+[tool.setuptools]
+py-modules = ["run", "helpers", "daemon"]

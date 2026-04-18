@@ -1,4 +1,11 @@
 import sys
 from helpers import *
-ensure_daemon()
-exec(sys.stdin.read())
+
+
+def main():
+    ensure_daemon()
+    exec(sys.stdin.read())
+
+
+if __name__ == "__main__":
+    main()
