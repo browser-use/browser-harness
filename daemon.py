@@ -28,10 +28,18 @@ BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
     Path.home() / "Library/Application Support/Microsoft Edge",
+    Path.home() / "Library/Application Support/Microsoft Edge Beta",
+    Path.home() / "Library/Application Support/Microsoft Edge Dev",
+    Path.home() / "Library/Application Support/Microsoft Edge Canary",
     Path.home() / ".config/google-chrome",
     Path.home() / ".config/microsoft-edge",
+    Path.home() / ".config/microsoft-edge-beta",
+    Path.home() / ".config/microsoft-edge-dev",
     Path.home() / "AppData/Local/Google/Chrome/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge/User Data",
+    Path.home() / "AppData/Local/Microsoft/Edge Beta/User Data",
+    Path.home() / "AppData/Local/Microsoft/Edge Dev/User Data",
+    Path.home() / "AppData/Local/Microsoft/Edge SxS/User Data",
 ]
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
