@@ -96,10 +96,12 @@ class Daemon:
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-        pages = [t for t in targets if is_real_page(t)] or [t for t in targets if t["type"] == "page"]
+        pages = [t for t in targets if is_real_page(t)]
         if not pages:
-            self.session = None
-            return None
+            # No real pages — create one instead of attaching to omnibox popup
+            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            log(f"no real pages found, created about:blank ({tid})")
+            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
         self.session = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
         ))["sessionId"]
