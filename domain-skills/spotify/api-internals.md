@@ -231,6 +231,85 @@ def get_lyrics(track_id):
 
 Response: `{lyrics: {syncType, lines: [{startTimeMs, words, syllables, endTimeMs, transliteratedWords}]}, colors, hasVocalRemoval}`. `syncType` is `LINE_SYNCED`, `SYLLABLE_SYNCED` (word-level), or `UNSYNCED`. The `/image/<cover-art-url>` segment the Web Player uses is optional.
 
+## Playlist mutations
+
+Creating playlists uses a REST endpoint; adding/removing/moving tracks uses pathfinder. All share the same auth pair.
+
+### Create a playlist
+
+```python
+def create_playlist(name):
+    url = "https://spclient.wg.spotify.com/playlist/v2/playlist"
+    body = json.dumps({
+        "ops": [{"kind": "UPDATE_LIST_ATTRIBUTES",
+                 "updateListAttributes": {"newAttributes": {"values": {"name": name}}}}]
+    }).encode()
+    req = urllib.request.Request(url, data=body, headers=send_headers, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())   # {"uri": "spotify:playlist:<id>", "revision": "..."}
+```
+
+New playlists don't automatically appear in the user's sidebar. To show it, add it to the rootlist:
+
+```python
+def add_to_rootlist(username, playlist_uri):
+    url = f"https://spclient.wg.spotify.com/playlist/v2/user/{username}/rootlist/changes"
+    body = json.dumps({"deltas": [{
+        "ops": [{"kind": "ADD", "add": {
+            "items": [{"uri": playlist_uri, "attributes": {"timestamp": str(int(time.time()*1000))}}],
+            "addFirst": True}}],
+        "info": {"source": {"client": "WEBPLAYER"}},
+    }]}).encode()
+    urllib.request.urlopen(urllib.request.Request(url, data=body, headers=send_headers, method="POST"))
+```
+
+The `username` is available from any captured user-scoped endpoint (e.g. `/collection/v2/contains` bodies include `"username": "<id>"`).
+
+### Add / remove / move tracks
+
+Three pathfinder ops, all sharing one hash, differing by operation name:
+
+```python
+def add_tracks(playlist_uri, track_uris):
+    # Cap batches at 25 — larger calls return 200 OK but silently add nothing.
+    for i in range(0, len(track_uris), 25):
+        pathfinder("addToPlaylist", {
+            "playlistUri": playlist_uri,
+            "playlistItemUris": track_uris[i:i+25],
+            "newPosition": {"moveType": "BOTTOM_OF_PLAYLIST"},
+        })
+
+def remove_tracks(playlist_uri, uids):
+    # `uids` are per-playlist-item identifiers from fetchPlaylistContents, NOT track URIs.
+    pathfinder("removeFromPlaylist", {"playlistUri": playlist_uri, "uids": uids})
+
+def move_tracks(playlist_uri, uids, new_position):
+    pathfinder("moveItemsInPlaylist", {
+        "playlistUri": playlist_uri, "uids": uids, "newPosition": new_position,
+    })
+```
+
+**`uid` vs `uri`.** Playlist items have both: the `uri` is the track's global URI; the `uid` is a per-slot identifier unique to *this* playlist's instance of that track. `removeFromPlaylist` and `moveItemsInPlaylist` operate on `uid` (so you can have duplicates and delete one specific copy). Read them out of `fetchPlaylistContents`:
+
+```python
+r = pathfinder("fetchPlaylistContents", {
+    "uri": playlist_uri, "offset": 0, "limit": 100,
+    "includeEpisodeContentRatingsV2": False,
+})
+for item in r["data"]["playlistV2"]["content"]["items"]:
+    uid = item["uid"]
+    track = item["itemV2"]["data"]
+    # {uri, name, artists, ...}
+```
+
+### Trap: silent 25-track cap on `addToPlaylist`
+
+Calling `addToPlaylist` with >25 URIs in `playlistItemUris` returns `200` with `{"data": {"addItemsToPlaylist": {"__typename": "AddItemsToPlaylistPayload"}}}` — looks successful, adds nothing. Always batch to 25 max. The response is the same whether zero or all tracks landed; verify with `fetchPlaylistContents.totalCount` if it matters.
+
+### Using error-driven probing to find variable shapes
+
+`addToPlaylist`'s error messages directly name the variables you're missing (`VALIDATION_INVALID_TYPE_VARIABLE` → `$playlistItemUris: [String!]!` → `$newPosition: PlaylistItemPositionInput!`). See "Probing unknown operations" above — same technique works here.
+
 ## Playback control — `connect-state`
 
 ```
@@ -274,6 +353,8 @@ Everything not covered above follows the same `pathfinder(op, vars)` shape:
 | Batch curation ("saved" heart state)| `isCurated`                |
 | Search (all categories)             | `searchDesktop` (route chunk) |
 | Autocomplete / recent searches      | `searchSuggestions`, `recentSearches` |
+| Add / remove / move playlist items  | `addToPlaylist` / `removeFromPlaylist` / `moveItemsInPlaylist` |
+| Create playlist (REST)              | `POST spclient.wg.spotify.com/playlist/v2/playlist` |
 
 ## Gotchas
 
