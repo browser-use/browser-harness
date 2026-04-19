@@ -1,6 +1,6 @@
 ---
 name: browser-harness
-description: Direct browser control via CDP. Use when the user wants to automate, scrape, test, or interact with web pages. Connects to the user's already-running Chrome.
+description: Direct browser control via CDP. Use when the user wants to automate, scrape, test, or interact with web pages. Connects to the user's already-running Chromium browser, including Chrome, Brave, or Edge.
 ---
 
 # browser-harness
@@ -134,7 +134,7 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 ## Design constraints
 
 - **Coordinate clicks default.** `Input.dispatchMouseEvent` goes through iframes/shadow/cross-origin at the compositor level.
-- **Connect to the user's running Chrome.** Don't launch your own browser.
+- **Connect to the user's running Chromium browser.** Don't launch your own browser unless setup requires opening the browser once.
 - **`cdp-use` is only for `CDPClient.send_raw`.** Prefer raw CDP strings over typed wrappers.
 - **`run.py` stays tiny.** No argparse, subcommands, or extra control layer.
 - **Helpers stay short.** Browser primitives in `helpers.py`; daemon/bootstrap and remote session admin live in `admin.py`.
@@ -143,7 +143,7 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 ## Architecture
 
 ```text
-Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.py
+Chromium browser / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.py
 ```
 
 - Protocol is one JSON line each way.
@@ -155,15 +155,15 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 
 ## Gotchas (field-tested)
 
-- **Chrome 144+ `chrome://inspect/#remote-debugging` does NOT serve `/json/version`.** Read `DevToolsActivePort` instead.
+- **Chromium 144+ `chrome://inspect/#remote-debugging` may NOT serve `/json/version`.** Read `DevToolsActivePort` instead.
 - **Try attaching before asking for setup.** If `uv run browser-harness` already works, skip the remote-debugging instructions entirely. Decide what to escalate from the harness's error message, not from whether Chrome is visibly running.
-- **The remote-debugging checkbox is per-profile sticky in Chrome.** Once ticked on a profile, every future Chrome launch auto-enables CDP — only navigate to `chrome://inspect/#remote-debugging` when `DevToolsActivePort` is genuinely missing on a fresh profile.
-- **The first connect may block on Chrome's Allow dialog.** If setup hangs, explicitly tell the user to click `Allow` in Chrome if it appears, then keep polling for up to 30 seconds instead of treating follow-on errors as a new failure.
+- **The remote-debugging checkbox is per-profile sticky in Chromium browsers.** Once ticked on a profile, every future launch for that profile auto-enables CDP. Only navigate to `chrome://inspect/#remote-debugging` when `DevToolsActivePort` is genuinely missing on a fresh profile.
+- **The first connect may block on the browser's Allow dialog.** If setup hangs, explicitly tell the user to click `Allow` if it appears, then keep polling for up to 30 seconds instead of treating follow-on errors as a new failure.
 - **`DevToolsActivePort` can exist before the port is actually listening.** Treat connection refused as "still enabling" and keep polling for up to 30 seconds.
-- **Chrome may open the profile picker before any real tab exists.** If Chrome opens both a profile picker and the remote-debugging page, tell the user to choose their normal profile first, then tick the checkbox and click `Allow` if shown.
-- **On macOS, if Chrome is already running, prefer AppleScript `open location` over `open -a ... URL`.** It reuses the current profile and avoids creating an extra startup path through the profile picker.
+- **The browser may open the profile picker before any real tab exists.** If it opens both a profile picker and the remote-debugging page, tell the user to choose their normal profile first, then tick the checkbox and click `Allow` if shown.
+- **On macOS, if the browser is already running, prefer AppleScript `open location` over `open -a ... URL`.** It reuses the current profile and avoids creating an extra startup path through the profile picker.
 - **Omnibox popups are fake `page` targets.** Filter `chrome://omnibox-popup...` and other internals when you need a real tab.
-- **CDP target order != Chrome's visible tab-strip order.** Use UI automation when the user means "the first/second tab I can see"; `Target.activateTarget` only shows a known target.
+- **CDP target order != the browser's visible tab-strip order.** Use UI automation when the user means "the first/second tab I can see"; `Target.activateTarget` only shows a known target.
 - **Default daemon sessions can go stale.** `ensure_real_tab()` re-attaches to a real page.
 - **`no close frame received or sent` usually means a stale daemon / websocket.** Restart the daemon once with:
   `uv run python - <<'PY'`
@@ -171,7 +171,7 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
   `restart_daemon()`
   `PY`
   before assuming setup is wrong.
-- **If `restart_daemon()` also hangs**, kill Chrome entirely (`pkill -9 -f "Google Chrome"`), clean sockets (`rm -f /tmp/bu-default.sock /tmp/bu-default.pid`), reopen Chrome (`open -a "Google Chrome"`), wait 5s, then reconnect. This resets all CDP state.
+- **If `restart_daemon()` also hangs**, kill the target browser entirely, clean sockets (`rm -f /tmp/bu-default.sock /tmp/bu-default.pid`), reopen the browser, wait 5s, then reconnect. This resets all CDP state.
 - **Browser Use API is camelCase on the wire.** `cdpUrl`, `proxyCountryCode`, etc.
 - **Remote `cdpUrl` is HTTPS, not ws.** Resolve the websocket URL via `/json/version`.
 - **Stop cloud browsers with `PATCH /browsers/{id}` + `{\"action\":\"stop\"}`.**

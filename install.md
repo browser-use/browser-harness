@@ -1,6 +1,6 @@
 ---
 name: browser-harness-install
-description: Install and bootstrap browser-harness into the current agent, then connect it to the user's real Chrome with minimal prompting.
+description: Install and bootstrap browser-harness into the current agent, then connect it to the user's real Chromium browser with minimal prompting. Works with Chrome, Brave, and Edge.
 ---
 
 # browser-harness install
@@ -53,24 +53,37 @@ PY
 
    Reuse an existing healthy daemon if it is already responding. Do not kill it during setup unless the attach is clearly stale and you are confident no other agent is using the same `BU_NAME`. For parallel agents, use distinct `BU_NAME`s so they do not fight over the same default session.
 
-3. If it failed, **read the error and escalate from there — do not assume you need `chrome://inspect`**. The remote-debugging checkbox is per-profile sticky in Chrome, so any profile that has had it toggled on once will auto-enable CDP on every future launch; the inspect page is only needed the first time per profile.
+3. If it failed, **read the error and escalate from there — do not assume you need `chrome://inspect`**. The remote-debugging checkbox is per-profile sticky in Chromium browsers, so any profile that has had it toggled on once will auto-enable CDP on every future launch. The inspect page is only needed the first time per profile.
 
-   - **No Chrome process running** → just start Chrome and re-run the harness. On macOS: `open -a "Google Chrome"`. Do *not* navigate to `chrome://inspect` yet — if the user has ever ticked the checkbox on this profile, the harness will attach on its own.
-   - **`DevToolsActivePort` missing or empty after Chrome is up** → remote-debugging has never been enabled on this profile. *This* is when you open `chrome://inspect/#remote-debugging` and ask the user to tick the checkbox and click `Allow`. Once ticked, the setting sticks.
-   - **Port present but `connection refused` / `DevTools not live yet` / `/json/version` 404** → Chrome is mid-startup. Just keep polling for up to 30 seconds; do not restart Chrome and do not open the inspect page.
-   - **`no close frame received or sent` / stale websocket** → the daemon (not Chrome) is the problem. Run `restart_daemon()` once and retry — see step 7 below.
+   - **No browser process running** → just start the chosen browser and re-run the harness. On macOS examples: `open -a "Google Chrome"`, `open -a "Brave Browser"`, or `open -a "Microsoft Edge"`. Do *not* navigate to `chrome://inspect` yet. If the user has ever ticked the checkbox on this profile, the harness will attach on its own.
+   - **`DevToolsActivePort` missing or empty after the browser is up** → remote-debugging has never been enabled on this profile. *This* is when you open `chrome://inspect/#remote-debugging` and ask the user to tick the checkbox and click `Allow`. Once ticked, the setting sticks.
+   - **Port present but `connection refused` / `DevTools not live yet` / `/json/version` 404** → the browser is mid-startup. Just keep polling for up to 30 seconds. Do not restart it and do not open the inspect page again.
+   - **`no close frame received or sent` / stale websocket** → the daemon (not the browser) is the problem. Run `restart_daemon()` once and retry — see step 7 below.
 
-   When you do need to open the inspect page on macOS and Chrome is already running, prefer AppleScript so it reuses the current profile instead of going through the picker:
+   When you do need to open the inspect page on macOS and the browser is already running, prefer AppleScript so it reuses the current profile instead of going through the picker.
 
+   Chrome:
 ```bash
 osascript -e 'tell application "Google Chrome" to activate' \
           -e 'tell application "Google Chrome" to open location "chrome://inspect/#remote-debugging"'
 ```
 
-   On Linux: open that URL manually in the existing Chrome window.
-   If Chrome shows the profile picker first, tell the user to choose their normal profile, *then* (only if `DevToolsActivePort` is still missing) open the inspect page in that profile. Keep polling instead of waiting for the user to type a follow-up.
-4. Be explicit with the user about the two possible Chrome actions: choose their normal profile if the profile picker is open, and in the remote-debugging tab tick the checkbox and click `Allow` once if Chrome shows it.
-5. Try to do everything yourself. Only ask the user to do something if it is truly necessary, like selecting the Chrome profile or clicking `Allow`. While the user is doing that, sleep and check every 3 seconds whether it is completed. After asking, keep retrying for at least 30 seconds even if you see connection-refused, stale websocket, or other weird transient attach errors.
+   Brave:
+```bash
+osascript -e 'tell application "Brave Browser" to activate' \
+          -e 'tell application "Brave Browser" to open location "chrome://inspect/#remote-debugging"'
+```
+
+   Edge:
+```bash
+osascript -e 'tell application "Microsoft Edge" to activate' \
+          -e 'tell application "Microsoft Edge" to open location "chrome://inspect/#remote-debugging"'
+```
+
+   On Linux: open that URL manually in the existing browser window.
+   If the browser shows the profile picker first, tell the user to choose their normal profile, *then* (only if `DevToolsActivePort` is still missing) open the inspect page in that profile. Keep polling instead of waiting for the user to type a follow-up.
+4. Be explicit with the user about the two possible browser actions: choose their normal profile if the profile picker is open, and in the remote-debugging tab tick the checkbox and click `Allow` once if the browser shows it.
+5. Try to do everything yourself. Only ask the user to do something if it is truly necessary, like selecting the browser profile or clicking `Allow`. While the user is doing that, sleep and check every 3 seconds whether it is completed. After asking, keep retrying for at least 30 seconds even if you see connection-refused, stale websocket, or other weird transient attach errors.
 6. If setup still lands on the profile picker, have the user choose their normal profile, then (only if `DevToolsActivePort` is still missing) open `chrome://inspect/#remote-debugging` in that profile and keep polling instead of restarting the explanation. As soon as attach succeeds, continue immediately with the verification task without asking again.
 7. Verify with:
 
@@ -95,11 +108,11 @@ PY
 
 ## Cold-start reminders
 
-- Try attaching before asking the user to change anything. Decide what to escalate based on the harness's error message, not on whether Chrome is visibly running.
-- The remote-debugging checkbox is per-profile sticky in Chrome. If it has ever been ticked on a profile, just launching Chrome is enough — only navigate to `chrome://inspect/#remote-debugging` when `DevToolsActivePort` is genuinely missing.
-- The first connect may block on Chrome's `Allow` dialog, and Chrome may also stop first on the profile picker.
+- Try attaching before asking the user to change anything. Decide what to escalate based on the harness's error message, not on whether the browser is visibly running.
+- The remote-debugging checkbox is per-profile sticky in Chromium browsers. If it has ever been ticked on a profile, just launching the browser is enough. Only navigate to `chrome://inspect/#remote-debugging` when `DevToolsActivePort` is genuinely missing.
+- The first connect may block on the browser's `Allow` dialog, and it may also stop first on the profile picker.
 - `DevToolsActivePort` can exist before the port is actually listening. Treat connection refused as "still enabling" and keep polling briefly.
 - If the port is listening but `/json/version` returns `404`, treat that as expected on newer Chrome builds and retry `browser-harness`.
-- Chrome may open the profile picker before any real tab exists.
-- On macOS, prefer AppleScript `open location` over `open -a ... URL` when Chrome is already running.
-- Microsoft Edge (including Beta/Dev/Canary) works too — substitute the app name; steps are identical.
+- The browser may open the profile picker before any real tab exists.
+- On macOS, prefer AppleScript `open location` over `open -a ... URL` when the browser is already running.
+- Brave and Microsoft Edge (including Beta/Dev/Canary) work too. Substitute the app name and use the matching profile path.

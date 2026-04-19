@@ -27,15 +27,18 @@ PID = f"/tmp/bu-{NAME}.pid"
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
+    Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser",
     Path.home() / "Library/Application Support/Microsoft Edge",
     Path.home() / "Library/Application Support/Microsoft Edge Beta",
     Path.home() / "Library/Application Support/Microsoft Edge Dev",
     Path.home() / "Library/Application Support/Microsoft Edge Canary",
     Path.home() / ".config/google-chrome",
+    Path.home() / ".config/BraveSoftware/Brave-Browser",
     Path.home() / ".config/microsoft-edge",
     Path.home() / ".config/microsoft-edge-beta",
     Path.home() / ".config/microsoft-edge-dev",
     Path.home() / "AppData/Local/Google/Chrome/User Data",
+    Path.home() / "AppData/Local/BraveSoftware/Brave-Browser/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge Beta/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge Dev/User Data",
@@ -69,13 +72,13 @@ def get_ws_url():
             except OSError:
                 if time.time() >= deadline:
                     raise RuntimeError(
-                        f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port.strip()} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
+                        f"The browser's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port.strip()} — if it opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
                     )
                 time.sleep(1)
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
+    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging in Chrome, Brave, or Edge, or set BU_CDP_WS for a remote browser")
 
 
 def stop_remote():
@@ -136,7 +139,7 @@ class Daemon:
         try:
             await self.cdp.start()
         except Exception as e:
-            raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
+            raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in the browser if prompted, then retry")
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"

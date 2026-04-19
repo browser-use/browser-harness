@@ -4,7 +4,7 @@
 
 The simplest, thinnest, **self-healing** harness that gives LLM **complete freedom** to complete any browser task. Built directly on CDP.
 
-The agent writes what's missing, mid-task. No framework, no recipes, no rails. One websocket to Chrome, nothing between.
+The agent writes what's missing, mid-task. No framework, no recipes, no rails. One websocket to a Chromium browser, nothing between.
 
 ```
   ● agent: wants to upload a file
