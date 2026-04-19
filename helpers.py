@@ -134,8 +134,13 @@ def switch_tab(target_id):
     return sid
 
 def new_tab(url="about:blank"):
-    tid = cdp("Target.createTarget", url=url)["targetId"]
+    # Always create blank, then goto: passing url to createTarget races with
+    # attach, so the brief about:blank is "complete" by the time the caller
+    # polls and wait_for_load() returns before navigation actually starts.
+    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
     switch_tab(tid)
+    if url != "about:blank":
+        goto(url)
     return tid
 
 def ensure_real_tab():

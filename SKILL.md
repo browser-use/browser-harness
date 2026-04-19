@@ -5,19 +5,22 @@ description: Direct browser control via CDP. Use when the user wants to automate
 
 # browser-harness
 
-Easiest and most powerful way to interact with the browser.
+Easiest and most powerful way to interact with the browser. **Read this file in full before using or editing the harness** — it has to be in context.
 
 ## Fast start
 
-Read `helpers.py` first. For first-time install or reconnect/bootstrap, read `install.md` first. For normal use, stay in this file.
+Read `helpers.py` first. For first-time install or reconnect/bootstrap, read `install.md` first.
 
 ```bash
-uv run bh <<'PY'
-goto("https://browser-use.com")
+browser-harness <<'PY'
+new_tab("https://browser-use.com")
 wait_for_load()
 print(page_info())
 PY
 ```
+
+- Invoke as `browser-harness` — it's on `$PATH`. No `cd`, no `uv run`.
+- First navigation is `new_tab(url)`, not `goto(url)` — `goto` runs in the user's active tab and clobbers their work.
 
 The code is the doc.
 
@@ -39,25 +42,26 @@ PY
 
 ### Remote browsers
 
-Remote is optional. Use it for parallel agents, sub-agents, or deployment.
-
-If `BROWSER_USE_API_KEY` is already present in `.env` or the environment, start a remote daemon with:
-
-Run this from the repo root:
+Use remote for **parallel sub-agents** (each gets its own isolated browser via a distinct `BU_NAME`) or on a headless server. `BROWSER_USE_API_KEY` must be set. `start_remote_daemon`, `list_cloud_profiles`, `list_local_profiles`, `sync_local_profile` are pre-imported.
 
 ```bash
-uv run python - <<'PY'
-from admin import start_remote_daemon
-print(start_remote_daemon("work"))
+browser-harness <<'PY'
+start_remote_daemon("work")                               # default — clean browser, no profile
+# start_remote_daemon("work", profileName="my-work")      # reuse a cloud profile (already logged in)
+# start_remote_daemon("work", profileId="<uuid>")         # same, but by UUID
+# start_remote_daemon("work", proxyCountryCode="de", timeout=120)   # DE proxy, 2-hour timeout
+# start_remote_daemon("work", proxyCountryCode=None)      # disable the Browser Use proxy
 PY
-BU_NAME=work uv run browser-harness <<'PY'
+
+BU_NAME=work browser-harness <<'PY'
+new_tab("https://example.com")
 print(page_info())
 PY
 ```
 
-Leaving a remote daemon running bills until the session timeout.
+`start_remote_daemon` prints `liveUrl` and auto-opens it in the local browser (if a GUI is detected) so the user can watch along. Headless servers print only — share the URL with the user. The daemon `PATCH`es the cloud browser to `stop` on shutdown, which persists profile state. Running remote daemons bill until timeout.
 
-Parallel agents should use distinct `BU_NAME`s and can share the same `helpers.py`; shared improvements are expected, and changes should stay general enough that other agents benefit rather than break.
+Profiles (cookies-only login state) live in `interaction-skills/profile-sync.md` — covers `list_cloud_profiles()`, the chat-driven "which profile?" pattern, and `sync_local_profile()` for uploading a local Chrome profile.
 
 ## Search first
 
@@ -73,6 +77,7 @@ Only if you start struggling with a specific mechanic while navigating, look in 
 - `iframes.md`
 - `network-requests.md`
 - `print-as-pdf.md`
+- `profile-sync.md`
 - `screenshots.md`
 - `scrolling.md`
 - `shadow-dom.md`
@@ -156,7 +161,8 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 ## Gotchas (field-tested)
 
 - **Chrome 144+ `chrome://inspect/#remote-debugging` does NOT serve `/json/version`.** Read `DevToolsActivePort` instead.
-- **Try attaching before asking for setup.** If `uv run browser-harness` already works, skip the remote-debugging instructions entirely.
+- **Try attaching before asking for setup.** If `uv run browser-harness` already works, skip the remote-debugging instructions entirely. Decide what to escalate from the harness's error message, not from whether Chrome is visibly running.
+- **The remote-debugging checkbox is per-profile sticky in Chrome.** Once ticked on a profile, every future Chrome launch auto-enables CDP — only navigate to `chrome://inspect/#remote-debugging` when `DevToolsActivePort` is genuinely missing on a fresh profile.
 - **The first connect may block on Chrome's Allow dialog.** If setup hangs, explicitly tell the user to click `Allow` in Chrome if it appears, then keep polling for up to 30 seconds instead of treating follow-on errors as a new failure.
 - **`DevToolsActivePort` can exist before the port is actually listening.** Treat connection refused as "still enabling" and keep polling for up to 30 seconds.
 - **Chrome may open the profile picker before any real tab exists.** If Chrome opens both a profile picker and the remote-debugging page, tell the user to choose their normal profile first, then tick the checkbox and click `Allow` if shown.
