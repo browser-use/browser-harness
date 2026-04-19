@@ -275,30 +275,21 @@ def get_embed_token(resource_type="track", resource_id="4PTG3Z6ehGkBFwjybzWkR8")
 
 ---
 
-## What Requires a Browser
+## What Requires Auth (But Not a Browser)
 
-The following are **not accessible** via http_get and require the CDP browser:
+The following need a logged-in session but can be driven over HTTP once you've intercepted the Web Player's tokens — see `api-internals.md` for the full pattern:
 
-- Lyrics (login-gated; JSON-LD confirms: `isAccessibleForFree: false`)
-- Search (`/search?q=...`) — loads client-side only, no meaningful HTML on first response
-- User library / listening history — requires OAuth
-- Full audio playback — requires OAuth + Widevine DRM
-- Podcast episodes — oEmbed returns 404; embed page `__NEXT_DATA__` lacks `state.data.entity`
-- Track recommendations beyond the top-10 artist view
-- Artist discography / full album list
+- Lyrics (`color-lyrics` REST endpoint; line- or syllable-synced)
+- Search — full results via `searchDesktop` pathfinder op
+- User library — `fetchLibraryTracks` (tracks) and `libraryV3` (albums/artists/playlists)
+- Recently played / listening history
+- Podcast episodes, track recommendations, artist discography
 
-If browser access is needed for search:
+Still not accessible at all:
 
-```python
-goto("https://open.spotify.com/search")
-wait_for_load()
-wait(2)
-# Type into the search box
-js("document.querySelector('input[data-testid=\"search-input\"]').focus()")
-type_text("never gonna give you up")
-wait(1)
-# Results appear in [data-testid="top-results-card"] or similar dynamic selectors
-```
+- Full audio playback — requires Widevine DRM
+
+If you specifically need to drive the visible tab (rare — the HTTP path is faster), see `playback.md`.
 
 ---
 
