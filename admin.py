@@ -34,12 +34,33 @@ def _log_tail(name):
 
 
 def daemon_alive(name=None):
+    # Connect-only isn't enough on Windows: if the daemon crashed and
+    # the OS reused its port for an unrelated listener, plain connect()
+    # would succeed against that other process. Send a ping with the
+    # token from the .port file and require the expected pong response
+    # so we confirm the listener is actually our daemon.
     try:
-        s = ipc.connect_client(name or NAME)
-        s.close()
-        return True
+        s, token = ipc.connect_client(name or NAME)
     except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
+    try:
+        s.settimeout(1)
+        req = {"meta": "ping"}
+        if token:
+            req["token"] = token
+        s.sendall((json.dumps(req) + "\n").encode())
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(1024)
+            if not chunk: break
+            data += chunk
+        r = json.loads(data or b"{}")
+        return r.get("pong") is True
+    except Exception:
+        return False
+    finally:
+        try: s.close()
+        except Exception: pass
 
 
 def ensure_daemon(wait=60.0, name=None, env=None):
@@ -102,8 +123,11 @@ def restart_daemon(name=None):
     n = name or NAME
     pidp = ipc.pid_path(n)
     try:
-        s = ipc.connect_client(n, timeout=5)
-        s.sendall(b'{"meta":"shutdown"}\n')
+        s, token = ipc.connect_client(n, timeout=5)
+        req = {"meta": "shutdown"}
+        if token:
+            req["token"] = token
+        s.sendall((json.dumps(req) + "\n").encode())
         s.recv(1024)
         s.close()
     except Exception:

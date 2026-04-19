@@ -156,7 +156,18 @@ class Daemon:
         self.cdp._event_registry.handle_event = tap
 
     async def handle(self, req):
+        # On Windows, gate every request on a per-daemon token the client
+        # must have read from %TEMP%\bu-<NAME>.port. Unix has no token
+        # (AF_UNIX + chmod 600 is the boundary) so expected_token is None
+        # there and this check is a no-op.
+        expected = ipc.expected_token()
+        if expected is not None and req.get("token") != expected:
+            return {"error": "unauthorized"}
         meta = req.get("meta")
+        # Liveness probe — lets clients confirm the listener on the
+        # recorded port is actually this daemon and not an unrelated
+        # process that happened to reuse the port after a crash.
+        if meta == "ping":        return {"pong": True}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
@@ -218,12 +229,28 @@ async def main():
 
 
 def already_running():
+    # Ping-handshake so a stale .port file + port reuse doesn't make us
+    # think an unrelated listener is our daemon.
     try:
-        s = ipc.connect_client(NAME, timeout=1)
-        s.close()
-        return True
+        s, token = ipc.connect_client(NAME, timeout=1)
     except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
+    try:
+        req = {"meta": "ping"}
+        if token:
+            req["token"] = token
+        s.sendall((json.dumps(req) + "\n").encode())
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(1024)
+            if not chunk: break
+            data += chunk
+        return json.loads(data or b"{}").get("pong") is True
+    except Exception:
+        return False
+    finally:
+        try: s.close()
+        except Exception: pass
 
 
 if __name__ == "__main__":

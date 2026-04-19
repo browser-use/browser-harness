@@ -25,7 +25,10 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 
 
 def _send(req):
-    s = ipc.connect_client(NAME, timeout=30)
+    s, token = ipc.connect_client(NAME, timeout=30)
+    if token:
+        # Token-gate on Windows. connect_client returns None on Unix.
+        req = {**req, "token": token}
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
