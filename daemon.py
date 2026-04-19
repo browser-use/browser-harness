@@ -1,5 +1,5 @@
 """CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.request
+import asyncio, hashlib, json, os, socket, sys, tempfile, time, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -21,9 +21,25 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+IS_WINDOWS = os.name == "nt" or not hasattr(socket, "AF_UNIX")
+RUNTIME_DIR = Path(os.environ.get("BU_RUNTIME_DIR") or tempfile.gettempdir()) / "browser-harness"
+if IS_WINDOWS:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _port_for_name(name):
+    digest = hashlib.sha256((name or NAME).encode()).digest()
+    return 37000 + int.from_bytes(digest[:2], "big") % 20000
+
+
+if IS_WINDOWS:
+    SOCK = f"127.0.0.1:{_port_for_name(NAME)}"
+    LOG = str(RUNTIME_DIR / f"bu-{NAME}.log")
+    PID = str(RUNTIME_DIR / f"bu-{NAME}.pid")
+else:
+    SOCK = f"/tmp/bu-{NAME}.sock"
+    LOG = f"/tmp/bu-{NAME}.log"
+    PID = f"/tmp/bu-{NAME}.pid"
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -188,7 +204,7 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
+    if not IS_WINDOWS and os.path.exists(SOCK):
         os.unlink(SOCK)
 
     async def handler(reader, writer):
@@ -208,8 +224,12 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
+    if IS_WINDOWS:
+        host, port = SOCK.rsplit(":", 1)
+        server = await asyncio.start_server(handler, host=host, port=int(port))
+    else:
+        server = await asyncio.start_unix_server(handler, path=SOCK)
+        os.chmod(SOCK, 0o600)
     log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
@@ -223,9 +243,16 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        if IS_WINDOWS:
+            host, port = SOCK.rsplit(":", 1)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect((host, int(port)))
+        else:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
+            s.connect(SOCK)
+        s.close(); return True
+    except (FileNotFoundError, ConnectionRefusedError, OSError, socket.timeout):
         return False
 
 
@@ -246,3 +273,6 @@ if __name__ == "__main__":
         stop_remote()
         try: os.unlink(PID)
         except FileNotFoundError: pass
+        if not IS_WINDOWS:
+            try: os.unlink(SOCK)
+            except FileNotFoundError: pass

@@ -1,5 +1,5 @@
 """Browser control via CDP. Read, edit, extend -- this file is yours."""
-import base64, json, os, socket, time, urllib.request
+import base64, hashlib, json, os, socket, tempfile, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,13 +19,32 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
+IS_WINDOWS = os.name == "nt" or not hasattr(socket, "AF_UNIX")
+RUNTIME_DIR = Path(os.environ.get("BU_RUNTIME_DIR") or tempfile.gettempdir()) / "browser-harness"
+if IS_WINDOWS:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _port_for_name(name):
+    digest = hashlib.sha256((name or NAME).encode()).digest()
+    return 37000 + int.from_bytes(digest[:2], "big") % 20000
+
+
+SOCK = f"127.0.0.1:{_port_for_name(NAME)}" if IS_WINDOWS else f"/tmp/bu-{NAME}.sock"
+IPC_TIMEOUT = float(os.environ.get("BU_IPC_TIMEOUT_SEC", "30"))
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
+    if IS_WINDOWS:
+        host, port = SOCK.rsplit(":", 1)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(IPC_TIMEOUT)
+        s.connect((host, int(port)))
+    else:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(IPC_TIMEOUT)
+        s.connect(SOCK)
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
