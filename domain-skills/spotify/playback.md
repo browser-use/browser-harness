@@ -216,16 +216,71 @@ data.me.library.tracks.items[]         # UserLibraryTrackResponse
   .track.data.albumOfTrack             # album metadata
 ```
 
-### Other pathfinder operations to intercept the same way
+### Non-track library: `libraryV3`
 
-Watch the Network tab while doing each action; each persisted-query hash comes straight off the request body:
+Tracks use `fetchLibraryTracks` (above). **Every other library type** — saved albums, followed artists, playlists, folders — goes through one unified op, `libraryV3`. Swap the `filters` variable to pivot between them.
+
+```python
+HASH = OPS["libraryV3"]
+
+def lib_page(filters, order="Recents", offset=0, limit=50, text=""):
+    body = json.dumps({
+        "variables": {"filters": filters, "order": order, "textFilter": text, "offset": offset, "limit": limit},
+        "operationName": "libraryV3",
+        "extensions": {"persistedQuery": {"version": 1, "sha256Hash": HASH}},
+    }).encode()
+    req = urllib.request.Request("https://api-partner.spotify.com/pathfinder/v2/query",
+                                  data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())
+
+albums    = lib_page(["Albums"])     # AlbumResponseWrapper
+artists   = lib_page(["Artists"])    # ArtistResponseWrapper
+playlists = lib_page(["Playlists"])  # PlaylistResponseWrapper
+# No totalCount in the response — walk until the returned page is shorter than `limit`.
+```
+
+Valid `order` values come back in the response itself under `availableSortOrders`: `"Recents"`, `"Recently Added"`, `"Alphabetical"`, `"Creator"`.
+
+Response shape:
+```
+data.me.libraryV3.__typename = "LibraryPage"
+data.me.libraryV3.availableSortOrders[]  # [{id, name}] — self-documenting
+data.me.libraryV3.items[]                # one per saved item
+  .addedAt.isoString
+  .item.__typename                       # AlbumResponseWrapper | ArtistResponseWrapper | PlaylistResponseWrapper
+  .item._uri                             # "spotify:album:..." etc.
+  .item.data                             # typed payload (Album|Artist|Playlist)
+```
+
+### Probing an unknown operation
+
+When you don't know what variables an op takes, pathfinder hands you the answer for free: invalid values come back as structured GraphQL responses with `__typename: "Library*Error"` (or similar) and a plain-text `message`. Probe, read the error, iterate.
+
+```python
+r = lib_page(["Albums"], order="RECENTLY_ADDED")
+# -> data.me.libraryV3 = {
+#      "__typename": "LibraryInvalidSortOrderIdError",
+#      "message": "RECENTLY_ADDED is not a valid sort order",
+#      "invalidSortOrderId": "RECENTLY_ADDED"
+#    }
+```
+
+Much faster than reading the minified bundle. Works for any pathfinder op that returns union types.
+
+### Other pathfinder operations worth knowing
+
+Watch the Network tab while doing each action; each persisted-query hash comes out of `load_pathfinder_hashes()` — no need to scrape request bodies.
 
 | Action                              | `operationName`            |
 |-------------------------------------|----------------------------|
-| Load Liked Songs (paginated)        | `fetchLibraryTracks`       |
-| Load a playlist                     | `fetchPlaylist`            |
-| Load album/artist pages             | `getAlbum` / `queryArtistOverview` |
-| Batch track metadata                | `TracksMetadata` (takes `{uris: [...]}` — seen in every page load) |
+| Saved tracks (Liked Songs)          | `fetchLibraryTracks`       |
+| Saved albums / followed artists / playlists | `libraryV3` (see above) |
+| Full playlist contents              | `fetchPlaylist`            |
+| Album page                          | `getAlbum` / `queryAlbumTracks` |
+| Artist overview                     | `queryArtistOverview` / `queryArtistDiscographyAlbums` |
+| Is-saved check, N URIs              | `areEntitiesInLibrary`     |
+| Batch curation flags                | `isCurated` (for "saved" heart state) |
 
 ### Gotchas
 
