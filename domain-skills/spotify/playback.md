@@ -89,7 +89,7 @@ Spotify IDs can be looked up via the oEmbed / embed approaches in `scraping.md` 
 
 ## Fast path: hijack the Web Player's internal GraphQL (pathfinder)
 
-Scrolling a virtualized list to extract a user's library is slow (~5 minutes for ~3.8k Liked Songs, with gaps from virtualization). The Web Player itself paginates via `api-partner.spotify.com/pathfinder/v2/query` — hijack its auth headers and replay the persisted query in parallel. 77 parallel requests covered 3,849 tracks in **4.5s**, with 100% coverage (15+ tracks more than the scroll path caught).
+Scrolling a virtualized list to extract a user's library is slow (minutes for a multi-thousand-song library) and misses tracks due to virtualization gaps. The Web Player itself paginates via `api-partner.spotify.com/pathfinder/v2/query` — hijack its auth headers and replay the persisted query in parallel. Measured in seconds regardless of library size, with 100% coverage.
 
 ### Why not `api.spotify.com/v1`?
 
@@ -127,6 +127,37 @@ for e in drain_events():
 
 Save every header — `Authorization`, `client-token`, `app-platform`, `spotify-app-version`, `accept`, `content-type`, etc. — and reuse them verbatim on your replay requests. Both tokens last ~1 hour; re-intercept when you start getting 401s.
 
+### Getting the persisted-query hash (don't hardcode it)
+
+Persisted-query hashes rotate when Spotify ships a new bundle. Look them up at runtime from the public Web Player JS — no auth, no browser needed. Every operation the Web Player can make is registered as `new X.l("<opName>","query"|"mutation","<sha256>",null)` in the main bundle.
+
+```python
+import urllib.request, re, gzip
+from helpers import http_get
+
+def load_pathfinder_hashes():
+    """Return {operationName: sha256Hash} for every pathfinder op the Web Player knows."""
+    html = http_get("https://open.spotify.com/")
+    bundles = re.findall(r'https://open\.spotifycdn\.com/cdn/build/web-player/[^"\'\s]+\.js', html)
+    ops = {}
+    for url in bundles:
+        try:
+            js = http_get(url, timeout=60)
+        except Exception:
+            continue
+        for op, h in re.findall(r'\("(\w+)","(?:query|mutation|subscription)","([0-9a-f]{64})"', js):
+            ops[op] = h
+    return ops
+
+OPS = load_pathfinder_hashes()
+# {'fetchLibraryTracks': '087278b2...', 'fetchPlaylist': '32b05e92...',
+#  'getAlbum': 'b9bfabef...', 'queryArtistOverview': '7f86ff63...',
+#  'isCurated': 'e4ed1f91...', 'areEntitiesInLibrary': '13433799...',  ...}
+# ~100 operations total; one HTTP round-trip per bundle (typically 3 bundles).
+```
+
+Cache the result — the hashes only change on bundle rollouts, so re-parsing on every call is wasteful. Invalidate when you see `PersistedQueryNotFound`.
+
 ### Replaying `fetchLibraryTracks` (Liked Songs in parallel)
 
 ```python
@@ -136,7 +167,7 @@ from concurrent.futures import ThreadPoolExecutor
 headers = json.load(open("/tmp/pf_headers.json"))
 headers = {k: v for k, v in headers.items() if k.lower() not in ("host", "content-length")}
 
-HASH = "087278b20b743578a6262c2b0b4bcd20d879c503cc359a2285baf083ef944240"  # verified 2026-04-19
+HASH = OPS["fetchLibraryTracks"]   # from load_pathfinder_hashes()
 
 def fetch_page(offset, limit=50):
     body = json.dumps({
@@ -150,7 +181,7 @@ def fetch_page(offset, limit=50):
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read())
 
-# Hit /me endpoint first to get totalCount, then fan out
+# Hit the endpoint once to get totalCount, then fan out
 first = fetch_page(0, 1)
 total = first["data"]["me"]["library"]["tracks"]["totalCount"]
 offsets = list(range(0, total, 50))
@@ -169,7 +200,7 @@ for page in pages:
                         for a in t["artists"]["items"]],
             "addedAt": item["addedAt"]["isoString"],
         })
-# ~4-5s for ~3.8k tracks at 10 workers.
+# Order-of-magnitude: seconds instead of minutes, regardless of library size.
 ```
 
 ### Response shape (fetchLibraryTracks)
@@ -198,7 +229,7 @@ Watch the Network tab while doing each action; each persisted-query hash comes s
 
 ### Gotchas
 
-- **Persisted-query hashes rotate.** The SHA256 above is a snapshot. If you start getting `PersistedQueryNotFound` errors, re-intercept — don't hardcode the hash in long-lived code without a fallback that reads it from the Web Player bundle or a live request.
+- **Persisted-query hashes rotate.** Never hardcode them. Bundle rollouts invalidate cached hashes; use `load_pathfinder_hashes()` above and re-run it when you see `PersistedQueryNotFound`.
 - **`client-token` is required.** 403 without it. Easy to miss because every browser tool auto-includes it; curl / Python do not.
 - **Tokens expire ~1h.** Plan for re-interception, or run the extraction → API batch in one session.
 - **Don't cross-use with `/v1`.** The same Bearer token is treated as rate-limit-poisoned on `api.spotify.com/v1` even if it works on pathfinder. Pick a lane.
