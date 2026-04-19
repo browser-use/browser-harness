@@ -1,0 +1,22 @@
+{
+  "packet_id": "{{packet_id}}",
+  "created_at": "{{created_at}}",
+  "operator": "{{operator}}",
+  "node": "{{node}}",
+  "lane": "{{lane}}",
+  "workflow": "{{workflow}}",
+  "objective": "{{objective}}",
+  "console": "{{console}}",
+  "page_title": "{{page_title}}",
+  "page_url": "{{page_url}}",
+  "object_under_inspection": "{{object_under_inspection}}",
+  "observed_state": "{{observed_state}}",
+  "expected_state": "{{expected_state}}",
+  "drift_or_issue": "{{drift_or_issue}}",
+  "risk_level": "{{risk_level}}",
+  "recommended_next_action": "{{recommended_next_action}}",
+  "approval_required": "{{approval_required}}",
+  "screenshot_paths": ["{{screenshot_path}}"],
+  "supporting_artifacts": [],
+  "notes": "{{notes}}"
+}

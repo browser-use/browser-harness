@@ -11,6 +11,31 @@ Easiest and most powerful way to interact with the browser. **Read this file in 
 
 Read `helpers.py` first. For first-time install or reconnect/bootstrap, read `install.md` first.
 
+Quick readiness check (fresh lane, read-only):
+
+```bash
+BU_NAME=smoke browser-harness-smoke --json
+```
+
+Cross-node rollout audit (auto-switches between ATHAME and FURNACE; override with `--remote-host` or `BROWSER_HARNESS_REMOTE_HOST`):
+
+```bash
+browser-harness-rollout-audit --json
+```
+
+Evidence packet (rollout audit + smoke/log tails + local/remote tests + git state artifacts):
+
+```bash
+browser-harness-evidence-packet
+```
+
+Mandatory shared-agent preflight contract:
+- Before the first `browser-harness` call in any lane, run `BU_NAME=<lane> browser-harness-smoke --json`.
+- If smoke returns `status=fail`, stop and surface the `error_code`, raw error, phase/`phase_timings`, and hints instead of pushing ahead blindly.
+- Prefer an explicit fresh `BU_NAME` for every meaningful task. Avoid the implicit `default` lane for shared/prod work.
+
+Interactive browser check:
+
 ```bash
 browser-harness <<'PY'
 new_tab("https://browser-use.com")
@@ -19,7 +44,8 @@ print(page_info())
 PY
 ```
 
-- Invoke as `browser-harness` — it's on `$PATH`. No `cd`, no `uv run`.
+- Invoke as `browser-harness` / `browser-harness-smoke` — both should be on `$PATH`. No `cd`, no `uv run`.
+- Prefer `BU_NAME=smoke` (or any fresh lane name) for preflight checks so you don't inherit a stale default daemon.
 - First navigation is `new_tab(url)`, not `goto(url)` — `goto` runs in the user's active tab and clobbers their work.
 
 The code is the doc.
@@ -39,6 +65,7 @@ PY
 ```
 
 `run.py` calls `ensure_daemon()` before `exec` — you never start/stop manually unless you want to.
+For shared agent surfaces, treat `browser-harness-smoke` as the mandatory gate and `browser-harness-rollout-audit` as the inspectable proof that Hermes / Claude Code / Codex wiring is still intact.
 
 ### Remote browsers
 

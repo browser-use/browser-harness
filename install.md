@@ -20,14 +20,39 @@ git clone https://github.com/browser-use/browser-harness
 cd browser-harness
 uv tool install -e .
 command -v browser-harness
+command -v browser-harness-smoke
+command -v browser-harness-rollout-audit
+command -v browser-harness-evidence-packet
 ```
 
+Then verify readiness:
+
+```bash
+BU_NAME=smoke browser-harness-smoke --json
+browser-harness-rollout-audit --json
+browser-harness-evidence-packet
+```
+
+- `browser-harness-smoke` verifies that a lane can actually attach and reports a machine-readable `error_code` when it cannot. Newer builds also emit `phase` + `phase_timings` so post-attach stalls are diagnosable.
+- `browser-harness-rollout-audit` verifies the local repo/skill wiring and auto-switches the remote probe between ATHAME and FURNACE. Override with `--remote-host <name>` or `BROWSER_HARNESS_REMOTE_HOST=<name>` when needed.
+- `browser-harness-evidence-packet` writes a timestamped packet under `.hermes/reports/` with rollout audit JSON, smoke log tails, local/remote test transcripts, and git status artifacts.
+
 That keeps the command global while still pointing at the real repo checkout, so when the agent edits `helpers.py` the next `browser-harness` uses the new code immediately. Prefer a stable path like `~/Developer/browser-harness`, not `/tmp`.
+
+If `uv` exists at `~/.local/bin/uv` but non-login shells cannot find it, add a tiny wrapper so `admin.ensure_daemon()` can spawn `uv` reliably:
+
+```bash
+mkdir -p ~/.cargo/bin
+printf '#!/bin/sh\nexec "$HOME/.local/bin/uv" "$@"\n' > ~/.cargo/bin/uv
+chmod +x ~/.cargo/bin/uv
+command -v uv
+```
 
 ## Make it global for the current agent
 
 After the repo is installed, register this repo's `SKILL.md` with the agent you are using:
 
+- **Hermes**: add/symlink this file into the shared skill tree (`~/.hermes/skills/software-development/browser-harness/SKILL.md`) and each active profile skill tree that should auto-load it.
 - **Codex**: add this file as a global skill at `$CODEX_HOME/skills/browser-harness/SKILL.md` (often `~/.codex/skills/browser-harness/SKILL.md`). A symlink to this repo's `SKILL.md` is fine.
 - **Claude Code**: add an import to `~/.claude/CLAUDE.md` that points at this repo's `SKILL.md`, for example `@~/src/browser-harness/SKILL.md`.
 
@@ -38,6 +63,18 @@ mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness" && ln -sf "$PWD/SK
 ```
 
 That makes new Codex or Claude Code sessions in other folders load the runtime browser harness instructions automatically. An empty `~/.codex/skills/browser-harness/` directory is fine; the symlink command above populates it.
+
+## Shared-operator guardrails (recommended on ATHAME/FURNACE)
+
+For shared agent surfaces, do two extra things:
+
+1. Put a small PATH-precedence wrapper in `~/bin/browser-harness` (or `~/.cargo/bin/browser-harness` on shells that only expose that path) that runs `BU_NAME=${BU_NAME:-smoke} browser-harness-smoke --json` before delegating to the real installed binary.
+2. In Claude Code, add a `PreToolUse` Bash hook that blocks `browser-harness` commands without an explicit `BU_NAME=` assignment so agents do not casually pile into the implicit default lane.
+
+Those two guardrails give you:
+- mandatory preflight before browser authority
+- explicit lane discipline
+- a clean failure surface with `error_code` + hints when Chrome/CDP is not actually ready
 
 ## Browser bootstrap
 
