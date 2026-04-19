@@ -47,7 +47,114 @@ for e in drain_events():
             break
 ```
 
-Save every header verbatim and reuse on replay. Tokens last ~1h — re-intercept on 401.
+Save every header verbatim and reuse on replay.
+
+## Keeping tokens fresh
+
+Bearer tokens last ~1h. Beyond that you get `HTTP 401` on every call until you refresh. Two paths, pick based on whether the browser stays open:
+
+### Fast path: piggyback on the Web Player's own refresh (~2ms reads)
+
+Install a one-shot `fetch` interceptor that caches every outgoing pathfinder/spclient call's headers. The Web Player makes these requests constantly (library navigation, metadata, connect-state heartbeats), so the cache stays <60s stale without any effort. Skip the re-intercept dance entirely.
+
+```python
+INTERCEPTOR = r"""
+(() => {
+  if (window.__authCache) return;
+  window.__authCache = null;
+  const origFetch = window.fetch;
+  window.fetch = async function(input, init) {
+    const url = typeof input === 'string' ? input : input.url;
+    if (/pathfinder|spclient\.wg|connect-state/.test(url) && init?.headers) {
+      const h = init.headers instanceof Headers ? Object.fromEntries(init.headers) : {...init.headers};
+      if (h.authorization || h.Authorization) {
+        window.__authCache = {captured_at: Date.now(), headers: h};
+      }
+    }
+    return origFetch.apply(this, arguments);
+  };
+})();
+"""
+
+# Install once per harness session — survives navigations
+cdp("Page.enable")
+cdp("Page.addScriptToEvaluateOnNewDocument", source=INTERCEPTOR)
+js(INTERCEPTOR)   # also inject into current page
+
+# Every subsequent read is ~2ms and always fresh
+def get_headers():
+    c = json.loads(js("JSON.stringify(window.__authCache)") or "null")
+    if not c:                       # cold start — wait for Web Player's first call
+        time.sleep(2)
+        c = json.loads(js("JSON.stringify(window.__authCache)") or "null")
+    return {k: v for k, v in c["headers"].items()
+            if k.lower() not in ("host", "content-length")}
+```
+
+**Measured:** full "read cache + call `/presence-view/v1/buddylist`" cycle is ~400ms, dominated by network. The token read itself is <2ms. Compared to the subprocess-based path (below), this is ~30× faster and eliminates 401 handling entirely as long as the browser tab is alive.
+
+### Fallback: subprocess-based re-intercept
+
+Use when the browser isn't attached (cron jobs, CI) or the interceptor cache is somehow dead. Slower (~10-15s per refresh) because it spawns a fresh `browser-harness` subprocess that navigates, forces a request, and drains CDP events.
+
+```python
+REINTERCEPT = r"""
+import time, json
+cdp("Network.enable")
+cdp("Network.setCacheDisabled", cacheDisabled=True)
+js("window.location.href = 'https://open.spotify.com/collection/tracks'")
+time.sleep(3)
+js('''(() => {
+  const sc = [...document.querySelectorAll('*')].filter(e => {
+    const s = getComputedStyle(e);
+    return s.overflowY === 'auto' && e.scrollHeight > e.clientHeight + 100;
+  }).sort((a,b) => b.scrollHeight - a.scrollHeight)[0];
+  if (sc) sc.scrollTop += 20000;
+})()''')
+time.sleep(3)
+for e in drain_events():
+    if e.get("method") == "Network.requestWillBeSent":
+        req = e["params"]["request"]
+        if "pathfinder" in req["url"] and "fetchLibraryTracks" in (req.get("postData") or ""):
+            json.dump(req["headers"], open("/tmp/pf_headers.json", "w"))
+            print("ok")
+            break
+else:
+    print("MISS")
+"""
+
+def reintercept():
+    r = subprocess.run(["browser-harness"], input=REINTERCEPT,
+                        capture_output=True, text=True, timeout=45)
+    return "ok" in r.stdout
+
+def call_with_retry(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except urllib.error.HTTPError as e:
+        if e.code != 401: raise
+        if not reintercept(): raise
+        return fn(*args, **kwargs)   # retry once
+```
+
+### Choosing between them
+
+| Scenario                                        | Use                |
+|-------------------------------------------------|--------------------|
+| Browser attached, interactive or long-running   | Fast path          |
+| Unattended cron job, Chrome closes between runs | Fallback only      |
+| CI / server deploy without ever touching a GUI  | Neither — you need full TOTP refresh (below) |
+
+### Downsides of the fast path (know before you ship it)
+
+- **Dies with the tab.** Closing Chrome kills `window.__authCache`. Fallback is required for scripts that survive browser quits.
+- **Doesn't refresh on idle tabs off `open.spotify.com`.** The Web Player has to keep issuing requests for the cache to stay fresh. Browse to `google.com` and the cache ages out.
+- **Monkey-patches `window.fetch`.** No current detection, but not tamper-proof if Spotify ever adds feature-checks.
+- **Cache-empty cold start.** First read after a page load can be null for ~2s until the Web Player's first natural request lands. The `get_headers()` helper above sleeps once to cover this.
+
+### Full token refresh without a browser
+
+Out of scope for this doc — included here for honesty about the gap. The Web Player refreshes its own tokens by POSTing to `https://open.spotify.com/api/token` with a **TOTP-signed** payload derived from a secret embedded in the main JS bundle. Replicating it is a separate RE task: extract the TOTP secret, implement the signing, match the exact request shape. Until that's done, every long-running tool needs either a live browser (fast path) or a one-shot human re-auth (fallback).
 
 ## Persisted-query hashes
 
@@ -360,7 +467,7 @@ Everything not covered above follows the same `pathfinder(op, vars)` shape:
 
 - **Persisted-query hashes rotate.** Use `load_pathfinder_hashes()`; re-run on `PersistedQueryNotFound`.
 - **`client-token` is required.** Missing it is the #1 cause of 403. Curl/Python won't auto-add it.
-- **Tokens expire ~1h.** Re-intercept on 401.
+- **Tokens expire ~1h.** Use the fetch-interceptor fast path above; fall back to subprocess re-intercept when the browser isn't attached.
 - **`api.spotify.com/v1` is poisoned.** Even a valid Bearer hits `429` almost immediately there; use pathfinder/spclient/guc3 only.
 - **Parallelism ceiling is ~10 workers.** Connections start dropping around 20+.
 - **Never commit captured headers.** They carry user identity (Bearer + client-token). `/tmp` only.
