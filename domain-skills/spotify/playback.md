@@ -153,10 +153,40 @@ OPS = load_pathfinder_hashes()
 # {'fetchLibraryTracks': '087278b2...', 'fetchPlaylist': '32b05e92...',
 #  'getAlbum': 'b9bfabef...', 'queryArtistOverview': '7f86ff63...',
 #  'isCurated': 'e4ed1f91...', 'areEntitiesInLibrary': '13433799...',  ...}
-# ~100 operations total; one HTTP round-trip per bundle (typically 3 bundles).
+# ~100 operations from the main bundle.
 ```
 
 Cache the result — the hashes only change on bundle rollouts, so re-parsing on every call is wasteful. Invalidate when you see `PersistedQueryNotFound`.
+
+#### Lazy-loaded route chunks hide extra ops
+
+The main bundle only contains ~100 ops. **Route-specific operations** (search, recent searches, some modal flows) live in lazy-loaded `xpui-routes-*.<hash>.js` chunks that the Web Player fetches on demand. `searchDesktop`, `browseAll`, `searchTracks`, `searchAlbums`, `searchArtists`, `searchPlaylists`, `searchPodcasts`, `searchEpisodes`, `searchAudiobooks`, `searchGenres`, `searchUsers`, `searchTopResultsOnly`, `searchTopResultsList` are all in `xpui-routes-search.<hash>.js`, for example.
+
+To get these, trigger the route in the browser so its chunk loads, then read it out of `performance` inside the page:
+
+```python
+# Make the route load its chunk
+js("window.location.href = 'https://open.spotify.com/search/anything'")
+time.sleep(3)
+
+# Fetch each route chunk via the page's own fetch (cache hit, no network)
+chunk_js = js("""(async () => {
+  const entries = performance.getEntriesByType('resource')
+    .map(e => e.name)
+    .filter(u => /xpui-routes-[^/]*\\.[a-f0-9]+\\.js$/.test(u));
+  const out = {};
+  for (const url of [...new Set(entries)]) {
+    try { out[url] = await (await fetch(url)).text(); } catch(e) {}
+  }
+  return out;
+})()""")
+
+for url, src in chunk_js.items():
+    for op, h in re.findall(r'\\("(\\w+)","(?:query|mutation|subscription)","([0-9a-f]{64})"', src):
+        OPS[op] = h
+```
+
+Scrape what you need from the main bundle first; fall back to triggering the relevant route only when the op you want isn't found. Missing chunk URLs (e.g. bare filenames inside the main bundle's webpack chunk manifest) don't resolve via direct HTTPS — you have to fetch through the browser's resolved URL or via `performance.getEntriesByType('resource')`.
 
 ### Replaying `fetchLibraryTracks` (Liked Songs in parallel)
 
@@ -268,6 +298,91 @@ r = lib_page(["Albums"], order="RECENTLY_ADDED")
 
 Much faster than reading the minified bundle. Works for any pathfinder op that returns union types.
 
+### Search: `searchDesktop` (+ type-specific variants)
+
+`scraping.md` notes search as "not accessible via http_get". It is — just not from the main bundle. `searchDesktop` lives in the `xpui-routes-search` chunk (see "Lazy-loaded route chunks" above for extraction).
+
+```python
+HASH = OPS["searchDesktop"]
+
+def search(term, limit=10):
+    body = json.dumps({
+        "variables": {
+            "searchTerm": term, "offset": 0, "limit": limit, "numberOfTopResults": 5,
+            "includeAudiobooks": False, "includeArtistHasConcertsField": False,
+            "includePreReleases": False, "includeLocalConcertsField": False,
+        },
+        "operationName": "searchDesktop",
+        "extensions": {"persistedQuery": {"version": 1, "sha256Hash": HASH}},
+    }).encode()
+    req = urllib.request.Request("https://api-partner.spotify.com/pathfinder/v2/query",
+                                  data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read())["data"]["searchV2"]
+
+# Returns all sections in one call (~1s):
+# { topResultsV2, tracksV2, albumsV2, artists, playlists,
+#   podcasts, episodes, genres, users, chipOrder }
+```
+
+Type-specific variants live alongside it in the same chunk — use them when you only want one category, they're cheaper: `searchTracks`, `searchAlbums`, `searchArtists`, `searchPlaylists`, `searchPodcasts`, `searchEpisodes`, `searchAudiobooks`, `searchGenres`, `searchUsers`.
+
+`searchSuggestions` is different — it's the autocomplete op, returns a mix of `SearchAutoCompleteEntity` strings and a handful of typed results. Useful for "what would the dropdown show?", not for full search.
+
+### Lyrics: `color-lyrics` REST endpoint
+
+Not a pathfinder op — a regular REST endpoint on `spclient.wg.spotify.com`. Same auth pair (Bearer + client-token).
+
+```python
+def get_lyrics(track_id):
+    url = f"https://spclient.wg.spotify.com/color-lyrics/v2/track/{track_id}?format=json&market=from_token"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None  # no lyrics for this track
+        raise
+```
+
+Response: `{lyrics: {syncType, lines: [{startTimeMs, words, syllables, endTimeMs, transliteratedWords}]}, colors, hasVocalRemoval}`. `syncType` is `LINE_SYNCED`, `SYLLABLE_SYNCED` (word-level), or `UNSYNCED`. The `/image/<cover-art-url>` path segment the Web Player uses is **optional** — the minimal URL above works.
+
+404 simply means no lyrics exist. Tracks missing lyrics include most instrumental/obscure releases.
+
+### Playback control via `connect-state`
+
+Not pathfinder — a REST endpoint on `guc3-spclient.spotify.com`. Same auth pair.
+
+```
+POST https://guc3-spclient.spotify.com/connect-state/v1/player/command/from/<device-id>/to/<device-id>
+```
+
+`<device-id>` is a 40-char hex string the Web Player uses for its own session. Capture it from any live request URL (e.g. the `track-playback/v1/devices/<id>/state` puts you see during playback).
+
+**Play a track/album/playlist/collection context:**
+```json
+{"command": {
+  "context": {"uri": "spotify:track:...", "url": "context://spotify:track:...", "metadata": {}},
+  "play_origin": {"feature_identifier": "harness"},
+  "options": {"license": "tft", "skip_to": {"track_uri": "spotify:track:..."}, "player_options_override": {}},
+  "logging_params": {"command_id": "<uuid>"},
+  "endpoint": "play"
+}}
+```
+`skip_to.track_uri` is optional — use it to jump to a specific track inside a playlist/album context.
+
+**Queue a track:**
+```json
+{"command": {
+  "track": {"uri": "spotify:track:...", "metadata": {"is_queued": "true"}, "provider": "queue"},
+  "endpoint": "add_to_queue",
+  "logging_params": {"command_id": "<uuid>"}
+}}
+```
+
+Both return `HTTP 200` with `{"ack_id": "..."}`. No DOM clicks needed; playback starts within ~500ms of the 200 coming back.
+
 ### Other pathfinder operations worth knowing
 
 Watch the Network tab while doing each action; each persisted-query hash comes out of `load_pathfinder_hashes()` — no need to scrape request bodies.
@@ -281,6 +396,8 @@ Watch the Network tab while doing each action; each persisted-query hash comes o
 | Artist overview                     | `queryArtistOverview` / `queryArtistDiscographyAlbums` |
 | Is-saved check, N URIs              | `areEntitiesInLibrary`     |
 | Batch curation flags                | `isCurated` (for "saved" heart state) |
+| Search (all categories)             | `searchDesktop` (route chunk — see above) |
+| Autocomplete / recent               | `searchSuggestions`, `recentSearches` |
 
 ### Gotchas
 
