@@ -13,7 +13,7 @@ Read `helpers.py` first. For first-time install or reconnect/bootstrap, read `in
 
 ```bash
 browser-harness <<'PY'
-new_tab("https://browser-use.com")
+new_tab("https://docs.browser-use.com")
 wait_for_load()
 print(page_info())
 PY
