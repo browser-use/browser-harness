@@ -98,7 +98,10 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def screenshot(path="/tmp/shot.png", full=False):
+def screenshot(path=None, full=False):
+    if path is None:
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), "shot.png")
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
     open(path, "wb").write(base64.b64decode(r["data"]))
     return path
