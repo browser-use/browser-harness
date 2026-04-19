@@ -5,6 +5,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from _compat import client_connect, paths as _bu_paths, remove_transport_artifacts
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -25,12 +27,17 @@ BU_API = "https://api.browser-use.com/api/v3"
 
 
 def _paths(name):
-    n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
+    """Backward-compat tuple: (transport_artifact, pid_path).
+
+    On POSIX transport_artifact is the unix socket path; on Windows it's the
+    port-file path. Callers that want the live PID use index [1]."""
+    p = _bu_paths(name or NAME)
+    artifact = p.get("sock") or p.get("port_file")
+    return artifact, p["pid"]
 
 
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
+    p = _bu_paths(name or NAME)["log"]
     try:
         return Path(p).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
@@ -39,9 +46,7 @@ def _log_tail(name):
 
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
+        s = client_connect(name)
         s.close()
         return True
     except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
@@ -53,15 +58,27 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     if daemon_alive(name):
         return
     import subprocess
+    import sys as _sys
 
     e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+    # Detach the child cleanly:
+    #   POSIX: start_new_session creates a new session/process group
+    #   Windows: CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS so it survives
+    #            this process and doesn't inherit our console.
+    spawn_kwargs = {}
+    if _sys.platform == "win32":
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        spawn_kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        spawn_kwargs["start_new_session"] = True
     p = subprocess.Popen(
         ["uv", "run", "daemon.py"],
         cwd=os.path.dirname(os.path.abspath(__file__)),
         env=e,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **spawn_kwargs,
     )
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -71,7 +88,8 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             break
         time.sleep(0.2)
     msg = _log_tail(name)
-    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+    log_path = _bu_paths(name or NAME)["log"]
+    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {log_path}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -96,11 +114,9 @@ def restart_daemon(name=None):
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    sock, pid_path = _paths(name)
+    artifact, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = client_connect(name, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -115,18 +131,22 @@ def restart_daemon(name=None):
             try:
                 os.kill(pid, 0)
                 time.sleep(0.2)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
+                # ProcessLookupError on POSIX, OSError on Windows when PID is gone
                 break
         else:
             try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
+                if hasattr(signal, "SIGTERM"):
+                    os.kill(pid, signal.SIGTERM)
+                else:
+                    os.kill(pid, signal.SIGABRT)
+            except (ProcessLookupError, OSError):
                 pass
-    for f in (sock, pid_path):
-        try:
-            os.unlink(f)
-        except FileNotFoundError:
-            pass
+    remove_transport_artifacts(name)
+    try:
+        os.unlink(pid_path)
+    except FileNotFoundError:
+        pass
 
 
 def _browser_use(path, method, body=None):

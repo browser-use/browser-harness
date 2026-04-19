@@ -17,4 +17,4 @@ dependencies = [
 browser-harness = "run:main"
 
 [tool.setuptools]
-py-modules = ["run", "helpers", "daemon", "admin"]
+py-modules = ["run", "helpers", "daemon", "admin", "_compat"]

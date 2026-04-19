@@ -1,9 +1,16 @@
-"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
+"""CDP WS holder + IPC relay. One daemon per BU_NAME.
+
+Transport:
+  POSIX: AF_UNIX socket at /tmp/bu-<NAME>.sock
+  Windows: AF_INET TCP on 127.0.0.1:<ephemeral>; port written to bu-<NAME>.port
+"""
 import asyncio, json, os, socket, sys, time, urllib.request
 from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+
+from _compat import client_connect, paths as _bu_paths, start_server
 
 
 def _load_env():
@@ -21,9 +28,9 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+_BUP = _bu_paths(NAME)
+LOG = _BUP["log"]
+PID = _BUP["pid"]
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -188,9 +195,6 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
-
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -208,9 +212,8 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    server, addr = await start_server(handler, name=NAME)
+    log(f"listening on {addr} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -223,15 +226,16 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
+        s = client_connect(NAME, timeout=1)
+        s.close()
+        return True
     except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
         return False
 
 
 if __name__ == "__main__":
     if already_running():
-        print(f"daemon already running on {SOCK}", file=sys.stderr)
+        print(f"daemon already running for name={NAME}", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))
@@ -246,3 +250,6 @@ if __name__ == "__main__":
         stop_remote()
         try: os.unlink(PID)
         except FileNotFoundError: pass
+        # Clean up the per-OS transport artifact (sock on POSIX, port file on Windows)
+        from _compat import remove_transport_artifacts
+        remove_transport_artifacts(NAME)
