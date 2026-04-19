@@ -1,5 +1,5 @@
 """Browser control via CDP. Read, edit, extend -- this file is yours."""
-import base64, json, os, socket, time, urllib.request
+import base64, json, os, socket, tempfile, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,13 +19,23 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
+# Windows lacks socket.AF_UNIX in the stdlib build; fall back to a TCP loopback
+# port written to a sibling .port file. POSIX keeps the original unix-socket path.
+_USE_UNIX = hasattr(socket, "AF_UNIX")
+_TMPDIR = "/tmp" if _USE_UNIX else tempfile.gettempdir()
+SOCK = os.path.join(_TMPDIR, f"bu-{NAME}.sock")
+PORT_FILE = os.path.join(_TMPDIR, f"bu-{NAME}.port")
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
+    if _USE_UNIX:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(SOCK)
+    else:
+        port = int(Path(PORT_FILE).read_text().strip())
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("127.0.0.1", port))
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
