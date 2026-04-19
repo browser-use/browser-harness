@@ -79,14 +79,21 @@ def stop_remote_daemon(name="remote"):
 
     Triggers the daemon's clean shutdown, which PATCHes
     /browsers/{id} {"action":"stop"} so billing ends and any profile
-    state in the session is persisted. Same implementation as
-    restart_daemon() — this alias just matches the common intent and
-    the symmetry with start_remote_daemon()."""
+    state in the session is persisted."""
+    # restart_daemon is misnamed — it only stops the daemon (sends
+    # shutdown, SIGTERMs if needed, unlinks socket+pid). It never
+    # restarts anything on its own; a follow-up `browser-harness`
+    # call would auto-spawn a fresh one via ensure_daemon(). That
+    # "run-it-again-to-restart" workflow is why it was named that way.
     restart_daemon(name)
 
 
 def restart_daemon(name=None):
-    """Best-effort daemon restart for setup/debug flows."""
+    """Best-effort daemon shutdown + socket/pid cleanup.
+
+    Name is historical: callers typically follow this with another
+    `browser-harness` invocation, which auto-spawns a fresh daemon via
+    ensure_daemon(). The function itself only stops."""
     import signal
 
     sock, pid_path = _paths(name)
