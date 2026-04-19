@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "browser-harness>=0.0.1",
     "cdp-use>=1.4.5",
+    "certifi>=2024.2.2",
     "websockets>=16.0",
 ]
 

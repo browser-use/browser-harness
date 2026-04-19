@@ -186,10 +186,11 @@ def upload_file(selector, path):
 
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk."""
-    import urllib.request, gzip
+    import urllib.request, gzip, ssl, certifi
     h = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
     if headers: h.update(headers)
-    with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout, context=ctx) as r:
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
         return data.decode()
