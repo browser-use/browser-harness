@@ -5,6 +5,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import ipc
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -24,27 +26,19 @@ NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
 
 
-def _paths(name):
-    n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
-
-
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
     try:
-        return Path(p).read_text().strip().splitlines()[-1]
+        return Path(ipc.log_path(name or NAME)).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
         return None
 
 
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
+        s = ipc.connect_client(name or NAME)
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
 
 
@@ -52,17 +46,26 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     """Idempotent. `env` is merged into the child process env."""
     if daemon_alive(name):
         return
-    import subprocess
+    import shutil, subprocess, sys
 
     e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
-    p = subprocess.Popen(
-        ["uv", "run", "daemon.py"],
+    popen_kw = dict(
         cwd=os.path.dirname(os.path.abspath(__file__)),
         env=e,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
     )
+    if os.name == "nt":
+        # Detach on Windows so the daemon survives the parent's exit.
+        popen_kw["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kw["start_new_session"] = True
+    # Prefer `uv run` when uv is on PATH (keeps Unix behaviour unchanged).
+    # Fall back to the current Python — robust when the tool runs under a
+    # uv-managed venv but `uv` itself isn't resolvable (common on Windows).
+    uv = shutil.which("uv")
+    cmd = [uv, "run", "daemon.py"] if uv else [sys.executable, "daemon.py"]
+    p = subprocess.Popen(cmd, **popen_kw)
     deadline = time.time() + wait
     while time.time() < deadline:
         if daemon_alive(name):
@@ -71,7 +74,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             break
         time.sleep(0.2)
     msg = _log_tail(name)
-    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -96,18 +99,17 @@ def restart_daemon(name=None):
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    sock, pid_path = _paths(name)
+    n = name or NAME
+    pidp = ipc.pid_path(n)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = ipc.connect_client(n, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
     except Exception:
         pass
     try:
-        pid = int(open(pid_path).read())
+        pid = int(open(pidp).read())
     except (FileNotFoundError, ValueError):
         pid = None
     if pid:
@@ -115,18 +117,18 @@ def restart_daemon(name=None):
             try:
                 os.kill(pid, 0)
                 time.sleep(0.2)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 break
         else:
             try:
                 os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 pass
-    for f in (sock, pid_path):
-        try:
-            os.unlink(f)
-        except FileNotFoundError:
-            pass
+    ipc.cleanup_addr(n)
+    try:
+        os.unlink(pidp)
+    except FileNotFoundError:
+        pass
 
 
 def _browser_use(path, method, body=None):

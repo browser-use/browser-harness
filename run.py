@@ -1,5 +1,13 @@
 import sys
 
+# Force UTF-8 stdio so the ♞ daemon title marker (U+1F7E2) and other
+# non-ASCII page data survive print() on Windows' default cp1252 console.
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 from admin import (
     ensure_daemon,
     list_cloud_profiles,

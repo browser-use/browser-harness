@@ -3,6 +3,8 @@ import base64, json, os, socket, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+import ipc
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -19,13 +21,11 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
+    s = ipc.connect_client(NAME, timeout=30)
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
