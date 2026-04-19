@@ -144,14 +144,14 @@ def _show_live_url(url):
     import sys, webbrowser
     if not url: return
     print(url)
-    if _has_local_gui():
-        try:
-            webbrowser.open(url, new=2)
-            print("(opened liveUrl in your default browser)", file=sys.stderr)
-            return
-        except Exception as e:
-            print(f"(couldn't auto-open: {e})", file=sys.stderr)
-    print("(no local GUI — share the liveUrl with the user)", file=sys.stderr)
+    if not _has_local_gui():
+        print("(no local GUI — share the liveUrl with the user)", file=sys.stderr)
+        return
+    try:
+        webbrowser.open(url, new=2)
+        print("(opened liveUrl in your default browser)", file=sys.stderr)
+    except Exception as e:
+        print(f"(couldn't auto-open: {e} — share the liveUrl with the user)", file=sys.stderr)
 
 
 def list_cloud_profiles():
