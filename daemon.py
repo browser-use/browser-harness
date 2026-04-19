@@ -31,6 +31,7 @@ PROFILES = [
     Path.home() / "Library/Application Support/Microsoft Edge Beta",
     Path.home() / "Library/Application Support/Microsoft Edge Dev",
     Path.home() / "Library/Application Support/Microsoft Edge Canary",
+    Path.home() / ".config/chromium",
     Path.home() / ".config/google-chrome",
     Path.home() / ".config/microsoft-edge",
     Path.home() / ".config/microsoft-edge-beta",
