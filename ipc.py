@@ -64,7 +64,7 @@ def _read_addr(name):
             d = json.loads(raw)
             return int(d["port"]), d.get("token")
         return int(raw), None
-    except (FileNotFoundError, ValueError, KeyError, OSError):
+    except (FileNotFoundError, ValueError, KeyError, TypeError, OSError):
         return None, None
 
 
