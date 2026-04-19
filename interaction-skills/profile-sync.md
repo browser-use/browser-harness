@@ -19,8 +19,12 @@ list_cloud_profiles()
 list_local_profiles()
 # [{BrowserName, ProfileName, DisplayName, ProfilePath, ...}, ...] — detected on this machine
 
-sync_local_profile(local_profile_name, browser=None)
-# Shells out to `profile-use sync`. Returns the new cloud profile UUID.
+sync_local_profile(local_profile_name, browser=None,
+                   cloud_profile_id=None,      # update an existing cloud profile instead of creating new
+                   include_domains=None,       # only these domains (and subdomains); leading dot optional
+                   exclude_domains=None)       # drop these domains; applied before include
+# Shells out to `profile-use sync`. Returns the cloud profile UUID
+# (the existing one if cloud_profile_id was passed, else the newly-created one).
 
 start_remote_daemon("work", profileName="my-work")   # name→id resolved client-side
 start_remote_daemon("work", profileId="<uuid>")      # or pass UUID directly
@@ -48,9 +52,17 @@ for lp in list_local_profiles():
 → Agent: *"Which local profile?"* → user picks → before syncing, inspect domain-level cookie counts with `profile-use inspect --profile <name>` (or `--verbose` for individual cookies) and report the summary; never dump 500 cookies into chat.
 
 ```python
-# 3. Sync + use. Returns the new cloud UUID.
+# 3. Sync + use. Returns the cloud UUID.
 uuid = sync_local_profile("browser-use.com")
 start_remote_daemon("work", profileId=uuid)
+
+# 3b. Refresh that same cloud profile later (idempotent — no duplicate profiles).
+sync_local_profile("browser-use.com", cloud_profile_id=uuid)
+
+# 3c. Scoped: push *only* Stripe cookies into a dedicated cloud profile.
+sync_local_profile("browser-use.com",
+                   cloud_profile_id=uuid,
+                   include_domains=["stripe.com"])
 ```
 
 ## What actually gets synced
@@ -58,15 +70,6 @@ start_remote_daemon("work", profileId=uuid)
 **Cookies only.** No localStorage, no IndexedDB, no extensions. Enough for session-cookie sites (Google, GitHub, Stripe, most SaaS); not for sites that store auth in localStorage.
 
 Cookies mutated during a remote session only persist on a clean `PATCH /browsers/{id} {"action":"stop"}` — the daemon does this on shutdown when `BU_BROWSER_ID` + `BROWSER_USE_API_KEY` are set (default for remote daemons). Sessions that hit the timeout lose in-session state.
-
-## Upstream limitations
-
-These need a PR to `browser-use/profile-use` — they can't be fixed inside `browser-harness`:
-
-- `profile-use sync` **always creates a new cloud profile.** No flag to update an existing one by UUID or name. Syncing the same local profile twice produces two cloud profiles — delete the old one first (UI or `DELETE /api/v3/profiles/{id}`) if you want one-to-one mapping.
-- `profile-use sync` **uploads every cookie in the local profile.** No `--domain` / `--cookie` filter. For scoped uploads, use a dedicated local Chrome profile containing only what you want synced.
-
-The Browser Use API has no cookie upload/download endpoint — `profile-use` is the only path, so both limitations live upstream.
 
 ## Cloud profile CRUD
 

@@ -160,19 +160,27 @@ def list_cloud_profiles():
     Returns [{id, name, userId, cookieDomains, lastUsedAt}, ...]. `cookieDomains`
     is the array of domain strings the cloud profile has cookies for — use
     `len(cookieDomains)` as a cheap 'how much is logged in' summary. Per-cookie
-    detail on a *local* profile before sync: `profile-use inspect --profile <name>`."""
-    listing = _browser_use("/profiles?pageSize=200", "GET")
-    items = listing.get("items", listing) if isinstance(listing, dict) else listing
-    out = []
-    for p in items:
-        detail = _browser_use(f"/profiles/{p['id']}", "GET")
-        out.append({
-            "id": detail["id"],
-            "name": detail.get("name"),
-            "userId": detail.get("userId"),
-            "cookieDomains": detail.get("cookieDomains") or [],
-            "lastUsedAt": detail.get("lastUsedAt"),
-        })
+    detail on a *local* profile before sync: `profile-use inspect --profile <name>`.
+
+    Paginates through all pages — the API caps `pageSize` at 100."""
+    out, page = [], 1
+    while True:
+        listing = _browser_use(f"/profiles?pageSize=100&pageNumber={page}", "GET")
+        items = listing.get("items") if isinstance(listing, dict) else listing
+        if not items:
+            break
+        for p in items:
+            detail = _browser_use(f"/profiles/{p['id']}", "GET")
+            out.append({
+                "id": detail["id"],
+                "name": detail.get("name"),
+                "userId": detail.get("userId"),
+                "cookieDomains": detail.get("cookieDomains") or [],
+                "lastUsedAt": detail.get("lastUsedAt"),
+            })
+        if isinstance(listing, dict) and len(out) >= listing.get("totalItems", len(out)):
+            break
+        page += 1
     return out
 
 
@@ -224,12 +232,25 @@ def list_local_profiles():
     return json.loads(subprocess.check_output(["profile-use", "list", "--json"], text=True))
 
 
-def sync_local_profile(profile_name, browser=None):
-    """Sync a local profile's cookies into a new cloud profile. Returns the cloud UUID.
+def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
+                        include_domains=None, exclude_domains=None):
+    """Sync a local profile's cookies to a cloud profile. Returns the cloud UUID.
 
-    Shells out to `profile-use sync --profile <name> [--browser <browser>]`. Every call
-    creates a *new* cloud profile (upstream limitation — see interaction-skills/profile-sync.md).
-    Requires BROWSER_USE_API_KEY and that the target local Chrome profile is closed."""
+    Shells out to `profile-use sync` (v1.0.4+). Requires BROWSER_USE_API_KEY and the
+    target local Chrome profile to be closed (profile-use needs an exclusive lock on
+    the Cookies DB).
+
+    Args:
+      profile_name:       local Chrome profile name (as shown by `list_local_profiles`).
+      browser:            disambiguate when multiple browsers have profiles of the
+                          same name (e.g. "Google Chrome"). Default: any match.
+      cloud_profile_id:   push cookies into this existing cloud profile instead of
+                          creating a new one. Idempotent — call again to refresh
+                          the same profile. Default: create new.
+      include_domains:    only sync cookies for these domains (and subdomains).
+                          Leading dot is optional. Example: ["google.com", "stripe.com"].
+      exclude_domains:    drop cookies for these domains (and subdomains). Applied
+                          before `include_domains` so exclude wins on overlap."""
     import os, re, shutil, subprocess, sys
     if not shutil.which("profile-use"):
         raise RuntimeError("profile-use not installed -- curl -fsSL https://browser-use.com/profile.sh | sh")
@@ -238,9 +259,21 @@ def sync_local_profile(profile_name, browser=None):
     cmd = ["profile-use", "sync", "--profile", profile_name]
     if browser:
         cmd += ["--browser", browser]
+    if cloud_profile_id:
+        cmd += ["--cloud-profile-id", cloud_profile_id]
+    for d in include_domains or []:
+        cmd += ["--domain", d]
+    for d in exclude_domains or []:
+        cmd += ["--exclude-domain", d]
     r = subprocess.run(cmd, text=True, capture_output=True)
     sys.stdout.write(r.stdout)
     sys.stderr.write(r.stderr)
+    if r.returncode != 0:
+        raise RuntimeError(f"profile-use sync failed (exit {r.returncode})")
+    # With --cloud-profile-id the tool prints "♻️ Using existing cloud profile"
+    # instead of "Profile created: <uuid>", so we already know the UUID.
+    if cloud_profile_id:
+        return cloud_profile_id
     m = re.search(r"Profile created:\s+([0-9a-f-]{36})", r.stdout)
     if not m:
         raise RuntimeError(f"profile-use did not report a profile UUID (exit {r.returncode})")
