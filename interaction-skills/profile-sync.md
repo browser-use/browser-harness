@@ -80,7 +80,7 @@ Cookies mutated during a remote session only persist on a clean `PATCH /browsers
 - UI: https://cloud.browser-use.com/settings?tab=profiles
 - API: `GET /profiles`, `GET/PATCH/DELETE /profiles/{id}` (paths are relative to `BU_API = "https://api.browser-use.com/api/v3"` in `admin.py`). Fields: `id`, `name`, `userId`, `lastUsedAt`, `cookieDomains[]`. `list_cloud_profiles()` wraps this.
 - Name → UUID: `profileName=` on `start_remote_daemon` resolves client-side; no API change needed.
-- Need the UUID for an existing profile? `next(p["id"] for p in list_cloud_profiles() if p["name"] == "<name>")`.
+- Need the UUID for an existing profile? `matches = [p["id"] for p in list_cloud_profiles() if p["name"] == "<name>"]` — then verify `len(matches) == 1` before using it. Profile names are not unique; syncs create duplicates unless you pass `cloud_profile_id=`.
 - Lower-level raw calls: `from admin import _browser_use; _browser_use("/profiles/<id>", "DELETE")`. Pass the path *without* the `/api/v3` prefix — it's already on `BU_API`.
 
 ## Traps
