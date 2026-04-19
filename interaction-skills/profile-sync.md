@@ -28,7 +28,11 @@ sync_local_profile(local_profile_name, browser=None,
 
 start_remote_daemon("work", profileName="my-work")   # name→id resolved client-side
 start_remote_daemon("work", profileId="<uuid>")      # or pass UUID directly
+
+stop_remote_daemon("work")                           # shut the daemon and PATCH the cloud browser to stop — billing ends
 ```
+
+`sync_local_profile` prints `♻️  Using existing cloud profile` when `cloud_profile_id` is accepted, or `📝  Creating remote profile...` → `✓ Profile created: <uuid>` when it creates a new one. Check that line if you want to confirm which path ran.
 
 ## Chat-driven flow (don't guess — ask the user)
 
@@ -74,11 +78,13 @@ Cookies mutated during a remote session only persist on a clean `PATCH /browsers
 ## Cloud profile CRUD
 
 - UI: https://cloud.browser-use.com/settings?tab=profiles
-- API: `GET /api/v3/profiles`, `GET/PATCH/DELETE /api/v3/profiles/{id}`. Fields: `id`, `name`, `userId`, `lastUsedAt`, `cookieDomains[]`. `list_cloud_profiles()` wraps this.
+- API: `GET /profiles`, `GET/PATCH/DELETE /profiles/{id}` (paths are relative to `BU_API = "https://api.browser-use.com/api/v3"` in `admin.py`). Fields: `id`, `name`, `userId`, `lastUsedAt`, `cookieDomains[]`. `list_cloud_profiles()` wraps this.
 - Name → UUID: `profileName=` on `start_remote_daemon` resolves client-side; no API change needed.
+- Need the UUID for an existing profile? `next(p["id"] for p in list_cloud_profiles() if p["name"] == "<name>")`.
+- Lower-level raw calls: `from admin import _browser_use; _browser_use("/profiles/<id>", "DELETE")`. Pass the path *without* the `/api/v3` prefix — it's already on `BU_API`.
 
 ## Traps
 
-- **Close the target Chrome profile before syncing.** `profile-use` reads the `Cookies` SQLite DB, which Chrome holds with an exclusive lock — `sync` hangs otherwise.
 - **Default proxy (`proxyCountryCode="us"`) blocks some destinations** with `ERR_TUNNEL_CONNECTION_FAILED` (e.g. `cloud.browser-use.com` itself). `proxyCountryCode=None` disables the BU proxy; a different country code picks a different exit.
 - **Prefer a dedicated work profile over your personal one.** Especially while testing.
+- **Older than `profile-use` v1.0.5?** Pre-1.0.5 the sync needed the Chrome profile to be closed (exclusive SQLite lock on the `Cookies` DB). v1.0.5+ copies the profile dir to a temp and syncs from the copy — Chrome can stay open.

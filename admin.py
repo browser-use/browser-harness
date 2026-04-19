@@ -74,6 +74,17 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
 
 
+def stop_remote_daemon(name="remote"):
+    """Stop a remote daemon and its backing Browser Use cloud browser.
+
+    Triggers the daemon's clean shutdown, which PATCHes
+    /browsers/{id} {"action":"stop"} so billing ends and any profile
+    state in the session is persisted. Same implementation as
+    restart_daemon() — this alias just matches the common intent and
+    the symmetry with start_remote_daemon()."""
+    restart_daemon(name)
+
+
 def restart_daemon(name=None):
     """Best-effort daemon restart for setup/debug flows."""
     import signal
