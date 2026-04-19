@@ -1,6 +1,13 @@
 import sys
 
-from admin import ensure_daemon
+from admin import (
+    ensure_daemon,
+    list_cloud_profiles,
+    list_local_profiles,
+    restart_daemon,
+    start_remote_daemon,
+    sync_local_profile,
+)
 from helpers import *
 
 HELP = """Browser Harness

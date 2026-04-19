@@ -42,27 +42,26 @@ PY
 
 ### Remote browsers
 
-Remote is optional. Use it for parallel agents, sub-agents, or deployment.
-
-If `BROWSER_USE_API_KEY` is already present in `.env` or the environment, start a remote daemon with:
-
-Run this from the repo root:
+Use remote for **parallel sub-agents** (each gets its own isolated browser via a distinct `BU_NAME`) or on a headless server. `BROWSER_USE_API_KEY` must be set. `start_remote_daemon`, `list_cloud_profiles`, `list_local_profiles`, `sync_local_profile` are pre-imported.
 
 ```bash
-uv run python - <<'PY'
-from admin import start_remote_daemon
-print(start_remote_daemon("work")["liveUrl"])
+browser-harness <<'PY'
+start_remote_daemon("work")                               # default — clean browser, no profile
+# start_remote_daemon("work", profileName="my-work")      # reuse a cloud profile (already logged in)
+# start_remote_daemon("work", profileId="<uuid>")         # same, but by UUID
+# start_remote_daemon("work", proxyCountryCode="de", timeout=120)   # DE proxy, 2-hour timeout
+# start_remote_daemon("work", proxyCountryCode=None)      # disable the Browser Use proxy
 PY
+
 BU_NAME=work browser-harness <<'PY'
+new_tab("https://example.com")
 print(page_info())
 PY
 ```
 
-Share the `liveUrl` with the user — it's a watch-along link.
+`start_remote_daemon` prints `liveUrl` and auto-opens it in the local browser (if a GUI is detected) so the user can watch along. Headless servers print only — share the URL with the user. The daemon `PATCH`es the cloud browser to `stop` on shutdown, which persists profile state. Running remote daemons bill until timeout.
 
-Leaving a remote daemon running bills until the session timeout.
-
-Parallel agents should use distinct `BU_NAME`s and can share the same `helpers.py`; shared improvements are expected, and changes should stay general enough that other agents benefit rather than break.
+Profiles (cookies-only login state) live in `interaction-skills/profile-sync.md` — covers `list_cloud_profiles()`, the chat-driven "which profile?" pattern, and `sync_local_profile()` for uploading a local Chrome profile.
 
 ## Search first
 
@@ -78,6 +77,7 @@ Only if you start struggling with a specific mechanic while navigating, look in 
 - `iframes.md`
 - `network-requests.md`
 - `print-as-pdf.md`
+- `profile-sync.md`
 - `screenshots.md`
 - `scrolling.md`
 - `shadow-dom.md`
