@@ -51,7 +51,8 @@ API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
 def log(msg):
-    open(LOG, "a").write(f"{msg}\n")
+    with open(LOG, "a") as f:
+        f.write(f"{msg}\n")
 
 
 def _running_debug_endpoints(ps_output=None):
@@ -118,36 +119,49 @@ def _ws_url_from_port(port, wait=30):
             time.sleep(1)
 
 
+def _ws_url_from_devtools_active_port(base, wait=30):
+    try:
+        port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
+    except (FileNotFoundError, NotADirectoryError):
+        return None, None
+
+    deadline = time.time() + wait
+    while True:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(1)
+        try:
+            probe.connect(("127.0.0.1", int(port.strip())))
+            return f"ws://127.0.0.1:{port.strip()}{path.strip()}", None
+        except OSError:
+            if time.time() >= deadline:
+                return None, (
+                    f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port.strip()} "
+                    "— if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
+                )
+            time.sleep(1)
+        finally:
+            probe.close()
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
     debug_endpoints = _running_debug_endpoints()
     profiles = _profile_roots(debug_endpoints)
+    last_active_port_error = None
     for base in profiles:
-        try:
-            port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        deadline = time.time() + 30
-        while True:
-            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            probe.settimeout(1)
-            try:
-                probe.connect(("127.0.0.1", int(port.strip())))
-                break
-            except OSError:
-                if time.time() >= deadline:
-                    raise RuntimeError(
-                        f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port.strip()} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
-                    )
-                time.sleep(1)
-            finally:
-                probe.close()
-        return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+        url, error = _ws_url_from_devtools_active_port(base)
+        if url:
+            return url
+        if error:
+            log(f"ignoring stale DevToolsActivePort in {base}: {error}")
+            last_active_port_error = error
     for path, port in debug_endpoints:
         if url := _ws_url_from_port(port):
             log(f"using /json/version fallback on 127.0.0.1:{port} from {path}")
             return url
+    if last_active_port_error:
+        raise RuntimeError(last_active_port_error)
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in profiles]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
