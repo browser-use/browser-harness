@@ -49,7 +49,7 @@ Useful for stealth, sub-agents, or deployment.<br>
 - Keep the existing Unix socket relay on macOS / Linux
 - Use `BU_DAEMON_TRANSPORT=tcp` for a Windows-native localhost relay
 - Leave `BU_DAEMON_TRANSPORT` unset, or set it to `auto`, to preserve the Unix path where `AF_UNIX` exists and fall back to TCP only where it does not
-- On Windows the daemon metadata lives under `%TEMP%\\bu-<NAME>.{port,pid,log}`
+- On Windows the daemon metadata lives under `%TEMP%\\bu-<NAME>.tcp.{port,pid,log}`
 
 ## How simple is it? (~592 lines of Python)
 

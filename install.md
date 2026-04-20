@@ -42,7 +42,7 @@ set BU_DAEMON_TRANSPORT=tcp
 browser-harness --help
 ```
 
-Leave `BU_DAEMON_TRANSPORT` unset, or set it to `auto`, to preserve the Unix path where `AF_UNIX` exists and only fall back to TCP where it does not. On Windows the daemon metadata lives under `%TEMP%\\bu-<NAME>.{port,pid,log}`.
+Leave `BU_DAEMON_TRANSPORT` unset, or set it to `auto`, to preserve the Unix path where `AF_UNIX` exists and only fall back to TCP where it does not. On Windows the daemon metadata lives under `%TEMP%\\bu-<NAME>.tcp.{port,pid,log}`.
 
 ## Make it global for the current agent
 

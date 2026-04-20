@@ -22,16 +22,14 @@ _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
 TMPDIR = Path(tempfile.gettempdir())
-SOCK = str(TMPDIR / f"bu-{NAME}.sock")
-LOG = str(TMPDIR / f"bu-{NAME}.log")
-PID = str(TMPDIR / f"bu-{NAME}.pid")
-PORT = str(TMPDIR / f"bu-{NAME}.port")
+UNIX_DIR = Path("/tmp")
 TRANSPORT = os.environ.get("BU_DAEMON_TRANSPORT", "auto").strip().lower()
 if TRANSPORT not in {"auto", "unix", "tcp"}:
     raise RuntimeError(f"unsupported BU_DAEMON_TRANSPORT={TRANSPORT!r}; expected auto, unix, or tcp")
 if TRANSPORT == "unix" and not hasattr(socket, "AF_UNIX"):
     raise RuntimeError("BU_DAEMON_TRANSPORT=unix requires AF_UNIX support")
 USE_UNIX = TRANSPORT == "unix" or (TRANSPORT == "auto" and hasattr(socket, "AF_UNIX"))
+CURRENT_TRANSPORT = "unix" if USE_UNIX else "tcp"
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -62,8 +60,59 @@ REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
+def _supported_transports():
+    if hasattr(socket, "AF_UNIX"):
+        return ("unix", "tcp")
+    return ("tcp",)
+
+
+def _paths(name=None, transport=None):
+    transport = transport or CURRENT_TRANSPORT
+    n = name or NAME
+    if transport == "unix":
+        base = UNIX_DIR / f"bu-{n}"
+        return str(base) + ".sock", str(base) + ".pid", None, str(base) + ".log"
+    if transport == "tcp":
+        base = TMPDIR / f"bu-{n}.tcp"
+        return None, str(base) + ".pid", str(base) + ".port", str(base) + ".log"
+    raise RuntimeError(f"unsupported transport {transport!r}")
+
+
+SOCK, PID, PORT, LOG = _paths()
+
+
 def log(msg):
     open(LOG, "a").write(f"{msg}\n")
+
+
+def _connect_transport(transport, timeout=1):
+    sock, _, port_path, _ = _paths(transport=transport)
+    if transport == "unix":
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(sock)
+        return s
+    try:
+        port = int(Path(port_path).read_text().strip())
+    except (OSError, ValueError):
+        raise FileNotFoundError(port_path)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(("127.0.0.1", port))
+    return s
+
+
+def _transport_alive(transport):
+    try:
+        s = _connect_transport(transport)
+        s.close()
+        return True
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
+        return False
+
+
+def _live_transports():
+    return [transport for transport in _supported_transports() if _transport_alive(transport)]
 
 
 def get_ws_url():
@@ -200,9 +249,9 @@ class Daemon:
 
 
 async def serve(d):
-    if USE_UNIX and os.path.exists(SOCK):
+    if USE_UNIX and SOCK and os.path.exists(SOCK):
         os.unlink(SOCK)
-    if not USE_UNIX and os.path.exists(PORT):
+    if not USE_UNIX and PORT and os.path.exists(PORT):
         os.unlink(PORT)
 
     async def handler(reader, writer):
@@ -243,25 +292,13 @@ async def main():
 
 
 def already_running():
-    try:
-        if USE_UNIX:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect(SOCK)
-        else:
-            port = int(Path(PORT).read_text().strip())
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect(("127.0.0.1", port))
-        s.close()
-        return True
-    except (FileNotFoundError, ValueError, ConnectionRefusedError, socket.timeout):
-        return False
+    return _live_transports()
 
 
 if __name__ == "__main__":
-    if already_running():
-        print(f"daemon already running on {SOCK}", file=sys.stderr)
+    live = already_running()
+    if live:
+        print(f"daemon already running for BU_NAME {NAME!r} on {', '.join(live)} transport(s)", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))
@@ -276,7 +313,11 @@ if __name__ == "__main__":
         stop_remote()
         try: os.unlink(PID)
         except FileNotFoundError: pass
-        try: os.unlink(SOCK)
+        try:
+            if SOCK:
+                os.unlink(SOCK)
         except FileNotFoundError: pass
-        try: os.unlink(PORT)
+        try:
+            if PORT:
+                os.unlink(PORT)
         except FileNotFoundError: pass
