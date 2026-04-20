@@ -24,6 +24,26 @@ command -v browser-harness
 
 That keeps the command global while still pointing at the real repo checkout, so when the agent edits `helpers.py` the next `browser-harness` uses the new code immediately. Prefer a stable path like `~/Developer/browser-harness`, not `/tmp`.
 
+## Optional Windows-native daemon transport
+
+Keep the existing Unix socket relay on macOS / Linux. If you want a Windows-native local relay instead, set `BU_DAEMON_TRANSPORT=tcp` before invoking `browser-harness`.
+
+PowerShell:
+
+```powershell
+$env:BU_DAEMON_TRANSPORT = "tcp"
+browser-harness --help
+```
+
+cmd.exe:
+
+```bat
+set BU_DAEMON_TRANSPORT=tcp
+browser-harness --help
+```
+
+Leave `BU_DAEMON_TRANSPORT` unset, or set it to `auto`, to preserve the Unix path where `AF_UNIX` exists and only fall back to TCP where it does not. On Windows the daemon metadata lives under `%TEMP%\\bu-<NAME>.{port,pid,log}`.
+
 ## Make it global for the current agent
 
 After the repo is installed, register this repo's `SKILL.md` with the agent you are using:
@@ -45,6 +65,7 @@ Prefer `browser-harness --setup` — it runs the full attach-and-escalate flow b
 
 1. Run `uv sync`.
    If `browser-harness` is still missing after that, run `command -v browser-harness >/dev/null || uv tool install -e .`.
+   On Windows, set `BU_DAEMON_TRANSPORT=tcp` first if you want the native local relay explicitly.
 2. First try the harness directly. If this works, skip manual browser setup:
 
 ```bash
@@ -133,6 +154,7 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 
 ## Cold-start reminders
 
+- Native Windows setup does not require WSL. Use the optional TCP daemon transport when you want a Windows-local relay.
 - Try attaching before asking the user to change anything. Decide what to escalate based on the harness's error message, not on whether Chrome is visibly running.
 - The remote-debugging checkbox is per-profile sticky in Chrome. If it has ever been ticked on a profile, just launching Chrome is enough — only navigate to `chrome://inspect/#remote-debugging` when `DevToolsActivePort` is genuinely missing.
 - The first connect may block on Chrome's `Allow` dialog, and Chrome may also stop first on the profile picker.

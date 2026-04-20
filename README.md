@@ -6,6 +6,8 @@ The simplest, thinnest, **self-healing** harness that gives LLM **complete freed
 
 The agent writes what's missing, mid-task. No framework, no recipes, no rails. One websocket to Chrome, nothing between.
 
+An optional Windows-native daemon transport is also supported. The original Unix socket relay remains the default path on macOS and Linux; Windows can use a localhost TCP relay plus `%TEMP%` metadata files to attach to the user's real Chrome profile without WSL.
+
 ```
   ● agent: wants to upload a file
   │
@@ -41,6 +43,13 @@ Useful for stealth, sub-agents, or deployment.<br>
 
 - Grab a key at [cloud.browser-use.com/new-api-key](https://cloud.browser-use.com/new-api-key)
 - Or let the agent sign up itself via [docs.browser-use.com/llms.txt](https://docs.browser-use.com/llms.txt) (setup flow + challenge context included).
+
+## Optional Windows-native daemon transport
+
+- Keep the existing Unix socket relay on macOS / Linux
+- Use `BU_DAEMON_TRANSPORT=tcp` for a Windows-native localhost relay
+- Leave `BU_DAEMON_TRANSPORT` unset, or set it to `auto`, to preserve the Unix path where `AF_UNIX` exists and fall back to TCP only where it does not
+- On Windows the daemon metadata lives under `%TEMP%\\bu-<NAME>.{port,pid,log}`
 
 ## How simple is it? (~592 lines of Python)
 

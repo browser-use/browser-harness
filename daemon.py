@@ -1,5 +1,5 @@
-"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.request
+"""CDP WS holder + local socket relay. One daemon per BU_NAME."""
+import asyncio, json, os, socket, sys, tempfile, time, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -21,9 +21,17 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+TMPDIR = Path(tempfile.gettempdir())
+SOCK = str(TMPDIR / f"bu-{NAME}.sock")
+LOG = str(TMPDIR / f"bu-{NAME}.log")
+PID = str(TMPDIR / f"bu-{NAME}.pid")
+PORT = str(TMPDIR / f"bu-{NAME}.port")
+TRANSPORT = os.environ.get("BU_DAEMON_TRANSPORT", "auto").strip().lower()
+if TRANSPORT not in {"auto", "unix", "tcp"}:
+    raise RuntimeError(f"unsupported BU_DAEMON_TRANSPORT={TRANSPORT!r}; expected auto, unix, or tcp")
+if TRANSPORT == "unix" and not hasattr(socket, "AF_UNIX"):
+    raise RuntimeError("BU_DAEMON_TRANSPORT=unix requires AF_UNIX support")
+USE_UNIX = TRANSPORT == "unix" or (TRANSPORT == "auto" and hasattr(socket, "AF_UNIX"))
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -192,8 +200,10 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
+    if USE_UNIX and os.path.exists(SOCK):
         os.unlink(SOCK)
+    if not USE_UNIX and os.path.exists(PORT):
+        os.unlink(PORT)
 
     async def handler(reader, writer):
         try:
@@ -212,9 +222,16 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    if USE_UNIX:
+        server = await asyncio.start_unix_server(handler, path=SOCK)
+        os.chmod(SOCK, 0o600)
+        listen_desc = SOCK
+    else:
+        server = await asyncio.start_server(handler, host="127.0.0.1", port=0)
+        port = server.sockets[0].getsockname()[1]
+        Path(PORT).write_text(str(port))
+        listen_desc = f"127.0.0.1:{port}"
+    log(f"listening on {listen_desc} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -227,9 +244,18 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        if USE_UNIX:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(SOCK)
+        else:
+            port = int(Path(PORT).read_text().strip())
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("127.0.0.1", port))
+        s.close()
+        return True
+    except (FileNotFoundError, ValueError, ConnectionRefusedError, socket.timeout):
         return False
 
 
@@ -249,4 +275,8 @@ if __name__ == "__main__":
     finally:
         stop_remote()
         try: os.unlink(PID)
+        except FileNotFoundError: pass
+        try: os.unlink(SOCK)
+        except FileNotFoundError: pass
+        try: os.unlink(PORT)
         except FileNotFoundError: pass
