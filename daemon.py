@@ -1,5 +1,5 @@
 """CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.request
+import asyncio, json, os, re, socket, sys, time, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -54,10 +54,76 @@ def log(msg):
     open(LOG, "a").write(f"{msg}\n")
 
 
+def _running_debug_endpoints(ps_output=None):
+    """(profile_path, port) from real browser processes, ordered by how likely they are to be user-facing."""
+    if ps_output is None:
+        import subprocess
+
+        try:
+            ps_output = subprocess.check_output(["ps", "-axww", "-o", "command="], text=True)
+        except Exception:
+            return []
+
+    ranked = []
+    for line in ps_output.splitlines():
+        line = line.strip()
+        if not line or "--type=" in line or "--remote-debugging-port" not in line:
+            continue
+        path_match = re.search(r"--user-data-dir(?:=|\s+)(\S+)", line)
+        port_match = re.search(r"--remote-debugging-port(?:=|\s+)(\d+)", line)
+        if not path_match or not port_match:
+            continue
+        score = 0
+        if "--no-startup-window" in line:
+            score += 100
+        if "playwright_" in line or "chromiumdev_profile" in line:
+            score += 50
+        ranked.append((score, len(ranked), Path(path_match.group(1)), int(port_match.group(1))))
+
+    out, seen = [], set()
+    for _, _, path, port in sorted(ranked):
+        key = (str(path), port)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((path, port))
+    return out
+
+
+def _running_profile_roots(ps_output=None):
+    return [path for path, _ in _running_debug_endpoints(ps_output)]
+
+
+def _profile_roots(debug_endpoints=None):
+    debug_endpoints = debug_endpoints if debug_endpoints is not None else _running_debug_endpoints()
+    out, seen = [], set()
+    for path in [path for path, _ in debug_endpoints] + PROFILES:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _ws_url_from_port(port, wait=30):
+    deadline = time.time() + wait
+    while True:
+        try:
+            body = urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2).read()
+            return json.loads(body)["webSocketDebuggerUrl"]
+        except Exception:
+            if time.time() >= deadline:
+                return None
+            time.sleep(1)
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
-    for base in PROFILES:
+    debug_endpoints = _running_debug_endpoints()
+    profiles = _profile_roots(debug_endpoints)
+    for base in profiles:
         try:
             port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
         except (FileNotFoundError, NotADirectoryError):
@@ -78,7 +144,11 @@ def get_ws_url():
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
+    for path, port in debug_endpoints:
+        if url := _ws_url_from_port(port):
+            log(f"using /json/version fallback on 127.0.0.1:{port} from {path}")
+            return url
+    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in profiles]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
 def stop_remote():
