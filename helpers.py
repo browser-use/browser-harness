@@ -1,5 +1,5 @@
 """Browser control via CDP. Read, edit, extend -- this file is yours."""
-import base64, json, os, socket, time, urllib.request
+import base64, json, os, socket, sys, tempfile, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,14 +18,42 @@ def _load_env():
 
 _load_env()
 
+IS_WIN = sys.platform == "win32"
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
+
+
+def _tmp(name, suffix):
+    # Unix keeps the fixed /tmp/ path so existing users (and macOS AF_UNIX
+    # path-length limits) see zero change. Windows has no /tmp, so we fall
+    # back to the per-user temp dir.
+    if IS_WIN:
+        return os.path.join(tempfile.gettempdir(), f"bu-{name}.{suffix}")
+    return f"/tmp/bu-{name}.{suffix}"
+
+
+# On Unix we keep AF_UNIX (SOCK is the socket path). On Windows AF_UNIX is
+# unavailable, so the daemon binds a TCP loopback port and writes it to
+# bu-{NAME}.port; clients read that file to find the daemon.
+SOCK = None if IS_WIN else _tmp(NAME, "sock")
+PORT_FILE = _tmp(NAME, "port") if IS_WIN else None
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
+def _connect(timeout=None):
+    if IS_WIN:
+        port = int(open(PORT_FILE).read().strip())
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if timeout is not None: s.settimeout(timeout)
+        s.connect(("127.0.0.1", port))
+    else:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if timeout is not None: s.settimeout(timeout)
+        s.connect(SOCK)
+    return s
+
+
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
+    s = _connect()
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
@@ -98,7 +126,9 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def screenshot(path="/tmp/shot.png", full=False):
+def screenshot(path=None, full=False):
+    if path is None:
+        path = os.path.join(tempfile.gettempdir(), "shot.png")
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
     open(path, "wb").write(base64.b64decode(r["data"]))
     return path

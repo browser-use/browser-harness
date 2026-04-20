@@ -1,6 +1,8 @@
 import json
 import os
 import socket
+import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -20,31 +22,78 @@ def _load_env():
 
 _load_env()
 
+IS_WIN = sys.platform == "win32"
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
 
 
-def _paths(name):
+def _tmp(name, suffix):
+    # Unix keeps the fixed /tmp/ path so existing users (and macOS AF_UNIX
+    # path-length limits) see zero change. Windows has no /tmp, so we fall
+    # back to the per-user temp dir.
     n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
+    if IS_WIN:
+        return os.path.join(tempfile.gettempdir(), f"bu-{n}.{suffix}")
+    return f"/tmp/bu-{n}.{suffix}"
+
+
+def _paths(name):
+    # On Unix: (sock, pid). On Windows: (port_file, pid) — the port file
+    # holds the TCP port the daemon is listening on, since AF_UNIX is
+    # unavailable on Windows Python builds.
+    return _tmp(name, "port" if IS_WIN else "sock"), _tmp(name, "pid")
 
 
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
     try:
-        return Path(p).read_text().strip().splitlines()[-1]
+        return Path(_tmp(name, "log")).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
         return None
 
 
+def _connect(name, timeout=1):
+    if IS_WIN:
+        port = int(open(_tmp(name, "port")).read().strip())
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(("127.0.0.1", port))
+    else:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(_tmp(name, "sock"))
+    return s
+
+
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
-        s.close()
+        _connect(name, timeout=1).close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ValueError, OSError):
+        return False
+
+
+def _pid_alive(pid):
+    # os.kill(pid, 0) is the POSIX idiom, but on Windows any sig value
+    # other than CTRL_C_EVENT/CTRL_BREAK_EVENT unconditionally kills the
+    # target via TerminateProcess — we must not send 0. Use OpenProcess
+    # with PROCESS_QUERY_LIMITED_INFORMATION (0x1000) for a read-only check.
+    if IS_WIN:
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if h:
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+        # Handle is NULL — distinguish "pid doesn't exist" from "access denied".
+        # ERROR_INVALID_PARAMETER (87) means no such pid; anything else (e.g.
+        # ERROR_ACCESS_DENIED 5 for a live process in a different token) we
+        # conservatively treat as alive so we don't unlink state while the
+        # real daemon is still running.
+        err = ctypes.windll.kernel32.GetLastError()
+        return err != 87
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
         return False
 
 
@@ -55,13 +104,20 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     import subprocess
 
     e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+    kwargs = {}
+    if IS_WIN:
+        # start_new_session is POSIX-only; on Windows we detach the child
+        # via CREATE_NEW_PROCESS_GROUP so it survives the parent exit.
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
     p = subprocess.Popen(
         ["uv", "run", "daemon.py"],
         cwd=os.path.dirname(os.path.abspath(__file__)),
         env=e,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **kwargs,
     )
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -71,7 +127,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             break
         time.sleep(0.2)
     msg = _log_tail(name)
-    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {_tmp(name, 'log')}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -96,11 +152,9 @@ def restart_daemon(name=None):
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    sock, pid_path = _paths(name)
+    ipc_path, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = _connect(name, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -112,17 +166,22 @@ def restart_daemon(name=None):
         pid = None
     if pid:
         for _ in range(75):
-            try:
-                os.kill(pid, 0)
-                time.sleep(0.2)
-            except ProcessLookupError:
+            if not _pid_alive(pid):
                 break
+            time.sleep(0.2)
         else:
+            # On Windows, SIGTERM maps to TerminateProcess — the daemon's
+            # `finally` (which calls stop_remote() and unlinks PID/PORT)
+            # would not run. Send CTRL_BREAK_EVENT instead; because the
+            # daemon was spawned with CREATE_NEW_PROCESS_GROUP, it's the
+            # leader of its own group and will receive the break as a
+            # KeyboardInterrupt, letting its finally block execute.
+            sig = signal.CTRL_BREAK_EVENT if IS_WIN else signal.SIGTERM
             try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
+                os.kill(pid, sig)
+            except (OSError, ProcessLookupError):
                 pass
-    for f in (sock, pid_path):
+    for f in (ipc_path, pid_path):
         try:
             os.unlink(f)
         except FileNotFoundError:

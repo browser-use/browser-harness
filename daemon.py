@@ -1,5 +1,5 @@
-"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.request
+"""CDP WS holder + IPC relay (Unix domain socket / TCP loopback). One daemon per BU_NAME."""
+import asyncio, json, os, socket, sys, tempfile, time, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -20,10 +20,26 @@ def _load_env():
 
 _load_env()
 
+IS_WIN = sys.platform == "win32"
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+
+
+def _tmp(suffix):
+    # Unix keeps the fixed /tmp/ path so existing users (and macOS AF_UNIX
+    # path-length limits) see zero change. Windows has no /tmp, so we fall
+    # back to the per-user temp dir.
+    if IS_WIN:
+        return os.path.join(tempfile.gettempdir(), f"bu-{NAME}.{suffix}")
+    return f"/tmp/bu-{NAME}.{suffix}"
+
+
+# On Unix we serve on AF_UNIX at SOCK. On Windows AF_UNIX is unavailable,
+# so we bind TCP loopback on an ephemeral port and write it to PORT_FILE;
+# clients read that file to find us.
+SOCK = None if IS_WIN else _tmp("sock")
+PORT_FILE = _tmp("port") if IS_WIN else None
+LOG = _tmp("log")
+PID = _tmp("pid")
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -188,9 +204,6 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
-
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -208,9 +221,26 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    if IS_WIN:
+        # TCP loopback: any local process that guesses the port can connect.
+        # On a single-user dev machine the blast radius is low, but this is
+        # a weaker posture than the Unix AF_UNIX 0600 socket. If upstream
+        # wants stronger isolation we'd add a per-session shared-secret
+        # token here; for now, doc the gap.
+        server = await asyncio.start_server(handler, host="127.0.0.1", port=0)
+        port = server.sockets[0].getsockname()[1]
+        # Atomic write: write to .tmp then os.replace so a concurrent
+        # reader never sees a truncated/empty port file.
+        tmp_port = PORT_FILE + ".tmp"
+        open(tmp_port, "w").write(str(port))
+        os.replace(tmp_port, PORT_FILE)
+        log(f"listening on 127.0.0.1:{port} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    else:
+        if os.path.exists(SOCK):
+            os.unlink(SOCK)
+        server = await asyncio.start_unix_server(handler, path=SOCK)
+        os.chmod(SOCK, 0o600)
+        log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -223,15 +253,21 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        if IS_WIN:
+            port = int(open(PORT_FILE).read().strip())
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.settimeout(1)
+            s.connect(("127.0.0.1", port))
+        else:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
+            s.connect(SOCK)
+        s.close(); return True
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ValueError, OSError):
         return False
 
 
 if __name__ == "__main__":
     if already_running():
-        print(f"daemon already running on {SOCK}", file=sys.stderr)
+        print(f"daemon already running (name={NAME})", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))
@@ -244,5 +280,6 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         stop_remote()
-        try: os.unlink(PID)
-        except FileNotFoundError: pass
+        for f in (PID, PORT_FILE) if IS_WIN else (PID,):
+            try: os.unlink(f)
+            except (FileNotFoundError, TypeError): pass
