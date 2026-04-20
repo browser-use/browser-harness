@@ -60,6 +60,26 @@ REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
+def _metadata_dir():
+    if os.name == "nt":
+        return TMPDIR
+    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg_runtime:
+        return Path(xdg_runtime) / "browser-harness"
+    return Path.home() / ".cache" / "browser-harness"
+
+
+def _ensure_metadata_dir():
+    meta = _metadata_dir()
+    meta.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        try:
+            os.chmod(meta, 0o700)
+        except OSError:
+            pass
+    return meta
+
+
 def _supported_transports():
     if hasattr(socket, "AF_UNIX"):
         return ("unix", "tcp")
@@ -69,11 +89,12 @@ def _supported_transports():
 def _paths(name=None, transport=None):
     transport = transport or CURRENT_TRANSPORT
     n = name or NAME
+    meta = _metadata_dir()
     if transport == "unix":
         base = UNIX_DIR / f"bu-{n}"
-        return str(base) + ".sock", str(base) + ".pid", None, str(base) + ".log"
+        return str(base) + ".sock", str(meta / f"bu-{n}.unix.pid"), None, str(meta / f"bu-{n}.unix.log")
     if transport == "tcp":
-        base = TMPDIR / f"bu-{n}.tcp"
+        base = meta / f"bu-{n}.tcp"
         return None, str(base) + ".pid", str(base) + ".port", str(base) + ".log"
     raise RuntimeError(f"unsupported transport {transport!r}")
 
@@ -249,6 +270,7 @@ class Daemon:
 
 
 async def serve(d):
+    _ensure_metadata_dir()
     if USE_UNIX and SOCK and os.path.exists(SOCK):
         os.unlink(SOCK)
     if not USE_UNIX and PORT and os.path.exists(PORT):
@@ -300,6 +322,7 @@ if __name__ == "__main__":
     if live:
         print(f"daemon already running for BU_NAME {NAME!r} on {', '.join(live)} transport(s)", file=sys.stderr)
         sys.exit(0)
+    _ensure_metadata_dir()
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))
     try:
