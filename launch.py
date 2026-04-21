@@ -2,13 +2,14 @@
 
 Chrome 147+ blocks --remote-debugging-port on the default user data
 directory (see chromium/browser_process_impl.cc kDisabledByDefaultUserDataDir).
-This module provides launch_chrome() which works around the restriction by
-setting CHROME_CONFIG_HOME to a temporary path, making Chrome think the
-real profile directory is "non-default" while keeping all user data intact.
+This module provides launch_chrome() which works around the restriction
+without copying data on Linux (CHROME_CONFIG_HOME), and by creating a
+temp profile copy on macOS/Windows where the env-var trick does not apply.
 """
 
 import os
 import platform
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -32,6 +33,13 @@ _CHROME_NAMES = {
 }
 
 
+_BH_STATE = Path.home() / ".local/share/browser-harness"
+if platform.system() == "Darwin":
+    _BH_STATE = Path.home() / "Library/Application Support/browser-harness"
+elif platform.system() == "Windows":
+    _BH_STATE = Path.home() / "AppData/Local/browser-harness"
+
+
 def _find_chrome():
     """Return the path to the Chrome binary, or None."""
     system = platform.system()
@@ -39,7 +47,6 @@ def _find_chrome():
         p = Path(name)
         if p.is_file():
             return str(p)
-        # Search PATH
         import shutil
         found = shutil.which(name)
         if found:
@@ -53,15 +60,24 @@ def _get_default_user_data_dir():
     return _DEFAULT_UDIR.get(system, Path.home() / ".config/google-chrome")
 
 
+def _copy_profile(src: Path, dst: Path):
+    """Copy a Chrome profile, skipping lock files that prevent multi-instance."""
+    def _ignore_locks(dirpath, names):
+        return {n for n in names if n in (
+            "SingletonLock", "SingletonSocket", "SingletonCookie",
+            "DevToolsActivePort",
+        )}
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, ignore=_ignore_locks, dirs_exist_ok=False)
+
+
 def _is_wayland_session():
     """Detect Wayland by checking loginctl or running processes."""
     try:
-        # Try loginctl with session ID
-        import subprocess
         r = subprocess.run(
             ["loginctl"], capture_output=True, text=True, timeout=3,
         )
-        # Parse session ID from output
         for line in r.stdout.strip().splitlines()[1:]:  # skip header
             parts = line.split()
             if len(parts) >= 1:
@@ -75,7 +91,6 @@ def _is_wayland_session():
     except Exception:
         pass
     try:
-        # Check if gnome-shell is running with wayland
         r = subprocess.run(
             ["pgrep", "-a", "gnome-shell"],
             capture_output=True, text=True, timeout=3,
@@ -84,7 +99,6 @@ def _is_wayland_session():
             return True
     except Exception:
         pass
-    # Check for wayland socket
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000")
     if Path(runtime_dir, "wayland-0").exists():
         return True
@@ -122,8 +136,19 @@ def launch_chrome(
 ):
     """Launch Chrome with remote debugging enabled, bypassing the Allow dialog.
 
-    Works on Chrome 147+ by setting CHROME_CONFIG_HOME to a temp path so the
-    default-user-data-dir check doesn't block remote debugging.
+    Chrome 147+ branded builds block --remote-debugging-port when the
+    default user-data directory is used (chromium/browser_process_impl.cc
+    kDisabledByDefaultUserDataDir).
+
+    Strategy by platform:
+      - Linux: set CHROME_CONFIG_HOME to a persistent fake path. Chrome
+        computes the default dir as $CHROME_CONFIG_HOME/google-chrome; by
+        keeping --user-data-dir on the real profile the paths differ and the
+        check passes. No data copy needed.
+      - macOS / Windows: CHROME_CONFIG_HOME is not honoured, so we create a
+        temporary *copy* of the real profile and point --user-data-dir at the
+        copy. The copy is refreshed on first launch after the real profile
+        changes.
 
     Args:
         port:             Remote debugging port (default 9222).
@@ -139,7 +164,7 @@ def launch_chrome(
             user_data_dir:    Absolute path to the profile used.
             port:             The debugging port.
             ws_url:           WebSocket debugger URL (only if wait=True).
-            chrome_config_home: The temp CHROME_CONFIG_HOME path used.
+            chrome_config_home: The CHROME_CONFIG_HOME path used (Linux only).
 
     Raises:
         RuntimeError: If Chrome not found or DevTools doesn't come up.
@@ -151,28 +176,40 @@ def launch_chrome(
             "BU_CDP_WS to an existing browser's CDP WebSocket URL."
         )
 
-    udir = Path(user_data_dir) if user_data_dir else _get_default_user_data_dir()
-    udir = udir.expanduser().resolve()
-
-    # Create a temp CHROME_CONFIG_HOME so IsUsingDefaultDataDirectory() returns false.
-    # We set CHROME_CONFIG_HOME to /tmp/bu-chrome-config-XXXXX, and Chrome computes
-    # the "default" dir as $CHROME_CONFIG_HOME/google-chrome. Since our --user-data-dir
-    # points to the real ~/.config/google-chrome, the paths differ and the check passes.
     system = platform.system()
-    if system == "Darwin":
-        dir_name = "google-chrome"
-    elif system == "Windows":
-        dir_name = "Google\\Chrome"
-    else:
-        dir_name = "google-chrome"
+    real_udir = Path(user_data_dir) if user_data_dir else _get_default_user_data_dir()
+    real_udir = real_udir.expanduser().resolve()
 
-    # Persistent fake CHROME_CONFIG_HOME so Chrome only asks to "Allow remote
-    # debugging" once.  Chrome computes the default user-data dir from this
-    # path; by pointing --user-data-dir at the real profile the paths differ
-    # and Chrome 147+'s restriction is bypassed.  Keeping the same fake home
-    # across restarts makes the permission sticky.
-    config_home = Path.home() / ".local/share/browser-harness/chrome-config-home"
-    config_home.mkdir(parents=True, exist_ok=True)
+    # ------------------------------------------------------------------
+    # Cross-platform workaround for Chrome 147+ default-profile block.
+    # ------------------------------------------------------------------
+    if system == "Linux":
+        # Linux: CHROME_CONFIG_HOME is honoured by Chrome.
+        config_home = _BH_STATE / "chrome-config-home"
+        config_home.mkdir(parents=True, exist_ok=True)
+        udir = real_udir
+        env_extra = {"CHROME_CONFIG_HOME": str(config_home)}
+    else:
+        # macOS / Windows: CHROME_CONFIG_HOME is ignored.
+        # Create a temp copy so --user-data-dir is "non-default".
+        copy_udir = _BH_STATE / "chrome-profile-copy"
+        # Only re-copy if the real profile is newer than the copy.
+        should_copy = True
+        if copy_udir.exists():
+            real_mtime = max(
+                (p.stat().st_mtime for p in real_udir.rglob("*") if p.is_file()),
+                default=0,
+            )
+            copy_mtime = max(
+                (p.stat().st_mtime for p in copy_udir.rglob("*") if p.is_file()),
+                default=0,
+            )
+            should_copy = real_mtime > copy_mtime
+        if should_copy:
+            _copy_profile(real_udir, copy_udir)
+        udir = copy_udir
+        config_home = None
+        env_extra = {}
 
     cmd = [
         chrome,
@@ -194,7 +231,7 @@ def launch_chrome(
     if extra_args:
         cmd.extend(extra_args)
 
-    env = {**os.environ, "CHROME_CONFIG_HOME": config_home}
+    env = {**os.environ, **env_extra}
 
     proc = subprocess.Popen(
         cmd,
@@ -208,8 +245,9 @@ def launch_chrome(
         "pid": proc.pid,
         "user_data_dir": str(udir),
         "port": port,
-        "chrome_config_home": config_home,
     }
+    if config_home:
+        result["chrome_config_home"] = str(config_home)
 
     if wait:
         import socket as _socket
@@ -225,8 +263,9 @@ def launch_chrome(
                         return result
                 except Exception:
                     pass
-            # Method 2: Probe the port directly (Chrome 147+ may not write DevToolsActivePort
-            # when started with a fixed --remote-debugging-port and CHROME_CONFIG_HOME)
+            # Method 2: Probe the port directly (Chrome 147+ may not write
+            # DevToolsActivePort when started with a fixed
+            # --remote-debugging-port and CHROME_CONFIG_HOME).
             try:
                 s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
                 s.settimeout(1)
@@ -234,9 +273,14 @@ def launch_chrome(
                 s.close()
                 # Port is listening — fetch ws_url from /json/version
                 import urllib.request, json
-                resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=3)
+                resp = urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/json/version", timeout=3
+                )
                 data = json.loads(resp.read())
-                result["ws_url"] = data.get("webSocketDebuggerUrl", f"ws://127.0.0.1:{port}/devtools/browser")
+                result["ws_url"] = data.get(
+                    "webSocketDebuggerUrl",
+                    f"ws://127.0.0.1:{port}/devtools/browser",
+                )
                 return result
             except Exception:
                 pass
@@ -244,7 +288,8 @@ def launch_chrome(
             if proc.poll() is not None:
                 stderr = proc.stderr.read().decode(errors="replace")
                 raise RuntimeError(
-                    f"Chrome exited with code {proc.returncode}. stderr: {stderr[:500]}"
+                    f"Chrome exited with code {proc.returncode}. "
+                    f"stderr: {stderr[:500]}"
                 )
             time.sleep(0.5)
         raise RuntimeError(
