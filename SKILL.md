@@ -126,7 +126,7 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 ## What actually works
 
 - **Screenshots first**: use `screenshot()` to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation.
-- **Clicking**: `screenshot()` → look → `click(x, y)` → `screenshot()` again to verify the result. Coordinate clicks pass through iframes/shadow/cross-origin at the compositor level.
+- **Clicking**: `screenshot()` → read the pixel off the image → `click(x, y)` → `screenshot()` to verify. Suppress the Playwright-habit reflex of "locate first, then click" — no `getBoundingClientRect`, no selector hunt. Drop to DOM only when the target has no visible geometry (hidden input, 0×0 node). Hit-testing happens in Chrome's browser process, so clicks go through iframes / shadow DOM / cross-origin without extra work.
 - **Bulk HTTP**: `http_get(url)` + `ThreadPoolExecutor`. No browser for static pages (249 Netflix pages in 2.8s).
 - **After goto**: `wait_for_load()`.
 - **Wrong/stale tab**: `ensure_real_tab()`. Use it when the current tab is stale or internal; the daemon also auto-recovers from stale sessions on the next call.
