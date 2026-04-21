@@ -15,6 +15,10 @@ dependencies = [
 
 [project.scripts]
 browser-harness = "run:main"
+browser-harness-smoke = "harness_smoke:main"
+browser-harness-rollout-audit = "rollout_audit:main"
+browser-site-audit = "public_site_audit:main"
+browser-observatory-run = "run_browser_observatory:main"
 
 [tool.setuptools]
-py-modules = ["run", "helpers", "daemon", "admin"]
+py-modules = ["run", "helpers", "daemon", "admin", "harness_smoke", "rollout_audit", "public_site_audit", "run_browser_observatory"]
