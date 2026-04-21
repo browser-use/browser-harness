@@ -1,9 +1,11 @@
-"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
+"""CDP WS holder + local IPC relay. One daemon per BU_NAME."""
 import asyncio, json, os, socket, sys, time, urllib.request
 from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+
+import ipc
 
 
 def _load_env():
@@ -21,9 +23,10 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+_P = ipc.paths(NAME)
+SOCK = _P["sock"]
+LOG = _P["log"]
+PID = _P["pid"]
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -58,9 +61,26 @@ def log(msg):
     open(LOG, "a").write(f"{msg}\n")
 
 
+def _ws_from_http(http_url):
+    """Resolve browser webSocketDebuggerUrl from a CDP HTTP endpoint (e.g. http://127.0.0.1:9222)."""
+    info = json.loads(urllib.request.urlopen(f"{http_url.rstrip('/')}/json/version", timeout=5).read())
+    return info["webSocketDebuggerUrl"]
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
+    if http_url := os.environ.get("BU_CDP_HTTP"):
+        # Poll briefly: Chrome may be starting up.
+        deadline = time.time() + 30
+        last_err = None
+        while time.time() < deadline:
+            try:
+                return _ws_from_http(http_url)
+            except Exception as e:
+                last_err = e
+                time.sleep(1)
+        raise RuntimeError(f"BU_CDP_HTTP set to {http_url} but no CDP endpoint came up: {last_err}")
     for base in PROFILES:
         try:
             port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
@@ -192,9 +212,6 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
-
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -212,11 +229,13 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
-    async with server:
-        await d.stop.wait()
+    server, endpoint, _cleanup = await ipc.start_server(handler, NAME)
+    log(f"listening on {endpoint} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    try:
+        async with server:
+            await d.stop.wait()
+    finally:
+        _cleanup()
 
 
 async def main():
@@ -227,9 +246,8 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        s = ipc.client_socket(NAME, timeout=1); s.close(); return True
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
 
 

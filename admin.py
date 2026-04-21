@@ -5,6 +5,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import ipc
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -25,12 +27,12 @@ BU_API = "https://api.browser-use.com/api/v3"
 
 
 def _paths(name):
-    n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
+    p = ipc.paths(name or NAME)
+    return p["sock"], p["pid"]
 
 
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
+    p = ipc.paths(name or NAME)["log"]
     try:
         return Path(p).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
@@ -39,12 +41,10 @@ def _log_tail(name):
 
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
+        s = ipc.client_socket(name or NAME, timeout=1)
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
 
 
@@ -55,13 +55,20 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     import subprocess
 
     e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+    popen_kwargs = {}
+    if ipc.IS_WINDOWS:
+        popen_kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
     p = subprocess.Popen(
         ["uv", "run", "daemon.py"],
         cwd=os.path.dirname(os.path.abspath(__file__)),
         env=e,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **popen_kwargs,
     )
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -71,7 +78,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             break
         time.sleep(0.2)
     msg = _log_tail(name)
-    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.paths(name or NAME)['log']}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -96,18 +103,16 @@ def restart_daemon(name=None):
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    sock, pid_path = _paths(name)
+    p = ipc.paths(name or NAME)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = ipc.client_socket(name or NAME, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
     except Exception:
         pass
     try:
-        pid = int(open(pid_path).read())
+        pid = int(open(p["pid"]).read())
     except (FileNotFoundError, ValueError):
         pid = None
     if pid:
@@ -115,14 +120,15 @@ def restart_daemon(name=None):
             try:
                 os.kill(pid, 0)
                 time.sleep(0.2)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 break
         else:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-    for f in (sock, pid_path):
+            if not ipc.IS_WINDOWS:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+    for f in (p["sock"], p["pid"], p["port"]):
         try:
             os.unlink(f)
         except FileNotFoundError:
