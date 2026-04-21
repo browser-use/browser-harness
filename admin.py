@@ -44,6 +44,14 @@ def _paths(name):
     return _tmp(name, "port" if IS_WIN else "sock"), _tmp(name, "pid")
 
 
+def _token(name):
+    # Windows TCP loopback IPC requires a shared-secret token on every
+    # request. Missing/unreadable token => we can't talk to the daemon.
+    if not IS_WIN:
+        return None
+    return open(_tmp(name, "token")).read().strip()
+
+
 def _log_tail(name):
     try:
         return Path(_tmp(name, "log")).read_text().strip().splitlines()[-1]
@@ -65,10 +73,24 @@ def _connect(name, timeout=1):
 
 
 def daemon_alive(name=None):
+    # On Windows a stale PORT_FILE can point at a port reused by an
+    # unrelated process that happily accepts TCP connects. Send an
+    # authenticated ping and require the token-checked {"ok":true}
+    # reply before calling the daemon alive.
     try:
-        _connect(name, timeout=1).close()
+        s = _connect(name, timeout=1)
+        if IS_WIN:
+            s.sendall((json.dumps({"meta": "ping", "token": _token(name)}) + "\n").encode())
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = s.recv(4096)
+                if not chunk: break
+                data += chunk
+            s.close()
+            return bool(data) and json.loads(data).get("ok") is True
+        s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ValueError, OSError):
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ValueError, OSError, json.JSONDecodeError):
         return False
 
 
@@ -153,9 +175,16 @@ def restart_daemon(name=None):
     import signal
 
     ipc_path, pid_path = _paths(name)
+    token_path = _tmp(name, "token") if IS_WIN else None
     try:
         s = _connect(name, timeout=5)
-        s.sendall(b'{"meta":"shutdown"}\n')
+        shutdown_req = {"meta": "shutdown"}
+        if IS_WIN:
+            try:
+                shutdown_req["token"] = _token(name)
+            except (FileNotFoundError, OSError):
+                pass
+        s.sendall((json.dumps(shutdown_req) + "\n").encode())
         s.recv(1024)
         s.close()
     except Exception:
@@ -181,11 +210,21 @@ def restart_daemon(name=None):
                 os.kill(pid, sig)
             except (OSError, ProcessLookupError):
                 pass
-    for f in (ipc_path, pid_path):
-        try:
-            os.unlink(f)
-        except FileNotFoundError:
-            pass
+            # Give the daemon a second chance to exit after the signal;
+            # its finally block will unlink its own state files.
+            for _ in range(75):
+                if not _pid_alive(pid):
+                    break
+                time.sleep(0.2)
+    # Only unlink state files when no live daemon still holds them. If we
+    # couldn't confirm the pid is gone, leave the files so ensure_daemon()
+    # won't race and spawn a duplicate alongside a still-running daemon.
+    if pid is None or not _pid_alive(pid):
+        for f in (ipc_path, pid_path) + ((token_path,) if IS_WIN else ()):
+            try:
+                os.unlink(f)
+            except (FileNotFoundError, TypeError):
+                pass
 
 
 def _browser_use(path, method, body=None):

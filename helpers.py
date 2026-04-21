@@ -36,7 +36,16 @@ def _tmp(name, suffix):
 # bu-{NAME}.port; clients read that file to find the daemon.
 SOCK = None if IS_WIN else _tmp(NAME, "sock")
 PORT_FILE = _tmp(NAME, "port") if IS_WIN else None
+TOKEN_FILE = _tmp(NAME, "token") if IS_WIN else None
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+
+
+def _token():
+    # Windows TCP loopback IPC requires a shared-secret token on every
+    # request. Unix AF_UNIX is already gated by filesystem perms.
+    if not IS_WIN:
+        return None
+    return open(TOKEN_FILE).read().strip()
 
 
 def _connect(timeout=None):
@@ -53,6 +62,8 @@ def _connect(timeout=None):
 
 
 def _send(req):
+    if IS_WIN:
+        req = {**req, "token": _token()}
     s = _connect()
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
@@ -128,7 +139,9 @@ def scroll(x, y, dy=-300, dx=0):
 # --- visual ---
 def screenshot(path=None, full=False):
     if path is None:
-        path = os.path.join(tempfile.gettempdir(), "shot.png")
+        # Keep the historical /tmp/shot.png default on Unix so existing callers
+        # don't regress; Windows has no /tmp, so fall back to the temp dir.
+        path = os.path.join(tempfile.gettempdir(), "shot.png") if IS_WIN else "/tmp/shot.png"
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
     open(path, "wb").write(base64.b64decode(r["data"]))
     return path

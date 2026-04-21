@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix domain socket / TCP loopback). One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, tempfile, time, urllib.request
+import asyncio, json, os, secrets, socket, sys, tempfile, time, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -38,6 +38,12 @@ def _tmp(suffix):
 # clients read that file to find us.
 SOCK = None if IS_WIN else _tmp("sock")
 PORT_FILE = _tmp("port") if IS_WIN else None
+# On Windows the IPC channel is TCP loopback, which any local process can
+# dial. A shared-secret token, written to a file the daemon owns and read by
+# legitimate clients, gates every request so unrelated local processes can't
+# issue CDP / shutdown commands. Unix gets this for free via AF_UNIX 0600.
+TOKEN_FILE = _tmp("token") if IS_WIN else None
+TOKEN = secrets.token_hex(16) if IS_WIN else None
 LOG = _tmp("log")
 PID = _tmp("pid")
 BUF = 500
@@ -172,7 +178,13 @@ class Daemon:
         self.cdp._event_registry.handle_event = tap
 
     async def handle(self, req):
+        # On Windows the TCP loopback has no kernel-level caller auth, so
+        # every request must carry the shared-secret token. Use a constant-
+        # time compare so a local attacker can't time-probe the token.
+        if IS_WIN and not secrets.compare_digest(str(req.get("token", "")), TOKEN):
+            return {"error": "unauthorized"}
         meta = req.get("meta")
+        if meta == "ping":        return {"ok": True}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
@@ -222,15 +234,19 @@ async def serve(d):
             writer.close()
 
     if IS_WIN:
-        # TCP loopback: any local process that guesses the port can connect.
-        # On a single-user dev machine the blast radius is low, but this is
-        # a weaker posture than the Unix AF_UNIX 0600 socket. If upstream
-        # wants stronger isolation we'd add a per-session shared-secret
-        # token here; for now, doc the gap.
+        # TCP loopback with a shared-secret token (TOKEN_FILE) gating every
+        # request. Without the token an unrelated local process that dials
+        # the port is rejected with {"error":"unauthorized"}. Unix gets
+        # caller isolation from AF_UNIX 0600 and does not need a token.
         server = await asyncio.start_server(handler, host="127.0.0.1", port=0)
         port = server.sockets[0].getsockname()[1]
-        # Atomic write: write to .tmp then os.replace so a concurrent
-        # reader never sees a truncated/empty port file.
+        # Atomic writes (write tmp + os.replace) so concurrent readers never
+        # see a truncated file. Write TOKEN_FILE before PORT_FILE: a client
+        # discovers the daemon via PORT_FILE, so the token must already be
+        # on disk by the time anyone can find us.
+        tmp_tok = TOKEN_FILE + ".tmp"
+        open(tmp_tok, "w").write(TOKEN)
+        os.replace(tmp_tok, TOKEN_FILE)
         tmp_port = PORT_FILE + ".tmp"
         open(tmp_port, "w").write(str(port))
         os.replace(tmp_port, PORT_FILE)
@@ -252,16 +268,29 @@ async def main():
 
 
 def already_running():
+    # On Windows a bare TCP connect isn't proof the port belongs to our
+    # daemon — a reused ephemeral port on a stale PORT_FILE would answer
+    # too, and we'd silently skip starting. Send an authenticated ping and
+    # only treat the daemon as running if it replies with our token.
     try:
         if IS_WIN:
             port = int(open(PORT_FILE).read().strip())
+            token = open(TOKEN_FILE).read().strip()
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.settimeout(1)
             s.connect(("127.0.0.1", port))
+            s.sendall((json.dumps({"meta": "ping", "token": token}) + "\n").encode())
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = s.recv(4096)
+                if not chunk: break
+                data += chunk
+            s.close()
+            return bool(data) and json.loads(data).get("ok") is True
         else:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
             s.connect(SOCK)
-        s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ValueError, OSError):
+            s.close(); return True
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ValueError, OSError, json.JSONDecodeError):
         return False
 
 
@@ -280,6 +309,6 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         stop_remote()
-        for f in (PID, PORT_FILE) if IS_WIN else (PID,):
+        for f in (PID, PORT_FILE, TOKEN_FILE) if IS_WIN else (PID,):
             try: os.unlink(f)
             except (FileNotFoundError, TypeError): pass
