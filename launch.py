@@ -73,32 +73,37 @@ def _copy_profile(src: Path, dst: Path):
 
 
 def _is_wayland_session():
-    """Detect Wayland by checking loginctl or running processes."""
+    """Detect Wayland by checking the current session only."""
+    # 1. Check env vars first (fastest, most reliable).
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+        return True
+
+    # 2. Check the current logind session (not all sessions).
     try:
-        r = subprocess.run(
-            ["loginctl"], capture_output=True, text=True, timeout=3,
-        )
-        for line in r.stdout.strip().splitlines()[1:]:  # skip header
-            parts = line.split()
-            if len(parts) >= 1:
-                sid = parts[0]
-                r2 = subprocess.run(
-                    ["loginctl", "show-session", sid, "-p", "Type"],
-                    capture_output=True, text=True, timeout=3,
-                )
-                if "wayland" in r2.stdout.lower():
-                    return True
+        sid = os.environ.get("XDG_SESSION_ID")
+        if not sid:
+            # Fallback: ask loginctl for the current session
+            r = subprocess.run(
+                ["loginctl", "show-user", os.getlogin(), "-p", "Sessions"],
+                capture_output=True, text=True, timeout=3,
+            )
+            for line in r.stdout.strip().splitlines():
+                if line.startswith("Sessions="):
+                    sid = line.split("=", 1)[1].strip()
+                    break
+        if sid:
+            r2 = subprocess.run(
+                ["loginctl", "show-session", sid, "-p", "Type"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if "wayland" in r2.stdout.lower():
+                return True
     except Exception:
         pass
-    try:
-        r = subprocess.run(
-            ["pgrep", "-a", "gnome-shell"],
-            capture_output=True, text=True, timeout=3,
-        )
-        if "wayland" in r.stdout.lower():
-            return True
-    except Exception:
-        pass
+
+    # 3. Check for a Wayland socket as last resort.
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000")
     if Path(runtime_dir, "wayland-0").exists():
         return True
@@ -233,11 +238,15 @@ def launch_chrome(
 
     env = {**os.environ, **env_extra}
 
+    # Redirect stderr to a temp file so the pipe buffer can't block Chrome.
+    stderr_path = _BH_STATE / f"chrome-{port}.stderr.log"
+    stderr_fh = open(stderr_path, "wb")
+
     proc = subprocess.Popen(
         cmd,
         env=env,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=stderr_fh,
         start_new_session=True,
     )
 
@@ -286,10 +295,14 @@ def launch_chrome(
                 pass
             # Check if Chrome exited
             if proc.poll() is not None:
-                stderr = proc.stderr.read().decode(errors="replace")
+                stderr_fh.close()
+                try:
+                    stderr = stderr_path.read_text(errors="replace")[:500]
+                except Exception:
+                    stderr = "<unable to read stderr log>"
                 raise RuntimeError(
                     f"Chrome exited with code {proc.returncode}. "
-                    f"stderr: {stderr[:500]}"
+                    f"stderr: {stderr}"
                 )
             time.sleep(0.5)
         raise RuntimeError(

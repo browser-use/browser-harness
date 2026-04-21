@@ -43,9 +43,11 @@ def _chrome_is_running():
     """Return True if any Chrome/Chromium main process is alive."""
     for name in ("chrome", "chromium", "chromium-browser"):
         try:
-            subprocess.run(["pgrep", "-x", name], check=True, capture_output=True)
+            subprocess.run(
+                ["pgrep", "-x", name], check=True, capture_output=True
+            )
             return True
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, FileNotFoundError):
             pass
     return False
 

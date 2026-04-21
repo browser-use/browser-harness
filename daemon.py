@@ -75,9 +75,18 @@ def _probe_cdp_port(port=9222, timeout=30):
             time.sleep(1)
         finally:
             probe.close()
-    resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=5)
-    data = json.loads(resp.read())
-    return data.get("webSocketDebuggerUrl", f"ws://127.0.0.1:{port}/devtools/browser")
+    try:
+        resp = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/json/version", timeout=5
+        )
+        data = json.loads(resp.read())
+        return data.get(
+            "webSocketDebuggerUrl", f"ws://127.0.0.1:{port}/devtools/browser"
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Found CDP port {port} open, but failed to fetch /json/version: {exc}"
+        )
 
 
 def get_ws_url():
