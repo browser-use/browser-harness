@@ -37,7 +37,8 @@ def main():
             "  PY"
         )
     ensure_daemon()
-    exec(sys.stdin.read())
+    ns = globals()
+    exec(sys.stdin.read(), ns, ns)
 
 
 if __name__ == "__main__":

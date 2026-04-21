@@ -1,6 +1,10 @@
 import json
 import os
 import socket
+import hashlib
+import shutil
+import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -22,15 +26,44 @@ _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
+IS_WINDOWS = os.name == "nt" or not hasattr(socket, "AF_UNIX")
+RUNTIME_DIR = Path(os.environ.get("BU_RUNTIME_DIR") or tempfile.gettempdir()) / "browser-harness"
+if IS_WINDOWS:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _port_for_name(name):
+    digest = hashlib.sha256((name or NAME).encode()).digest()
+    return 37000 + int.from_bytes(digest[:2], "big") % 20000
 
 
 def _paths(name):
     n = name or NAME
+    if IS_WINDOWS:
+        return f"127.0.0.1:{_port_for_name(n)}", str(RUNTIME_DIR / f"bu-{n}.pid")
     return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
 
 
+def _log_path(name):
+    if IS_WINDOWS:
+        return str(RUNTIME_DIR / f"bu-{name or NAME}.log")
+    return f"/tmp/bu-{name or NAME}.log"
+
+
+def _client_socket(name=None):
+    sock, _ = _paths(name)
+    if IS_WINDOWS:
+        host, port = sock.rsplit(":", 1)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((host, int(port)))
+        return s
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(sock)
+    return s
+
+
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
+    p = _log_path(name)
     try:
         return Path(p).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
@@ -39,12 +72,11 @@ def _log_tail(name):
 
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s = _client_socket(name)
         s.settimeout(1)
-        s.connect(_paths(name)[0])
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, OSError, socket.timeout):
         return False
 
 
@@ -55,8 +87,10 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     import subprocess
 
     e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+    uv = shutil.which("uv")
+    daemon_cmd = [uv, "run", "daemon.py"] if uv else [sys.executable, "daemon.py"]
     p = subprocess.Popen(
-        ["uv", "run", "daemon.py"],
+        daemon_cmd,
         cwd=os.path.dirname(os.path.abspath(__file__)),
         env=e,
         stdout=subprocess.DEVNULL,
@@ -71,7 +105,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             break
         time.sleep(0.2)
     msg = _log_tail(name)
-    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {_log_path(name)}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -98,9 +132,8 @@ def restart_daemon(name=None):
 
     sock, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s = _client_socket(name)
         s.settimeout(5)
-        s.connect(sock)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -111,18 +144,26 @@ def restart_daemon(name=None):
     except (FileNotFoundError, ValueError):
         pid = None
     if pid:
-        for _ in range(75):
-            try:
-                os.kill(pid, 0)
-                time.sleep(0.2)
-            except ProcessLookupError:
-                break
-        else:
+        if IS_WINDOWS:
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+        else:
+            for _ in range(75):
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.2)
+                except ProcessLookupError:
+                    break
+            else:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
     for f in (sock, pid_path):
+        if IS_WINDOWS and str(f).startswith("127.0.0.1:"):
+            continue
         try:
             os.unlink(f)
         except FileNotFoundError:
