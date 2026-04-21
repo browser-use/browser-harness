@@ -51,7 +51,7 @@ Even with `--user-data-dir` pointing to the real profile, Chrome 147 still shows
 
 **Root cause** (from `chromium/browser_process_impl.cc`): In Google Chrome branded builds, `IsRemoteDebuggingAllowed()` checks `IsUsingDefaultDataDirectory()` and returns `kDisabledByDefaultUserDataDir` when the paths match. This is hardcoded for `GOOGLE_CHROME_BRANDING` — Chromium builds skip this check.
 
-**The fix** — use `launch_chrome()` from `admin.py`, which sets `CHROME_CONFIG_HOME` to a temporary path. This makes Chrome think the real profile directory is "non-default" while keeping all user data (bookmarks, extensions, cookies) intact:
+**The fix** — use `launch_chrome()` from `admin.py`, which sets `CHROME_CONFIG_HOME` to a persistent fake path. This makes Chrome think the real profile directory is "non-default" while keeping all user data (bookmarks, extensions, cookies) intact:
 
 ```python
 from admin import launch_chrome, ensure_daemon
@@ -74,7 +74,7 @@ print(f"DevTools: {info['ws_url']}")
 PY
 ```
 
-**How it works**: Chrome computes the "default" user data dir as `$CHROME_CONFIG_HOME/google-chrome` (Linux) or equivalent. By setting `CHROME_CONFIG_HOME=/tmp/bu-chrome-config-XXXXX`, the default path becomes `/tmp/bu-chrome-config-XXXXX/google-chrome` while `--user-data-dir` still points to `~/.config/google-chrome`. The paths differ → `IsUsingDefaultDataDirectory()` returns false → remote debugging is allowed.
+**How it works**: Chrome computes the "default" user data dir as `$CHROME_CONFIG_HOME/google-chrome` (Linux) or equivalent. By setting `CHROME_CONFIG_HOME` to a persistent path under `~/.local/share/browser-harness/`, the default path becomes something like `~/.local/share/browser-harness/chrome-config-home/google-chrome` while `--user-data-dir` still points to `~/.config/google-chrome`. The paths differ → `IsUsingDefaultDataDirectory()` returns false → remote debugging is allowed.
 
 **Limitations**: This shares the real Chrome profile. If Chrome is already running without remote debugging, you need to close it first (Chrome's single-instance lock prevents two processes from using the same profile).
 

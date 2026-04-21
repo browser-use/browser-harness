@@ -17,7 +17,7 @@ from admin import (
     sync_local_profile,
 )
 from helpers import *
-from launch import _get_default_user_data_dir
+from launch import get_default_user_data_dir
 
 HELP = """Browser Harness
 
@@ -54,7 +54,7 @@ def _chrome_is_running():
 
 def _chrome_has_cdp():
     """Return True if DevToolsActivePort exists in the default profile."""
-    return (_get_default_user_data_dir() / "DevToolsActivePort").exists()
+    return (get_default_user_data_dir() / "DevToolsActivePort").exists()
 
 
 def main():

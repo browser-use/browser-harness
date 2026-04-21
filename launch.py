@@ -54,7 +54,7 @@ def _find_chrome():
     return None
 
 
-def _get_default_user_data_dir():
+def get_default_user_data_dir():
     """Return the platform-specific default Chrome user data directory."""
     system = platform.system()
     return _DEFAULT_UDIR.get(system, Path.home() / ".config/google-chrome")
@@ -84,16 +84,32 @@ def _is_wayland_session():
     try:
         sid = os.environ.get("XDG_SESSION_ID")
         if not sid:
-            # Fallback: ask loginctl for the current session
+            # Fallback: ask loginctl for the current user's sessions.
+            # loginctl may report multiple active session IDs.
+            login_name = None
+            try:
+                login_name = os.getlogin()
+            except OSError:
+                import pwd
+                login_name = pwd.getpwuid(os.getuid()).pw_name
             r = subprocess.run(
-                ["loginctl", "show-user", os.getlogin(), "-p", "Sessions"],
+                ["loginctl", "show-user", login_name, "-p", "Sessions"],
                 capture_output=True, text=True, timeout=3,
             )
             for line in r.stdout.strip().splitlines():
                 if line.startswith("Sessions="):
-                    sid = line.split("=", 1)[1].strip()
+                    # Sessions= may contain multiple space-separated IDs.
+                    for candidate in line.split("=", 1)[1].strip().split():
+                        if not candidate:
+                            continue
+                        r2 = subprocess.run(
+                            ["loginctl", "show-session", candidate, "-p", "Type"],
+                            capture_output=True, text=True, timeout=3,
+                        )
+                        if "wayland" in r2.stdout.lower():
+                            return True
                     break
-        if sid:
+        else:
             r2 = subprocess.run(
                 ["loginctl", "show-session", sid, "-p", "Type"],
                 capture_output=True, text=True, timeout=3,
@@ -182,7 +198,7 @@ def launch_chrome(
         )
 
     system = platform.system()
-    real_udir = Path(user_data_dir) if user_data_dir else _get_default_user_data_dir()
+    real_udir = Path(user_data_dir) if user_data_dir else get_default_user_data_dir()
     real_udir = real_udir.expanduser().resolve()
 
     # ------------------------------------------------------------------
@@ -211,7 +227,12 @@ def launch_chrome(
             )
             should_copy = real_mtime > copy_mtime
         if should_copy:
-            _copy_profile(real_udir, copy_udir)
+            if real_udir.exists():
+                _copy_profile(real_udir, copy_udir)
+            else:
+                # First run: Chrome hasn't created the default profile yet.
+                # Create an empty copy dir so Chrome can populate it.
+                copy_udir.mkdir(parents=True, exist_ok=True)
         udir = copy_udir
         config_home = None
         env_extra = {}
@@ -226,7 +247,7 @@ def launch_chrome(
     if system == "Linux":
         wayland = (
             os.environ.get("WAYLAND_DISPLAY")
-            or os.environ.get("XDG_SESSION_TYPE") == "wayland"
+            or os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
             or _is_wayland_session()
         )
         if wayland:
@@ -241,14 +262,16 @@ def launch_chrome(
     # Redirect stderr to a temp file so the pipe buffer can't block Chrome.
     stderr_path = _BH_STATE / f"chrome-{port}.stderr.log"
     stderr_fh = open(stderr_path, "wb")
-
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=stderr_fh,
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_fh,
+            start_new_session=True,
+        )
+    finally:
+        stderr_fh.close()
 
     result = {
         "pid": proc.pid,
