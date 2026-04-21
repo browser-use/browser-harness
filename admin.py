@@ -87,7 +87,10 @@ def daemon_alive(name=None):
                 if not chunk: break
                 data += chunk
             s.close()
-            return bool(data) and json.loads(data).get("ok") is True
+            if not data:
+                return False
+            resp = json.loads(data)
+            return isinstance(resp, dict) and resp.get("ok") is True
         s.close()
         return True
     except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ValueError, OSError, json.JSONDecodeError):
