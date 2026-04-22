@@ -38,9 +38,19 @@ def _send(req):
     return r
 
 
-def cdp(method, session_id=None, **params):
-    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
-    return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
+def cdp(method, session_id=None, target_id=None, **params):
+    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1).
+
+    target_id routes the call to a specific tab's cached session (auto-attaches if needed).
+    session_id is legacy and still works — explicit session wins over target_id.
+    Neither set → uses the daemon's current tab.
+    """
+    return _send({
+        "method": method,
+        "params": params,
+        "session_id": session_id,
+        "target_id": target_id,
+    }).get("result", {})
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
@@ -115,7 +125,10 @@ def list_tabs(include_chrome=True):
     return out
 
 def current_tab():
-    t = cdp("Target.getTargetInfo").get("targetInfo", {})
+    tid = _send({"meta": "current_target"}).get("target_id")
+    if not tid:
+        return {"targetId": None, "url": "", "title": ""}
+    t = cdp("Target.getTargetInfo", targetId=tid).get("targetInfo", {})
     return {"targetId": t.get("targetId"), "url": t.get("url", ""), "title": t.get("title", "")}
 
 def _mark_tab():
@@ -124,14 +137,13 @@ def _mark_tab():
     except Exception: pass
 
 def switch_tab(target_id):
-    # Unmark old tab
+    # Unmark the current (about-to-be-old) tab.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F7E2 '))document.title=document.title.slice(2)")
     except Exception: pass
     cdp("Target.activateTarget", targetId=target_id)
-    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid})
-    _mark_tab()
-    return sid
+    # Daemon owns the attach + session caching now.
+    r = _send({"meta": "set_target", "target_id": target_id})
+    return r.get("session_id")
 
 def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
@@ -178,9 +190,11 @@ def wait_for_load(timeout=15.0):
     return False
 
 def js(expression, target_id=None):
-    """Run JS in the attached tab (default) or inside an iframe target (via iframe_target())."""
-    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
-    r = cdp("Runtime.evaluate", session_id=sid, expression=expression, returnByValue=True, awaitPromise=True)
+    """Run JS in the attached tab (default) or inside a specific target (iframe, other page).
+
+    target_id is scoped to this call only — it does not change the daemon's current tab.
+    """
+    r = cdp("Runtime.evaluate", target_id=target_id, expression=expression, returnByValue=True, awaitPromise=True)
     return r.get("result", {}).get("value")
 
 

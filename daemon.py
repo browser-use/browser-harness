@@ -101,50 +101,75 @@ def stop_remote():
 
 
 def is_real_page(t):
-    return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
+    # "page" is a rendered frame; "tab" (M128+) is the slot container and must NOT be attached to.
+    # "prerender" page subtypes swap in/out and make sessions point at formerly-prerendered pages.
+    return (t["type"] == "page"
+            and t.get("subtype") != "prerender"
+            and not t.get("url", "").startswith(INTERNAL))
 
 
 class Daemon:
     def __init__(self):
         self.cdp = None
-        self.session = None
+        self.sessions = {}       # targetId -> sessionId
+        self.current_tid = None  # targetId of the "default" attached tab
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
-    async def attach_first_page(self):
-        """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
-        targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-        pages = [t for t in targets if is_real_page(t)]
-        if not pages:
-            # No real pages — create one instead of attaching to omnibox popup
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
-            log(f"no real pages found, created about:blank ({tid})")
-            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
-        self.session = (await self.cdp.send_raw(
-            "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
+    async def _attach(self, target_id):
+        """Attach if not already; return sessionId. One session per target, cached."""
+        if target_id in self.sessions:
+            return self.sessions[target_id]
+        sid = (await self.cdp.send_raw(
+            "Target.attachToTarget", {"targetId": target_id, "flatten": True}
         ))["sessionId"]
-        log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
+        self.sessions[target_id] = sid
         for d in ("Page", "DOM", "Runtime", "Network"):
             try:
                 await asyncio.wait_for(
-                    self.cdp.send_raw(f"{d}.enable", session_id=self.session),
+                    self.cdp.send_raw(f"{d}.enable", session_id=sid),
                     timeout=5
                 )
             except Exception as e:
-                log(f"enable {d}: {e}")
-        return pages[0]
+                log(f"enable {d} on {target_id}: {e}")
+        return sid
+
+    async def _pick_real_page(self):
+        """Find a real page target. Returns (targetId, url). Creates about:blank if none."""
+        targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        pages = [t for t in targets if is_real_page(t)]
+        if pages:
+            return pages[0]["targetId"], pages[0].get("url", "")
+        tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+        log(f"no real pages found, created about:blank ({tid})")
+        return tid, "about:blank"
 
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
         log(f"connecting to {url}")
-        self.cdp = CDPClient(url)
-        try:
-            await self.cdp.start()
-        except Exception as e:
-            raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
-        await self.attach_first_page()
+        # Retry WS handshake up to 30s: Chrome shows a per-connection "Allow DevTools"
+        # dialog on each new debugger attach, and the user needs time to click it.
+        deadline = time.time() + 30
+        last_err = None
+        while time.time() < deadline:
+            self.cdp = CDPClient(url)
+            try:
+                await self.cdp.start()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                log(f"WS handshake attempt failed, retrying: {e}")
+                await asyncio.sleep(2)
+        if last_err is not None:
+            raise RuntimeError(f"CDP WS handshake failed after 30s: {last_err} -- click Allow in Chrome if prompted, then retry")
+        tid, page_url = await self._pick_real_page()
+        sid = await self._attach(tid)
+        self.current_tid = tid
+        log(f"attached {tid} ({page_url[:80]}) session={sid}")
+
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
         async def tap(method, params, session_id=None):
@@ -153,9 +178,23 @@ class Daemon:
                 self.dialog = params
             elif method == "Page.javascriptDialogClosed":
                 self.dialog = None
+            elif method == "Target.detachedFromTarget":
+                gone = params.get("targetId")
+                if gone:
+                    self.sessions.pop(gone, None)
+                    log(f"detached from {gone}")
+            elif method == "Target.targetDestroyed":
+                gone = params.get("targetId")
+                if gone:
+                    self.sessions.pop(gone, None)
+                    if self.current_tid == gone:
+                        log(f"current target {gone} destroyed; current_tid cleared")
+                        self.current_tid = None
             elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-                try: await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)
-                except Exception: pass
+                # Mark whichever session fired, not a hard-coded "current".
+                if session_id and session_id in self.sessions.values():
+                    try: await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=session_id), timeout=2)
+                    except Exception: pass
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
@@ -164,30 +203,70 @@ class Daemon:
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
-        if meta == "session":     return {"session_id": self.session}
-        if meta == "set_session":
-            self.session = req.get("session_id")
+        if meta == "current_target":
+            return {"target_id": self.current_tid}
+        if meta == "set_target":
+            tid = req.get("target_id")
+            if not tid:
+                return {"error": "set_target requires target_id"}
             try:
-                await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=self.session), timeout=3)
-                await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=self.session), timeout=2)
+                sid = await self._attach(tid)
+            except Exception as e:
+                return {"error": f"attach {tid} failed: {e}"}
+            self.current_tid = tid
+            try: await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=sid), timeout=2)
             except Exception: pass
-            return {"session_id": self.session}
+            return {"target_id": tid, "session_id": sid}
+        # Back-compat: legacy session/set_session route through the map.
+        if meta == "session":
+            sid = self.sessions.get(self.current_tid) if self.current_tid else None
+            return {"session_id": sid}
+        if meta == "set_session":
+            sid = req.get("session_id")
+            tid = next((t for t, s in self.sessions.items() if s == sid), None)
+            if not tid:
+                return {"error": "unknown session_id — use set_target with a target_id instead"}
+            self.current_tid = tid
+            return {"session_id": sid}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
 
         method = req["method"]
         params = req.get("params") or {}
-        # Browser-level Target.* calls must not use a session (stale or otherwise).
-        # For everything else, explicit session in req wins; else default.
-        sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        needs_session = not method.startswith("Target.")
+
+        def is_stale(msg):
+            return ("Session with given id not found" in msg
+                    or "No target with given id found" in msg)
+
+        async def attempt():
+            sid = None
+            if needs_session:
+                if req.get("session_id"):
+                    sid = req["session_id"]
+                else:
+                    tid = req.get("target_id") or self.current_tid
+                    if not tid:
+                        tid, _ = await self._pick_real_page()
+                        self.current_tid = tid
+                    sid = await self._attach(tid)
+            return await self.cdp.send_raw(method, params, session_id=sid)
+
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            return {"result": await attempt()}
         except Exception as e:
             msg = str(e)
-            if "Session with given id not found" in msg and sid == self.session and sid:
-                log(f"stale session {sid}, re-attaching")
-                if await self.attach_first_page():
-                    return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
+            if needs_session and is_stale(msg):
+                # Target or session vanished — drop caches and retry once with a fresh page.
+                log(f"stale target/session ({msg}), re-picking")
+                if self.current_tid:
+                    self.sessions.pop(self.current_tid, None)
+                self.current_tid = None
+                await asyncio.sleep(0.3)  # let Target.getTargets catch up after close
+                try:
+                    return {"result": await attempt()}
+                except Exception as e2:
+                    return {"error": str(e2)}
             return {"error": msg}
 
 
