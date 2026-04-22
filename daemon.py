@@ -1,9 +1,13 @@
-"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
+"""CDP WS holder + local socket relay. One daemon per BU_NAME.
+
+IPC is AF_UNIX on Unix, TCP loopback on Windows (see ipc.py)."""
 import asyncio, json, os, socket, sys, time, urllib.request
 from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+
+import ipc
 
 
 def _load_env():
@@ -21,9 +25,8 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+LOG = ipc.log_path(NAME)
+PID = ipc.pid_path(NAME)
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -160,7 +163,18 @@ class Daemon:
         self.cdp._event_registry.handle_event = tap
 
     async def handle(self, req):
+        # On Windows, gate every request on a per-daemon token the client
+        # must have read from %TEMP%\bu-<NAME>.port. Unix has no token
+        # (AF_UNIX + chmod 600 is the boundary) so expected_token is None
+        # there and this check is a no-op.
+        expected = ipc.expected_token()
+        if expected is not None and req.get("token") != expected:
+            return {"error": "unauthorized"}
         meta = req.get("meta")
+        # Liveness probe — lets clients confirm the listener on the
+        # recorded port is actually this daemon and not an unrelated
+        # process that happened to reuse the port after a crash.
+        if meta == "ping":        return {"pong": True}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
@@ -192,9 +206,6 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
-
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -212,9 +223,8 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    server = await ipc.start_server(NAME, handler)
+    log(f"listening on {ipc.listening_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -226,16 +236,33 @@ async def main():
 
 
 def already_running():
+    # Ping-handshake so a stale .port file + port reuse doesn't make us
+    # think an unrelated listener is our daemon.
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        s, token = ipc.connect_client(NAME, timeout=1)
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
+    try:
+        req = {"meta": "ping"}
+        if token:
+            req["token"] = token
+        s.sendall((json.dumps(req) + "\n").encode())
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(1024)
+            if not chunk: break
+            data += chunk
+        return json.loads(data or b"{}").get("pong") is True
+    except Exception:
+        return False
+    finally:
+        try: s.close()
+        except Exception: pass
 
 
 if __name__ == "__main__":
     if already_running():
-        print(f"daemon already running on {SOCK}", file=sys.stderr)
+        print(f"daemon already running on {ipc.listening_addr(NAME)}", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))
@@ -248,5 +275,6 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         stop_remote()
+        ipc.cleanup_addr(NAME)
         try: os.unlink(PID)
         except FileNotFoundError: pass

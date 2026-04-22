@@ -3,6 +3,8 @@ import base64, json, os, socket, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+import ipc
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -19,13 +21,14 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
+    s, token = ipc.connect_client(NAME, timeout=30)
+    if token:
+        # Token-gate on Windows. connect_client returns None on Unix.
+        req = {**req, "token": token}
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
@@ -98,7 +101,10 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def screenshot(path="/tmp/shot.png", full=False):
+def screenshot(path=None, full=False):
+    if path is None:
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), "shot.png")
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
     open(path, "wb").write(base64.b64decode(r["data"]))
     return path
