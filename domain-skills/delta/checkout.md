@@ -20,8 +20,11 @@ Complete Purchase step.
 ## Flow
 
 1. Hit the prefill URL → press `Find Flights`.
-2. Fare grid renders. Click the fare cell (`#grid-row-0-fare-cell-desktop-BMAIN` for
-   the cheapest Main). A "Select an Experience" drawer slides up.
+2. Fare grid renders. Default view shows ~20 rows; click `See More Results`
+   (visible-text match, no stable ID) to expand to the full result set (~38 rows
+   observed on LGA→ORD). Click the fare cell
+   (`#grid-row-<N>-fare-cell-desktop-BMAIN` for Main Basic). A "Select an
+   Experience" drawer slides up.
 3. In the drawer: check `#restrictions` (Accept Restrictions), then click
    `#mach-drawer-select-cta-BMAIN` (Select for Basic).
 4. Trip summary page. Scan for button text `Continue to Review & Pay` — no stable ID.
@@ -38,10 +41,16 @@ Search widget (home):
 - `#findFilghtsCta` (note the typo — that's the real ID)
 
 Results grid:
+- `#flight-results-grid-<N>` — full-row container. `innerText` yields parseable
+  `DL<num>\n<duration>\n<dep>\n<arr>\n<orig>\n<orig>\nNonstop|<conn>\n<dest>\n<dest>\n...`
+  — use this for read-only enumeration (flight number, times, nonstop vs
+  connection) before picking a fare cell.
 - `#grid-row-<N>-fare-cell-desktop-BMAIN` — Main Basic
 - `#grid-row-<N>-fare-cell-desktop-BDCP` — Comfort
 - `#grid-row-<N>-fare-cell-desktop-CFIRST` — First
 - Fare drawer: `#restrictions`, `#mach-drawer-select-cta-BMAIN` / `CMAIN` / `EMAIN`
+- `See More Results` button: no stable ID, match by visible text. Default render
+  truncates results; a single click expands to the full set (observed: 20 → 38).
 
 Pax form (index `_0` for passenger 1):
 - `#firstName_0`, `#lastName_0`, `#middleName_0`
@@ -129,10 +138,15 @@ PAN first, then re-enumerate.
 - `press_key(" ")` on the state wrapper only works if you `.focus()` the
   wrapper first (same CDP session). Trying to send a Space without focus
   just scrolls the page.
-- Clicking the "No, do not protect" trip-insurance radio by its `#noProtectTrip`
+- **Trip insurance IS required** before Complete Purchase will submit — the
+  Angular validator flags "Required: Select Yes or No" on the first submit click
+  if unset, even though it looks optional. Clicking `#noProtectTrip` by its
   centerpoint does not register (radio is inside a large clickable `<label>`
-  card that intercepts at a different child). Trip insurance is NOT required to
-  reach the card fields — skip it.
+  card that intercepts at a different child). Working recipe: scroll
+  `label[for="noProtectTrip"]` into center, then coordinate-click at
+  `(labelRect.x + 60, labelRect.y + 15)` — the label's top-left text area, not
+  its geometric center. The Angular form wrapper may still visually report
+  `ng-pristine ng-invalid` after this, but the submit path accepts it.
 - The fare drawer Select button (`#mach-drawer-select-cta-BMAIN`) will appear
   disabled-looking in some screenshots when `#restrictions` is unchecked. Always
   check `#restrictions` first.
