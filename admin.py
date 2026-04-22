@@ -1,9 +1,10 @@
 import json
 import os
-import socket
 import time
 import urllib.request
 from pathlib import Path
+
+from transport import cleanup_endpoint, connect_client, endpoint_label, runtime_paths, version_cache_path
 
 
 def _load_env():
@@ -23,42 +24,40 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
 GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
-VERSION_CACHE = Path("/tmp/bu-version-cache.json")
+VERSION_CACHE = version_cache_path()
 VERSION_CACHE_TTL = 24 * 3600
 
 
 def _paths(name):
     n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
+    paths = runtime_paths(n)
+    return str(paths.sock), str(paths.pid)
 
 
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
+    p = runtime_paths(name or NAME).log
     try:
-        return Path(p).read_text().strip().splitlines()[-1]
+        return p.read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
         return None
 
 
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
+        s = connect_client(name or NAME, timeout=1)
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, OSError, ValueError):
         return False
 
 
-def ensure_daemon(wait=60.0, name=None, env=None):
+def ensure_daemon(wait=60.0, name=None, env=None, open_inspect=True):
     """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
-            s.connect(_paths(name)[0])
+            s = connect_client(name or NAME, timeout=3)
             s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
             data = b""
             while not data.endswith(b"\n"):
@@ -84,12 +83,12 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             if p.poll() is not None: break
             time.sleep(0.2)
         msg = _log_tail(name) or ""
-        if local and attempt == 0 and ("DevToolsActivePort not found" in msg or "not live yet" in msg or ("WS handshake failed" in msg and "403" in msg)):
+        if open_inspect and local and attempt == 0 and ("DevToolsActivePort not found" in msg or "not live yet" in msg or ("WS handshake failed" in msg and "403" in msg)):
             _open_chrome_inspect()
             print("browser-harness: click Allow on chrome://inspect (and tick the checkbox if shown)", file=sys.stderr)
             restart_daemon(name)
             continue
-        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {runtime_paths(name or NAME).log}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -116,9 +115,7 @@ def restart_daemon(name=None):
 
     sock, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = connect_client(name or NAME, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -140,7 +137,8 @@ def restart_daemon(name=None):
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-    for f in (sock, pid_path):
+    cleanup_endpoint(name or NAME)
+    for f in (pid_path,):
         try:
             os.unlink(f)
         except FileNotFoundError:
@@ -425,6 +423,100 @@ def _chrome_running():
         return False
 
 
+def _find_windows_browser():
+    candidates = (
+        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+        Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe",
+    )
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def _windows_profile_directory():
+    state = Path.home() / "AppData/Local/Google/Chrome/User Data/Local State"
+    try:
+        profile = json.loads(state.read_text(encoding="utf-8")).get("profile", {})
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+
+    for candidate in profile.get("last_active_profiles") or []:
+        if candidate and candidate != "Guest Profile":
+            return candidate
+
+    last_used = profile.get("last_used")
+    if last_used and last_used != "Guest Profile":
+        return last_used
+
+    for candidate in (profile.get("info_cache") or {}).keys():
+        if candidate and candidate != "Guest Profile":
+            return candidate
+
+    return None
+
+
+def _ps_single_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _windows_internal_url_script(browser, url, profile_dir=None):
+    chrome = _ps_single_quote(browser)
+    url_value = _ps_single_quote(url)
+    profile = _ps_single_quote(profile_dir or "")
+    return f"""
+Add-Type -AssemblyName System.Windows.Forms
+$chrome = {chrome}
+$targetUrl = {url_value}
+$profile = {profile}
+$args = @()
+if ($profile) {{
+  $args += "--profile-directory=$profile"
+}}
+$proc = Start-Process -FilePath $chrome -ArgumentList $args -PassThru
+Start-Sleep -Milliseconds 1500
+$wshell = New-Object -ComObject WScript.Shell
+$activated = $false
+if ($proc) {{
+  for ($i = 0; $i -lt 10; $i++) {{
+    try {{
+      if ($wshell.AppActivate($proc.Id)) {{
+        $activated = $true
+        break
+      }}
+    }} catch {{}}
+    Start-Sleep -Milliseconds 300
+  }}
+}}
+if (-not $activated) {{
+  $chromeProc = Get-Process chrome -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
+  if ($chromeProc) {{
+    try {{
+      $activated = $wshell.AppActivate($chromeProc.Id)
+    }} catch {{}}
+  }}
+}}
+Start-Sleep -Milliseconds 300
+Set-Clipboard -Value $targetUrl
+[System.Windows.Forms.SendKeys]::SendWait('^l')
+Start-Sleep -Milliseconds 150
+[System.Windows.Forms.SendKeys]::SendWait('^v')
+Start-Sleep -Milliseconds 150
+[System.Windows.Forms.SendKeys]::SendWait('~')
+""".strip()
+
+
+def _open_windows_internal_url(browser, url, profile_dir=None):
+    import subprocess
+
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", _windows_internal_url_script(browser, url, profile_dir)],
+        timeout=20,
+        check=False,
+    )
+
+
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
@@ -439,6 +531,14 @@ def _open_chrome_inspect():
             return
         except Exception:
             pass
+    if platform.system() == "Windows":
+        browser = _find_windows_browser()
+        if browser:
+            try:
+                _open_windows_internal_url(browser, url, _windows_profile_directory())
+                return
+            except Exception:
+                pass
     try:
         webbrowser.open(url, new=2)
     except Exception:
@@ -462,7 +562,7 @@ def run_setup():
 
     # First attach attempt.
     try:
-        ensure_daemon(wait=20.0)
+        ensure_daemon(wait=20.0, open_inspect=False)
         print("daemon is up.")
         return 0
     except RuntimeError as e:
@@ -483,7 +583,7 @@ def run_setup():
     last = first_err
     while time.time() < deadline:
         try:
-            ensure_daemon(wait=5.0)
+            ensure_daemon(wait=5.0, open_inspect=False)
             print("daemon is up.")
             return 0
         except RuntimeError as e:

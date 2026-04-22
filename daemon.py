@@ -4,6 +4,7 @@ from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+from transport import cleanup_endpoint, connect_client, endpoint_label, runtime_paths, start_server
 
 
 def _load_env():
@@ -21,9 +22,10 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+PATHS = runtime_paths(NAME)
+SOCK = str(PATHS.sock)
+LOG = str(PATHS.log)
+PID = str(PATHS.pid)
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -192,9 +194,6 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
-
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -212,9 +211,8 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    server = await start_server(handler, NAME)
+    log(f"listening on {endpoint_label(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -227,9 +225,10 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        s = connect_client(NAME, timeout=1)
+        s.close()
+        return True
+    except (FileNotFoundError, OSError, ValueError):
         return False
 
 
@@ -248,5 +247,8 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         stop_remote()
-        try: os.unlink(PID)
-        except FileNotFoundError: pass
+        cleanup_endpoint(NAME)
+        try:
+            os.unlink(PID)
+        except FileNotFoundError:
+            pass

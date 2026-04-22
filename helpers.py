@@ -1,7 +1,9 @@
 """Browser control via CDP. Read, edit, extend -- this file is yours."""
-import base64, json, os, socket, time, urllib.request
+import base64, json, os, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
+
+from transport import connect_client, runtime_paths, screenshot_path
 
 
 def _load_env():
@@ -19,13 +21,13 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
+PATHS = runtime_paths(NAME)
+SOCK = str(PATHS.sock)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
+    s = connect_client(NAME)
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
@@ -98,7 +100,8 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def screenshot(path="/tmp/shot.png", full=False):
+def screenshot(path=None, full=False):
+    path = path or screenshot_path()
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
     open(path, "wb").write(base64.b64decode(r["data"]))
     return path
