@@ -1,9 +1,15 @@
 import json
 import os
 import socket
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
+
+# POSIX: AF_UNIX socket file. Windows: TCP loopback with port written to a
+# sibling .port file (stdlib Python on Windows is built without AF_UNIX).
+_USE_UNIX = hasattr(socket, "AF_UNIX")
+TMPDIR = "/tmp" if _USE_UNIX else tempfile.gettempdir()
 
 
 def _load_env():
@@ -29,11 +35,12 @@ VERSION_CACHE_TTL = 24 * 3600
 
 def _paths(name):
     n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
+    addr = os.path.join(TMPDIR, f"bu-{n}.sock" if _USE_UNIX else f"bu-{n}.port")
+    return addr, os.path.join(TMPDIR, f"bu-{n}.pid")
 
 
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
+    p = os.path.join(TMPDIR, f"bu-{name or NAME}.log")
     try:
         return Path(p).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
@@ -41,13 +48,20 @@ def _log_tail(name):
 
 
 def daemon_alive(name=None):
+    addr = _paths(name)[0]
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
+        if _USE_UNIX:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(addr)
+        else:
+            port = int(Path(addr).read_text().strip())
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("127.0.0.1", port))
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ValueError):
         return False
 
 
@@ -74,7 +88,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             break
         time.sleep(0.2)
     msg = _log_tail(name)
-    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {os.path.join(TMPDIR, f'bu-{name or NAME}.log')}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -99,11 +113,17 @@ def restart_daemon(name=None):
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    sock, pid_path = _paths(name)
+    addr, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        if _USE_UNIX:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(5)
+            s.connect(addr)
+        else:
+            port = int(Path(addr).read_text().strip())
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            s.connect(("127.0.0.1", port))
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -113,7 +133,10 @@ def restart_daemon(name=None):
         pid = int(open(pid_path).read())
     except (FileNotFoundError, ValueError):
         pid = None
-    if pid:
+    # os.kill(pid, 0) and SIGTERM fallback are POSIX-only; on Windows
+    # os.kill with sig=0 raises OSError unconditionally. The graceful
+    # shutdown meta above handles the common case for both platforms.
+    if pid and _USE_UNIX:
         for _ in range(75):
             try:
                 os.kill(pid, 0)
@@ -125,7 +148,7 @@ def restart_daemon(name=None):
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-    for f in (sock, pid_path):
+    for f in (addr, pid_path):
         try:
             os.unlink(f)
         except FileNotFoundError:

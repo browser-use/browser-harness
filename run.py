@@ -1,5 +1,14 @@
 import sys
 
+# Reconfigure stdio to UTF-8 so Windows' default CP1252 console doesn't
+# crash on non-ASCII output (e.g. the 🟢 tab-marker glyph in page titles).
+# No-op on POSIX where stdio is already UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, OSError):
+    pass
+
 from admin import (
     _version,
     ensure_daemon,
