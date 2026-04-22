@@ -45,7 +45,7 @@ Home search widget:
 - `#DepartDate_start` (input with value like `Apr 29`)
 
 Results / fare drawer:
-- Price card buttons: `button` whose innerText matches `/From\s*\$\d+.*Economy|First/` (no stable id — the id attribute is empty).
+- Price card buttons: `button` whose innerText matches `/From\s*\$\d+.*(Economy|First)/` (no stable id — the id attribute is empty).
 - Basic Economy ack checkbox: `input[type=checkbox]` inside `.app-pod-shopping-nestedFSR-NestedPriceCards-styles__basicFooter--*` (UUID id).
 - Fare Select buttons: `button[aria-label^="Select United Economy Basic"]`, `"Select United Economy Standard"`, `"Select United Economy Flexible"`. Each has `aria-describedby="nested-atc-btn-ECO-BASIC|ECO-STANDARD|ECO-FLEX"` — stable across rows.
 
@@ -125,7 +125,7 @@ and walk up to its closest `div` containing an `input[type=checkbox]`.
 ## Waits
 
 - `wait_for_load()` returns before React hydrates on fare results and checkout
-  pages. Add `time.sleep(3-5)` after each page transition before DOM probing.
+  pages. Add `time.sleep(3)` to `time.sleep(5)` after each page transition before DOM probing.
 - The fare drawer animates in; `sleep(1)` after clicking the price card.
 - State autocomplete: after `type_text("New York")`, `sleep(1.5)` before
   looking for the `New York` option.
