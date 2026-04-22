@@ -35,6 +35,7 @@ PID = f"/tmp/bu-{NAME}.pid"
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
+    Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser",
     Path.home() / "Library/Application Support/Microsoft Edge",
     Path.home() / "Library/Application Support/Microsoft Edge Beta",
     Path.home() / "Library/Application Support/Microsoft Edge Dev",
@@ -93,7 +94,7 @@ def get_ws_url():
             except OSError:
                 if time.time() >= deadline:
                     raise RuntimeError(
-                        f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port.strip()} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
+                        f"The browser's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port.strip()} — if it opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
                     )
                 time.sleep(1)
             finally:
