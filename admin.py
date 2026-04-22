@@ -341,19 +341,30 @@ def _cache_write(data):
 
 
 def _latest_release_tag(force=False):
-    """Return latest release tag from GitHub, or None. Cached for 24h to avoid hammering the API."""
+    """Return (tag, reachable) for the latest release on GitHub.
+
+    tag is the release tag or None when no release has been published yet, or
+    when the API was unreachable and no cached value exists.
+    reachable is True when the API responded (even if there is no release),
+    False when the HTTP request failed. Cached for 24h to avoid hammering the API."""
+    import urllib.error
     cache = _cache_read()
     now = time.time()
-    if not force and cache.get("tag") and now - cache.get("fetched_at", 0) < VERSION_CACHE_TTL:
-        return cache["tag"]
+    if not force and cache.get("fetched_at") and now - cache["fetched_at"] < VERSION_CACHE_TTL:
+        return cache.get("tag") or None, True
     try:
         req = urllib.request.Request(GH_RELEASES, headers={"Accept": "application/vnd.github+json"})
         tag = json.loads(urllib.request.urlopen(req, timeout=5).read()).get("tag_name") or ""
+    except urllib.error.HTTPError as e:
+        if e.code == 404:  # repo has no releases yet -- reachable, just empty
+            _cache_write({**cache, "tag": "", "fetched_at": now})
+            return None, True
+        return cache.get("tag") or None, False
     except Exception:
-        return cache.get("tag")  # fall back to last known
+        return cache.get("tag") or None, False
     tag = tag.lstrip("v")
     _cache_write({**cache, "tag": tag, "fetched_at": now})
-    return tag or None
+    return (tag or None), True
 
 
 def _version_tuple(v):
@@ -371,9 +382,10 @@ def _version_tuple(v):
 
 
 def check_for_update():
-    """(current, latest, newer_available). latest may be None if the API was unreachable and no cache exists."""
+    """(current, latest, newer_available). latest may be None if the API was unreachable
+    and no cache exists, or if no release has been published yet."""
     cur = _version()
-    latest = _latest_release_tag()
+    latest, _ = _latest_release_tag()
     newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
     return cur, latest, newer
 
@@ -489,7 +501,7 @@ def run_doctor():
     daemon = daemon_alive()
     profile_use = shutil.which("profile-use") is not None
     api_key = bool(os.environ.get("BROWSER_USE_API_KEY"))
-    latest = _latest_release_tag()
+    latest, reachable = _latest_release_tag()
     # Only claim an update when we know the installed version — `cur or "(unknown)"`
     # for display would otherwise be parsed as (0,) and flag every latest as newer.
     newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
@@ -505,6 +517,8 @@ def run_doctor():
     print(f"  version           {cur_display} ({mode})")
     if latest:
         print(f"  latest release    {latest}" + (" (update available)" if newer else ""))
+    elif reachable:
+        print("  latest release    (no release published yet)")
     else:
         print("  latest release    (could not reach github)")
     row("chrome running", chrome, "" if chrome else "start chrome/edge and rerun `browser-harness --setup`")
