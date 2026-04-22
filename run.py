@@ -5,7 +5,6 @@ from admin import (
     ensure_daemon,
     list_cloud_profiles,
     list_local_profiles,
-    print_update_banner,
     restart_daemon,
     run_doctor,
     run_setup,
@@ -58,7 +57,6 @@ def main():
             "  print(page_info())\n"
             "  PY"
         )
-    print_update_banner()
     ensure_daemon()
     exec(sys.stdin.read())
 
