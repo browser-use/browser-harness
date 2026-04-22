@@ -3,6 +3,8 @@ import base64, json, os, socket, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+from _compat import client_connect
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -19,13 +21,14 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
+    # client_connect handles AF_UNIX on POSIX, AF_INET on Windows transparently.
+    # Use a connect timeout, then reset to blocking mode for the data exchange.
+    s = client_connect(NAME, timeout=5)
+    s.settimeout(None)
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
