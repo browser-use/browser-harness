@@ -12,7 +12,7 @@ Automated job application workflow using browser-harness to apply for jobs on Li
 
 ```python
 # 1. Search for jobs with Easy Apply filter
-new_tab("https://www.linkedin.com/jobs/search/?f_WT=2&keywords=YOUR_KEYWORDS&f_TPR=r2592000")
+goto("https://www.linkedin.com/jobs/search/?f_WT=2&keywords=YOUR_KEYWORDS&f_TPR=r2592000")
 wait_for_load()
 wait(2)
 
@@ -31,8 +31,8 @@ result = js("""
   })()
 """)
 
-# 3. Navigate to a job page and open Easy Apply
-new_tab("https://www.linkedin.com/jobs/view/{JOB_ID}")
+# 3. Navigate to a job page and open Easy Apply (use goto, NOT new_tab, to preserve session/modal state)
+goto("https://www.linkedin.com/jobs/view/{JOB_ID}")
 wait_for_load()
 wait(3)
 
