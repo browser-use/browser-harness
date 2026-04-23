@@ -72,6 +72,28 @@ def _copy_profile(src: Path, dst: Path):
     shutil.copytree(src, dst, ignore=_ignore_locks, dirs_exist_ok=False)
 
 
+
+def _safe_max_mtime(path):
+    """Return the most recent modification time of files under path, ignoring OSErrors."""
+    if not path.exists():
+        return 0.0
+    max_time = 0.0
+    try:
+        for p in path.rglob("*"):
+            if not p.is_file():
+                continue
+            try:
+                mtime = p.stat().st_mtime
+                if mtime > max_time:
+                    max_time = mtime
+            except OSError:
+                # File disappeared, permission denied, etc.
+                continue
+    except OSError:
+        # Directory inaccessible
+        pass
+    return max_time
+
 def _is_wayland_session():
     """Detect Wayland by checking the current session only."""
     # 1. Check env vars first (fastest, most reliable).
@@ -217,14 +239,8 @@ def launch_chrome(
         # Only re-copy if the real profile is newer than the copy.
         should_copy = True
         if copy_udir.exists():
-            real_mtime = max(
-                (p.stat().st_mtime for p in real_udir.rglob("*") if p.is_file()),
-                default=0,
-            )
-            copy_mtime = max(
-                (p.stat().st_mtime for p in copy_udir.rglob("*") if p.is_file()),
-                default=0,
-            )
+            real_mtime = _safe_max_mtime(real_udir)
+            copy_mtime = _safe_max_mtime(copy_udir)
             should_copy = real_mtime > copy_mtime
         if should_copy:
             if real_udir.exists():
