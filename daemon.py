@@ -58,6 +58,13 @@ def log(msg):
     open(LOG, "a").write(f"{msg}\n")
 
 
+async def _silent(coro):
+    try:
+        await coro
+    except Exception:
+        pass
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -154,8 +161,7 @@ class Daemon:
             elif method == "Page.javascriptDialogClosed":
                 self.dialog = None
             elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-                try: await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)
-                except Exception: pass
+                asyncio.create_task(_silent(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session)))
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
