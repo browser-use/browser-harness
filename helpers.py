@@ -47,10 +47,29 @@ def drain_events():  return _send({"meta": "drain_events"})["events"]
 
 
 # --- navigation / page ---
+def _skill_dir(url):
+    """Resolve URL to domain-skills/ subdirectory.
+
+    Tries progressively shorter hostname segments, then the full hostname
+    hyphenated, so ``booking.com`` → ``booking-com``, ``old.reddit.com`` → ``reddit``,
+    ``itch.io`` → ``itch-io``."""
+    host = (urlparse(url).hostname or "").removeprefix("www.")
+    base = Path(__file__).parent / "domain-skills"
+    # Try each segment of the hostname: old.reddit.com → old, reddit, com
+    parts = host.split(".")
+    for i in range(len(parts)):
+        d = base / parts[i]
+        if d.is_dir(): return d
+    # Try full hostname hyphenated: booking.com → booking-com
+    d = base / host.replace(".", "-")
+    if d.is_dir(): return d
+    return None
+
+
 def goto(url):
     r = cdp("Page.navigate", url=url)
-    d = (Path(__file__).parent / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
-    return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
+    d = _skill_dir(url)
+    return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d else r
 
 def page_info():
     """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
