@@ -85,8 +85,9 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             time.sleep(0.2)
         msg = _log_tail(name) or ""
         if local and attempt == 0 and ("DevToolsActivePort not found" in msg or "not live yet" in msg or ("WS handshake failed" in msg and "403" in msg)):
-            _launch_chrome_debug()
-            print("browser-harness: launched Chrome with remote debugging on port 9222", file=sys.stderr)
+            launched = _launch_chrome_debug()
+            if launched:
+                print("browser-harness: launched Chrome with remote debugging on port 9222", file=sys.stderr)
             restart_daemon(name)
             continue
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
@@ -446,7 +447,7 @@ def _launch_chrome_debug():
         profile = os.path.expanduser("~/.local/share/browser-harness/chrome-debug-profile")
     if not chrome or not os.path.exists(chrome):
         _open_chrome_inspect()
-        return
+        return False
     os.makedirs(profile, exist_ok=True)
     subprocess.Popen(
         [chrome, "--remote-debugging-port=9222", f"--user-data-dir={profile}"],
@@ -459,7 +460,7 @@ def _launch_chrome_debug():
         try:
             sock.connect(("127.0.0.1", 9222))
             sock.close()
-            return
+            return True
         except OSError:
             pass
         finally:
