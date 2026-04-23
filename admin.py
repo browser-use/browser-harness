@@ -85,8 +85,8 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             time.sleep(0.2)
         msg = _log_tail(name) or ""
         if local and attempt == 0 and ("DevToolsActivePort not found" in msg or "not live yet" in msg or ("WS handshake failed" in msg and "403" in msg)):
-            _open_chrome_inspect()
-            print("browser-harness: click Allow on chrome://inspect (and tick the checkbox if shown)", file=sys.stderr)
+            _launch_chrome_debug()
+            print("browser-harness: launched Chrome with remote debugging on port 9222", file=sys.stderr)
             restart_daemon(name)
             continue
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
@@ -423,6 +423,48 @@ def _chrome_running():
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
+
+
+def _launch_chrome_debug():
+    """Launch Chrome with remote debugging on a persistent profile.
+
+    Chrome 147+ blocks remote debugging on the default user data directory.
+    This launches Chrome with a separate profile and --remote-debugging-port=9222.
+    The profile persists across sessions so cookies and logins survive.
+    """
+    import platform, shutil, subprocess
+    if platform.system() == "Darwin":
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        profile = os.path.expanduser("~/Library/Application Support/browser-harness/chrome-debug-profile")
+    elif platform.system() == "Windows":
+        chrome = os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe")
+        if not os.path.exists(chrome):
+            chrome = os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe")
+        profile = os.path.expandvars(r"%LOCALAPPDATA%\browser-harness\chrome-debug-profile")
+    else:
+        chrome = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser")
+        profile = os.path.expanduser("~/.local/share/browser-harness/chrome-debug-profile")
+    if not chrome or not os.path.exists(chrome):
+        _open_chrome_inspect()
+        return
+    os.makedirs(profile, exist_ok=True)
+    subprocess.Popen(
+        [chrome, "--remote-debugging-port=9222", f"--user-data-dir={profile}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    import time as _t, socket as _s
+    for _ in range(30):
+        sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+        sock.settimeout(1)
+        try:
+            sock.connect(("127.0.0.1", 9222))
+            sock.close()
+            return
+        except OSError:
+            pass
+        finally:
+            sock.close()
+        _t.sleep(1)
 
 
 def _open_chrome_inspect():

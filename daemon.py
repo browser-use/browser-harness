@@ -58,6 +58,18 @@ def log(msg):
     open(LOG, "a").write(f"{msg}\n")
 
 
+def _probe_port(port):
+    """Probe a local CDP port for a websocket URL. Returns ws:// URL or None."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as r:
+            info = json.loads(r.read())
+            ws = info.get("webSocketDebuggerUrl")
+            if ws: log(f"probed CDP on port {port}: {ws}")
+            return ws
+    except Exception:
+        return None
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -82,7 +94,17 @@ def get_ws_url():
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
+    # Chrome 147+ blocks remote debugging on the default user data directory.
+    # Probe the default port — a previous `ensure_daemon` may have launched
+    # Chrome with --remote-debugging-port=9222 and a temp profile.
+    ws = _probe_port(9222)
+    if ws: return ws
+    raise RuntimeError(
+        "DevToolsActivePort not found — "
+        "Chrome 147+ blocks remote debugging on the default profile. "
+        "Launch Chrome with --remote-debugging-port=9222 --user-data-dir=/tmp/bu-chrome-profile, "
+        "or set BU_CDP_WS for a remote browser."
+    )
 
 
 def stop_remote():
