@@ -18,7 +18,14 @@ class RuntimePaths:
 
 
 def supports_unix_sockets():
-    return hasattr(socket, "AF_UNIX") and hasattr(asyncio, "start_unix_server")
+    if not hasattr(socket, "AF_UNIX") or not hasattr(asyncio, "start_unix_server"):
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.close()
+        return True
+    except OSError:
+        return False
 
 
 def runtime_paths(name):
@@ -41,7 +48,13 @@ def screenshot_path(filename="shot.png"):
 
 def endpoint_label(name):
     paths = runtime_paths(name)
-    return str(paths.sock) if supports_unix_sockets() else f"127.0.0.1:{paths.port}"
+    if supports_unix_sockets():
+        return str(paths.sock)
+    try:
+        port = paths.port.read_text().strip()
+        return f"127.0.0.1:{port}"
+    except OSError:
+        return f"127.0.0.1:{paths.port}"
 
 
 def connect_client(name, timeout=None):

@@ -1,5 +1,10 @@
 import sys
 
+if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower().replace("-", "") != "utf8":
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from admin import (
     _version,
     ensure_daemon,

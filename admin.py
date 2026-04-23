@@ -513,7 +513,7 @@ def _open_windows_internal_url(browser, url, profile_dir=None):
     subprocess.run(
         ["powershell", "-NoProfile", "-Command", _windows_internal_url_script(browser, url, profile_dir)],
         timeout=20,
-        check=False,
+        check=True,
     )
 
 
