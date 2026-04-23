@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -61,6 +62,62 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                         return data
 
                     self.assertEqual(await asyncio.to_thread(roundtrip), b"ping\n")
+
+    async def test_tcp_readiness_is_published_only_after_token_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            name = "ready-after-token"
+            paths = None
+            observed = {}
+            attempt_started = threading.Event()
+            attempt_finished = threading.Event()
+            attempt_thread = None
+
+            async def handler(reader, writer):
+                line = await reader.readline()
+                writer.write(line)
+                await writer.drain()
+                writer.close()
+
+            with (
+                mock.patch.object(transport, "TMP_DIR", Path(tmp)),
+                mock.patch("transport.supports_unix_sockets", return_value=False),
+            ):
+                paths = transport.runtime_paths(name)
+                original_write_private = transport._write_private
+
+                def connect_once():
+                    attempt_started.set()
+                    client = transport.connect_client(name, timeout=1)
+                    client.sendall(b"ping\n")
+                    data = client.recv(1024)
+                    client.close()
+                    return data
+
+                def wrapped_write_private(path, value):
+                    nonlocal attempt_thread
+                    original_write_private(path, value)
+                    if path == paths.port:
+                        def attempt():
+                            try:
+                                observed["data"] = connect_once()
+                            except Exception as exc:
+                                observed["error"] = exc
+                            finally:
+                                attempt_finished.set()
+
+                        attempt_thread = threading.Thread(target=attempt)
+                        attempt_thread.start()
+                        attempt_started.wait(timeout=1)
+                    elif path == paths.token and paths.port.exists():
+                        attempt_finished.wait(timeout=1)
+
+                with mock.patch("transport._write_private", side_effect=wrapped_write_private):
+                    server = await transport.start_server(handler, name)
+                    async with server:
+                        if attempt_thread is not None:
+                            await asyncio.to_thread(attempt_thread.join, 1)
+                        self.assertNotIn("error", observed)
+                        self.assertEqual(observed["data"], b"ping\n")
 
 
 if __name__ == "__main__":

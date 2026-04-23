@@ -130,8 +130,8 @@ async def _start_tcp_server(handler, paths):
 
     server = await asyncio.start_server(authenticated_handler, host=TCP_HOST, port=0)
     port = server.sockets[0].getsockname()[1]
-    _write_private(paths.port, str(port))
     _write_private(paths.token, token)
+    _write_private(paths.port, str(port))
     return server
 
 
