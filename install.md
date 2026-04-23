@@ -39,6 +39,45 @@ mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness" && ln -sf "$PWD/SK
 
 That makes new Codex or Claude Code sessions in other folders load the runtime browser harness instructions automatically. An empty `~/.codex/skills/browser-harness/` directory is fine; the symlink command above populates it.
 
+## Chrome 147+ workaround
+
+**Chrome 147+** (Google Chrome branded builds) blocks `--remote-debugging-port` when using the **default** user data directory. The error message is:
+
+```
+DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.
+```
+
+Even with `--user-data-dir` pointing to the real profile, Chrome 147 still shows an "Allow remote debugging" dialog that can't be dismissed programmatically on Wayland (no keyboard simulation tools work).
+
+**Root cause** (from `chromium/browser_process_impl.cc`): In Google Chrome branded builds, `IsRemoteDebuggingAllowed()` checks `IsUsingDefaultDataDirectory()` and returns `kDisabledByDefaultUserDataDir` when the paths match. This is hardcoded for `GOOGLE_CHROME_BRANDING` — Chromium builds skip this check.
+
+**The fix** — use `launch_chrome()` from `admin.py`, which sets `CHROME_CONFIG_HOME` to a temporary path. This makes Chrome think the real profile directory is "non-default" while keeping all user data (bookmarks, extensions, cookies) intact:
+
+```python
+from admin import launch_chrome, ensure_daemon
+
+# Start Chrome with remote debugging on your real profile
+info = launch_chrome(port=9222)
+print(f"Chrome started: PID {info['pid']}, WS {info['ws_url']}")
+
+# Now connect the daemon
+ensure_daemon()
+```
+
+Or from the shell:
+
+```bash
+browser-harness <<'PY'
+from launch import launch_chrome
+info = launch_chrome()
+print(f"DevTools: {info['ws_url']}")
+PY
+```
+
+**How it works**: Chrome computes the "default" user data dir as `$CHROME_CONFIG_HOME/google-chrome` (Linux) or equivalent. By setting `CHROME_CONFIG_HOME=/tmp/bu-chrome-config-XXXXX`, the default path becomes `/tmp/bu-chrome-config-XXXXX/google-chrome` while `--user-data-dir` still points to `~/.config/google-chrome`. The paths differ → `IsUsingDefaultDataDirectory()` returns false → remote debugging is allowed.
+
+**Limitations**: This shares the real Chrome profile. If Chrome is already running without remote debugging, you need to close it first (Chrome's single-instance lock prevents two processes from using the same profile).
+
 ## Browser bootstrap
 
 Prefer `browser-harness --setup` — it runs the full attach-and-escalate flow below as one interactive command. The manual steps that follow are only for when `--setup` is unavailable or you need to debug a specific failure.

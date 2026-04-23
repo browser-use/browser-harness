@@ -6,6 +6,9 @@ import urllib.request
 from pathlib import Path
 
 
+from launch import launch_chrome  # noqa: F401 — re-exported for convenience
+
+
 def _load_env():
     p = Path(__file__).parent / ".env"
     if not p.exists():
@@ -35,7 +38,8 @@ def _paths(name):
 def _log_tail(name):
     p = f"/tmp/bu-{name or NAME}.log"
     try:
-        return Path(p).read_text().strip().splitlines()[-1]
+        lines = Path(p).read_text().strip().splitlines()
+        return "\n".join(lines[-5:])  # last 5 lines for context
     except (FileNotFoundError, IndexError):
         return None
 

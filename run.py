@@ -1,8 +1,10 @@
+import subprocess
 import sys
 
 from admin import (
     _version,
     ensure_daemon,
+    launch_chrome,
     list_cloud_profiles,
     list_local_profiles,
     print_update_banner,
@@ -15,6 +17,7 @@ from admin import (
     sync_local_profile,
 )
 from helpers import *
+from launch import _get_default_user_data_dir
 
 HELP = """Browser Harness
 
@@ -34,6 +37,22 @@ Commands:
   browser-harness --setup          interactively attach to your running browser
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
 """
+
+
+def _chrome_is_running():
+    """Return True if any Chrome/Chromium main process is alive."""
+    for name in ("chrome", "chromium", "chromium-browser"):
+        try:
+            subprocess.run(["pgrep", "-x", name], check=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError:
+            pass
+    return False
+
+
+def _chrome_has_cdp():
+    """Return True if DevToolsActivePort exists in the default profile."""
+    return (_get_default_user_data_dir() / "DevToolsActivePort").exists()
 
 
 def main():
@@ -59,7 +78,28 @@ def main():
             "  PY"
         )
     print_update_banner()
-    ensure_daemon()
+    try:
+        ensure_daemon()
+    except RuntimeError as e:
+        msg = str(e).lower()
+        if "devtoolsactiveport" in msg or "remote debugging" in msg:
+            if _chrome_is_running() and not _chrome_has_cdp():
+                sys.exit(
+                    "Chrome is already running without remote debugging.\n"
+                    "Close Chrome and retry so browser-harness can launch it "
+                    "with the right flags automatically."
+                )
+            if not _chrome_is_running():
+                info = launch_chrome()
+                print(
+                    f"Auto-launched Chrome with CDP on port {info['port']}",
+                    file=sys.stderr,
+                )
+                ensure_daemon()
+            else:
+                raise
+        else:
+            raise
     exec(sys.stdin.read(), globals())
 
 

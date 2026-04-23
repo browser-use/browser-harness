@@ -58,6 +58,28 @@ def log(msg):
     open(LOG, "a").write(f"{msg}\n")
 
 
+def _probe_cdp_port(port=9222, timeout=30):
+    """Connect to a fixed CDP port and return the WebSocket debugger URL."""
+    deadline = time.time() + timeout
+    while True:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(1)
+        try:
+            probe.connect(("127.0.0.1", port))
+            break
+        except OSError:
+            if time.time() >= deadline:
+                raise RuntimeError(
+                    f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port}"
+                )
+            time.sleep(1)
+        finally:
+            probe.close()
+    resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=5)
+    data = json.loads(resp.read())
+    return data.get("webSocketDebuggerUrl", f"ws://127.0.0.1:{port}/devtools/browser")
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -82,7 +104,18 @@ def get_ws_url():
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
+    # Chrome 147+ with CHROME_CONFIG_HOME may not write DevToolsActivePort.
+    # Fallback to the well-known default port.
+    try:
+        return _probe_cdp_port()
+    except RuntimeError:
+        pass
+    raise RuntimeError(
+        f"DevToolsActivePort not found in {[str(p) for p in PROFILES]}.\n"
+        "Chrome 147+ blocks remote debugging on the default profile — "
+        "see https://github.com/browser-use/browser-harness/blob/main/install.md#chrome-147-workaround.\n"
+        "Fix: use launch_chrome() from admin.py, or set BU_CDP_WS for a remote browser."
+    )
 
 
 def stop_remote():
