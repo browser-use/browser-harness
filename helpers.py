@@ -3,7 +3,7 @@ import base64, json, os, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
-from transport import connect_client, runtime_paths, screenshot_path
+from transport import connect_client, screenshot_path
 
 
 def _load_env():
@@ -21,8 +21,6 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-PATHS = runtime_paths(NAME)
-SOCK = str(PATHS.sock)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 

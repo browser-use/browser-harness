@@ -4,7 +4,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from transport import cleanup_endpoint, connect_client, endpoint_label, runtime_paths, version_cache_path
+from transport import cleanup_endpoint, connect_client, runtime_paths, version_cache_path
 
 
 def _load_env():
@@ -113,7 +113,7 @@ def restart_daemon(name=None):
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    sock, pid_path = _paths(name)
+    _, pid_path = _paths(name)
     try:
         s = connect_client(name or NAME, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')

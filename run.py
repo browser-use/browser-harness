@@ -1,9 +1,15 @@
 import sys
 
-if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if sys.stderr.encoding and sys.stderr.encoding.lower().replace("-", "") != "utf8":
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+def _ensure_utf8(stream):
+    encoding = getattr(stream, "encoding", None)
+    reconfigure = getattr(stream, "reconfigure", None)
+    if encoding and callable(reconfigure) and encoding.lower().replace("-", "") != "utf8":
+        reconfigure(encoding="utf-8", errors="replace")
+
+
+_ensure_utf8(sys.stdout)
+_ensure_utf8(sys.stderr)
 
 from admin import (
     _version,

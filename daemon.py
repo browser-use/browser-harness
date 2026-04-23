@@ -23,7 +23,6 @@ _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
 PATHS = runtime_paths(NAME)
-SOCK = str(PATHS.sock)
 LOG = str(PATHS.log)
 PID = str(PATHS.pid)
 BUF = 500
@@ -234,7 +233,7 @@ def already_running():
 
 if __name__ == "__main__":
     if already_running():
-        print(f"daemon already running on {SOCK}", file=sys.stderr)
+        print(f"daemon already running on {endpoint_label(NAME)}", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))
