@@ -26,13 +26,28 @@ Usage as module:
         {"path": "/path/to/video.mp4", "type": "video"},
     ])
 """
-import sys, subprocess, os, tempfile
+import sys, subprocess, os, tempfile, atexit
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).parent
 sys.path.insert(0, str(SKILL_DIR.parent.parent))
 from helpers import *
 from admin import ensure_daemon
+
+# Temp video files created by _ensure_h264 that need cleanup after the post
+_TEMP_FILES = []
+
+
+def _cleanup_temp_files():
+    for f in _TEMP_FILES:
+        try:
+            os.unlink(f)
+        except Exception:
+            pass
+    _TEMP_FILES.clear()
+
+
+atexit.register(_cleanup_temp_files)
 
 
 def _is_video(path):
@@ -70,8 +85,9 @@ def _ensure_h264(path):
         subprocess.run(
             ["ffmpeg", "-i", path, "-c:v", "libx264", "-c:a", "aac",
              "-movflags", "+faststart", out_path, "-y"],
-            capture_output=True, timeout=300
+            check=True, capture_output=True, timeout=300
         )
+        _TEMP_FILES.append(out_path)
         return out_path
     except Exception:
         try:
@@ -192,6 +208,8 @@ def post_to_x(text, media, screenshot_dir=None):
             return false;
         })()
     """ % json.dumps(text[:40]))
+
+    _cleanup_temp_files()
 
     return {
         "success": True,
