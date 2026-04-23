@@ -45,3 +45,16 @@ Prefer navigating an existing tab over `new_tab()`. Tabs created via CDP's `Targ
 tab = ensure_real_tab()
 goto("https://example.com")
 ```
+
+## Heredoc hang in background invocations
+
+The `browser-harness <<'PY' ... PY` heredoc form hangs when the harness is called from a background or sub-agent context (e.g. a spawned Claude sub-agent). Use the inline form instead:
+
+```bash
+uv run python -c "
+import sys; sys.path.insert(0, '.')
+from helpers import *
+goto('https://example.com')
+wait_for_load()
+"
+```

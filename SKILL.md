@@ -35,6 +35,7 @@ Available interaction skills:
 
 Available domain skills:
 - `tiktok/upload.md`
+- `linkedin/messaging.md`
 
 ## Tool call shape
 
