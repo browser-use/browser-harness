@@ -53,6 +53,35 @@ BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
+# Hooks permission-gated Web APIs that open OS-native popups Chrome renders outside
+# the page viewport (geolocation, notifications, camera/mic, file pickers, print, ...).
+# Each call appends to window.__bu_blockers__ so page_info() / pending_blockers() can
+# tell the agent "something native is open" without a full-desktop screencapture.
+# Chrome emits no CDP event for these popups, hence the in-page wrapper.
+BLOCKER_JS = """(()=>{
+if(window.__bu_blockers_installed__)return;window.__bu_blockers_installed__=true;
+window.__bu_blockers__=window.__bu_blockers__||[];
+const log=k=>{const a=window.__bu_blockers__;a.push({kind:k,t:Date.now()});if(a.length>200)a.splice(0,a.length-200);};
+const w=(o,n,k)=>{if(!o)return;const f=o[n];if(typeof f!=='function')return;o[n]=function(){log(k);return f.apply(this,arguments);};};
+try{w(navigator.geolocation,'getCurrentPosition','geolocation');}catch(_){}
+try{w(navigator.geolocation,'watchPosition','geolocation');}catch(_){}
+try{w(Notification,'requestPermission','notifications');}catch(_){}
+try{w(navigator.mediaDevices,'getUserMedia','media');}catch(_){}
+try{w(navigator.mediaDevices,'getDisplayMedia','display');}catch(_){}
+try{w(navigator.clipboard,'read','clipboard-read');}catch(_){}
+try{w(navigator.clipboard,'readText','clipboard-read');}catch(_){}
+try{w(navigator.bluetooth,'requestDevice','bluetooth');}catch(_){}
+try{w(navigator.usb,'requestDevice','usb');}catch(_){}
+try{w(navigator.serial,'requestPort','serial');}catch(_){}
+try{w(navigator.hid,'requestDevice','hid');}catch(_){}
+try{w(window,'showOpenFilePicker','file-picker');}catch(_){}
+try{w(window,'showSaveFilePicker','file-picker');}catch(_){}
+try{w(window,'showDirectoryPicker','file-picker');}catch(_){}
+try{w(window,'print','print');}catch(_){}
+try{w(document,'requestStorageAccess','storage-access');}catch(_){}
+addEventListener('click',e=>{const t=e.target;if(t&&t.tagName==='INPUT'&&t.type==='file')log('file-input');},true);
+})();"""
+
 
 def log(msg):
     open(LOG, "a").write(f"{msg}\n")
@@ -110,7 +139,19 @@ class Daemon:
         self.session = None
         self.events = deque(maxlen=BUF)
         self.dialog = None
+        self.blockers = deque(maxlen=200)
         self.stop = None  # asyncio.Event, set inside start()
+
+    async def install_blocker_probe(self):
+        """Wrap permission-gated JS APIs so native popups become observable. Idempotent per page."""
+        try:
+            await asyncio.wait_for(self.cdp.send_raw(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": BLOCKER_JS}, session_id=self.session), timeout=3)
+            await asyncio.wait_for(self.cdp.send_raw(
+                "Runtime.evaluate", {"expression": BLOCKER_JS}, session_id=self.session), timeout=3)
+        except Exception as e:
+            log(f"install_blocker_probe: {e}")
 
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -127,12 +168,16 @@ class Daemon:
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         for d in ("Page", "DOM", "Runtime", "Network"):
             try:
+                # Page.enable takes enableFileChooserOpenedEvent — off by default,
+                # so without it Page.fileChooserOpened never fires (CDP experimental).
+                params = {"enableFileChooserOpenedEvent": True} if d == "Page" else {}
                 await asyncio.wait_for(
-                    self.cdp.send_raw(f"{d}.enable", session_id=self.session),
+                    self.cdp.send_raw(f"{d}.enable", params, session_id=self.session),
                     timeout=5
                 )
             except Exception as e:
                 log(f"enable {d}: {e}")
+        await self.install_blocker_probe()
         return pages[0]
 
     async def start(self):
@@ -151,8 +196,11 @@ class Daemon:
             self.events.append({"method": method, "params": params, "session_id": session_id})
             if method == "Page.javascriptDialogOpening":
                 self.dialog = params
+                self.blockers.append({"kind": "dialog", "params": params, "t": time.time()})
             elif method == "Page.javascriptDialogClosed":
                 self.dialog = None
+            elif method in ("Page.fileChooserOpened", "Page.downloadWillBegin"):
+                self.blockers.append({"kind": method.split(".")[-1], "params": params, "t": time.time()})
             elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
                 try: await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)
                 except Exception: pass
@@ -171,8 +219,12 @@ class Daemon:
                 await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=self.session), timeout=3)
                 await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=self.session), timeout=2)
             except Exception: pass
+            await self.install_blocker_probe()
             return {"session_id": self.session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
+        if meta == "pending_blockers":
+            out = list(self.blockers); self.blockers.clear()
+            return {"blockers": out}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
 
         method = req["method"]

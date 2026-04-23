@@ -57,14 +57,45 @@ def page_info():
 
     If a native dialog (alert/confirm/prompt/beforeunload) is open, returns
     {dialog: {type, message, ...}} instead — the page's JS thread is frozen
-    until the dialog is handled (see interaction-skills/dialogs.md)."""
+    until the dialog is handled (see interaction-skills/dialogs.md).
+
+    If an OS-native popup is suspected (permission prompt, file picker, print,
+    download bar, ...), adds a `blockers` key. See interaction-skills/permissions.md."""
     dialog = _send({"meta": "pending_dialog"}).get("dialog")
     if dialog:
         return {"dialog": dialog}
     r = cdp("Runtime.evaluate",
-            expression="JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})",
+            expression="JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight,blockers:(window.__bu_blockers__||[])})",
             returnByValue=True)
-    return json.loads(r["result"]["value"])
+    info = json.loads(r["result"]["value"])
+    js_blockers = info.pop("blockers", None)
+    cdp_blockers = _send({"meta": "pending_blockers"}).get("blockers")
+    all_blockers = (js_blockers if isinstance(js_blockers, list) else []) + (cdp_blockers if isinstance(cdp_blockers, list) else [])
+    if all_blockers:
+        info["blockers"] = all_blockers
+    return info
+
+def pending_blockers(clear_js=False):
+    """Return records of OS-native popups that Chrome renders outside the page viewport.
+
+    JS-side: permission-gated Web API calls (geolocation, notifications, mediaDevices,
+    clipboard, bluetooth/usb/serial/hid, file pickers, print, storage-access, <input type=file>).
+    CDP-side: Page.javascriptDialogOpening, Page.fileChooserOpened, Page.downloadWillBegin.
+
+    Chrome emits no CDP event for permission popups, so detection happens via an injected
+    wrapper installed on every document by the daemon.
+
+    To prevent popups rather than detect them, pre-grant with `Browser.grantPermissions` and
+    pre-seed data with `Emulation.setGeolocationOverride` — see interaction-skills/permissions.md.
+    """
+    cdp_side = _send({"meta": "pending_blockers"}).get("blockers") or []
+    js_expr = "(function(){const a=window.__bu_blockers__||[];" + ("window.__bu_blockers__=[];" if clear_js else "") + "return a;})()"
+    try:
+        raw = js(js_expr)
+    except Exception:
+        raw = None  # JS frozen (dialog), detached session, etc. — fall back to CDP-only
+    js_side = raw if isinstance(raw, list) else []
+    return {"cdp": cdp_side, "js": js_side}
 
 # --- input ---
 def click(x, y, button="left", clicks=1):
