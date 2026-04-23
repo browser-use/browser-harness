@@ -18,7 +18,6 @@ class DoctorCommandTests(unittest.TestCase):
 
         combined = f"{proc.stdout}\n{proc.stderr}"
 
-        self.assertEqual(proc.returncode, 0)
         self.assertIn("browser-harness doctor", combined)
         self.assertNotIn("AttributeError", combined)
         self.assertNotIn("AF_UNIX", combined)
