@@ -154,7 +154,10 @@ class Daemon:
             elif method == "Page.javascriptDialogClosed":
                 self.dialog = None
             elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-                asyncio.create_task(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session))
+                async def _mark():
+                    try: await self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session)
+                    except Exception: pass
+                asyncio.create_task(_mark())
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
