@@ -150,72 +150,73 @@ def post_to_x(text, media, screenshot_dir=None):
     # Pre-convert videos to H.264 if needed
     videos = [_ensure_h264(v) for v in videos]
 
-    goto("https://x.com/home")
-    wait_for_load()
+    try:
+        goto("https://x.com/home")
+        wait_for_load()
 
-    compose = js("""
-        (() => {
-            const el = document.querySelector('[data-testid="tweetTextarea_0_label"]');
-            if (!el) return null;
-            const r = el.getBoundingClientRect();
-            return { x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2) };
-        })()
-    """)
-    if not compose:
-        return {"success": False, "post_in_feed": False, "error": "compose textarea not found"}
-
-    click(compose["x"], compose["y"])
-    wait(0.3)
-    type_text(text)
-    wait(0.2)
-
-    # Upload images first, then videos
-    all_media = images + videos
-    for m in all_media:
-        upload_file('[data-testid="fileInput"]', m)
-        wait(0.5)
-
-    wait(3.0)
-
-    for _ in range(60):
-        wait(0.2)
-        btn = js("""
+        compose = js("""
             (() => {
-                const el = document.querySelector('[data-testid="tweetButtonInline"]');
+                const el = document.querySelector('[data-testid="tweetTextarea_0_label"]');
                 if (!el) return null;
-                return el.getAttribute('aria-disabled') !== 'true';
+                const r = el.getBoundingClientRect();
+                return { x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2) };
             })()
         """)
-        if btn:
-            break
-    else:
-        return {"success": False, "post_in_feed": False, "error": "Post button never enabled"}
+        if not compose:
+            return {"success": False, "post_in_feed": False, "error": "compose textarea not found"}
 
-    js("""(() => { const btn = document.querySelector('[data-testid="tweetButtonInline"]'); if (btn) btn.click(); })()""")
+        click(compose["x"], compose["y"])
+        wait(0.3)
+        type_text(text)
+        wait(0.2)
 
-    wait(5)
+        # Upload images first, then videos
+        all_media = images + videos
+        for m in all_media:
+            upload_file('[data-testid="fileInput"]', m)
+            wait(0.5)
 
-    if screenshot_dir:
-        Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
-        screenshot(f"{screenshot_dir}/x_post_result.png")
+        wait(3.0)
 
-    posted = js("""
-        (() => {
-            const posts = document.querySelectorAll('[data-testid="tweet"]');
-            for (const p of posts) {
-                if (p.textContent.includes(%s)) return true;
-            }
-            return false;
-        })()
-    """ % json.dumps(text[:40]))
+        for _ in range(60):
+            wait(0.2)
+            btn = js("""
+                (() => {
+                    const el = document.querySelector('[data-testid="tweetButtonInline"]');
+                    if (!el) return null;
+                    return el.getAttribute('aria-disabled') !== 'true';
+                })()
+            """)
+            if btn:
+                break
+        else:
+            return {"success": False, "post_in_feed": False, "error": "Post button never enabled"}
 
-    _cleanup_temp_files()
+        js("""(() => { const btn = document.querySelector('[data-testid="tweetButtonInline"]'); if (btn) btn.click(); })()""")
 
-    return {
-        "success": True,
-        "post_in_feed": bool(posted),
-        "url": page_info().get("url", ""),
-    }
+        wait(5)
+
+        if screenshot_dir:
+            Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
+            screenshot(f"{screenshot_dir}/x_post_result.png")
+
+        posted = js("""
+            (() => {
+                const posts = document.querySelectorAll('[data-testid="tweet"]');
+                for (const p of posts) {
+                    if (p.textContent.includes(%s)) return true;
+                }
+                return false;
+            })()
+        """ % json.dumps(text[:40]))
+
+        return {
+            "success": True,
+            "post_in_feed": bool(posted),
+            "url": page_info().get("url", ""),
+        }
+    finally:
+        _cleanup_temp_files()
 
 
 if __name__ == "__main__":
