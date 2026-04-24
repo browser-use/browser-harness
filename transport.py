@@ -93,10 +93,18 @@ def cleanup_server_files(name: str) -> None:
 
 # --- Popen detach ----------------------------------------------------------
 
+# subprocess.DETACHED_PROCESS / CREATE_NEW_PROCESS_GROUP are Windows-only
+# attributes. We look them up defensively so this module imports cleanly on
+# POSIX (where the values are never actually used at runtime, but are still
+# reachable via the monkeypatched cross-platform tests).
+_WIN_DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+_WIN_CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+
+
 def popen_detach_kwargs() -> dict:
     """Kwargs so subprocess.Popen spawns a detached daemon on this OS."""
     if sys.platform == "win32":
-        return {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {"creationflags": _WIN_DETACHED_PROCESS | _WIN_CREATE_NEW_PROCESS_GROUP}
     return {"start_new_session": True}
 
 

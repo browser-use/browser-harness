@@ -144,11 +144,14 @@ def test_popen_detach_kwargs_posix(monkeypatch):
 
 def test_popen_detach_kwargs_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    import subprocess
     kw = transport.popen_detach_kwargs()
     assert "creationflags" in kw
-    assert kw["creationflags"] & subprocess.DETACHED_PROCESS
-    assert kw["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    # Numeric flags per MSDN so this test works on POSIX runners too
+    # (subprocess module there has no DETACHED_PROCESS attribute).
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    assert kw["creationflags"] & DETACHED_PROCESS
+    assert kw["creationflags"] & CREATE_NEW_PROCESS_GROUP
     assert "start_new_session" not in kw
 
 
