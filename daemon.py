@@ -4,6 +4,7 @@ from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+from transport import cleanup_endpoint, connect_client, runtime_paths, start_server
 
 
 def _load_env():
@@ -21,9 +22,9 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+PATHS = runtime_paths(NAME)
+LOG = str(PATHS.log)
+PID = str(PATHS.pid)
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -58,6 +59,37 @@ def log(msg):
     open(LOG, "a").write(f"{msg}\n")
 
 
+def _probe_cdp_port(port=9222, timeout=30):
+    """Connect to a fixed CDP port and return the WebSocket debugger URL."""
+    deadline = time.time() + timeout
+    while True:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(1)
+        try:
+            probe.connect(("127.0.0.1", port))
+            break
+        except OSError:
+            if time.time() >= deadline:
+                raise RuntimeError(
+                    f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port}"
+                )
+            time.sleep(1)
+        finally:
+            probe.close()
+    try:
+        resp = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/json/version", timeout=5
+        )
+        data = json.loads(resp.read())
+        return data.get(
+            "webSocketDebuggerUrl", f"ws://127.0.0.1:{port}/devtools/browser"
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Found CDP port {port} open, but failed to fetch /json/version: {exc}"
+        )
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -82,7 +114,18 @@ def get_ws_url():
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
+    # Chrome 147+ with CHROME_CONFIG_HOME may not write DevToolsActivePort.
+    # Fallback to the well-known default port.
+    try:
+        return _probe_cdp_port()
+    except RuntimeError:
+        pass
+    raise RuntimeError(
+        f"DevToolsActivePort not found in {[str(p) for p in PROFILES]}.\n"
+        "Chrome 147+ blocks remote debugging on the default profile — "
+        "see https://github.com/browser-use/browser-harness/blob/main/install.md#chrome-147-workaround.\n"
+        "Fix: use launch_chrome() from admin.py, or set BU_CDP_WS for a remote browser."
+    )
 
 
 def stop_remote():
@@ -192,8 +235,8 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
+    cleanup_endpoint(NAME)
+    # os.unlink(SOCK)
 
     async def handler(reader, writer):
         try:
@@ -212,9 +255,9 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    server = await start_server(handler, NAME)
+    # os.chmod(SOCK, 0o600)
+    log(f"listening on {PATHS.sock} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -227,26 +270,8 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
+        s = connect_client(NAME, timeout=1)
+        s.close()
+        return True
     except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
         return False
-
-
-if __name__ == "__main__":
-    if already_running():
-        print(f"daemon already running on {SOCK}", file=sys.stderr)
-        sys.exit(0)
-    open(LOG, "w").close()
-    open(PID, "w").write(str(os.getpid()))
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        log(f"fatal: {e}")
-        sys.exit(1)
-    finally:
-        stop_remote()
-        try: os.unlink(PID)
-        except FileNotFoundError: pass
