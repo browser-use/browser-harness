@@ -35,6 +35,7 @@ Available interaction skills:
 
 Available domain skills:
 - `tiktok/upload.md`
+- `domain-skills/x/post.md` — post text + image(s) or video(s) to X.com (auto-converts non-H.264 video, supports multiple media)
 
 ## Tool call shape
 
