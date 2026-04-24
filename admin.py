@@ -5,6 +5,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import transport
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -23,73 +25,66 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
 GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
-VERSION_CACHE = Path("/tmp/bu-version-cache.json")
+VERSION_CACHE = transport.version_cache_path()
 VERSION_CACHE_TTL = 24 * 3600
 
 
-def _paths(name):
-    n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
-
-
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
     try:
-        return Path(p).read_text().strip().splitlines()[-1]
+        return transport.log_path(name or NAME).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
         return None
 
 
 def daemon_alive(name=None):
-    try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
-        s.close()
-        return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
-        return False
+    return transport.is_alive(name or NAME, timeout=1.0)
 
 
 def ensure_daemon(wait=60.0, name=None, env=None):
     """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
-    if daemon_alive(name):
+    n = name or NAME
+    if daemon_alive(n):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
-            s.connect(_paths(name)[0])
+            s = transport.open_client_sync(n, timeout=3)
             s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
             data = b""
             while not data.endswith(b"\n"):
                 chunk = s.recv(1 << 16)
                 if not chunk: break
                 data += chunk
+            s.close()
             if b'"result"' in data: return
         except Exception: pass
-        restart_daemon(name)
+        restart_daemon(n)
+    else:
+        # Clean up any stale endpoint file so the fresh daemon gets a clean bind.
+        transport.cleanup_endpoint(n)
+        transport.cleanup_server_files(n)
 
     import subprocess, sys
     local = not (env or {}).get("BU_CDP_WS") and not os.environ.get("BU_CDP_WS")
     for attempt in (0, 1):
-        e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+        e = {**os.environ, **({"BU_NAME": n} if n else {}), **(env or {})}
         p = subprocess.Popen(
             ["uv", "run", "daemon.py"],
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            **transport.popen_detach_kwargs(),
         )
         deadline = time.time() + wait
         while time.time() < deadline:
-            if daemon_alive(name): return
+            if daemon_alive(n): return
             if p.poll() is not None: break
             time.sleep(0.2)
-        msg = _log_tail(name) or ""
+        msg = _log_tail(n) or ""
         if local and attempt == 0 and ("DevToolsActivePort not found" in msg or "not live yet" in msg or ("WS handshake failed" in msg and "403" in msg)):
             _open_chrome_inspect()
             print("browser-harness: click Allow on chrome://inspect (and tick the checkbox if shown)", file=sys.stderr)
-            restart_daemon(name)
+            restart_daemon(n)
             continue
-        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+        raise RuntimeError(msg or f"daemon {n} didn't come up -- check {transport.log_path(n)}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -107,25 +102,24 @@ def stop_remote_daemon(name="remote"):
 
 
 def restart_daemon(name=None):
-    """Best-effort daemon shutdown + socket/pid cleanup.
+    """Best-effort daemon shutdown + endpoint/socket/pid cleanup.
 
     Name is historical: callers typically follow this with another
     `browser-harness` invocation, which auto-spawns a fresh daemon via
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    sock, pid_path = _paths(name)
+    n = name or NAME
+    pid_path = transport.pid_path(n)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = transport.open_client_sync(n, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
     except Exception:
         pass
     try:
-        pid = int(open(pid_path).read())
+        pid = int(pid_path.read_text())
     except (FileNotFoundError, ValueError):
         pid = None
     if pid:
@@ -133,18 +127,19 @@ def restart_daemon(name=None):
             try:
                 os.kill(pid, 0)
                 time.sleep(0.2)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 break
         else:
             try:
                 os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 pass
-    for f in (sock, pid_path):
-        try:
-            os.unlink(f)
-        except FileNotFoundError:
-            pass
+    transport.cleanup_endpoint(n)
+    transport.cleanup_server_files(n)
+    try:
+        pid_path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _browser_use(path, method, body=None):
@@ -509,6 +504,8 @@ def run_doctor():
     # for display would otherwise be parsed as (0,) and flag every latest as newer.
     newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
     cur_display = cur or "(unknown)"
+    transport_kind = "tcp" if transport.is_tcp() else "uds"
+    endpoint_desc = transport.read_endpoint(NAME)
 
     def row(label, ok, detail=""):
         mark = "ok  " if ok else "FAIL"
@@ -522,6 +519,12 @@ def run_doctor():
         print(f"  latest release    {latest}" + (" (update available)" if newer else ""))
     else:
         print("  latest release    (could not reach github)")
+    if endpoint_desc and endpoint_desc.get("kind") == "tcp":
+        print(f"  transport         tcp {endpoint_desc['host']}:{endpoint_desc['port']} (name={NAME})")
+    elif endpoint_desc and endpoint_desc.get("kind") == "uds":
+        print(f"  transport         uds {endpoint_desc['path']} (name={NAME})")
+    else:
+        print(f"  transport         {transport_kind} (name={NAME}, no endpoint file — daemon not running)")
     row("chrome running", chrome, "" if chrome else "start chrome/edge and rerun `browser-harness --setup`")
     row("daemon alive", daemon, "" if daemon else "run `browser-harness --setup` to attach")
     row("profile-use installed", profile_use, "" if profile_use else "optional: curl -fsSL https://browser-use.com/profile.sh | sh")
