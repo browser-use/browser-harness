@@ -1,9 +1,15 @@
-"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
+"""CDP WS holder + local IPC relay. One daemon per BU_NAME.
+
+The IPC endpoint is a Unix Domain Socket on POSIX and a loopback-only TCP
+listener on Windows; ``transport.py`` owns the OS detection.
+"""
 import asyncio, json, os, socket, sys, time, urllib.request
 from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+
+import transport
 
 
 def _load_env():
@@ -21,9 +27,8 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+LOG = str(transport.log_path(NAME))
+PID = str(transport.pid_path(NAME))
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -192,9 +197,6 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
-
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -212,11 +214,16 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
-    async with server:
-        await d.stop.wait()
+    server = await transport.start_ipc_server(NAME, handler)
+    desc = transport.read_endpoint(NAME)
+    endpoint = desc.get("path") if desc.get("kind") == "uds" else f"{desc['host']}:{desc['port']}"
+    log(f"listening on {desc['kind']}:{endpoint} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    try:
+        async with server:
+            await d.stop.wait()
+    finally:
+        transport.cleanup_endpoint(NAME)
+        transport.cleanup_server_files(NAME)
 
 
 async def main():
@@ -226,16 +233,12 @@ async def main():
 
 
 def already_running():
-    try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
-        return False
+    return transport.is_alive(NAME)
 
 
 if __name__ == "__main__":
     if already_running():
-        print(f"daemon already running on {SOCK}", file=sys.stderr)
+        print(f"daemon already running for {NAME!r}", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))

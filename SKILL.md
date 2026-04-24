@@ -154,7 +154,7 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 ## Architecture
 
 ```text
-Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.py
+Chrome / Browser Use cloud -> CDP WS -> daemon.py -> local IPC (UDS on POSIX, TCP loopback on Windows) -> run.py
 ```
 
 - Protocol is one JSON line each way.
@@ -182,7 +182,7 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
   `restart_daemon()`
   `PY`
   before assuming setup is wrong.
-- If `restart_daemon()` also hangs, kill Chrome entirely (`pkill -9 -f "Google Chrome"`), clean sockets (`rm -f /tmp/bu-default.sock /tmp/bu-default.pid`), reopen Chrome (`open -a "Google Chrome"`), wait 5s, then reconnect. This resets all CDP state.
+- If `restart_daemon()` also hangs, kill Chrome entirely (POSIX: `pkill -9 -f "Google Chrome"`; Windows: `taskkill /F /IM chrome.exe`), clean stale state in `$TMPDIR`/`%TEMP%` (`bu-default.endpoint`, `bu-default.sock` on POSIX, `bu-default.pid`), reopen Chrome, wait 5s, then reconnect. This resets all CDP state.
 - Browser Use API is camelCase on the wire. `cdpUrl`, `proxyCountryCode`, etc.
 - Remote `cdpUrl` is HTTPS, not ws. Resolve the websocket URL via `/json/version`.
 - Stop cloud browsers with `PATCH /browsers/{id}` + `{\"action\":\"stop\"}`.
