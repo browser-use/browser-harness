@@ -23,8 +23,10 @@ SOCK = f"/tmp/bu-{NAME}.sock"
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
-def _send(req):
+def _send(req, timeout=None):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    if timeout is not None:
+        s.settimeout(timeout)
     s.connect(SOCK)
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
@@ -38,9 +40,11 @@ def _send(req):
     return r
 
 
-def cdp(method, session_id=None, **params):
-    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
-    return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
+def cdp(method, session_id=None, timeout=None, **params):
+    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1).
+    Pass timeout=<seconds> for best-effort calls that shouldn't block forever
+    (e.g. touching a possibly-stale session — see switch_tab's unmark step)."""
+    return _send({"method": method, "params": params, "session_id": session_id}, timeout=timeout).get("result", {})
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
@@ -124,8 +128,10 @@ def _mark_tab():
     except Exception: pass
 
 def switch_tab(target_id):
-    # Unmark old tab
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F7E2 '))document.title=document.title.slice(2)")
+    # Unmark old tab. Short timeout: if the attached session's target is gone
+    # (tab closed, crashed, never woken), the daemon has nothing to reply with
+    # and this cosmetic call would otherwise hang forever, wedging switch_tab.
+    try: cdp("Runtime.evaluate", timeout=2, expression="if(document.title.startsWith('\U0001F7E2 '))document.title=document.title.slice(2)")
     except Exception: pass
     cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
