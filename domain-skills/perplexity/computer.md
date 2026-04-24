@@ -10,7 +10,11 @@ You must be signed in before the harness can drive it. Computer is a paid featur
 - Task detail (run page): `https://www.perplexity.ai/computer/tasks/<slug>-<id>`
   - `<slug>` is a kebab-case auto-summary of the prompt (typically 3–6 words from the title).
   - `<id>` is a 22-char base62-ish opaque id (character set includes letters, digits, `-`, and `_`).
-  - The full last segment is `<slug>-<id>` joined with a `-`; there's no separator character beyond that. Strip the trailing 22 chars to recover just the id.
+  - The full last segment is `<slug>-<id>` joined with a `-`; there's no separator character beyond that. To recover the id, parse with `URL` and take the last 22 chars of the pathname's final segment — **never slice the raw href**, because query/hash (e.g. `?view=thread`) will corrupt the result:
+    ```python
+    # JS:  new URL(href).pathname.split('/').pop().slice(-22)
+    # Python: urlparse(href).path.rsplit('/', 1)[-1][-22:]
+    ```
 - Connectors: `https://www.perplexity.ai/computer/connectors`
 - Custom skills: `https://www.perplexity.ai/computer/skills`
 - Public share: the same task URL with `?view=thread` appended (e.g. `https://www.perplexity.ai/computer/tasks/<slug>-<id>?view=thread`). There is **no separate `/share/<id>` path** — the access level is toggled server-side and the `view=thread` query just opens the thread view for unauthenticated viewers.
@@ -166,7 +170,7 @@ def all_todo_done():
       if(!panel) return null;
       const icons = [...panel.querySelectorAll('svg use')]
         .map(u => u.getAttribute('xlink:href')||'');
-      if(icons.length === 0) return false;  // panel still hydrating
+      if(icons.length === 0) return null;   // panel still hydrating
       return icons.every(h => /#pplx-icon-check/.test(h));
     })()
     """)

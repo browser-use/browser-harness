@@ -55,10 +55,16 @@ new_tab("https://manus.im/app")
 wait_for_load()
 wait(1.5)  # SPA still hydrating; composer is a TipTap editor that mounts late
 # Locate the editor and click into it — the ProseMirror div is the contenteditable.
-rect = js(r"""
-(()=>{const ce=document.querySelector('div.ProseMirror[contenteditable="true"]');
-const r=ce.getBoundingClientRect();return {x:r.x+r.width/2|0,y:r.y+r.height/2|0}})()
-""")
+# The composer mounts late; retry briefly if it isn't in the DOM yet.
+for _ in range(10):
+    rect = js(r"""
+    (()=>{const ce=document.querySelector('div.ProseMirror[contenteditable="true"]');
+    if(!ce) return null;
+    const r=ce.getBoundingClientRect();return {x:r.x+r.width/2|0,y:r.y+r.height/2|0}})()
+    """)
+    if rect: break
+    wait(0.5)
+assert rect, "ProseMirror composer never mounted — page probably failed to hydrate"
 click(rect["x"], rect["y"])
 wait(0.3)
 type_text("Research the top 5 espresso machines under $500 and summarize tradeoffs")
