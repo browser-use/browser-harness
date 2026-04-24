@@ -51,16 +51,11 @@ def main():
     if args and args[0] == "--update":
         yes = any(a in {"-y", "--yes"} for a in args[1:])
         sys.exit(run_update(yes=yes))
-    if sys.stdin.isatty():
-        sys.exit(
-            "browser-harness reads Python from stdin. Use:\n"
-            "  browser-harness <<'PY'\n"
-            "  print(page_info())\n"
-            "  PY"
-        )
+    if not args or args[0] != "-c":
+        sys.exit("Usage: browser-harness -c \"print(page_info())\"")
     print_update_banner()
     ensure_daemon()
-    exec(sys.stdin.read(), globals())
+    exec(args[1], globals())
 
 
 if __name__ == "__main__":
