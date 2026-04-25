@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import patch
 import helpers
 
@@ -35,12 +36,35 @@ def test_iife_with_internal_return_is_not_double_wrapped():
     assert _evaluated_expression(captured) == "(function(){ return document.title; })()"
 
 
+def test_js_raises_on_runtime_exception():
+    def fake_cdp(method, **kwargs):
+        return {
+            "exceptionDetails": {
+                "text": "Uncaught ReferenceError",
+                "exception": {"description": "ReferenceError: missing is not defined"},
+            }
+        }
+
+    with patch("helpers.cdp", side_effect=fake_cdp):
+        with pytest.raises(RuntimeError, match="missing is not defined"):
+            helpers.js("missing.value")
+
+
 def test_wait_for_js_returns_first_truthy_value():
     with patch("helpers.js", side_effect=[False, None, {"ready": True}]), \
          patch("helpers.time.sleep") as sleep:
         assert helpers.wait_for_js("window.__ready", timeout=1, interval=0.01) == {"ready": True}
 
     assert sleep.call_count == 2
+
+
+def test_wait_for_js_propagates_js_errors():
+    with patch("helpers.js", side_effect=RuntimeError("JavaScript evaluation failed")), \
+         patch("helpers.time.sleep") as sleep:
+        with pytest.raises(RuntimeError, match="JavaScript evaluation failed"):
+            helpers.wait_for_js("missing.value", timeout=1, interval=0.01)
+
+    sleep.assert_not_called()
 
 
 def test_wait_for_selector_uses_visible_predicate():

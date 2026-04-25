@@ -226,6 +226,11 @@ return !!(r.width && r.height && s.visibility !== 'hidden' && s.display !== 'non
 """
     return bool(wait_for_js(expression, timeout=timeout, interval=interval))
 
+def _js_exception_text(r):
+    d = r.get("exceptionDetails") or {}
+    e = d.get("exception") or {}
+    return "\n".join(str(x) for x in (d.get("text"), e.get("description"), e.get("value")) if x)
+
 def js(expression, target_id=None):
     """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
 
@@ -236,6 +241,8 @@ def js(expression, target_id=None):
     if "return " in expression and not expression.strip().startswith("("):
         expression = f"(function(){{{expression}}})()"
     r = cdp("Runtime.evaluate", session_id=sid, expression=expression, returnByValue=True, awaitPromise=True)
+    if "exceptionDetails" in r:
+        raise RuntimeError(f"JavaScript evaluation failed: {_js_exception_text(r) or 'unknown error'}")
     return r.get("result", {}).get("value")
 
 def page_outline(limit=80):
