@@ -126,8 +126,10 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 - Clicking: capture_screenshot() → read the pixel off the image → click_at_xy(x, y) → capture_screenshot() to verify. Suppress the Playwright-habit reflex of "locate first, then click" — no getBoundingClientRect, no selector hunt. Drop to DOM only when the target has no visible geometry (hidden input, 0×0 node). Hit-testing happens in Chrome's browser process, so clicks go through iframes / shadow DOM / cross-origin without extra work.
 - Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
 - After goto: wait_for_load().
+- React/SPA readiness: use wait_for_selector(...) or wait_for_js(...) for the hydrated UI state you need instead of fixed sleeps after wait_for_load().
 - Wrong/stale tab: ensure_real_tab(). Use it when the current tab is stale or internal; the daemon also auto-recovers from stale sessions on the next call.
 - Verification: print(page_info()) is the simplest "is this alive?" check, but screenshots are the default way to verify whether a visible action actually worked.
+- Agent observation: page_outline() returns a compact list of visible interactive elements with text, roles, labels, hrefs, and rects.
 - DOM reads: use js(...) for inspection and extraction when the screenshot shows that coordinates are the wrong tool.
 - Iframe sites (Azure blades, Salesforce): click_at_xy(x, y) passes through; only drop to iframe DOM work when coordinate clicks are the wrong tool.
 - Auth wall: redirected to login → stop and ask the user. Don't type credentials from screenshots.

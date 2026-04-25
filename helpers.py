@@ -197,6 +197,35 @@ def wait_for_load(timeout=15.0):
         time.sleep(0.3)
     return False
 
+def wait_for_js(expression, timeout=10.0, interval=0.2):
+    """Poll a JS expression until it returns a truthy value, then return that value.
+
+    Useful for React/SPA pages where document.readyState is complete before the
+    component the agent needs has hydrated or rendered."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = js(expression)
+        if value:
+            return value
+        time.sleep(interval)
+    return False
+
+def wait_for_selector(selector, timeout=10.0, visible=False, interval=0.2):
+    """Wait for `document.querySelector(selector)`.
+
+    Pass visible=True when the agent needs a painted target, not just a mounted
+    DOM node."""
+    expression = f"""
+const el = document.querySelector({json.dumps(selector)});
+if (!el) return false;
+if (!{json.dumps(bool(visible))}) return true;
+const r = el.getBoundingClientRect();
+const s = getComputedStyle(el);
+return !!(r.width && r.height && s.visibility !== 'hidden' && s.display !== 'none' &&
+          r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth);
+"""
+    return bool(wait_for_js(expression, timeout=timeout, interval=interval))
+
 def js(expression, target_id=None):
     """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
 
@@ -208,6 +237,38 @@ def js(expression, target_id=None):
         expression = f"(function(){{{expression}}})()"
     r = cdp("Runtime.evaluate", session_id=sid, expression=expression, returnByValue=True, awaitPromise=True)
     return r.get("result", {}).get("value")
+
+def page_outline(limit=80):
+    """Compact summary of visible interactive elements for agent observation."""
+    limit = max(0, int(limit))
+    expression = f"""
+const limit = {limit};
+const q = 'a,button,input,textarea,select,[role],[aria-label],[contenteditable="true"]';
+const out = [];
+for (const el of document.querySelectorAll(q)) {{
+  if (out.length >= limit) break;
+  const r = el.getBoundingClientRect();
+  const s = getComputedStyle(el);
+  if (!r.width || !r.height || s.visibility === 'hidden' || s.display === 'none') continue;
+  if (r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) continue;
+  const text = (el.innerText || el.value || el.getAttribute('aria-label') ||
+                el.getAttribute('placeholder') || el.getAttribute('title') || '')
+    .replace(/\\s+/g, ' ').trim().slice(0, 140);
+  out.push({{
+    i: out.length,
+    tag: el.tagName.toLowerCase(),
+    text,
+    role: el.getAttribute('role'),
+    aria: el.getAttribute('aria-label'),
+    type: el.getAttribute('type'),
+    href: el.href || null,
+    disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+    rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]
+  }});
+}}
+return out;
+"""
+    return js(expression) or []
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}

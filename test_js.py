@@ -33,3 +33,40 @@ def test_iife_with_internal_return_is_not_double_wrapped():
     with patch("helpers.cdp", side_effect=fake_cdp):
         helpers.js("(function(){ return document.title; })()")
     assert _evaluated_expression(captured) == "(function(){ return document.title; })()"
+
+
+def test_wait_for_js_returns_first_truthy_value():
+    with patch("helpers.js", side_effect=[False, None, {"ready": True}]), \
+         patch("helpers.time.sleep") as sleep:
+        assert helpers.wait_for_js("window.__ready", timeout=1, interval=0.01) == {"ready": True}
+
+    assert sleep.call_count == 2
+
+
+def test_wait_for_selector_uses_visible_predicate():
+    with patch("helpers.wait_for_js", return_value=True) as wait:
+        assert helpers.wait_for_selector("button[aria-label='Save']", timeout=3, visible=True)
+
+    expression = wait.call_args[0][0]
+    assert "button[aria-label='Save']" in expression
+    assert "getBoundingClientRect" in expression
+    assert "visibility !== 'hidden'" in expression
+    assert wait.call_args.kwargs == {"timeout": 3, "interval": 0.2}
+
+
+def test_page_outline_returns_agent_summary():
+    outline = [{"tag": "button", "text": "Save", "rect": [10, 20, 80, 30]}]
+    with patch("helpers.js", return_value=outline) as run_js:
+        assert helpers.page_outline(limit=3) == outline
+
+    expression = run_js.call_args[0][0]
+    assert "const limit = 3" in expression
+    assert "a,button,input,textarea,select" in expression
+    assert "aria-label" in expression
+
+
+def test_page_outline_clamps_negative_limit():
+    with patch("helpers.js", return_value=[]) as run_js:
+        assert helpers.page_outline(limit=-1) == []
+
+    assert "const limit = 0" in run_js.call_args[0][0]
