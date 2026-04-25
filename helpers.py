@@ -217,7 +217,12 @@ def js(expression, target_id=None):
     if "return " in expression:
         expression = f"(function(){{{expression}}})()"
     r = cdp("Runtime.evaluate", session_id=sid, expression=expression, returnByValue=True, awaitPromise=True)
-    return r.get("result", {}).get("value")
+    result = r.get("result", {})
+    if result.get("wasThrown"):
+        detail = result.get("exceptionDetails", {})
+        desc = detail.get("exception", {}).get("description", "unknown") if isinstance(detail.get("exception"), dict) else str(detail.get("exception", "unknown"))
+        raise RuntimeError(f"JS evaluate threw: {desc}")
+    return result.get("value")
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
