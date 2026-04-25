@@ -35,7 +35,10 @@ def test_top_level_return_retries_wrapped():
         {
             "exceptionDetails": {
                 "text": "Uncaught SyntaxError: Illegal return statement",
-                "exception": {"description": "SyntaxError: Illegal return statement"},
+                "exception": {
+                    "className": "SyntaxError",
+                    "description": "SyntaxError: Illegal return statement",
+                },
             }
         },
         {"result": {"value": 1}},
@@ -53,6 +56,24 @@ def test_iife_with_internal_return_is_not_double_wrapped():
     with patch("helpers.cdp", side_effect=fake_cdp):
         helpers.js("(function(){ return document.title; })()")
     assert _evaluated_expression(captured) == "(function(){ return document.title; })()"
+
+
+def test_runtime_error_message_does_not_retry_wrapped():
+    fake_cdp, captured = _capture_cdp([
+        {
+            "exceptionDetails": {
+                "text": "Uncaught Error: Illegal return statement",
+                "exception": {
+                    "className": "Error",
+                    "description": "Error: Illegal return statement",
+                },
+            }
+        }
+    ])
+    expression = "throw new Error('Illegal return statement')"
+    with patch("helpers.cdp", side_effect=fake_cdp):
+        assert helpers.js(expression) is None
+    assert _evaluated_expressions(captured) == [expression]
 
 
 def test_iife_return_is_not_wrapped():

@@ -202,6 +202,17 @@ def _exception_text(r):
     e = d.get("exception") or {}
     return "\n".join(str(x) for x in (d.get("text"), e.get("description"), e.get("value")) if x)
 
+def _is_illegal_return_syntax_error(r):
+    d = r.get("exceptionDetails") or {}
+    e = d.get("exception") or {}
+    text = str(d.get("text") or "")
+    description = str(e.get("description") or "")
+    class_name = e.get("className")
+    return (
+        "Illegal return statement" in (text + "\n" + description)
+        and (class_name == "SyntaxError" or "SyntaxError:" in text or "SyntaxError:" in description)
+    )
+
 def js(expression, target_id=None):
     """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
 
@@ -210,7 +221,7 @@ def js(expression, target_id=None):
     """
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
     r = cdp("Runtime.evaluate", session_id=sid, expression=expression, returnByValue=True, awaitPromise=True)
-    if "Illegal return statement" in _exception_text(r):
+    if _is_illegal_return_syntax_error(r):
         r = cdp("Runtime.evaluate", session_id=sid, expression=f"(function(){{{expression}}})()", returnByValue=True, awaitPromise=True)
     return r.get("result", {}).get("value")
 
