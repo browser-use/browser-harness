@@ -455,17 +455,13 @@ def _launch_chrome_debug():
     )
     import time as _t, socket as _s
     for _ in range(30):
-        sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
-        sock.settimeout(1)
         try:
-            sock.connect(("127.0.0.1", 9222))
-            sock.close()
+            urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2)
             return True
-        except OSError:
+        except Exception:
             pass
-        finally:
-            sock.close()
         _t.sleep(1)
+    return False
 
 
 def _open_chrome_inspect():
