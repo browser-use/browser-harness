@@ -204,7 +204,7 @@ def js(expression, target_id=None):
     `document.title` and `const x = 1; return x` are valid inputs.
     """
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
-    if "return " in expression:
+    if "return " in expression and not expression.strip().startswith("("):
         expression = f"(function(){{{expression}}})()"
     r = cdp("Runtime.evaluate", session_id=sid, expression=expression, returnByValue=True, awaitPromise=True)
     return r.get("result", {}).get("value")

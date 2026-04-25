@@ -26,3 +26,10 @@ def test_return_statement_gets_wrapped():
     with patch("helpers.cdp", side_effect=fake_cdp):
         helpers.js("const x = 1; return x")
     assert _evaluated_expression(captured) == "(function(){const x = 1; return x})()"
+
+
+def test_iife_with_internal_return_is_not_double_wrapped():
+    fake_cdp, captured = _capture_cdp()
+    with patch("helpers.cdp", side_effect=fake_cdp):
+        helpers.js("(function(){ return document.title; })()")
+    assert _evaluated_expression(captured) == "(function(){ return document.title; })()"
