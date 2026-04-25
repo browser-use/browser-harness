@@ -25,15 +25,25 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 
 def _send(req):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
-    s.sendall((json.dumps(req) + "\n").encode())
+    s.settimeout(30.0)  # prevent indefinite hang if daemon is unresponsive
+    try:
+        s.connect(SOCK)
+    except OSError as e:
+        raise RuntimeError(f"failed to connect to daemon at {SOCK}: {e}") from None
+    try:
+        s.sendall((json.dumps(req) + "\n").encode())
+    except OSError as e:
+        raise RuntimeError(f"failed to send request to daemon: {e}") from None
     data = b""
     while not data.endswith(b"\n"):
         chunk = s.recv(1 << 20)
         if not chunk: break
         data += chunk
     s.close()
-    r = json.loads(data)
+    try:
+        r = json.loads(data)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"daemon returned malformed JSON: {data[:200]!r}") from None
     if "error" in r: raise RuntimeError(r["error"])
     return r
 
