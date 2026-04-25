@@ -197,6 +197,11 @@ def wait_for_load(timeout=15.0):
         time.sleep(0.3)
     return False
 
+def _exception_text(r):
+    d = r.get("exceptionDetails") or {}
+    e = d.get("exception") or {}
+    return "\n".join(str(x) for x in (d.get("text"), e.get("description"), e.get("value")) if x)
+
 def js(expression, target_id=None):
     """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
 
@@ -204,9 +209,9 @@ def js(expression, target_id=None):
     `document.title` and `const x = 1; return x` are valid inputs.
     """
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
-    if "return " in expression and not expression.strip().startswith("("):
-        expression = f"(function(){{{expression}}})()"
     r = cdp("Runtime.evaluate", session_id=sid, expression=expression, returnByValue=True, awaitPromise=True)
+    if "Illegal return statement" in _exception_text(r):
+        r = cdp("Runtime.evaluate", session_id=sid, expression=f"(function(){{{expression}}})()", returnByValue=True, awaitPromise=True)
     return r.get("result", {}).get("value")
 
 
