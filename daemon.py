@@ -128,8 +128,8 @@ class Daemon:
                 await asyncio.wait_for(
                     self.cdp.send_raw("Page.enable", session_id=sid), timeout=2
                 )
-            except asyncio.TimeoutError:
-                log(f"skipping unresponsive target {p['targetId']} ({p.get('url','')[:80]}) — likely discarded")
+            except Exception as e:
+                log(f"skipping unresponsive target {p['targetId']} ({p.get('url','')[:80]}) — {e or 'likely discarded'}")
                 try:
                     await self.cdp.send_raw("Target.detachFromTarget", {"sessionId": sid})
                 except Exception:
