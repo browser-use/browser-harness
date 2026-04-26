@@ -49,8 +49,12 @@ def drain_events():  return _send({"meta": "drain_events"})["events"]
 # --- navigation / page ---
 def goto_url(url):
     r = cdp("Page.navigate", url=url)
-    d = (Path(__file__).parent / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
-    return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
+    hostname = (urlparse(url).hostname or "").removeprefix("www.").split(".")[0]
+    if hostname and hostname.isalnum():
+        d = Path(__file__).parent / "domain-skills" / hostname
+        if d.is_dir():
+            return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]}
+    return r
 
 def page_info():
     """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
