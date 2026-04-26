@@ -152,7 +152,7 @@ class Daemon:
                     self.cdp.send_raw("Page.enable", session_id=self.session), timeout=5
                 )
             except Exception as e:
-                log(f"enable Page: {e}")
+                raise RuntimeError(f"failed to enable Page on fresh about:blank tab: {e}")
 
         log(f"attached {chosen['targetId']} ({chosen.get('url','')[:80]}) session={self.session}")
         for d in ("DOM", "Runtime", "Network"):
