@@ -1,9 +1,24 @@
-"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
+"""CDP WS holder + Unix socket / TCP loopback relay. One daemon per BU_NAME.
+
+Cross-platform: uses Unix domain sockets on macOS/Linux, TCP loopback on Windows
+(via _ipc.py abstraction; Windows has no socket.AF_UNIX).
+"""
 import asyncio, json, os, socket, sys, time, urllib.request
 from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+
+from _ipc import (
+    SOCK_EXT,
+    PID_EXT,
+    LOG_EXT,
+    cleanup_endpoint,
+    connect_daemon,
+    is_windows,
+    runtime_path,
+    start_daemon_server,
+)
 
 
 def _load_env():
@@ -21,9 +36,9 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+SOCK = runtime_path(NAME, SOCK_EXT)
+LOG = runtime_path(NAME, LOG_EXT)
+PID = runtime_path(NAME, PID_EXT)
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -198,9 +213,6 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
-
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -218,9 +230,8 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    server, endpoint = await start_daemon_server(handler, NAME)
+    log(f"listening on {endpoint} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -233,9 +244,10 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        s = connect_daemon(NAME, timeout=1)
+        s.close()
+        return True
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
 
 
@@ -254,5 +266,4 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         stop_remote()
-        try: os.unlink(PID)
-        except FileNotFoundError: pass
+        cleanup_endpoint(NAME)

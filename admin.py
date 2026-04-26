@@ -5,6 +5,17 @@ import time
 import urllib.request
 from pathlib import Path
 
+from _ipc import (
+    SOCK_EXT,
+    PID_EXT,
+    LOG_EXT,
+    cleanup_endpoint,
+    connect_daemon,
+    is_windows,
+    runtime_dir,
+    runtime_path,
+)
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -23,17 +34,17 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
 GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
-VERSION_CACHE = Path("/tmp/bu-version-cache.json")
+VERSION_CACHE = Path(runtime_dir()) / "bu-version-cache.json"
 VERSION_CACHE_TTL = 24 * 3600
 
 
 def _paths(name):
     n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
+    return runtime_path(n, SOCK_EXT), runtime_path(n, PID_EXT)
 
 
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
+    p = runtime_path(name or NAME, LOG_EXT)
     try:
         return Path(p).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
@@ -66,12 +77,10 @@ def _is_local_chrome_mode(env=None):
 
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
+        s = connect_daemon(name or NAME, timeout=1)
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
 
 
@@ -81,8 +90,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
-            s.connect(_paths(name)[0])
+            s = connect_daemon(name or NAME, timeout=3)
             s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
             data = b""
             while not data.endswith(b"\n"):
@@ -97,11 +105,16 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     local = _is_local_chrome_mode(env)
     for attempt in (0, 1):
         e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
-        p = subprocess.Popen(
-            ["uv", "run", "daemon.py"],
+        popen_kwargs = dict(
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        if is_windows():
+            # CREATE_NEW_PROCESS_GROUP detaches from parent's console group on Win
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+        p = subprocess.Popen(["uv", "run", "daemon.py"], **popen_kwargs)
         deadline = time.time() + wait
         while time.time() < deadline:
             if daemon_alive(name): return
@@ -140,9 +153,7 @@ def restart_daemon(name=None):
 
     sock, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = connect_daemon(name or NAME, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -150,25 +161,21 @@ def restart_daemon(name=None):
         pass
     try:
         pid = int(open(pid_path).read())
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError, OSError):
         pid = None
     if pid:
         for _ in range(75):
             try:
                 os.kill(pid, 0)
                 time.sleep(0.2)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 break
         else:
             try:
                 os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 pass
-    for f in (sock, pid_path):
-        try:
-            os.unlink(f)
-        except FileNotFoundError:
-            pass
+    cleanup_endpoint(name or NAME)
 
 
 def _browser_use(path, method, body=None):
