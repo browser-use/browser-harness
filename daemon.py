@@ -113,19 +113,49 @@ class Daemon:
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self):
-        """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
+        """Attach to a real, responsive page. Sets self.session. Returns attached target."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
-        if not pages:
-            # No real pages — create one instead of attaching to omnibox popup
+
+        chosen = None
+        for p in pages:
+            sid = (await self.cdp.send_raw(
+                "Target.attachToTarget", {"targetId": p["targetId"], "flatten": True}
+            ))["sessionId"]
+            # Page.enable doubles as a liveness probe: discarded tabs (Memory Saver)
+            # leave the target attachable but the renderer is gone, so it never returns.
+            try:
+                await asyncio.wait_for(
+                    self.cdp.send_raw("Page.enable", session_id=sid), timeout=2
+                )
+            except asyncio.TimeoutError:
+                log(f"skipping unresponsive target {p['targetId']} ({p.get('url','')[:80]}) — likely discarded")
+                try:
+                    await self.cdp.send_raw("Target.detachFromTarget", {"sessionId": sid})
+                except Exception:
+                    pass
+                continue
+            chosen = p
+            self.session = sid
+            break
+
+        if chosen is None:
+            # No real pages, or all unresponsive — fall back to a fresh blank tab
             tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
-            log(f"no real pages found, created about:blank ({tid})")
-            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
-        self.session = (await self.cdp.send_raw(
-            "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
-        ))["sessionId"]
-        log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
-        for d in ("Page", "DOM", "Runtime", "Network"):
+            log(f"no live real pages, created about:blank ({tid})")
+            chosen = {"targetId": tid, "url": "about:blank", "type": "page"}
+            self.session = (await self.cdp.send_raw(
+                "Target.attachToTarget", {"targetId": tid, "flatten": True}
+            ))["sessionId"]
+            try:
+                await asyncio.wait_for(
+                    self.cdp.send_raw("Page.enable", session_id=self.session), timeout=5
+                )
+            except Exception as e:
+                log(f"enable Page: {e}")
+
+        log(f"attached {chosen['targetId']} ({chosen.get('url','')[:80]}) session={self.session}")
+        for d in ("DOM", "Runtime", "Network"):
             try:
                 await asyncio.wait_for(
                     self.cdp.send_raw(f"{d}.enable", session_id=self.session),
@@ -133,7 +163,7 @@ class Daemon:
                 )
             except Exception as e:
                 log(f"enable {d}: {e}")
-        return pages[0]
+        return chosen
 
     async def start(self):
         self.stop = asyncio.Event()
