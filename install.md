@@ -48,9 +48,7 @@ Prefer `browser-harness --setup` — it runs the full attach-and-escalate flow b
 2. First try the harness directly. If this works, skip manual browser setup:
 
 ```bash
-uv run browser-harness <<'PY'
-print(page_info())
-PY
+uv run browser-harness -c 'print(page_info())'
 ```
 
    Reuse an existing healthy daemon if it is already responding. Do not kill it during setup unless the attach is clearly stale and you are confident no other agent is using the same `BU_NAME`. For parallel agents, use distinct `BU_NAME`s so they do not fight over the same default session.
@@ -77,11 +75,12 @@ osascript -e 'tell application "Google Chrome" to activate' \
 7. Verify with:
 
 ```bash
-uv run browser-harness <<'PY'
+uv run browser-harness -c "$(cat <<'PY'
 goto_url("https://github.com/browser-use/browser-harness")
 wait_for_load()
 print(page_info())
 PY
+)"
 ```
 
 If that fails with a stale websocket or stale socket, restart the daemon once and retry:

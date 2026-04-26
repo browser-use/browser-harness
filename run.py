@@ -21,10 +21,14 @@ HELP = """Browser Harness
 Read SKILL.md for the default workflow and examples.
 
 Typical usage:
-  uv run bh <<'PY'
+  browser-harness -c 'print(page_info())'
+
+  # multi-line:
+  browser-harness -c "$(cat <<'PY'
   ensure_real_tab()
   print(page_info())
   PY
+  )"
 
 Helpers are pre-imported. The daemon auto-starts and connects to the running browser.
 
