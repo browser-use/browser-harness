@@ -55,7 +55,8 @@ API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
 def log(msg):
-    open(LOG, "a").write(f"{msg}\n")
+    with open(LOG, "a") as f:
+        f.write(f"{msg}\n")
 
 
 def get_ws_url():
@@ -244,7 +245,8 @@ if __name__ == "__main__":
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
-    open(PID, "w").write(str(os.getpid()))
+    with open(PID, "w") as f:
+        f.write(str(os.getpid()))
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
