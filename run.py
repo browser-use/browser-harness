@@ -21,10 +21,12 @@ HELP = """Browser Harness
 Read SKILL.md for the default workflow and examples.
 
 Typical usage:
-  uv run bh <<'PY'
+  browser-harness <<'PY'
   ensure_real_tab()
   print(page_info())
   PY
+
+  browser-harness -c "print(page_info())"
 
 Helpers are pre-imported. The daemon auto-starts and connects to the running browser.
 
@@ -35,6 +37,15 @@ Commands:
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
 """
+
+
+USAGE = 'Usage: browser-harness [-c "print(page_info())"]'
+
+
+def _exec_code(code):
+    print_update_banner()
+    ensure_daemon()
+    exec(code, globals())
 
 
 def main():
@@ -59,11 +70,19 @@ def main():
     if args and args[0] == "--debug-clicks":
         os.environ["BH_DEBUG_CLICKS"] = "1"
         args = args[1:]
-    if not args or args[0] != "-c":
-        sys.exit("Usage: browser-harness -c \"print(page_info())\"")
-    print_update_banner()
-    ensure_daemon()
-    exec(args[1], globals())
+    if args and args[0] == "-c":
+        if len(args) < 2:
+            sys.exit(USAGE)
+        _exec_code(args[1])
+        return
+    if args:
+        sys.exit(USAGE)
+    if sys.stdin.isatty():
+        sys.exit(USAGE)
+    code = sys.stdin.read()
+    if not code.strip():
+        sys.exit(USAGE)
+    _exec_code(code)
 
 
 if __name__ == "__main__":

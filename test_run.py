@@ -26,3 +26,15 @@ def test_c_flag_does_not_read_stdin():
         run.main()
 
     assert not stdin_read, "stdin should not be read when -c is passed"
+
+
+def test_no_args_executes_stdin():
+    stdout = StringIO()
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("run.ensure_daemon"), \
+         patch("run.print_update_banner"), \
+         patch("sys.stdin", StringIO("print('hello from stdin')")), \
+         patch("sys.stdout", stdout):
+        run.main()
+
+    assert stdout.getvalue().strip() == "hello from stdin"
