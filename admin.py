@@ -80,6 +80,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
+        s = None
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
             s.connect(_paths(name)[0])
@@ -91,6 +92,8 @@ def ensure_daemon(wait=60.0, name=None, env=None):
                 data += chunk
             if b'"result"' in data: return
         except Exception: pass
+        finally:
+            if s: s.close()
         restart_daemon(name)
 
     import subprocess, sys
@@ -139,15 +142,17 @@ def restart_daemon(name=None):
     import signal
 
     sock, pid_path = _paths(name)
+    s = None
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(5)
         s.connect(sock)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
-        s.close()
     except Exception:
         pass
+    finally:
+        if s: s.close()
     try:
         pid = int(open(pid_path).read())
     except (FileNotFoundError, ValueError):

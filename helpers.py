@@ -25,14 +25,16 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 
 def _send(req):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
-    s.sendall((json.dumps(req) + "\n").encode())
-    data = b""
-    while not data.endswith(b"\n"):
-        chunk = s.recv(1 << 20)
-        if not chunk: break
-        data += chunk
-    s.close()
+    try:
+        s.connect(SOCK)
+        s.sendall((json.dumps(req) + "\n").encode())
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(1 << 20)
+            if not chunk: break
+            data += chunk
+    finally:
+        s.close()
     r = json.loads(data)
     if "error" in r: raise RuntimeError(r["error"])
     return r
@@ -120,7 +122,8 @@ def scroll(x, y, dy=-300, dx=0):
 # --- visual ---
 def capture_screenshot(path="/tmp/shot.png", full=False):
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
-    open(path, "wb").write(base64.b64decode(r["data"]))
+    with open(path, "wb") as f:
+        f.write(base64.b64decode(r["data"]))
     return path
 
 
