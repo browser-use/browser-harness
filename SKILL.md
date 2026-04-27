@@ -10,14 +10,22 @@ Direct browser control via CDP. Read helpers.py — that's where the functions l
 ## Usage
 
 ```bash
-browser-harness <<'PY'
+browser-harness -c "$(cat <<'PY'
 new_tab("https://docs.browser-use.com")
 wait_for_load()
 print(page_info())
 PY
+)"
+```
+
+For one-liners, just pass the code directly:
+
+```bash
+browser-harness -c 'print(page_info())'
 ```
 
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
+- Pass Python via `-c` — the CLI does not read stdin. For multi-line scripts use the `-c "$(cat <<'PY' ... PY)"` form above.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
 
 Available interaction skills:
@@ -30,9 +38,16 @@ Available domain skills:
 ## Tool call shape
 
 ```bash
-browser-harness <<'PY'
+browser-harness -c "$(cat <<'PY'
 # any python. helpers pre-imported. daemon auto-starts.
 PY
+)"
+```
+
+For short scripts, single-quote the code after `-c`:
+
+```bash
+browser-harness -c 'ensure_real_tab(); print(page_info())'
 ```
 
 run.py calls ensure_daemon() before exec — you never start/stop manually unless you want to.
@@ -42,18 +57,20 @@ run.py calls ensure_daemon() before exec — you never start/stop manually unles
 Use remote for parallel sub-agents (each gets its own isolated browser via a distinct BU_NAME) or on a headless server. BROWSER_USE_API_KEY must be set. start_remote_daemon, list_cloud_profiles, list_local_profiles, sync_local_profile are pre-imported.
 
 ```bash
-browser-harness <<'PY'
+browser-harness -c "$(cat <<'PY'
 start_remote_daemon("work")                               # default — clean browser, no profile
 # start_remote_daemon("work", profileName="my-work")      # reuse a cloud profile (already logged in)
 # start_remote_daemon("work", profileId="<uuid>")         # same, but by UUID
 # start_remote_daemon("work", proxyCountryCode="de", timeout=120)   # DE proxy, 2-hour timeout
 # start_remote_daemon("work", proxyCountryCode=None)      # disable the Browser Use proxy
 PY
+)"
 
-BU_NAME=work browser-harness <<'PY'
+BU_NAME=work browser-harness -c "$(cat <<'PY'
 new_tab("https://example.com")
 print(page_info())
 PY
+)"
 ```
 
 start_remote_daemon prints liveUrl and auto-opens it in the local browser (if a GUI is detected) so the user can watch along. Headless servers print only — share the URL with the user. The daemon PATCHes the cloud browser to stop on shutdown, which persists profile state. Running remote daemons bill until timeout.
