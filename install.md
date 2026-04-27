@@ -31,6 +31,60 @@ After the repo is installed, register this repo's `SKILL.md` with the agent you 
 - **Codex**: add this file as a global skill at `$CODEX_HOME/skills/browser-harness/SKILL.md` (often `~/.codex/skills/browser-harness/SKILL.md`). A symlink to this repo's `SKILL.md` is fine.
 - **Claude Code**: add an import to `~/.claude/CLAUDE.md` that points at this repo's `SKILL.md`, for example `@~/src/browser-harness/SKILL.md`.
 
+## Using MiniMax-M2.7 with Claude Code
+
+browser-harness works with any AI coding agent that speaks the Anthropic API. [MiniMax-M2.7](https://www.minimax.io/models/text/m27) is a cost-effective model that can back Claude Code via MiniMax's Anthropic-compatible endpoint — no separate agent installation required.
+
+**Step 1 — Get a MiniMax API key**
+
+Register at [platform.minimax.io](https://platform.minimax.io/login), then visit [API Keys → Create new secret key](https://platform.minimax.io/user-center/basic-information/interface-key). Export it:
+
+```bash
+export MINIMAX_API_KEY="your_key_here"
+```
+
+**Step 2 — Point Claude Code at MiniMax**
+
+Before configuring, clear any existing Anthropic variables to avoid conflicts:
+
+```bash
+unset ANTHROPIC_AUTH_TOKEN
+unset ANTHROPIC_BASE_URL
+```
+
+Then create or edit `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.minimax.io/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "<YOUR_MINIMAX_API_KEY>",
+    "ANTHROPIC_MODEL": "MiniMax-M2.7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M2.7",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "MiniMax-M2.7",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "MiniMax-M2.7",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  }
+}
+```
+
+For users in China, replace `https://api.minimax.io/anthropic` with `https://api.minimaxi.com/anthropic`.
+
+**Step 3 — Verify**
+
+```bash
+claude --version          # confirm Claude Code is installed
+claude "print hello"      # first call — Claude Code will use MiniMax-M2.7
+```
+
+**Notes**
+
+- `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` set as process environment variables take priority over `settings.json`. If things aren't working, run `unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL` first.
+- `API_TIMEOUT_MS: 3000000` (50 minutes) prevents Claude Code from timing out on long browser sessions.
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 1` skips Anthropic telemetry — required when using a third-party base URL.
+- The same `SKILL.md` setup steps apply: `@~/src/browser-harness/SKILL.md` in `~/.claude/CLAUDE.md`.
+
 Codex command:
 
 ```bash

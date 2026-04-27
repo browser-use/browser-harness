@@ -20,13 +20,36 @@ The agent writes what's missing, mid-task. No framework, no recipes, no rails. O
 
 ## Setup prompt
 
-Paste into Claude Code or Codex:
+Paste into Claude Code or Codex (also works with [MiniMax-M2.7 in Claude Code](#minimax-m27)):
 
 ```text
 Set up https://github.com/browser-use/browser-harness for me.
 
 Read `install.md` first to install and connect this repo to my real browser. Then read `SKILL.md` for normal usage. Always read `helpers.py` because that is where the functions are. When you open a setup or verification tab, activate it so I can see the active browser tab. After it is installed, open this repository in my browser and, if I am logged in to GitHub, ask me whether you should star it for me as a quick demo that the interaction works — only click the star if I say yes. If I am not logged in, just go to browser-use.com.
 ```
+
+## MiniMax-M2.7
+
+browser-harness works with any AI coding agent that supports the Anthropic API. [MiniMax-M2.7](https://www.minimax.io/models/text/m27) is a cost-effective alternative that can power Claude Code via the MiniMax Anthropic-compatible endpoint.
+
+**Quick setup** — add to `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.minimax.io/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "<YOUR_MINIMAX_API_KEY>",
+    "ANTHROPIC_MODEL": "MiniMax-M2.7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M2.7",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "MiniMax-M2.7",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "MiniMax-M2.7",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  }
+}
+```
+
+Get your API key at [platform.minimax.io](https://platform.minimax.io/user-center/basic-information/interface-key). For users in China, replace the base URL with `https://api.minimaxi.com/anthropic`. See `install.md` for more details.
 
 When this page appears, tick the checkbox so the agent can connect to your browser:
 
