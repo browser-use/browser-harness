@@ -1,9 +1,13 @@
 import json
 import os
 import socket
+import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
+
+_IS_WIN = sys.platform == "win32"
 
 
 def _load_env():
@@ -21,19 +25,33 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
+_TMPDIR = tempfile.gettempdir()
 BU_API = "https://api.browser-use.com/api/v3"
 GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
-VERSION_CACHE = Path("/tmp/bu-version-cache.json")
+VERSION_CACHE = Path(os.path.join(_TMPDIR, "bu-version-cache.json"))
 VERSION_CACHE_TTL = 24 * 3600
+
+
+def _bu_port(name=None):
+    """Deterministic TCP port for a daemon name (Windows). Range 49200-49399."""
+    import hashlib
+    n = name or NAME
+    return 49200 + int(hashlib.md5(n.encode()).hexdigest(), 16) % 200
+
+
+def _bu_port_file(name=None):
+    return os.path.join(_TMPDIR, f"bu-{name or NAME}.port")
 
 
 def _paths(name):
     n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
+    sock = os.path.join(_TMPDIR, f"bu-{n}.sock")
+    pid = os.path.join(_TMPDIR, f"bu-{n}.pid")
+    return sock, pid
 
 
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
+    p = os.path.join(_TMPDIR, f"bu-{name or NAME}.log")
     try:
         return Path(p).read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
@@ -64,14 +82,31 @@ def _is_local_chrome_mode(env=None):
     return not (env or {}).get("BU_CDP_WS") and not os.environ.get("BU_CDP_WS")
 
 
-def daemon_alive(name=None):
-    try:
+def _connect_daemon(name=None):
+    """Connect to daemon, returns a connected socket."""
+    if _IS_WIN:
+        port_file = _bu_port_file(name)
+        try:
+            port = int(Path(port_file).read_text().strip())
+        except (FileNotFoundError, ValueError):
+            port = _bu_port(name)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(("127.0.0.1", port))
+        return s
+    else:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(1)
         s.connect(_paths(name)[0])
+        return s
+
+
+def daemon_alive(name=None):
+    try:
+        s = _connect_daemon(name)
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
 
 
@@ -81,8 +116,8 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
-            s.connect(_paths(name)[0])
+            s = _connect_daemon(name)
+            s.settimeout(3)
             s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
             data = b""
             while not data.endswith(b"\n"):
@@ -97,11 +132,15 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     local = _is_local_chrome_mode(env)
     for attempt in (0, 1):
         e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
-        p = subprocess.Popen(
-            ["uv", "run", "daemon.py"],
+        popen_kwargs = dict(
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        if _IS_WIN:
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        else:
+            popen_kwargs["start_new_session"] = True
+        p = subprocess.Popen(["uv", "run", "daemon.py"], **popen_kwargs)
         deadline = time.time() + wait
         while time.time() < deadline:
             if daemon_alive(name): return
@@ -113,7 +152,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             print("browser-harness: click Allow on chrome://inspect (and tick the checkbox if shown)", file=sys.stderr)
             restart_daemon(name)
             continue
-        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {os.path.join(_TMPDIR, 'bu-' + (name or NAME) + '.log')}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -140,9 +179,8 @@ def restart_daemon(name=None):
 
     sock, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s = _connect_daemon(name)
         s.settimeout(5)
-        s.connect(sock)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -157,14 +195,20 @@ def restart_daemon(name=None):
             try:
                 os.kill(pid, 0)
                 time.sleep(0.2)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 break
         else:
             try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
+                if _IS_WIN:
+                    os.kill(pid, signal.SIGTERM)
+                else:
+                    os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
                 pass
-    for f in (sock, pid_path):
+    cleanup = [sock, pid_path]
+    if _IS_WIN:
+        cleanup.append(_bu_port_file(name))
+    for f in cleanup:
         try:
             os.unlink(f)
         except FileNotFoundError:

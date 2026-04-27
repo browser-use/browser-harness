@@ -1,7 +1,9 @@
 """Browser control via CDP. Read, edit, extend -- this file is yours."""
-import base64, json, os, socket, time, urllib.request
+import base64, json, os, socket, sys, tempfile, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
+
+_IS_WIN = sys.platform == "win32"
 
 
 def _load_env():
@@ -19,13 +21,45 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
+_TMPDIR = tempfile.gettempdir()
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
+def _bu_port(name=None):
+    """Deterministic TCP port for a daemon name (Windows only). Range 49200-49399."""
+    import hashlib
+    n = name or NAME
+    return 49200 + int(hashlib.md5(n.encode()).hexdigest(), 16) % 200
+
+
+def _bu_port_file(name=None):
+    """File that stores the TCP port the daemon is listening on (Windows)."""
+    return os.path.join(_TMPDIR, f"bu-{name or NAME}.port")
+
+
+def _sock_path(name=None):
+    """Unix socket path (non-Windows)."""
+    return os.path.join(_TMPDIR, f"bu-{name or NAME}.sock")
+
+
+def _connect_daemon():
+    """Connect to the daemon, returns a connected socket."""
+    if _IS_WIN:
+        port_file = _bu_port_file()
+        try:
+            port = int(Path(port_file).read_text().strip())
+        except (FileNotFoundError, ValueError):
+            port = _bu_port()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("127.0.0.1", port))
+    else:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(_sock_path())
+    return s
+
+
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(SOCK)
+    s = _connect_daemon()
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
@@ -75,7 +109,7 @@ def click_at_xy(x, y, button="left", clicks=1):
         try:
             from PIL import Image, ImageDraw
             dpr = js("window.devicePixelRatio") or 1
-            path = capture_screenshot(f"/tmp/debug_click_{_debug_click_counter}.png")
+            path = capture_screenshot(os.path.join(_TMPDIR, f"debug_click_{_debug_click_counter}.png"))
             img = Image.open(path)
             draw = ImageDraw.Draw(img)
             px, py = int(x * dpr), int(y * dpr)
@@ -118,7 +152,9 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def capture_screenshot(path="/tmp/shot.png", full=False):
+def capture_screenshot(path=None, full=False):
+    if path is None:
+        path = os.path.join(_TMPDIR, "shot.png")
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
     open(path, "wb").write(base64.b64decode(r["data"]))
     return path

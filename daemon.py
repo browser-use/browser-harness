@@ -1,9 +1,11 @@
-"""CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.request
+"""CDP WS holder + socket relay. One daemon per BU_NAME."""
+import asyncio, json, os, socket, sys, tempfile, time, urllib.request
 from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+
+_IS_WIN = sys.platform == "win32"
 
 
 def _load_env():
@@ -21,9 +23,10 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+_TMPDIR = tempfile.gettempdir()
+SOCK = os.path.join(_TMPDIR, f"bu-{NAME}.sock")
+LOG = os.path.join(_TMPDIR, f"bu-{NAME}.log")
+PID = os.path.join(_TMPDIR, f"bu-{NAME}.pid")
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -197,10 +200,18 @@ class Daemon:
             return {"error": msg}
 
 
-async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
+def _bu_port(name=None):
+    """Deterministic TCP port for a daemon name (Windows). Range 49200-49399."""
+    import hashlib
+    n = name or NAME
+    return 49200 + int(hashlib.md5(n.encode()).hexdigest(), 16) % 200
 
+
+def _bu_port_file(name=None):
+    return os.path.join(_TMPDIR, f"bu-{name or NAME}.port")
+
+
+async def serve(d):
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -218,9 +229,19 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    if _IS_WIN:
+        port = _bu_port()
+        server = await asyncio.start_server(handler, "127.0.0.1", port)
+        # Write actual port so clients can find it
+        Path(_bu_port_file()).write_text(str(port))
+        log(f"listening on 127.0.0.1:{port} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    else:
+        if os.path.exists(SOCK):
+            os.unlink(SOCK)
+        server = await asyncio.start_unix_server(handler, path=SOCK)
+        os.chmod(SOCK, 0o600)
+        log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+
     async with server:
         await d.stop.wait()
 
@@ -233,9 +254,22 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        if _IS_WIN:
+            port_file = _bu_port_file()
+            try:
+                port = int(Path(port_file).read_text().strip())
+            except (FileNotFoundError, ValueError):
+                port = _bu_port()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("127.0.0.1", port))
+        else:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(SOCK)
+        s.close()
+        return True
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
         return False
 
 
@@ -254,5 +288,6 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         stop_remote()
-        try: os.unlink(PID)
-        except FileNotFoundError: pass
+        for f in [PID] + ([_bu_port_file()] if _IS_WIN else []):
+            try: os.unlink(f)
+            except FileNotFoundError: pass
