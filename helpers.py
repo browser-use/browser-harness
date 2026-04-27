@@ -213,16 +213,13 @@ def js(expression, target_id=None):
     return r.get("result", {}).get("value")
 
 
-_KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
-
-
 def dispatch_key(selector, key="Enter", event="keypress"):
     """Dispatch a DOM KeyboardEvent on the matched element.
 
     Use this when a site reacts to synthetic DOM key events on an element more reliably
     than to raw CDP input events.
     """
-    kc = _KC.get(key, ord(key) if len(key) == 1 else 0)
+    kc = _KEYS[key][0] if key in _KEYS else (ord(key) if len(key) == 1 else 0)
     js(
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});if(e){{e.focus();e.dispatchEvent(new KeyboardEvent({json.dumps(event)},{{key:{json.dumps(key)},code:{json.dumps(key)},keyCode:{kc},which:{kc},bubbles:true}}));}}}})()"
     )
