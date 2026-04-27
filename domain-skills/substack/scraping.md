@@ -19,7 +19,7 @@ responds to the same API paths. No API key, no login, no browser required.
 - Read the RSS feed (`/feed`) for title/date/link/description metadata
 
 **Limitations:**
-- Paid-only post bodies return `null` for `body_html` (truncated preview only)
+- Paid-only post bodies return a truncated HTML preview for `body_html` (not the full article)
 - No cross-publication search API accessible without a logged-in session
 - Comment endpoint uses `post_id` (integer), not slug
 
@@ -115,7 +115,7 @@ def substack_all_posts(publication_url, max_posts=200):
 `GET https://{subdomain}.substack.com/api/v1/posts/{slug}`
 
 Returns the full post including `body_html` for free posts. Paywalled posts
-return `null` for `body_html` and a short `truncated_body_text` preview.
+return a truncated HTML preview for `body_html` (not the full article).
 
 ```python
 from helpers import http_get
@@ -125,7 +125,7 @@ def substack_get_post(publication_url, slug):
     """Fetch full content of a single Substack post by slug.
 
     Returns title, body as plain text, body_html, author, date,
-    and metadata. body_html is None for paywalled posts.
+    and metadata. body_html is a truncated preview for paywalled posts.
     """
     url = f"{publication_url.rstrip('/')}/api/v1/posts/{slug}"
     post = json.loads(http_get(url))
