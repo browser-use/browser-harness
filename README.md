@@ -20,7 +20,7 @@ The agent writes what's missing, mid-task. No framework, no recipes, no rails. O
 
 ## Setup prompt
 
-Paste into Claude Code or Codex:
+Paste into Codex or another human-spawned agent session:
 
 ```text
 Set up https://github.com/browser-use/browser-harness for me.
@@ -32,7 +32,7 @@ When this page appears, tick the checkbox so the agent can connect to your brows
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
-See [domain-skills/](domain-skills/) for example tasks.
+See [domain-skills/](domain-skills/) for example tasks. The library now includes browser-tested playbooks for common scraping targets plus action-oriented flows such as GitHub repo actions, Facebook groups/pages, Trello boards/lists, Framer editor work, Reddit JSON/DOM extraction, Medium article hydration, Atlas, and Centilebrain normative z-scores.
 
 ## Free remote browsers
 
@@ -42,13 +42,13 @@ Useful for stealth, sub-agents, or deployment.<br>
 - Grab a key at [cloud.browser-use.com/new-api-key](https://cloud.browser-use.com/new-api-key)
 - Or let the agent sign up itself via [docs.browser-use.com/llms.txt](https://docs.browser-use.com/llms.txt) (setup flow + challenge context included).
 
-## How simple is it? (~592 lines of Python)
+## How simple is it? (~816 lines of Python)
 
 - `install.md` — first-time install and browser bootstrap
 - `SKILL.md` — day-to-day usage
-- `run.py` (~36 lines) — runs plain Python with helpers preloaded
-- `helpers.py` (~195 lines) — starting tool calls; the agent edits these
-- `admin.py` + `daemon.py` (~361 lines) — daemon bootstrap plus the CDP websocket and socket bridge
+- `run.py` (~44 lines) — runs plain Python with helpers preloaded
+- `helpers.py` (~216 lines) — starting tool calls; the agent edits these
+- `admin.py` + `daemon.py` (~556 lines) — daemon bootstrap, profile detection, remote stop/restart helpers, plus the CDP websocket and socket bridge
 
 ## Contributing
 
