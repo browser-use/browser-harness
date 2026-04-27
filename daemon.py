@@ -28,7 +28,7 @@ if TRANSPORT not in {"auto", "unix", "tcp"}:
     raise RuntimeError(f"unsupported BU_DAEMON_TRANSPORT={TRANSPORT!r}; expected auto, unix, or tcp")
 if TRANSPORT == "unix" and not hasattr(socket, "AF_UNIX"):
     raise RuntimeError("BU_DAEMON_TRANSPORT=unix requires AF_UNIX support")
-USE_UNIX = TRANSPORT == "unix" or (TRANSPORT == "auto" and hasattr(socket, "AF_UNIX"))
+USE_UNIX = TRANSPORT == "unix" or (TRANSPORT == "auto" and hasattr(socket, "AF_UNIX") and os.name != "nt")
 CURRENT_TRANSPORT = "unix" if USE_UNIX else "tcp"
 BUF = 500
 PROFILES = [
@@ -125,6 +125,13 @@ def _connect_transport(transport, timeout=1):
 
 def _transport_alive(transport):
     try:
+        _, pid_path, port_path, _ = _paths(transport=transport)
+        if transport == "tcp" and pid_path:
+            try:
+                pid = int(Path(pid_path).read_text().strip())
+                os.kill(pid, 0)
+            except (OSError, ValueError):
+                return False
         s = _connect_transport(transport)
         s.close()
         return True
