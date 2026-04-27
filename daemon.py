@@ -25,12 +25,14 @@ SOCK = f"/tmp/bu-{NAME}.sock"
 LOG = f"/tmp/bu-{NAME}.log"
 PID = f"/tmp/bu-{NAME}.pid"
 BUF = 500
+LINUX_HARNESS_PROFILE = Path.home() / ".config/chrome-harness"
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
     Path.home() / "Library/Application Support/Microsoft Edge",
     Path.home() / "Library/Application Support/Microsoft Edge Beta",
     Path.home() / "Library/Application Support/Microsoft Edge Dev",
     Path.home() / "Library/Application Support/Microsoft Edge Canary",
+    LINUX_HARNESS_PROFILE,
     Path.home() / ".config/google-chrome",
     Path.home() / ".config/chromium",
     Path.home() / ".config/chromium-browser",
@@ -82,6 +84,27 @@ def get_ws_url():
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+    # On Linux with a display, auto-launch Chrome with remote debugging on the harness profile.
+    if sys.platform.startswith("linux") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        import shutil, subprocess
+        chrome = shutil.which("google-chrome") or shutil.which("google-chrome-stable") or shutil.which("chromium") or shutil.which("chromium-browser")
+        if chrome:
+            LINUX_HARNESS_PROFILE.mkdir(parents=True, exist_ok=True)
+            subprocess.Popen(
+                [chrome, f"--user-data-dir={LINUX_HARNESS_PROFILE}", "--remote-debugging-port=0"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                try:
+                    port, path = (LINUX_HARNESS_PROFILE / "DevToolsActivePort").read_text().strip().split("\n", 1)
+                    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    probe.settimeout(1)
+                    probe.connect(("127.0.0.1", int(port.strip())))
+                    probe.close()
+                    return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+                except Exception:
+                    time.sleep(0.5)
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
