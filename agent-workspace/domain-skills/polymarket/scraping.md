@@ -129,7 +129,7 @@ Polymarket's event page renders every outcome row inside nested `<div>`s with **
 **Only emit text from DOM leaves** — elements with `children.length === 0`. A leaf node's `innerText` is precisely what it renders, never a concatenation of siblings. Then group adjacent leaves by their **nearest common ancestor** to assemble rows.
 
 ```bash
-browser-harness <<'PY'
+browser-harness -c "$(cat <<'PY'
 new_tab("https://polymarket.com/event/iran-x-israelus-conflict-ends-by")
 wait_for_load()
 wait(3.0)   # SPA hydration
@@ -175,6 +175,7 @@ labels = js(r"""
 """)
 print(labels)
 PY
+)"
 ```
 
 Then assemble rows in Python by matching fingerprints:

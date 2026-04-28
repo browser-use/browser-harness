@@ -35,7 +35,7 @@ Fails on:
 Core selector: every post renders inside a single `<shreddit-post>` custom element. Top-level comments are `<shreddit-comment depth="0">`.
 
 ```bash
-browser-harness <<'PY'
+browser-harness -c "$(cat <<'PY'
 new_tab("https://www.reddit.com/r/vibecoding/comments/1kwuqpz/")
 wait_for_load()
 wait(3.0)  # SPA still hydrating after readyState=complete
@@ -73,6 +73,7 @@ data = js(r"""
 """)
 print(data["title"], "·", len(data["body"]), "chars ·", len(data["comments"]), "comments")
 PY
+)"
 ```
 
 ### Key selectors

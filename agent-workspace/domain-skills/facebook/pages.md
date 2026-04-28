@@ -197,7 +197,7 @@ print(js("""
 ## Full example — mine one Page, emit JSON for downstream tools
 
 ```bash
-cd ~/Developer/browser-harness && uv run browser-harness <<'PY'
+cd ~/Developer/browser-harness && uv run browser-harness -c "$(cat <<'PY'
 import json, sys
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -267,6 +267,7 @@ print(json.dumps({
     "external_urls": all_externals,
 }, ensure_ascii=False))
 PY
+)"
 ```
 
 The stdout JSON is the handoff payload — parse it in the calling agent and
