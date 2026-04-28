@@ -33,7 +33,7 @@ Safe pattern: take the extracted markdown, then drop leading paragraphs that are
 ## Extractor
 
 ````bash
-browser-harness <<'PY'
+browser-harness -c "$(cat <<'PY'
 new_tab("https://medium.com/@user/slug-abc123")
 wait_for_load()
 wait(2.0)  # Medium hydrates more UI after readyState=complete
@@ -87,6 +87,7 @@ while paras and len(paras[0]) < 12:
 md = '\n\n'.join(paras)
 print(md)
 PY
+)"
 ````
 
 The `seen` set avoids double-emitting when an `<li>` matches the block query inside its `<ul>`.

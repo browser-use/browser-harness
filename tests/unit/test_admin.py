@@ -40,6 +40,20 @@ def test_handshake_403_needs_chrome_remote_debugging_prompt():
     assert admin._needs_chrome_remote_debugging_prompt(msg)
 
 
+def test_chrome_running_allows_slow_windows_tasklist(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+
+    def fake_check_output(cmd, text=True, timeout=None):
+        assert cmd == ["tasklist"]
+        assert text is True
+        assert timeout == 15
+        return "chrome.exe"
+
+    monkeypatch.setattr("subprocess.check_output", fake_check_output)
+
+    assert admin._chrome_running()
+
+
 def test_stale_websocket_does_not_open_chrome_inspect():
     msg = "no close frame received or sent"
 
@@ -70,6 +84,22 @@ def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
     monkeypatch.setattr(admin.ipc, "connect", fake_connect)
 
     assert admin.active_browser_connections() == 1
+
+
+def test_ensure_daemon_probes_live_daemon_through_ipc(monkeypatch):
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: True)
+
+    class ProbeSocket(FakeSocket):
+        def __init__(self):
+            super().__init__(b'{"result":{"targetInfos":[]}}\n')
+
+    def fail_restart(_name=None):
+        raise AssertionError("live daemon should not be restarted")
+
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout=1.0: ProbeSocket())
+    monkeypatch.setattr(admin, "restart_daemon", fail_restart)
+
+    admin.ensure_daemon()
 
 
 def test_browser_connections_returns_attached_page(monkeypatch):

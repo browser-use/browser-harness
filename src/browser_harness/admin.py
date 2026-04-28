@@ -148,9 +148,9 @@ def ensure_daemon(wait=60.0, name=None, env=None, _open_inspect=True):
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
+        s = None
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
-            s.connect(_paths(name)[0])
+            s = ipc.connect(name or NAME, timeout=3.0)
             s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
             data = b""
             while not data.endswith(b"\n"):
@@ -159,6 +159,10 @@ def ensure_daemon(wait=60.0, name=None, env=None, _open_inspect=True):
                 data += chunk
             if b'"result"' in data: return
         except Exception: pass
+        finally:
+            if s:
+                try: s.close()
+                except Exception: pass
         restart_daemon(name)
 
     import subprocess, sys
@@ -507,7 +511,7 @@ def _chrome_running():
     system = platform.system()
     try:
         if system == "Windows":
-            out = subprocess.check_output(["tasklist"], text=True, timeout=5)
+            out = subprocess.check_output(["tasklist"], text=True, timeout=15)
             names = ("chrome.exe", "msedge.exe")
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
