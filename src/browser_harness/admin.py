@@ -34,6 +34,7 @@ BU_API = "https://api.browser-use.com/api/v3"
 GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
 VERSION_CACHE = Path(tempfile.gettempdir()) / "bu-version-cache.json"
 VERSION_CACHE_TTL = 24 * 3600
+DOCTOR_TEXT_LIMIT = 140
 
 
 def _paths(name):
@@ -77,6 +78,69 @@ def daemon_alive(name=None):
         c = ipc.connect(name or NAME, timeout=1.0); c.close(); return True
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError):
         return False
+
+
+def _daemon_endpoint_names():
+    pattern = "bu-*.port" if ipc.IS_WINDOWS else "bu-*.sock"
+    suffix = ".port" if ipc.IS_WINDOWS else ".sock"
+    names = []
+    for p in sorted(ipc._TMP.glob(pattern)):
+        name = p.name
+        if not name.startswith("bu-") or not name.endswith(suffix):
+            continue
+        raw = name[3:-len(suffix)]
+        try:
+            ipc._check(raw)
+        except ValueError:
+            continue
+        names.append(raw)
+    return names
+
+
+def _daemon_browser_connection(name):
+    c = None
+    try:
+        c = ipc.connect(name, timeout=1.0)
+        c.sendall(b'{"meta":"connection_status"}\n')
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = c.recv(1 << 16)
+            if not chunk:
+                break
+            data += chunk
+        response = json.loads(data)
+        if "error" in response:
+            return None
+        page = response.get("page")
+        if page:
+            page = {"title": page.get("title") or "(untitled)", "url": page.get("url") or ""}
+        return {"name": name, "page": page}
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, KeyError, ValueError, json.JSONDecodeError):
+        return None
+    finally:
+        if c:
+            c.close()
+
+
+def browser_connections():
+    """Live browser-harness daemons with healthy CDP browser connections and their attached page."""
+    out = []
+    for name in _daemon_endpoint_names():
+        conn = _daemon_browser_connection(name)
+        if conn:
+            out.append(conn)
+    return out
+
+
+def active_browser_connections():
+    """Count live browser-harness daemons with a healthy CDP browser connection."""
+    return len(browser_connections())
+
+
+def _doctor_short_text(value, limit=None):
+    limit = limit or DOCTOR_TEXT_LIMIT
+    value = str(value)
+    return value if len(value) <= limit else value[:limit - 3] + "..."
 
 
 def ensure_daemon(wait=60.0, name=None, env=None, _open_inspect=True):
@@ -530,6 +594,7 @@ def run_doctor():
     mode = _install_mode()
     chrome = _chrome_running()
     daemon = daemon_alive()
+    connections = browser_connections()
     profile_use = shutil.which("profile-use") is not None
     api_key = bool(os.environ.get("BROWSER_USE_API_KEY"))
     latest = _latest_release_tag()
@@ -552,6 +617,15 @@ def run_doctor():
         print("  latest release    (could not reach github)")
     row("chrome running", chrome, "" if chrome else "start chrome/edge and rerun `browser-harness --setup`")
     row("daemon alive", daemon, "" if daemon else "run `browser-harness --setup` to attach")
+    row("active browser connections", bool(connections), str(len(connections)))
+    for conn in connections:
+        page = conn.get("page")
+        if page:
+            title = _doctor_short_text(page["title"])
+            url = _doctor_short_text(page["url"])
+            print(f"        {conn['name']} — active page: {title} — {url}")
+        else:
+            print(f"        {conn['name']} — active page: (no real page)")
     row("profile-use installed", profile_use, "" if profile_use else "optional: curl -fsSL https://browser-use.com/profile.sh | sh")
     row("BROWSER_USE_API_KEY set", api_key, "" if api_key else "optional: needed only for cloud browsers / profile sync")
     # Core health = chrome + daemon. Profile-use/api-key are optional.
