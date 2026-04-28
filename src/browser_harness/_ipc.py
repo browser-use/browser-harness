@@ -31,7 +31,12 @@ def sock_addr(name):  # display-only, used in log lines
 
 def spawn_kwargs():  # subprocess.Popen flags so the daemon detaches from this terminal
     if IS_WINDOWS:
-        return {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+        # CREATE_NO_WINDOW: no console window for the daemon. CREATE_NEW_PROCESS_GROUP:
+        # daemon doesn't receive Ctrl-C/Ctrl-Break sent to the parent terminal, so
+        # closing that terminal doesn't kill it. DETACHED_PROCESS is intentionally
+        # omitted: per Win32 docs it overrides CREATE_NO_WINDOW, causing Windows to
+        # allocate a fresh console for the (still console-subsystem) python.exe.
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
     return {"start_new_session": True}
 
 
