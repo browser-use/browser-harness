@@ -1,9 +1,12 @@
 import json
 import os
 import socket
+import sys
 import time
 import urllib.request
 from pathlib import Path
+
+from transport import BASE, cleanup_endpoint, connect_socket, paths
 
 
 def _load_env():
@@ -23,19 +26,19 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
 GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
-VERSION_CACHE = Path("/tmp/bu-version-cache.json")
+VERSION_CACHE = BASE / "bu-version-cache.json"
 VERSION_CACHE_TTL = 24 * 3600
 
 
 def _paths(name):
-    n = name or NAME
-    return f"/tmp/bu-{n}.sock", f"/tmp/bu-{n}.pid"
+    sock, pid, _ = paths(name)
+    return str(sock), str(pid)
 
 
 def _log_tail(name):
-    p = f"/tmp/bu-{name or NAME}.log"
+    _, _, log_path = paths(name)
     try:
-        return Path(p).read_text().strip().splitlines()[-1]
+        return log_path.read_text().strip().splitlines()[-1]
     except (FileNotFoundError, IndexError):
         return None
 
@@ -66,12 +69,10 @@ def _is_local_chrome_mode(env=None):
 
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
+        s = connect_socket(name, timeout=1)
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except OSError:
         return False
 
 
@@ -81,8 +82,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
-            s.connect(_paths(name)[0])
+            s = connect_socket(name, timeout=3)
             s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
             data = b""
             while not data.endswith(b"\n"):
@@ -95,12 +95,25 @@ def ensure_daemon(wait=60.0, name=None, env=None):
 
     import subprocess, sys
     local = _is_local_chrome_mode(env)
+    # On Windows, start_new_session is silently ignored by subprocess and the
+    # daemon dies with its parent. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP
+    # gives the same "fully detached" semantics as setsid() on POSIX.
+    if sys.platform == "win32":
+        spawn_kwargs = {
+            "creationflags": (
+                getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            ),
+            "close_fds": True,
+        }
+    else:
+        spawn_kwargs = {"start_new_session": True}
     for attempt in (0, 1):
         e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
         p = subprocess.Popen(
             ["uv", "run", "daemon.py"],
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **spawn_kwargs,
         )
         deadline = time.time() + wait
         while time.time() < deadline:
@@ -113,7 +126,8 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             print("browser-harness: click Allow on chrome://inspect (and tick the checkbox if shown)", file=sys.stderr)
             restart_daemon(name)
             continue
-        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+        _, _, log_path = paths(name)
+        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {log_path}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -140,9 +154,7 @@ def restart_daemon(name=None):
 
     sock, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = connect_socket(name, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -153,22 +165,31 @@ def restart_daemon(name=None):
     except (FileNotFoundError, ValueError):
         pid = None
     if pid:
-        for _ in range(75):
-            try:
-                os.kill(pid, 0)
-                time.sleep(0.2)
-            except ProcessLookupError:
-                break
-        else:
+        if sys.platform == "win32":
+            # Windows os.kill(pid, 0) raises WinError 87 instead of acting as a ping.
+            # Give the daemon ~2s to honour the shutdown message, then TerminateProcess via SIGTERM.
+            time.sleep(2.0)
             try:
                 os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 pass
-    for f in (sock, pid_path):
-        try:
-            os.unlink(f)
-        except FileNotFoundError:
-            pass
+        else:
+            for _ in range(75):
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.2)
+                except ProcessLookupError:
+                    break
+            else:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+    cleanup_endpoint(name)
+    try:
+        os.unlink(pid_path)
+    except FileNotFoundError:
+        pass
 
 
 def _browser_use(path, method, body=None):

@@ -4,6 +4,7 @@ from collections import deque
 from pathlib import Path
 
 from cdp_use.client import CDPClient
+from transport import cleanup_endpoint, connect_socket, paths, start_server
 
 
 def _load_env():
@@ -21,9 +22,7 @@ def _load_env():
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+SOCK, PID, LOG = paths()
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -55,7 +54,7 @@ API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
 def log(msg):
-    open(LOG, "a").write(f"{msg}\n")
+    LOG.open("a").write(f"{msg}\n")
 
 
 def get_ws_url():
@@ -198,8 +197,7 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
+    cleanup_endpoint()
 
     async def handler(reader, writer):
         try:
@@ -218,9 +216,8 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    server, endpoint = await start_server(handler)
+    log(f"listening on {endpoint} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -233,18 +230,17 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        s = connect_socket(timeout=1); s.close(); return True
+    except OSError:
         return False
 
 
 if __name__ == "__main__":
     if already_running():
-        print(f"daemon already running on {SOCK}", file=sys.stderr)
+        print(f"daemon already running for BU_NAME={NAME}", file=sys.stderr)
         sys.exit(0)
-    open(LOG, "w").close()
-    open(PID, "w").write(str(os.getpid()))
+    LOG.write_text("")
+    PID.write_text(str(os.getpid()))
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -254,5 +250,5 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         stop_remote()
-        try: os.unlink(PID)
+        try: PID.unlink()
         except FileNotFoundError: pass
