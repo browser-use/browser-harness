@@ -7,14 +7,14 @@ No CAPTCHA or bot detection was triggered during any test run.
 
 ### Direct search URL (fastest, always use this)
 ```python
-goto("https://www.amazon.com/s?k=mechanical+keyboard")
+goto_url("https://www.amazon.com/s?k=mechanical+keyboard")
 wait_for_load()
 wait(2)  # dynamic content needs ~2s after readyState=complete
 ```
 
 ### Search box typing (use when you need category filtering)
 ```python
-goto("https://www.amazon.com")
+goto_url("https://www.amazon.com")
 wait_for_load()
 wait(1)
 js("document.querySelector('#twotabsearchtextbox').focus()")
@@ -30,7 +30,7 @@ wait(2)
 ### Direct product page
 ```python
 # URL pattern: /dp/{ASIN}  or  /dp/{ASIN}?th=1 (Amazon may redirect to add ?th=1)
-goto("https://www.amazon.com/dp/B08Z6X4NK3")
+goto_url("https://www.amazon.com/dp/B08Z6X4NK3")
 wait_for_load()
 wait(2)
 ```
@@ -38,7 +38,7 @@ wait(2)
 ## Session Gotcha
 
 **Always use `new_tab()` when opening Amazon for the first time in a harness session.**
-`goto()` can silently fail to navigate if the current tab resists the navigation
+`goto_url()` can silently fail to navigate if the current tab resists the navigation
 (observed when the daemon attached to a different real tab). The safe pattern:
 
 ```python
@@ -47,7 +47,7 @@ wait_for_load()
 wait(2)
 ```
 
-After that, `goto()` works fine within the same Amazon session.
+After that, `goto_url()` works fine within the same Amazon session.
 
 ## Search Results Extraction
 
@@ -120,7 +120,7 @@ e.g. `https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/`
 `.zg-item-immersion` **does not exist** — Amazon migrated to CSS modules. Use `[data-asin]` anchored on `[id="gridItemRoot"]`:
 
 ```python
-goto("https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/")
+goto_url("https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/")
 wait_for_load()
 wait(2)
 
@@ -146,12 +146,12 @@ Note: Title comes from the product image `alt` attribute — the text title elem
 # Get next page URL directly
 next_url = js("document.querySelector('.s-pagination-next')?.href")
 if next_url:
-    goto(next_url)
+    goto_url(next_url)
     wait_for_load()
     wait(2)
 
 # Or construct by page number
-goto("https://www.amazon.com/s?k=wireless+mouse&page=2")
+goto_url("https://www.amazon.com/s?k=wireless+mouse&page=2")
 ```
 
 ## Result Count
@@ -186,7 +186,7 @@ Amazon may serve a CAPTCHA on fresh/anonymous sessions. Using the browser's exis
 
 ## Gotchas
 
-- **`goto()` silent failure**: On first visit, use `new_tab(url)` instead. After the tab is on Amazon, `goto()` works.
+- **`goto_url()` silent failure**: On first visit, use `new_tab(url)` instead. After the tab is on Amazon, `goto_url()` works.
 - **`.zg-item-immersion` is gone**: Best Sellers page uses CSS module classes (obfuscated). Use `[data-asin]` + `img[alt]` for title.
 - **`.a-size-base.s-underline-text` is unreliable for review count**: On sponsored results it shows unrelated text (e.g. "Xbox"). Use `[aria-label*="ratings"]` instead.
 - **`#priceblock_ourprice` is legacy**: Returns `null` on modern pages. Construct from `.a-price-whole` + `.a-price-fraction`.

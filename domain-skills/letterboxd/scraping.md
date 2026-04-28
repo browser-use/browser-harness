@@ -250,14 +250,14 @@ def extract_activity_stream():
 
 ## Path 4: Browser for list pages and sub-pages (403 via http_get)
 
-These pages require the browser — use `goto()` + `wait_for_load()` + `wait(2)`:
+These pages require the browser — use `goto_url()` + `wait_for_load()` + `wait(2)`:
 
 ```python
 from helpers import goto, wait_for_load, wait, js
 import json
 
 # Popular films
-goto("https://letterboxd.com/films/popular/")
+goto_url("https://letterboxd.com/films/popular/")
 wait_for_load()
 wait(2)
 
@@ -276,7 +276,7 @@ films = json.loads(js("""
 """))
 
 # User watched films list (paginated, 72/page)
-goto("https://letterboxd.com/dave/films/")
+goto_url("https://letterboxd.com/dave/films/")
 wait_for_load()
 wait(2)
 
@@ -294,7 +294,7 @@ films = json.loads(js("""
 """))
 
 # User diary entries
-goto("https://letterboxd.com/dave/diary/")
+goto_url("https://letterboxd.com/dave/diary/")
 wait_for_load()
 wait(2)
 
@@ -305,7 +305,7 @@ next_page_url = js("""
   return a ? a.href : null;
 })()
 """)
-# Returns URL for next page or null. Load it with goto(next_page_url).
+# Returns URL for next page or null. Load it with goto_url(next_page_url).
 ```
 
 ---

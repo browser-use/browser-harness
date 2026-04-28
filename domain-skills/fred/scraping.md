@@ -425,7 +425,7 @@ When you need data from `fred.stlouisfed.org` that has no API equivalent (custom
 
 ```python
 # Navigate to a series page
-goto("https://fred.stlouisfed.org/series/GDP")
+goto_url("https://fred.stlouisfed.org/series/GDP")
 wait_for_load()
 
 # Option 1: Intercept the fredgraph XHR that the chart fires

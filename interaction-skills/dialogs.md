@@ -52,7 +52,7 @@ Fires when navigating away from a page with unsaved changes (forms, editors, upl
 
 ```python
 # Option A: dismiss after navigating (CDP-level, safe)
-goto("https://new-url.com")
+goto_url("https://new-url.com")
 try:
     cdp("Page.handleJavaScriptDialog", accept=True)  # click "Leave"
 except:
@@ -60,5 +60,5 @@ except:
 
 # Option B: prevent before navigating (JS injection, detectable)
 js("window.onbeforeunload=null")
-goto("https://new-url.com")
+goto_url("https://new-url.com")
 ```

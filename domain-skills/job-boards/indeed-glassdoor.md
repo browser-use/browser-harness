@@ -13,23 +13,23 @@ from urllib.parse import quote_plus
 
 # Indeed — English (US)
 query, location = "Python developer", "San Francisco"
-goto(f"https://www.indeed.com/jobs?q={quote_plus(query)}&l={quote_plus(location)}")
+goto_url(f"https://www.indeed.com/jobs?q={quote_plus(query)}&l={quote_plus(location)}")
 wait_for_load()
 wait(2)
 
 # Indeed — last 24 hours
-goto(f"https://www.indeed.com/jobs?q={quote_plus(query)}&l={quote_plus(location)}&fromage=1")
+goto_url(f"https://www.indeed.com/jobs?q={quote_plus(query)}&l={quote_plus(location)}&fromage=1")
 wait_for_load()
 wait(2)
 
 # Glassdoor — public search (no login required for result cards)
-goto(f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={quote_plus(query)}")
+goto_url(f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={quote_plus(query)}")
 wait_for_load()
 wait(2)
 
 # Stepstone (Germany)
 keyword, city = "Data Scientist", "Berlin"
-goto(f"https://www.stepstone.de/jobs/{quote_plus(keyword)}/in-{quote_plus(city)}.html")
+goto_url(f"https://www.stepstone.de/jobs/{quote_plus(keyword)}/in-{quote_plus(city)}.html")
 wait_for_load()
 wait(2)
 ```
@@ -78,7 +78,7 @@ For Stepstone, keyword and city go directly in the path — encode spaces as `-`
 ```python
 kw_path = keyword.replace(" ", "-")
 city_path = city.replace(" ", "-")
-goto(f"https://www.stepstone.de/jobs/{kw_path}/in-{city_path}.html")
+goto_url(f"https://www.stepstone.de/jobs/{kw_path}/in-{city_path}.html")
 ```
 
 ---
@@ -122,7 +122,7 @@ def dismiss_cookie_banner():
 Call immediately after `wait_for_load()` on `.co.uk`, `.de`, or `glassdoor.com`:
 
 ```python
-goto("https://www.indeed.co.uk/jobs?q=Python+developer&l=London")
+goto_url("https://www.indeed.co.uk/jobs?q=Python+developer&l=London")
 wait_for_load()
 wait(2)
 dismiss_cookie_banner()
@@ -140,7 +140,7 @@ import json
 from urllib.parse import quote_plus
 
 query, location = "machine learning engineer", "New York"
-goto(f"https://www.indeed.com/jobs?q={quote_plus(query)}&l={quote_plus(location)}")
+goto_url(f"https://www.indeed.com/jobs?q={quote_plus(query)}&l={quote_plus(location)}")
 wait_for_load()
 wait(2)
 dismiss_cookie_banner()
@@ -210,7 +210,7 @@ all_jobs = []
 for page in range(3):   # 3 pages = up to ~30 results
     start = page * 10
     url = base_url if start == 0 else f"{base_url}&start={start}"
-    goto(url)
+    goto_url(url)
     wait_for_load()
     wait(2)   # mandatory — bot detection is aggressive on rapid loads
 
@@ -268,7 +268,7 @@ import json, re
 
 def get_indeed_job_detail(jk: str) -> dict:
     """Fetch full job details from an Indeed job key."""
-    goto(f"https://www.indeed.com/viewjob?jk={jk}")
+    goto_url(f"https://www.indeed.com/viewjob?jk={jk}")
     wait_for_load()
     wait(2)
 
@@ -324,7 +324,7 @@ import json
 from urllib.parse import quote_plus
 
 query = "product manager"
-goto(f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={quote_plus(query)}")
+goto_url(f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={quote_plus(query)}")
 wait_for_load()
 wait(3)   # Glassdoor JS rendering takes longer
 
@@ -385,7 +385,7 @@ for r in results:
 **If `jobs` returns an empty list**, Glassdoor has changed its DOM structure. Take a screenshot and inspect:
 
 ```python
-screenshot()
+capture_screenshot()
 # Look for the actual card selector, then update the querySelectorAll above
 ```
 
@@ -448,7 +448,7 @@ city = "Regensburg"
 kw_path = keyword.replace(" ", "-")
 city_path = city.replace(" ", "-")
 
-goto(f"https://www.stepstone.de/jobs/{kw_path}/in-{city_path}.html")
+goto_url(f"https://www.stepstone.de/jobs/{kw_path}/in-{city_path}.html")
 wait_for_load()
 wait(2)
 dismiss_cookie_banner()
@@ -503,7 +503,7 @@ for page in range(1, 4):   # pages 1-3
     else:
         url = f"https://www.stepstone.de/jobs/{kw_path}/in-{city_path}/page-{page}.html"
 
-    goto(url)
+    goto_url(url)
     wait_for_load()
     wait(2)
 
@@ -779,7 +779,7 @@ Some Indeed listings apply on Indeed directly ("Easy Apply") while others redire
 ```python
 def get_application_type(jk: str) -> dict:
     """Returns {type: 'easy_apply'|'external'|'unknown', external_url: str|None}"""
-    goto(f"https://www.indeed.com/viewjob?jk={jk}")
+    goto_url(f"https://www.indeed.com/viewjob?jk={jk}")
     wait_for_load()
     wait(2)
 
@@ -848,14 +848,14 @@ def is_captcha_page() -> bool:
     return any(signals)
 
 # Use after every goto:
-goto(some_url)
+goto_url(some_url)
 wait_for_load()
 wait(2)
 if is_captcha_page():
-    screenshot()
+    capture_screenshot()
     # Wait longer and retry once
     wait(10)
-    goto(some_url)
+    goto_url(some_url)
     wait_for_load()
     wait(3)
 ```
@@ -864,7 +864,7 @@ if is_captcha_page():
 
 Glassdoor's bot detection is more fingerprint-based. If results stop loading:
 
-1. Take a `screenshot()` — confirm whether it is a login modal vs a block page
+1. Take a `capture_screenshot()` — confirm whether it is a login modal vs a block page
 2. Dismiss any login modal first (`dismiss_glassdoor_login_modal()`)
 3. If a block page appears, pause 30+ seconds before retrying
 4. Switch to Indeed for the same query — results are similar and bot tolerance is higher
@@ -923,7 +923,7 @@ def collect_indeed_jobs(query: str, location: str = "", max_results: int = 20,
     while len(all_jobs) < max_results:
         start = page * 10
         url = build_indeed_url(query, location, fromage=fromage, job_type=job_type, start=start)
-        goto(url)
+        goto_url(url)
         wait_for_load()
         wait(2.5)
 
@@ -1012,7 +1012,7 @@ jobs = collect_indeed_jobs("machine learning engineer", max_results=30, fromage=
 
 - **User-agent matters** — `http_get` uses `Mozilla/5.0` by default (see `helpers.py`). For Indeed `http_get`, also set `Accept-Language: en-US,en;q=0.9` to avoid getting German or localized results based on IP geolocation.
 
-- **Stepstone cookie modal is fullscreen** — On first load, Stepstone shows a fullscreen consent overlay that blocks the entire page. Always call `dismiss_cookie_banner()` before any extraction. If the overlay cannot be dismissed with the generic pattern, use a coordinate click: `screenshot()` first to find the "Alle akzeptieren" (Accept all) button position, then `click(x, y)`.
+- **Stepstone cookie modal is fullscreen** — On first load, Stepstone shows a fullscreen consent overlay that blocks the entire page. Always call `dismiss_cookie_banner()` before any extraction. If the overlay cannot be dismissed with the generic pattern, use a coordinate click: `capture_screenshot()` first to find the "Alle akzeptieren" (Accept all) button position, then `click_at_xy(x, y)`.
 
 - **Glassdoor salary in card vs detail** — Salary text in the card may be truncated ("$90K - $120K (Glassdoor est.)"). The full salary breakdown (base, bonus, total comp) is only on the job detail page, which requires a click through.
 

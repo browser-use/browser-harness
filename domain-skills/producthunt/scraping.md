@@ -16,14 +16,14 @@ Product Hunt is a React SPA. Key structural facts discovered:
 - **4 homepage sections**: today, yesterday, last week, last month (5 products each, plus "see all")
 - **Today's votes are hidden** for the first 4 hours of each day (`—` instead of count)
 - **Homepage has 30 fixed post-items** — scrolling does NOT load more
-- **`goto()` may return `ERR_ABORTED`** for producthunt.com in some browser sessions — use `new_tab()` instead
+- **`goto_url()` may return `ERR_ABORTED`** for producthunt.com in some browser sessions — use `new_tab()` instead
 
 ---
 
 ## Navigation Pattern
 
 ```python
-# goto() may fail on Product Hunt — use new_tab() reliably
+# goto_url() may fail on Product Hunt — use new_tab() reliably
 tid = new_tab("https://www.producthunt.com")
 wait(4)  # React SPA needs time; wait_for_load() alone is insufficient
 page = page_info()
@@ -253,7 +253,7 @@ JSON.stringify(
 
 1. **`innerText` returns `None` on complex elements** — use `outerText` or break into simple single-property expressions. Avoid chaining DOM traversal inside `JSON.stringify()` on large objects.
 
-2. **`goto()` returns `ERR_ABORTED`** for producthunt.com in some browser sessions — always use `new_tab("url")` instead.
+2. **`goto_url()` returns `ERR_ABORTED`** for producthunt.com in some browser sessions — always use `new_tab("url")` instead.
 
 3. **`a[href^="/posts/"]` matches nothing** — Product Hunt uses `/products/` for product URLs, not `/posts/`.
 

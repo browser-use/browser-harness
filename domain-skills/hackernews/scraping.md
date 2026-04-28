@@ -240,4 +240,4 @@ For structured comment access prefer Algolia items API — it returns a proper n
 
 ## Do NOT use a browser for HN
 
-All data is in plain HTML or JSON APIs. `goto()` + `wait_for_load()` takes 3–8 seconds; `http_get` takes 170–400ms. The JS `querySelectorAll` approach works (tested, returns correct data) but is 20–50x slower with no benefit.
+All data is in plain HTML or JSON APIs. `goto_url()` + `wait_for_load()` takes 3–8 seconds; `http_get` takes 170–400ms. The JS `querySelectorAll` approach works (tested, returns correct data) but is 20–50x slower with no benefit.

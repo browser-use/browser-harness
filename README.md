@@ -36,7 +36,8 @@ See [domain-skills/](domain-skills/) for example tasks.
 
 ## Free remote browsers
 
-Useful for sub-agents or deployment. **Free tier: 3 concurrent browsers, no card required.**
+Useful for stealth, sub-agents, or deployment.<br>
+**Free tier: 3 concurrent browsers, proxies, captcha solving, and more. No card required.**
 
 - Grab a key at [cloud.browser-use.com/new-api-key](https://cloud.browser-use.com/new-api-key)
 - Or let the agent sign up itself via [docs.browser-use.com/llms.txt](https://docs.browser-use.com/llms.txt) (setup flow + challenge context included).
@@ -62,4 +63,4 @@ If you're not sure where to start, open an issue and we'll point you somewhere u
 
 ---
 
-[Bitter lesson](https://browser-use.com/posts/bitter-lesson-agent-frameworks) · [Skills](https://browser-use.com/posts/web-agents-that-actually-learn)
+[The Bitter Lesson of Agent Harnesses](https://browser-use.com/posts/bitter-lesson-agent-harnesses) · [Web Agents That Actually Learn](https://browser-use.com/posts/web-agents-that-actually-learn)

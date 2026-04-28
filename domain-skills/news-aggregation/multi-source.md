@@ -113,7 +113,7 @@ stories = re.findall(r'class="titleline"><a href="([^"]+)"[^>]*>([^<]+)<', html)
 No consent banner in headless browser (US region served; GDPR banner only appears for EU IP). Articles use `article h2` selectors.
 
 ```python
-goto("https://www.bbc.com/news")
+goto_url("https://www.bbc.com/news")
 wait_for_load()
 wait(2)
 
@@ -146,7 +146,7 @@ Confirmed: `h3` elements on BBC are site-chrome labels ("The BBC is in multiple 
 `article` and `.post-block` selectors return 0 results — TechCrunch changed their layout. Articles are in `h3` elements.
 
 ```python
-goto("https://techcrunch.com")
+goto_url("https://techcrunch.com")
 wait_for_load()
 wait(2)
 
@@ -169,7 +169,7 @@ RSS is almost always faster for TechCrunch: **0.08s vs 3-5s browser** load. Only
 `http_get` returns 403. Browser loads but the homepage is heavily JS-rendered with delayed hydration. `h3` selectors only return nav elements after standard `wait_for_load()`. Use `wait(3)` plus scroll:
 
 ```python
-goto("https://www.reuters.com")
+goto_url("https://www.reuters.com")
 wait_for_load()
 wait(3)
 js("window.scrollTo(0, 500)")

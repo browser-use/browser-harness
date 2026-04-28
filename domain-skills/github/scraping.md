@@ -50,7 +50,7 @@ The trending page is JS-rendered. `article.Box-row` selector confirmed working (
 
 ```python
 import json
-goto("https://github.com/trending")          # or /trending/python?since=weekly
+goto_url("https://github.com/trending")          # or /trending/python?since=weekly
 wait_for_load()
 wait(2)                                       # extra 2s — React hydration completes after readyState
 
@@ -169,7 +169,7 @@ with ThreadPoolExecutor(max_workers=3) as ex:
 
 - **Code search requires auth** — `GET /search/code` returns HTTP 401 without a token. Repo/user/issues search works unauthenticated.
 
-- **Trending page selectors only work if navigation is in the same script run** — Each `uv run browser-harness` exec is fresh. Selectors that returned 0 results were run in a separate invocation after the page had navigated away. Always include `goto()` + `wait_for_load()` + `wait(2)` in the same script.
+- **Trending page selectors only work if navigation is in the same script run** — Each `uv run browser-harness` exec is fresh. Selectors that returned 0 results were run in a separate invocation after the page had navigated away. Always include `goto_url()` + `wait_for_load()` + `wait(2)` in the same script.
 
 - **wait(2) after wait_for_load() on trending** — `document.readyState == 'complete'` fires before React finishes painting repo cards. Without the extra 2s sleep, `article.Box-row` count was 0 even though the DOM technically loaded.
 

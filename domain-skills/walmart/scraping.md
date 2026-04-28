@@ -391,7 +391,7 @@ new_tab("https://www.walmart.com/search?q=laptop")
 wait_for_load()
 wait(2)
 ```
-After that, `goto()` works normally within the same session.
+After that, `goto_url()` works normally within the same session.
 
 ---
 

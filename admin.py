@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -24,6 +25,9 @@ _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
+GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
+VERSION_CACHE = Path(tempfile.gettempdir()) / "bu-version-cache.json"
+VERSION_CACHE_TTL = 24 * 3600
 
 
 def _paths(name):
@@ -38,6 +42,30 @@ def _log_tail(name):
         return None
 
 
+def _needs_chrome_remote_debugging_prompt(msg):
+    """True when Chrome needs the inspect-page permission/profile flow."""
+    lower = (msg or "").lower()
+    return (
+        "devtoolsactiveport not found" in lower
+        or "enable chrome://inspect" in lower
+        or "not live yet" in lower
+        or (
+            "ws handshake failed" in lower
+            and (
+                "403" in lower
+                or "opening handshake" in lower
+                or "timed out" in lower
+                or "timeout" in lower
+            )
+        )
+    )
+
+
+def _is_local_chrome_mode(env=None):
+    """True when the daemon discovers a local Chrome instead of a remote CDP WS."""
+    return not (env or {}).get("BU_CDP_WS") and not os.environ.get("BU_CDP_WS")
+
+
 def daemon_alive(name=None):
     try:
         c = ipc.connect(name or NAME, timeout=1.0); c.close(); return True
@@ -46,29 +74,44 @@ def daemon_alive(name=None):
 
 
 def ensure_daemon(wait=60.0, name=None, env=None):
-    """Idempotent. `env` is merged into the child process env."""
+    """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
     if daemon_alive(name):
-        return
-    import subprocess
+        # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
+        # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
+            s.connect(_paths(name)[0])
+            s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = s.recv(1 << 16)
+                if not chunk: break
+                data += chunk
+            if b'"result"' in data: return
+        except Exception: pass
+        restart_daemon(name)
 
-    e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
-    p = subprocess.Popen(
-        ["uv", "run", "daemon.py"],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-        env=e,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        **ipc.spawn_kwargs(),
-    )
-    deadline = time.time() + wait
-    while time.time() < deadline:
-        if daemon_alive(name):
-            return
-        if p.poll() is not None:
-            break
-        time.sleep(0.2)
-    msg = _log_tail(name)
-    raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
+    import subprocess, sys
+    local = _is_local_chrome_mode(env)
+    for attempt in (0, 1):
+        e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+        p = subprocess.Popen(
+            ["uv", "run", "daemon.py"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
+        )
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            if daemon_alive(name): return
+            if p.poll() is not None: break
+            time.sleep(0.2)
+        msg = _log_tail(name) or ""
+        if local and attempt == 0 and _needs_chrome_remote_debugging_prompt(msg):
+            _open_chrome_inspect()
+            print("browser-harness: click Allow on chrome://inspect (and tick the checkbox if shown)", file=sys.stderr)
+            restart_daemon(name)
+            continue
+        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
 
 
 def stop_remote_daemon(name="remote"):
@@ -291,3 +334,288 @@ def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
     if not m:
         raise RuntimeError(f"profile-use did not report a profile UUID (exit {r.returncode})")
     return m.group(1)
+
+
+def _version():
+    """Installed version of the browser-harness package. Empty string if unknown."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            return version("browser-harness")
+        except PackageNotFoundError:
+            return ""
+    except Exception:
+        return ""
+
+
+def _repo_dir():
+    """Return the repo root if this install is an editable git clone, else None."""
+    p = Path(__file__).resolve().parent
+    return p if (p / ".git").is_dir() else None
+
+
+def _install_mode():
+    """"git" for editable clone, "pypi" for an installed wheel, "unknown" otherwise."""
+    if _repo_dir():
+        return "git"
+    return "pypi" if _version() else "unknown"
+
+
+def _cache_read():
+    try:
+        return json.loads(VERSION_CACHE.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _cache_write(data):
+    try:
+        VERSION_CACHE.write_text(json.dumps(data))
+    except OSError:
+        pass
+
+
+def _latest_release_tag(force=False):
+    """Return latest release tag from GitHub, or None. Cached for 24h to avoid hammering the API."""
+    cache = _cache_read()
+    now = time.time()
+    if not force and cache.get("tag") and now - cache.get("fetched_at", 0) < VERSION_CACHE_TTL:
+        return cache["tag"]
+    try:
+        req = urllib.request.Request(GH_RELEASES, headers={"Accept": "application/vnd.github+json"})
+        tag = json.loads(urllib.request.urlopen(req, timeout=5).read()).get("tag_name") or ""
+    except Exception:
+        return cache.get("tag")  # fall back to last known
+    tag = tag.lstrip("v")
+    _cache_write({**cache, "tag": tag, "fetched_at": now})
+    return tag or None
+
+
+def _version_tuple(v):
+    """Best-effort semver parse. Non-numeric components sort as 0, so pre-releases may not rank perfectly."""
+    parts = []
+    for s in (v or "").split("."):
+        m = ""
+        for ch in s:
+            if ch.isdigit():
+                m += ch
+            else:
+                break
+        parts.append(int(m) if m else 0)
+    return tuple(parts)
+
+
+def check_for_update():
+    """(current, latest, newer_available). latest may be None if the API was unreachable and no cache exists."""
+    cur = _version()
+    latest = _latest_release_tag()
+    newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
+    return cur, latest, newer
+
+
+def print_update_banner(out=None):
+    """Print the update banner to stderr once per day. Silent when up-to-date or offline."""
+    import sys
+    out = out or sys.stderr
+    cache = _cache_read()
+    today = time.strftime("%Y-%m-%d")
+    if cache.get("banner_shown_on") == today:
+        return
+    cur, latest, newer = check_for_update()
+    if not newer:
+        return
+    print(f"[browser-harness] update available: {cur} -> {latest}", file=out)
+    print(f"[browser-harness] agents: run `browser-harness --update -y` to upgrade and restart the daemon", file=out)
+    _cache_write({**cache, "banner_shown_on": today})
+
+
+def _chrome_running():
+    """Cross-platform best-effort check for a running Chrome/Edge process."""
+    import platform, subprocess
+    system = platform.system()
+    try:
+        if system == "Windows":
+            out = subprocess.check_output(["tasklist"], text=True, timeout=5)
+            names = ("chrome.exe", "msedge.exe")
+        else:
+            out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
+            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge")
+        return any(n.lower() in out.lower() for n in names)
+    except Exception:
+        return False
+
+
+def _open_chrome_inspect():
+    """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
+    import platform, subprocess, webbrowser
+    url = "chrome://inspect/#remote-debugging"
+    if platform.system() == "Darwin":
+        try:
+            subprocess.run([
+                "osascript",
+                "-e", 'tell application "Google Chrome" to activate',
+                "-e", f'tell application "Google Chrome" to open location "{url}"',
+            ], timeout=5, check=False)
+            return
+        except Exception:
+            pass
+    try:
+        webbrowser.open(url, new=2)
+    except Exception:
+        pass
+
+
+def run_setup():
+    """Interactive bootstrap: attach to the running browser, guiding the user through chrome://inspect if needed.
+
+    Exit code 0 on success, 1 on failure."""
+    import sys
+    print("browser-harness setup: attaching to your browser...")
+
+    if daemon_alive():
+        print("daemon already running; nothing to do.")
+        return 0
+
+    if not _chrome_running():
+        print("no Chrome/Edge process detected. please start your browser and rerun `browser-harness --setup`.")
+        return 1
+
+    # First attach attempt.
+    try:
+        ensure_daemon(wait=20.0)
+        print("daemon is up.")
+        return 0
+    except RuntimeError as e:
+        first_err = str(e)
+
+    needs_inspect = _is_local_chrome_mode() and _needs_chrome_remote_debugging_prompt(first_err)
+    if needs_inspect:
+        print("chrome remote-debugging is not enabled on the current profile.")
+        print("opening chrome://inspect/#remote-debugging -- in the tab that opens:")
+        print("  1. if chrome shows the profile picker, pick your normal profile;")
+        print("  2. tick 'Discover network targets' and click Allow if prompted.")
+        _open_chrome_inspect()
+    else:
+        print(f"attach failed: {first_err}")
+        print("retrying for up to 60s (chrome may still be starting up)...")
+
+    deadline = time.time() + 60
+    last = first_err
+    while time.time() < deadline:
+        try:
+            ensure_daemon(wait=5.0)
+            print("daemon is up.")
+            return 0
+        except RuntimeError as e:
+            last = str(e)
+            time.sleep(2)
+
+    print(f"setup failed: {last}", file=sys.stderr)
+    print("run `browser-harness --doctor` for diagnostics.", file=sys.stderr)
+    return 1
+
+
+def run_doctor():
+    """Read-only diagnostics. Exit 0 iff everything looks healthy."""
+    import platform, shutil, sys
+    cur = _version()
+    mode = _install_mode()
+    chrome = _chrome_running()
+    daemon = daemon_alive()
+    profile_use = shutil.which("profile-use") is not None
+    api_key = bool(os.environ.get("BROWSER_USE_API_KEY"))
+    latest = _latest_release_tag()
+    # Only claim an update when we know the installed version — `cur or "(unknown)"`
+    # for display would otherwise be parsed as (0,) and flag every latest as newer.
+    newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
+    cur_display = cur or "(unknown)"
+
+    def row(label, ok, detail=""):
+        mark = "ok  " if ok else "FAIL"
+        print(f"  [{mark}] {label}{(' — ' + detail) if detail else ''}")
+
+    print("browser-harness doctor")
+    print(f"  platform          {platform.system()} {platform.release()}")
+    print(f"  python            {sys.version.split()[0]}")
+    print(f"  version           {cur_display} ({mode})")
+    if latest:
+        print(f"  latest release    {latest}" + (" (update available)" if newer else ""))
+    else:
+        print("  latest release    (could not reach github)")
+    row("chrome running", chrome, "" if chrome else "start chrome/edge and rerun `browser-harness --setup`")
+    row("daemon alive", daemon, "" if daemon else "run `browser-harness --setup` to attach")
+    row("profile-use installed", profile_use, "" if profile_use else "optional: curl -fsSL https://browser-use.com/profile.sh | sh")
+    row("BROWSER_USE_API_KEY set", api_key, "" if api_key else "optional: needed only for cloud browsers / profile sync")
+    # Core health = chrome + daemon. Profile-use/api-key are optional.
+    return 0 if (chrome and daemon) else 1
+
+
+def _prompt_yes(question, default_yes=True, yes=False):
+    if yes:
+        return True
+    suffix = "[Y/n]" if default_yes else "[y/N]"
+    try:
+        ans = input(f"{question} {suffix} ").strip().lower()
+    except EOFError:
+        return default_yes
+    if not ans:
+        return default_yes
+    return ans.startswith("y")
+
+
+def run_update(yes=False):
+    """Pull the latest version and (after prompt) restart the daemon so it picks up changed code.
+
+    Exit 0 on success, non-zero on failure."""
+    import subprocess, sys
+    cur, latest, newer = check_for_update()
+    # Only short-circuit as "up to date" when we actually know the installed
+    # version. Otherwise `newer=False` just means "couldn't compare" — proceed.
+    if cur and latest and not newer:
+        print(f"browser-harness is up to date ({cur}).")
+        return 0
+    if cur and latest:
+        print(f"updating browser-harness: {cur} -> {latest}")
+    elif latest:
+        print(f"installed version unknown; will try to update to {latest}.")
+    else:
+        print("could not reach github; will try to update anyway.")
+
+    mode = _install_mode()
+    if mode == "git":
+        repo = _repo_dir()
+        status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
+        if status.returncode != 0:
+            print(f"git status failed: {status.stderr.strip()}", file=sys.stderr)
+            return 1
+        if status.stdout.strip():
+            print(f"refusing to update: uncommitted changes in {repo}", file=sys.stderr)
+            print("commit or stash them first, or run `git -C %s pull` yourself." % repo, file=sys.stderr)
+            return 1
+        r = subprocess.run(["git", "-C", str(repo), "pull", "--ff-only"])
+        if r.returncode != 0:
+            return r.returncode
+    elif mode == "pypi":
+        tool_upgrade = subprocess.run(["uv", "tool", "upgrade", "browser-harness"])
+        if tool_upgrade.returncode != 0:
+            # Fall back to pip in case this wasn't a `uv tool install`.
+            pip = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "browser-harness"])
+            if pip.returncode != 0:
+                return pip.returncode
+    else:
+        print("unknown install mode; can't auto-update.", file=sys.stderr)
+        return 1
+
+    # Invalidate banner/tag cache so the new version doesn't keep nagging.
+    cache = _cache_read()
+    cache.pop("banner_shown_on", None)
+    _cache_write(cache)
+
+    if daemon_alive():
+        if _prompt_yes("restart the running daemon so it picks up the new code?", default_yes=True, yes=yes):
+            restart_daemon()
+            print("daemon stopped; it will auto-restart on next `browser-harness` call.")
+        else:
+            print("daemon left running on old code. run `browser-harness` and it'll use the new code after the daemon recycles.")
+    print("update complete.")
+    return 0

@@ -290,7 +290,7 @@ The following are **not accessible** via http_get and require the CDP browser:
 If browser access is needed for search:
 
 ```python
-goto("https://open.spotify.com/search")
+goto_url("https://open.spotify.com/search")
 wait_for_load()
 wait(2)
 # Type into the search box

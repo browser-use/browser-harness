@@ -329,7 +329,7 @@ over_500  = search_craigslist("sfbay", "sss", "macbook", min_price=501)
 ```
 
 If true pagination is required (e.g. you need more than 350 results), you must use a browser session
-with `goto()` + `wait_for_load()`.
+with `goto_url()` + `wait_for_load()`.
 
 ## Bot detection
 

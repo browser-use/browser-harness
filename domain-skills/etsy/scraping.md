@@ -240,7 +240,7 @@ Expected output (ItemList typically has 48 items per search page):
 ### Listing detail page extraction (browser)
 
 ```python
-goto("https://www.etsy.com/listing/1234567890/product-slug")
+goto_url("https://www.etsy.com/listing/1234567890/product-slug")
 wait_for_load()
 wait(2)
 
@@ -292,7 +292,7 @@ detail = js("""
 ### Shop/seller page extraction (browser)
 
 ```python
-goto("https://www.etsy.com/shop/ShopName")
+goto_url("https://www.etsy.com/shop/ShopName")
 wait_for_load()
 wait(2)
 
@@ -329,7 +329,7 @@ Pagination for shop listings: Etsy loads more listings via infinite scroll or a 
 # Check for pagination or load-more
 load_more = js("document.querySelector('[data-wt-shop-listings-load-more], button[class*=\"load-more\"]')?.href")
 if load_more:
-    goto(load_more)
+    goto_url(load_more)
     wait_for_load()
     wait(2)
 # Or: scroll to bottom to trigger infinite scroll
@@ -343,12 +343,12 @@ wait(2)
 # Etsy uses ?page=N — 48 results per page (standard), up to ~250 pages
 next_url = js("document.querySelector('a[data-wt-search-page-next], .wt-action-group a[rel=\"next\"]')?.href")
 if next_url:
-    goto(next_url)
+    goto_url(next_url)
     wait_for_load()
     wait(2)
 
 # Or construct directly:
-goto(f"https://www.etsy.com/search?q=handmade+candle&explicit=1&page={page_num}")
+goto_url(f"https://www.etsy.com/search?q=handmade+candle&explicit=1&page={page_num}")
 wait_for_load()
 wait(2)
 ```

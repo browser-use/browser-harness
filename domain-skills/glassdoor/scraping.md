@@ -23,7 +23,7 @@ required in a real browser). Cookie-only bypass also fails — the `__cf_bm` coo
 
 `api.glassdoor.com` (the old public partner API) returned `410 Gone` — permanently shut down.
 
-**Use `goto()` + `wait()` exclusively. Never use `http_get` for Glassdoor.**
+**Use `goto_url()` + `wait()` exclusively. Never use `http_get` for Glassdoor.**
 
 ---
 
@@ -128,7 +128,7 @@ for r in results:
 serves a different layout under A/B tests. The screenshot will reveal the actual card selector.
 
 ```python
-screenshot("/tmp/glassdoor_jobs.png")
+capture_screenshot("/tmp/glassdoor_jobs.png")
 # Inspect the image, then adjust the querySelectorAll selector above
 ```
 
@@ -147,7 +147,7 @@ all_jobs = []
 
 for page in range(1, 4):   # pages 1-3, ~10 cards each
     url = f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={quote_plus(query)}&p={page}"
-    goto(url)
+    goto_url(url)
     wait_for_load()
     wait(5 if page == 1 else 3)  # first page needs CF wait; subsequent pages are faster
 
@@ -201,7 +201,7 @@ import json, re
 employer_id = 9079
 company_slug = "Google"
 
-goto(f"https://www.glassdoor.com/Overview/Working-at-{company_slug}-EI_IE{employer_id}.htm")
+goto_url(f"https://www.glassdoor.com/Overview/Working-at-{company_slug}-EI_IE{employer_id}.htm")
 wait_for_load()
 wait(5)   # CF challenge
 
@@ -250,7 +250,7 @@ import json
 employer_id = 9079
 company_slug = "Google"
 
-goto(f"https://www.glassdoor.com/Reviews/{company_slug}-Reviews-E{employer_id}.htm")
+goto_url(f"https://www.glassdoor.com/Reviews/{company_slug}-Reviews-E{employer_id}.htm")
 wait_for_load()
 wait(5)
 
@@ -316,7 +316,7 @@ from urllib.parse import quote_plus
 role = "software-engineer"
 n = len(role)  # 17 for "software-engineer"
 
-goto(f"https://www.glassdoor.com/Salaries/{role}-salary-SRCH_KO0,{n}.htm")
+goto_url(f"https://www.glassdoor.com/Salaries/{role}-salary-SRCH_KO0,{n}.htm")
 wait_for_load()
 wait(5)
 
@@ -418,7 +418,7 @@ may itself be outside the viewport.
 
 ## Detecting whether you are past the CF challenge
 
-After `goto()` + `wait(5)`, confirm you are on the real page:
+After `goto_url()` + `wait(5)`, confirm you are on the real page:
 
 ```python
 def glassdoor_is_cf_blocked() -> bool:
@@ -428,14 +428,14 @@ def glassdoor_is_cf_blocked() -> bool:
     return "Security" in title or "__cf_chl_tk" in url
 
 # Usage
-goto("https://www.glassdoor.com/Reviews/Google-Reviews-E9079.htm")
+goto_url("https://www.glassdoor.com/Reviews/Google-Reviews-E9079.htm")
 wait_for_load()
 wait(5)
 
 if glassdoor_is_cf_blocked():
     wait(10)   # give CF extra time
     if glassdoor_is_cf_blocked():
-        screenshot("/tmp/glassdoor_cf_block.png")
+        capture_screenshot("/tmp/glassdoor_cf_block.png")
         raise RuntimeError("CF challenge did not resolve — check screenshot")
 ```
 
@@ -450,7 +450,7 @@ To find the ID for any company:
 from urllib.parse import quote_plus
 
 company_name = "OpenAI"
-goto(f"https://www.glassdoor.com/Search/results.htm?keyword={quote_plus(company_name)}&locT=N")
+goto_url(f"https://www.glassdoor.com/Search/results.htm?keyword={quote_plus(company_name)}&locT=N")
 wait_for_load()
 wait(5)
 
@@ -537,7 +537,7 @@ for c in json.loads(companies):
   data. If a field returns empty consistently, the page may require authentication before surfacing
   that data in the DOM or `__NEXT_DATA__`.
 
-- **`goto()` vs `new_tab()` for first navigation.** Use `new_tab()` for the very first Glassdoor
-  page in a session. If the harness is attached to a non-Glassdoor tab, `goto()` can silently
+- **`goto_url()` vs `new_tab()` for first navigation.** Use `new_tab()` for the very first Glassdoor
+  page in a session. If the harness is attached to a non-Glassdoor tab, `goto_url()` can silently
   fail to pass the CF challenge because the existing tab may not have a clean origin context.
-  After the first successful load, `goto()` works fine for subsequent Glassdoor navigations.
+  After the first successful load, `goto_url()` works fine for subsequent Glassdoor navigations.

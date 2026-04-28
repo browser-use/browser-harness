@@ -302,8 +302,8 @@ The charting UI (`/chart/`), symbol detail pages (`/symbols/NASDAQ-AAPL/`), and 
 
 ```python
 # Only if you need a chart screenshot:
-goto("https://www.tradingview.com/chart/?symbol=NASDAQ:AAPL")
+goto_url("https://www.tradingview.com/chart/?symbol=NASDAQ:AAPL")
 wait_for_load()
 wait(3)   # chart renders asynchronously after readyState
-screenshot("/tmp/aapl_chart.png", full=False)
+capture_screenshot("/tmp/aapl_chart.png", full=False)
 ```

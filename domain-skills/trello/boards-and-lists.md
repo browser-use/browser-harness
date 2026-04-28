@@ -37,7 +37,7 @@ matches the visible column count.
 
 ## Framework / interaction quirks
 
-- `goto('https://trello.com/')` redirects asynchronously to the user's
+- `goto_url('https://trello.com/')` redirects asynchronously to the user's
   boards dashboard. After `wait_for_load()`, the URL in `page_info()`
   will be `.../u/<username>/boards`. Don't hard-code the username;
   read it back from `page_info()['url']` if you need it.

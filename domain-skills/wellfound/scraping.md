@@ -73,7 +73,7 @@ if "wellfound.com" not in url or not title or "Just a moment" in title:
     wait(8)
     title = js("document.title")
     if "Just a moment" in title or not title:
-        screenshot("/tmp/wellfound_block.png")
+        capture_screenshot("/tmp/wellfound_block.png")
         raise RuntimeError("DataDome/CF challenge did not resolve — see screenshot")
 ```
 
@@ -473,7 +473,7 @@ wait(5)
 if wellfound_is_blocked():
     wait(8)   # DataDome sometimes needs up to 10s total
     if wellfound_is_blocked():
-        screenshot("/tmp/wellfound_blocked.png")
+        capture_screenshot("/tmp/wellfound_blocked.png")
         raise RuntimeError("DataDome/CF challenge did not resolve — see /tmp/wellfound_blocked.png")
 ```
 
@@ -530,9 +530,9 @@ Wellfound uses **Tailwind CSS** — no stable semantic class names. These patter
    Call `dismiss_wellfound_login_modal()` right after `wait(5)` on these pages.
 
 8. **Rate limiting.** After ~5-10 rapid page navigations DataDome may harden. Use `wait(3)` between
-   `goto()` calls. If you get a captcha that does not auto-resolve, wait 30-60 seconds.
+   `goto_url()` calls. If you get a captcha that does not auto-resolve, wait 30-60 seconds.
 
-9. **`new_tab()` over `goto()` for the first Wellfound page.** `goto()` in an existing tab
+9. **`new_tab()` over `goto_url()` for the first Wellfound page.** `goto_url()` in an existing tab
    may inherit a stale DataDome fingerprint. `new_tab()` gives a clean origin context that
    DataDome processes cleanly.
 

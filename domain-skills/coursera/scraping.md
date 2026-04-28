@@ -233,7 +233,7 @@ client-side, or use the browser approach below.
 new_tab("https://www.coursera.org/search?query=machine+learning")
 wait_for_load()
 wait(3)  # Results load asynchronously via React
-screenshot()
+capture_screenshot()
 ```
 
 Note: The search results page (`/search?query=...`) is a client-rendered React app. The

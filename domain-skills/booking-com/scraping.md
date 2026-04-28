@@ -355,14 +355,14 @@ results = js("""
 # Method 1: Next page button
 next_btn = js("document.querySelector('[data-testid=\"pagination-next\"]')?.href")
 if next_btn:
-    goto(next_btn)
+    goto_url(next_btn)
     wait_for_load()
     wait(3)
 
 # Method 2: Offset parameter (25 results per page)
 current_url = page_info()["url"]
 offset = 25  # next page
-goto(current_url + f"&offset={offset}")
+goto_url(current_url + f"&offset={offset}")
 wait_for_load()
 wait(3)
 ```
@@ -502,8 +502,8 @@ def wait_past_waf(timeout=15):
         wait(1)
     return False  # timed out — WAF didn't resolve
 
-# Use after goto():
-goto("https://www.booking.com/searchresults.html?ss=London&checkin=2026-06-01&checkout=2026-06-03&group_adults=2&no_rooms=1")
+# Use after goto_url():
+goto_url("https://www.booking.com/searchresults.html?ss=London&checkin=2026-06-01&checkout=2026-06-03&group_adults=2&no_rooms=1")
 wait_for_load()
 wait_past_waf()
 wait(2)  # hydration

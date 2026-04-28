@@ -179,7 +179,7 @@ GROUP = "riceLakeBoating"          # slug or numeric id
 TARGET = 50                         # how many posts to collect
 MAX_SCROLLS = 30
 
-goto(f"https://www.facebook.com/groups/{GROUP}/?sorting_setting=CHRONOLOGICAL")
+goto_url(f"https://www.facebook.com/groups/{GROUP}/?sorting_setting=CHRONOLOGICAL")
 wait_for_load()
 wait(2)
 
@@ -215,7 +215,7 @@ def decode(u):
 
 posts = list(seen.values())
 all_externals = sorted({decode(x) for p in posts for x in p["externals"]})
-screenshot(f"/tmp/fb-group-{GROUP}.png", full=True)
+capture_screenshot(f"/tmp/fb-group-{GROUP}.png", full=True)
 print(json.dumps({
     "group": GROUP,
     "post_count": len(posts),

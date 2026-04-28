@@ -23,7 +23,7 @@ DataDome's challenge is **silent** — no CAPTCHA widget appears in a real brows
 
 Pages **not** behind DataDome (safe to `http_get`): `help.g2.com`, `research.g2.com`, `learn.g2.com`, `data.g2.com/api/docs`.
 
-**Use `goto()` + `wait()` exclusively. Never use `http_get` for www.g2.com.**
+**Use `goto_url()` + `wait()` exclusively. Never use `http_get` for www.g2.com.**
 
 ---
 
@@ -186,7 +186,7 @@ G2 is a **Rails app** (not Next.js) — there is no `__NEXT_DATA__`. Use schema.
 ```python
 import json
 
-goto("https://www.g2.com/products/slack/reviews")
+goto_url("https://www.g2.com/products/slack/reviews")
 wait_for_load()
 wait(5)
 
@@ -229,7 +229,7 @@ The rating distribution histogram (5-star, 4-star, …) is rendered server-side 
 ```python
 import json
 
-goto("https://www.g2.com/products/slack/reviews")
+goto_url("https://www.g2.com/products/slack/reviews")
 wait_for_load()
 wait(5)
 
@@ -277,7 +277,7 @@ for star in ["5", "4", "3", "2", "1"]:
 If the distribution returns empty, take a screenshot and inspect the actual element structure:
 
 ```python
-screenshot("/tmp/g2_reviews.png")
+capture_screenshot("/tmp/g2_reviews.png")
 # Inspect the image, then adjust selectors above
 ```
 
@@ -290,7 +290,7 @@ G2 renders reviews server-side as schema.org `Review` microdata items. Extract b
 ```python
 import json
 
-goto("https://www.g2.com/products/slack/reviews")
+goto_url("https://www.g2.com/products/slack/reviews")
 wait_for_load()
 wait(5)
 
@@ -377,7 +377,7 @@ for r in results:
 **If `results` is empty:** G2 may have re-skinned. Take a screenshot and inspect the DOM:
 
 ```python
-screenshot("/tmp/g2_page.png")
+capture_screenshot("/tmp/g2_page.png")
 # Check element structure with:
 structure = js("""
 (function() {
@@ -406,9 +406,9 @@ all_reviews = []
 for page_num in range(1, 6):  # up to 5 pages (~10 reviews each)
     url = f"https://www.g2.com/products/{slug}/reviews?page={page_num}"
     if page_num == 1:
-        goto(url)
+        goto_url(url)
     else:
-        goto(url)
+        goto_url(url)
     wait_for_load()
     wait(4 if page_num == 1 else 2)  # DataDome only challenges on first page in session
 
@@ -453,7 +453,7 @@ print(f"Total: {len(all_reviews)} reviews")
 ```python
 import json
 
-goto("https://www.g2.com/categories/team-collaboration")
+goto_url("https://www.g2.com/categories/team-collaboration")
 wait_for_load()
 wait(5)
 
@@ -511,7 +511,7 @@ wait(5)
 if g2_is_datadome_blocked():
     wait(10)  # give DataDome JS extra time to complete
     if g2_is_datadome_blocked():
-        screenshot("/tmp/g2_dd_block.png")
+        capture_screenshot("/tmp/g2_dd_block.png")
         raise RuntimeError("DataDome challenge did not resolve — check screenshot")
 ```
 
@@ -569,7 +569,7 @@ Call `dismiss_g2_login_modal()` after any scroll action that might trigger the m
 
 - **Sign-in modal triggers on scroll.** G2 limits anonymous visitors to the reviews visible in the initial viewport (~5 reviews). Scrolling triggers a login modal. Extract all initial cards before any scroll call. To get more reviews without login, use `?page=2`, `?page=3`, etc. instead of scrolling.
 
-- **Rate limiting on navigation.** G2 does not publish a browser-facing rate limit, but rapid consecutive `goto()` calls (< 2s apart) can trigger soft blocks. Use `wait(3)` between product page navigations and `wait(2)` between paginated review pages in the same session.
+- **Rate limiting on navigation.** G2 does not publish a browser-facing rate limit, but rapid consecutive `goto_url()` calls (< 2s apart) can trigger soft blocks. Use `wait(3)` between product page navigations and `wait(2)` between paginated review pages in the same session.
 
 - **Cloudflare is CDN-only here, not Bot Management.** The `Server: cloudflare` header and `__cf_bm` cookie are standard Cloudflare CDN features (not the Cloudflare Bot Management product). The actual anti-bot protection is DataDome. Do not apply Glassdoor-style CF challenge waits — the DataDome wait is what matters.
 

@@ -205,7 +205,7 @@ PAGE = "BoatingOntario.ca"   # vanity slug OR numeric Page ID
 TARGET = 30
 MAX_SCROLLS = 25
 
-goto(f"https://www.facebook.com/{PAGE}/posts")
+goto_url(f"https://www.facebook.com/{PAGE}/posts")
 wait_for_load()
 wait(3)
 
@@ -258,7 +258,7 @@ posts = list(seen.values())
 if meta.get("website_redirector"):
     meta["website"] = decode(meta["website_redirector"])
 all_externals = sorted({decode(x) for p in posts for x in p["externals"]})
-screenshot(f"/tmp/fb-page-{PAGE}.png", full=True)
+capture_screenshot(f"/tmp/fb-page-{PAGE}.png", full=True)
 print(json.dumps({
     "page": PAGE,
     "meta": meta,

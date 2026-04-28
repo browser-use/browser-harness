@@ -32,12 +32,17 @@ PROFILES = [
     Path.home() / "Library/Application Support/Microsoft Edge Beta",
     Path.home() / "Library/Application Support/Microsoft Edge Dev",
     Path.home() / "Library/Application Support/Microsoft Edge Canary",
+    Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser",
     Path.home() / ".config/google-chrome",
     Path.home() / ".config/chromium",
     Path.home() / ".config/chromium-browser",
     Path.home() / ".config/microsoft-edge",
     Path.home() / ".config/microsoft-edge-beta",
     Path.home() / ".config/microsoft-edge-dev",
+    Path.home() / ".var/app/org.chromium.Chromium/config/chromium",
+    Path.home() / ".var/app/com.google.Chrome/config/google-chrome",
+    Path.home() / ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
+    Path.home() / ".var/app/com.microsoft.Edge/config/microsoft-edge",
     Path.home() / "AppData/Local/Google/Chrome/User Data",
     Path.home() / "AppData/Local/Chromium/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge/User Data",
@@ -58,6 +63,19 @@ def log(msg):
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
+    if url := os.environ.get("BU_CDP_URL"):
+        # HTTP DevTools endpoint (e.g. http://127.0.0.1:9333) — resolve to ws via /json/version.
+        # Use this for a dedicated automation Chrome on a non-default profile, which avoids the
+        # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
+        deadline = time.time() + 30
+        last_err = None
+        while time.time() < deadline:
+            try:
+                return json.loads(urllib.request.urlopen(f"{url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+            except Exception as e:
+                last_err = e
+                time.sleep(1)
+        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- is the dedicated automation Chrome running?")
     for base in PROFILES:
         try:
             port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
@@ -79,6 +97,12 @@ def get_ws_url():
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+    for probe_port in (9222, 9223):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
+                return json.loads(r.read())["webSocketDebuggerUrl"]
+        except (OSError, KeyError, ValueError):
+            continue
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
@@ -140,6 +164,12 @@ class Daemon:
         try:
             await self.cdp.start()
         except Exception as e:
+            if os.environ.get("BU_CDP_WS"):
+                raise RuntimeError(
+                    f"CDP WS handshake failed: {e} -- remote browser WebSocket connection failed. "
+                    "This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "
+                    "If you use Browser Use cloud, verify BROWSER_USE_API_KEY and get a fresh URL via start_remote_daemon()."
+                )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
