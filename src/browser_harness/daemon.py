@@ -142,6 +142,7 @@ class Daemon:
     def __init__(self):
         self.cdp = None
         self.session = None
+        self.target_id = None
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
@@ -158,6 +159,7 @@ class Daemon:
         self.session = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
         ))["sessionId"]
+        self.target_id = pages[0]["targetId"]
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         for d in ("Page", "DOM", "Runtime", "Network"):
             try:
@@ -204,8 +206,23 @@ class Daemon:
             out = list(self.events); self.events.clear()
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
+        if meta == "connection_status":
+            page = None
+            if self.target_id:
+                try:
+                    info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
+                    if is_real_page(info):
+                        page = {
+                            "targetId": info.get("targetId"),
+                            "title": info.get("title") or "(untitled)",
+                            "url": info.get("url") or "",
+                        }
+                except Exception:
+                    page = None
+            return {"target_id": self.target_id, "session_id": self.session, "page": page}
         if meta == "set_session":
             self.session = req.get("session_id")
+            self.target_id = req.get("target_id") or self.target_id
             try:
                 await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=self.session), timeout=3)
                 await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=self.session), timeout=2)
