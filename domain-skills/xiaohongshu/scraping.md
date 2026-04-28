@@ -21,9 +21,13 @@ Search → collect hrefs → open each post → read `__INITIAL_STATE__.note.not
 ```bash
 browser-harness <<'PY'
 import json, time
+from urllib.parse import quote
 
-# 1. Search.
-goto_url("https://www.xiaohongshu.com/search_result?keyword=" + "bloc1".replace(" ", "%20") + "&type=51")
+# 1. Search. URL-encode the full keyword — XHS queries commonly contain
+#    Chinese characters, spaces, and ampersands, none of which a naive
+#    space-only replace handles.
+keyword = "bloc1 攀岩"
+goto_url(f"https://www.xiaohongshu.com/search_result?keyword={quote(keyword)}&type=51")
 wait_for_load(timeout=20)
 for _ in range(15):
     if js('document.querySelectorAll("section.note-item").length'):
