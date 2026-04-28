@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, os, tempfile, time, urllib.request
+import base64, importlib.util, json, math, os, tempfile, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -61,6 +61,104 @@ def cdp(method, session_id=None, **params):
 def drain_events():  return _send({"meta": "drain_events"})["events"]
 
 
+def _js_snippet(expression, limit=160):
+    snippet = expression.strip().replace("\n", "\\n")
+    return snippet[:limit - 3] + "..." if len(snippet) > limit else snippet
+
+
+def _js_exception_description(result, details):
+    desc = result.get("description")
+    exc = details.get("exception") if details else None
+    if not desc and isinstance(exc, dict):
+        desc = exc.get("description")
+        if desc is None and "value" in exc:
+            desc = str(exc["value"])
+        if desc is None:
+            desc = exc.get("className")
+    if not desc and details:
+        desc = details.get("text")
+    return desc or "JavaScript evaluation failed"
+
+
+def _decode_unserializable_js_value(value):
+    if value == "NaN":
+        return math.nan
+    if value == "Infinity":
+        return math.inf
+    if value == "-Infinity":
+        return -math.inf
+    if value == "-0":
+        return -0.0
+    if value.endswith("n"):
+        return int(value[:-1])
+    return value
+
+
+def _runtime_value(response, expression):
+    result = response.get("result", {})
+    details = response.get("exceptionDetails")
+    if details or result.get("subtype") == "error":
+        desc = _js_exception_description(result, details)
+        if details:
+            line = details.get("lineNumber")
+            col = details.get("columnNumber")
+            loc = f" at line {line}, column {col}" if line is not None and col is not None else ""
+        else:
+            loc = ""
+        raise RuntimeError(f"JavaScript evaluation failed{loc}: {desc}; expression: {_js_snippet(expression)}")
+    if "value" in result:
+        return result["value"]
+    if "unserializableValue" in result:
+        return _decode_unserializable_js_value(result["unserializableValue"])
+    return None
+
+
+def _runtime_evaluate(expression, session_id=None, await_promise=False):
+    try:
+        r = cdp("Runtime.evaluate", session_id=session_id, expression=expression, returnByValue=True, awaitPromise=await_promise)
+    except TimeoutError as e:
+        raise RuntimeError(f"Runtime.evaluate timed out; expression: {_js_snippet(expression)}") from e
+    return _runtime_value(r, expression)
+
+
+def _has_return_statement(expression):
+    i = 0
+    n = len(expression)
+    state = "code"
+    quote = ""
+    while i < n:
+        ch = expression[i]
+        nxt = expression[i + 1] if i + 1 < n else ""
+        if state == "code":
+            if ch in ("'", '"', "`"):
+                state = "string"; quote = ch; i += 1; continue
+            if ch == "/" and nxt == "/":
+                state = "line_comment"; i += 2; continue
+            if ch == "/" and nxt == "*":
+                state = "block_comment"; i += 2; continue
+            if expression.startswith("return", i):
+                before = expression[i - 1] if i > 0 else ""
+                after = expression[i + 6] if i + 6 < n else ""
+                if not (before == "_" or before.isalnum()) and not (after == "_" or after.isalnum()):
+                    return True
+            i += 1; continue
+        if state == "line_comment":
+            if ch == "\n":
+                state = "code"
+            i += 1; continue
+        if state == "block_comment":
+            if ch == "*" and nxt == "/":
+                state = "code"; i += 2; continue
+            i += 1; continue
+        if state == "string":
+            if ch == "\\":
+                i += 2; continue
+            if ch == quote:
+                state = "code"; quote = ""
+            i += 1; continue
+    return False
+
+
 # --- navigation / page ---
 def goto_url(url):
     r = cdp("Page.navigate", url=url)
@@ -76,10 +174,8 @@ def page_info():
     dialog = _send({"meta": "pending_dialog"}).get("dialog")
     if dialog:
         return {"dialog": dialog}
-    r = cdp("Runtime.evaluate",
-            expression="JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})",
-            returnByValue=True)
-    return json.loads(r["result"]["value"])
+    expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
+    return json.loads(_runtime_evaluate(expression))
 
 # --- input ---
 _debug_click_counter = 0
@@ -231,27 +327,9 @@ def js(expression, target_id=None):
     `document.title` and `const x = 1; return x` are valid inputs.
     """
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
-    if "return " in expression and not expression.strip().startswith("("):
+    if _has_return_statement(expression) and not expression.strip().startswith("("):
         expression = f"(function(){{{expression}}})()"
-    r = cdp("Runtime.evaluate", session_id=sid, expression=expression, returnByValue=True, awaitPromise=True)
-    result = r.get("result", {})
-    details = r.get("exceptionDetails")
-    if details or result.get("subtype") == "error":
-        desc = result.get("description")
-        if not desc and details:
-            desc = details.get("text")
-        desc = desc or "JavaScript evaluation failed"
-        if details:
-            line = details.get("lineNumber")
-            col = details.get("columnNumber")
-            loc = f" at line {line}, column {col}" if line is not None and col is not None else ""
-        else:
-            loc = ""
-        snippet = expression.strip().replace("\n", "\\n")
-        if len(snippet) > 160:
-            snippet = snippet[:157] + "..."
-        raise RuntimeError(f"JavaScript evaluation failed{loc}: {desc}; expression: {snippet}")
-    return result.get("value")
+    return _runtime_evaluate(expression, session_id=sid, await_promise=True)
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
