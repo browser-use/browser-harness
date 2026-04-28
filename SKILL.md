@@ -89,6 +89,27 @@ Having `BROWSER_USE_API_KEY` set or remote browser access available does not mak
 
 Use remote only when the user explicitly asks for a Browser Use cloud browser, a non-local browser, or a headless/deployment browser. BROWSER_USE_API_KEY must be set. start_remote_daemon, list_cloud_profiles, list_local_profiles, sync_local_profile are pre-imported.
 
+Baseline remote run:
+
+```bash
+browser-harness -c '
+start_remote_daemon("remote", timeout=5)
+'
+
+BU_NAME=remote browser-harness -c '
+new_tab("https://example.com")
+wait_for_load()
+print(current_tab())
+print(page_info())
+'
+
+browser-harness -c '
+stop_remote_daemon("remote")
+'
+```
+
+`start_remote_daemon(...)` prints and opens a `live.browser-use.com` viewer in the local Chrome. That tab is only the viewer; the controlled page runs in the Browser Use cloud browser.
+
 ```bash
 browser-harness -c '
 start_remote_daemon("work")                               # default — clean browser, no profile
