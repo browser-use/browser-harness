@@ -88,6 +88,21 @@ def test_browser_connections_returns_attached_page(monkeypatch):
     ]
 
 
+def test_browser_connections_counts_legacy_daemon_that_still_answers_cdp(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default"])
+    responses = [
+        b'{"error":"\'method\'"}\n',
+        b'{"result":{"targetInfos":[]}}\n',
+    ]
+
+    def fake_connect(name, timeout=1.0):
+        return FakeSocket(responses.pop(0))
+
+    monkeypatch.setattr(admin.ipc, "connect", fake_connect)
+
+    assert admin.browser_connections() == [{"name": "default", "page": None}]
+
+
 def test_run_doctor_prints_active_browser_connections_and_active_pages(monkeypatch, capsys):
     monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
     monkeypatch.setattr(admin, "_install_mode", lambda: "git")

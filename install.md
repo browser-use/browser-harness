@@ -53,7 +53,7 @@ print(page_info())
 PY
 ```
 
-   Reuse an existing healthy daemon if it is already responding. Do not kill it during setup unless the attach is clearly stale and you are confident no other agent is using the same `BU_NAME`. For parallel agents, use distinct `BU_NAME`s so they do not fight over the same default session.
+   Reuse an existing healthy daemon if it is already responding. Do not kill it during setup unless the attach is clearly stale and you are confident no other agent is using the same `BU_NAME`. For parallel agents, use distinct `BU_NAME`s so they do not fight over the same default session. Distinct `BU_NAME`s isolate harness sessions, not the local Chrome itself: separate agents can still affect the same tabs, profile state, or logged-in sites unless you move them to remote browsers.
 
 3. If it failed, **read the error and escalate from there — do not assume you need `chrome://inspect`**. The remote-debugging checkbox is per-profile sticky in Chrome, so any profile that has had it toggled on once will auto-enable CDP on every future launch; the inspect page is only needed the first time per profile.
 
@@ -121,7 +121,11 @@ Chrome / Browser Use cloud -> CDP WS -> browser_harness.daemon -> /tmp/bu-<NAME>
 - Requests are {method, params, session_id} for CDP or {meta: ...} for daemon control.
 - Responses are {result} / {error} / {events} / {session_id}.
 - BU_NAME namespaces socket, pid, and log files.
+- Different `BU_NAME`s can point at the same local Chrome while keeping separate daemon/session state.
+- Different `BU_NAME`s do not create separate local Chrome profiles or windows; use remote browsers only when explicitly requested or when true cloud-browser isolation is required.
 - BU_CDP_WS overrides local Chrome discovery for remote browsers.
+- BROWSER_USE_API_KEY enables remote browser creation, but does not make ordinary BU_NAME daemons remote by default.
+- When local Chrome remote debugging is enabled and serving on 127.0.0.1:9222, plain BU_NAME daemons attach there unless BU_CDP_WS or BU_CDP_URL points them elsewhere.
 - BU_BROWSER_ID + BROWSER_USE_API_KEY lets the daemon stop a Browser Use cloud browser on shutdown.
 
 ## Keeping the harness current

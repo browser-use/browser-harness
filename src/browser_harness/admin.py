@@ -110,6 +110,8 @@ def _daemon_browser_connection(name):
             data += chunk
         response = json.loads(data)
         if "error" in response:
+            if response.get("error") == "'method'":
+                return _legacy_daemon_browser_connection(name)
             return None
         page = response.get("page")
         if page:
@@ -120,6 +122,28 @@ def _daemon_browser_connection(name):
     finally:
         if c:
             c.close()
+
+
+def _legacy_daemon_browser_connection(name):
+    c = None
+    try:
+        c = ipc.connect(name, timeout=1.0)
+        c.sendall(b'{"method":"Target.getTargets","params":{}}\n')
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = c.recv(1 << 16)
+            if not chunk:
+                break
+            data += chunk
+        response = json.loads(data)
+        if "result" in response:
+            return {"name": name, "page": None}
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, KeyError, ValueError, json.JSONDecodeError):
+        return None
+    finally:
+        if c:
+            c.close()
+    return None
 
 
 def browser_connections():

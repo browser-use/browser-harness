@@ -42,6 +42,28 @@ Useful for stealth, sub-agents, or deployment.<br>
 - Grab a key at [cloud.browser-use.com/new-api-key](https://cloud.browser-use.com/new-api-key)
 - Or let the agent sign up itself via [docs.browser-use.com/llms.txt](https://docs.browser-use.com/llms.txt) (setup flow + challenge context included).
 
+## Parallel agents and `BU_NAME`
+
+Multiple agents can use the same local Chrome if each one runs with a distinct `BU_NAME`. That isolates the harness daemon/session state, not the whole browser.
+
+```bash
+BU_NAME=alpha browser-harness -c 'new_tab("https://example.com"); print(page_info())'
+BU_NAME=beta browser-harness -c 'new_tab("https://example.org"); print(page_info())'
+```
+
+What `BU_NAME` isolates:
+- socket, pid, and daemon state
+- attached target/session inside the harness
+
+What it does not isolate on local Chrome:
+- the visible Chrome window
+- profile cookies/login state
+- accidental interaction with the same site or tab flow
+
+Use Browser Use remote browsers only when explicitly requested or when the task genuinely requires a separate cloud browser.
+
+Remote access is opt-in per daemon. Setting `BROWSER_USE_API_KEY` or having Browser Use cloud enabled is not enough: `BU_NAME=alpha browser-harness ...` still attaches to local Chrome unless `alpha` was started with `start_remote_daemon("alpha")` or a remote `BU_CDP_WS` / `BU_CDP_URL`. When Chrome remote debugging shows `Server running at: 127.0.0.1:9222`, local daemons will prefer that local browser unless you explicitly point them elsewhere.
+
 ## How simple is it? (~592 lines of Python)
 
 - `install.md` — first-time install and browser bootstrap
