@@ -20,6 +20,34 @@ print(page_info())
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
 
+## Use local Chrome by default
+
+Always use the user's local Chrome for browser-harness work unless the user explicitly asks for a remote Browser Use cloud browser. When local Chrome remote debugging is enabled at `127.0.0.1:9222`, plain `browser-harness` and plain `BU_NAME=<name> browser-harness ...` should attach there.
+
+Do not start a remote daemon just because the user asks for parallel work, a fresh `BU_NAME`, or a new browser-harness session. `BU_NAME` only selects the harness daemon namespace. If the command calls `new_tab(...)`, it opens a tab in the local Chrome unless that specific daemon was explicitly created as remote.
+
+Local parallel pattern:
+
+```bash
+BU_NAME=work browser-harness -c '
+new_tab("https://example.com")
+print(page_info())
+'
+```
+
+Remote pattern, only when explicitly requested:
+
+```bash
+browser-harness -c '
+start_remote_daemon("work")
+'
+
+BU_NAME=work browser-harness -c '
+new_tab("https://example.com")
+print(page_info())
+'
+```
+
 Available interaction skills:
 - interaction-skills/connection.md — startup sequence, tab visibility, omnibox popup fix
 
@@ -37,9 +65,50 @@ browser-harness -c '
 
 run.py calls ensure_daemon() before exec — you never start/stop manually unless you want to.
 
+### Parallel agents on local Chrome
+
+You can run multiple agents against the same local Chrome as long as each one uses a distinct `BU_NAME`.
+
+```bash
+BU_NAME=alpha browser-harness -c '
+new_tab("https://example.com")
+print(page_info())
+'
+
+BU_NAME=beta browser-harness -c '
+new_tab("https://example.org")
+print(page_info())
+'
+```
+
+`BU_NAME` isolates the harness session and daemon state (`/tmp/bu-<NAME>.sock`, pid, attached target). It does **not** give each agent a separate local browser profile or independent visible window. Agents with different `BU_NAME`s still share the same real Chrome and can interfere with each other if they touch the same site, account, or active tab flow. Use remote browsers when you need real isolation.
+
+Having `BROWSER_USE_API_KEY` set or remote browser access available does not make plain `BU_NAME=<name> browser-harness ...` remote. A new `BU_NAME` defaults to local Chrome unless that daemon was created with `start_remote_daemon("<name>")` or an explicit remote CDP endpoint (`BU_CDP_WS` / `BU_CDP_URL`). If Chrome's remote debugging page says `Server running at: 127.0.0.1:9222`, new local daemons can attach there immediately. If your command calls `new_tab(...)`, it opens a new tab in whichever browser that daemon is attached to.
+
 ### Remote browsers
 
-Use remote for parallel sub-agents (each gets its own isolated browser via a distinct BU_NAME) or on a headless server. BROWSER_USE_API_KEY must be set. start_remote_daemon, list_cloud_profiles, list_local_profiles, sync_local_profile are pre-imported.
+Use remote only when the user explicitly asks for a Browser Use cloud browser, a non-local browser, or a headless/deployment browser. BROWSER_USE_API_KEY must be set. start_remote_daemon, list_cloud_profiles, list_local_profiles, sync_local_profile are pre-imported.
+
+Baseline remote run:
+
+```bash
+browser-harness -c '
+start_remote_daemon("remote", timeout=5)
+'
+
+BU_NAME=remote browser-harness -c '
+new_tab("https://example.com")
+wait_for_load()
+print(current_tab())
+print(page_info())
+'
+
+browser-harness -c '
+stop_remote_daemon("remote")
+'
+```
+
+`start_remote_daemon(...)` prints and opens a `live.browser-use.com` viewer in the local Chrome. That tab is only the viewer; the controlled page runs in the Browser Use cloud browser.
 
 ```bash
 browser-harness -c '

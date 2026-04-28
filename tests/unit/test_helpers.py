@@ -50,3 +50,50 @@ def test_page_info_raises_clear_error_on_js_exception():
          patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         with pytest.raises(RuntimeError, match="ReferenceError"):
             helpers.page_info()
+
+
+def test_current_tab_uses_daemon_connection_status_page():
+    def fake_send(req):
+        assert req == {"meta": "connection_status"}
+        return {
+            "target_id": "browser-target",
+            "session_id": "session-1",
+            "page": {
+                "targetId": "page-target",
+                "title": "Example",
+                "url": "https://example.test",
+            },
+        }
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send):
+        assert helpers.current_tab() == {
+            "targetId": "page-target",
+            "title": "Example",
+            "url": "https://example.test",
+        }
+
+
+def test_current_tab_falls_back_to_target_id_from_connection_status():
+    def fake_send(req):
+        assert req == {"meta": "connection_status"}
+        return {"target_id": "page-target", "session_id": "session-1", "page": None}
+
+    def fake_cdp(method, **kwargs):
+        assert method == "Target.getTargetInfo"
+        assert kwargs == {"targetId": "page-target"}
+        return {
+            "targetInfo": {
+                "targetId": "page-target",
+                "type": "page",
+                "title": "Example",
+                "url": "https://example.test",
+            }
+        }
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        assert helpers.current_tab() == {
+            "targetId": "page-target",
+            "title": "Example",
+            "url": "https://example.test",
+        }

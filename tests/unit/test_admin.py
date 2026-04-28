@@ -88,6 +88,21 @@ def test_browser_connections_returns_attached_page(monkeypatch):
     ]
 
 
+def test_browser_connections_counts_legacy_daemon_that_still_answers_cdp(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default"])
+    responses = [
+        b'{"error":"\'method\'"}\n',
+        b'{"result":{"targetInfos":[]}}\n',
+    ]
+
+    def fake_connect(name, timeout=1.0):
+        return FakeSocket(responses.pop(0))
+
+    monkeypatch.setattr(admin.ipc, "connect", fake_connect)
+
+    assert admin.browser_connections() == [{"name": "default", "page": None}]
+
+
 def test_run_doctor_prints_active_browser_connections_and_active_pages(monkeypatch, capsys):
     monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
     monkeypatch.setattr(admin, "_install_mode", lambda: "git")
@@ -103,7 +118,7 @@ def test_run_doctor_prints_active_browser_connections_and_active_pages(monkeypat
             "page": {"title": "Cat - Wikipedia", "url": "https://en.wikipedia.org/wiki/Cat"},
         },
     ])
-    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_latest_release_lookup", lambda: ("0.1.0", "ok"))
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
     monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
 
@@ -127,7 +142,7 @@ def test_doctor_page_output_truncates_long_text(monkeypatch, capsys):
             "page": {"title": "A very long page title", "url": "https://example.test/very/long/path"},
         }
     ])
-    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_latest_release_lookup", lambda: ("0.1.0", "ok"))
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
     monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
 
@@ -136,3 +151,19 @@ def test_doctor_page_output_truncates_long_text(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "A very long page ..." in out
     assert "https://example.t..." in out
+
+
+def test_run_doctor_reports_when_no_release_is_published(monkeypatch, capsys):
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_chrome_running", lambda: True)
+    monkeypatch.setattr(admin, "daemon_alive", lambda: True)
+    monkeypatch.setattr(admin, "browser_connections", lambda: [])
+    monkeypatch.setattr(admin, "_latest_release_lookup", lambda: (None, "no_release"))
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+
+    assert admin.run_doctor() == 0
+
+    out = capsys.readouterr().out
+    assert "latest release    (none published)" in out

@@ -255,6 +255,25 @@ def list_tabs(include_chrome=True):
     return out
 
 def current_tab():
+    try:
+        status = _send({"meta": "connection_status"})
+        page = status.get("page")
+        if page:
+            return {
+                "targetId": page.get("targetId"),
+                "url": page.get("url", ""),
+                "title": page.get("title", ""),
+            }
+        target_id = status.get("target_id")
+        if target_id:
+            t = cdp("Target.getTargetInfo", targetId=target_id).get("targetInfo", {})
+            return {
+                "targetId": t.get("targetId"),
+                "url": t.get("url", ""),
+                "title": t.get("title", ""),
+            }
+    except Exception:
+        pass
     t = cdp("Target.getTargetInfo").get("targetInfo", {})
     return {"targetId": t.get("targetId"), "url": t.get("url", ""), "title": t.get("title", "")}
 

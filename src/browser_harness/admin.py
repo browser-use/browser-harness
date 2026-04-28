@@ -3,6 +3,7 @@ import os
 import socket
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -110,6 +111,8 @@ def _daemon_browser_connection(name):
             data += chunk
         response = json.loads(data)
         if "error" in response:
+            if response.get("error") == "'method'":
+                return _legacy_daemon_browser_connection(name)
             return None
         page = response.get("page")
         if page:
@@ -120,6 +123,28 @@ def _daemon_browser_connection(name):
     finally:
         if c:
             c.close()
+
+
+def _legacy_daemon_browser_connection(name):
+    c = None
+    try:
+        c = ipc.connect(name, timeout=1.0)
+        c.sendall(b'{"method":"Target.getTargets","params":{}}\n')
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = c.recv(1 << 16)
+            if not chunk:
+                break
+            data += chunk
+        response = json.loads(data)
+        if "result" in response:
+            return {"name": name, "page": None}
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, KeyError, ValueError, json.JSONDecodeError):
+        return None
+    finally:
+        if c:
+            c.close()
+    return None
 
 
 def browser_connections():
@@ -447,20 +472,35 @@ def _cache_write(data):
         pass
 
 
-def _latest_release_tag(force=False):
-    """Return latest release tag from GitHub, or None. Cached for 24h to avoid hammering the API."""
+def _latest_release_lookup(force=False):
+    """Return (latest release tag, status). Cached for 24h to avoid hammering the API."""
     cache = _cache_read()
     now = time.time()
-    if not force and cache.get("tag") and now - cache.get("fetched_at", 0) < VERSION_CACHE_TTL:
-        return cache["tag"]
+    if not force and now - cache.get("fetched_at", 0) < VERSION_CACHE_TTL:
+        if cache.get("tag"):
+            return cache["tag"], "ok"
+        if cache.get("release_status") == "no_release":
+            return None, "no_release"
     try:
         req = urllib.request.Request(GH_RELEASES, headers={"Accept": "application/vnd.github+json"})
         tag = json.loads(urllib.request.urlopen(req, timeout=5).read()).get("tag_name") or ""
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            _cache_write({**cache, "tag": "", "release_status": "no_release", "fetched_at": now})
+            return None, "no_release"
+        return cache.get("tag"), "ok" if cache.get("tag") else "unreachable"
     except Exception:
-        return cache.get("tag")  # fall back to last known
+        return cache.get("tag"), "ok" if cache.get("tag") else "unreachable"
     tag = tag.lstrip("v")
-    _cache_write({**cache, "tag": tag, "fetched_at": now})
-    return tag or None
+    release_status = "ok" if tag else "no_release"
+    _cache_write({**cache, "tag": tag, "release_status": release_status, "fetched_at": now})
+    return tag or None, release_status
+
+
+def _latest_release_tag(force=False):
+    """Return latest release tag from GitHub, or None."""
+    tag, _status = _latest_release_lookup(force=force)
+    return tag
 
 
 def _version_tuple(v):
@@ -597,7 +637,7 @@ def run_doctor():
     connections = browser_connections()
     profile_use = shutil.which("profile-use") is not None
     api_key = bool(os.environ.get("BROWSER_USE_API_KEY"))
-    latest = _latest_release_tag()
+    latest, latest_status = _latest_release_lookup()
     # Only claim an update when we know the installed version — `cur or "(unknown)"`
     # for display would otherwise be parsed as (0,) and flag every latest as newer.
     newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
@@ -613,6 +653,8 @@ def run_doctor():
     print(f"  version           {cur_display} ({mode})")
     if latest:
         print(f"  latest release    {latest}" + (" (update available)" if newer else ""))
+    elif latest_status == "no_release":
+        print("  latest release    (none published)")
     else:
         print("  latest release    (could not reach github)")
     row("chrome running", chrome, "" if chrome else "start chrome/edge and rerun `browser-harness --setup`")
