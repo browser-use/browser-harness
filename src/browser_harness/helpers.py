@@ -272,7 +272,7 @@ def switch_tab(target):
     except Exception: pass
     cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid})
+    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
     return sid
 
