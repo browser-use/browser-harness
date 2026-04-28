@@ -37,11 +37,6 @@ VERSION_CACHE_TTL = 24 * 3600
 DOCTOR_TEXT_LIMIT = 140
 
 
-def _paths(name):
-    n = name or NAME
-    return ipc.sock_addr(n), str(ipc.pid_path(n))
-
-
 def _log_tail(name):
     try:
         return ipc.log_path(name or NAME).read_text().strip().splitlines()[-1]
@@ -148,9 +143,10 @@ def ensure_daemon(wait=60.0, name=None, env=None, _open_inspect=True):
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
+        # Must go through ipc.connect so this works on Windows (TCP loopback) too;
+        # raw AF_UNIX here would fail on every warm call and churn the daemon.
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
-            s.connect(_paths(name)[0])
+            s = ipc.connect(name or NAME, timeout=3.0)
             s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
             data = b""
             while not data.endswith(b"\n"):
@@ -206,7 +202,7 @@ def restart_daemon(name=None):
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    _, pid_path = _paths(name)
+    pid_path = str(ipc.pid_path(name or NAME))
     try:
         c = ipc.connect(name or NAME, timeout=5.0)
         c.sendall(b'{"meta":"shutdown"}\n')
