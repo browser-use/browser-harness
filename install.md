@@ -39,8 +39,8 @@ the session prompt explicit:
 
 ```text
 Read the browser-harness SKILL.md and helpers.py first. Before any site-specific
-browser task, run `rg --files <browser-harness>/domain-skills` and read matching
-site files instead of inventing the flow from scratch.
+browser task, run `rg --files /path/to/browser-harness/domain-skills` and read
+matching site files instead of inventing the flow from scratch.
 ```
 
 Codex command:
