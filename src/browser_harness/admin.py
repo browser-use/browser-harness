@@ -248,6 +248,15 @@ def _browser_use(path, method, body=None):
     return json.loads(urllib.request.urlopen(req, timeout=60).read() or b"{}")
 
 
+def _stop_cloud_browser(browser_id):
+    if not browser_id:
+        return
+    try:
+        _browser_use(f"/browsers/{browser_id}", "PATCH", {"action": "stop"})
+    except BaseException:
+        pass
+
+
 def _cdp_ws_from_url(cdp_url):
     return json.loads(urllib.request.urlopen(f"{cdp_url}/json/version", timeout=15).read())["webSocketDebuggerUrl"]
 
@@ -338,10 +347,14 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
             raise RuntimeError("pass profileName OR profileId, not both")
         create_kwargs["profileId"] = _resolve_profile_name(profileName)
     browser = _browser_use("/browsers", "POST", create_kwargs)
-    ensure_daemon(
-        name=name,
-        env={"BU_CDP_WS": _cdp_ws_from_url(browser["cdpUrl"]), "BU_BROWSER_ID": browser["id"]},
-    )
+    try:
+        ensure_daemon(
+            name=name,
+            env={"BU_CDP_WS": _cdp_ws_from_url(browser["cdpUrl"]), "BU_BROWSER_ID": browser["id"]},
+        )
+    except BaseException:
+        _stop_cloud_browser(browser.get("id"))
+        raise
     _show_live_url(browser.get("liveUrl"))
     return browser
 
