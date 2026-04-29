@@ -205,6 +205,26 @@ def click_at_xy(x, y, button="left", clicks=1):
 def type_text(text):
     cdp("Input.insertText", text=text)
 
+def fill_input(selector, text, clear_first=True):
+    """Fill a framework-managed input (React controlled, Vue v-model, Ember tracked).
+
+    type_text() uses Input.insertText which bypasses framework event listeners and leaves
+    submit buttons disabled. This helper focuses the element, clears it, types via real
+    key events, then fires synthetic input+change events so the framework sees the update.
+    """
+    js(f"document.querySelector({json.dumps(selector)})?.focus()")
+    if clear_first:
+        press_key("a", modifiers=2)  # Ctrl+A
+        press_key("Backspace")
+    for ch in text:
+        press_key(ch)
+    js(
+        f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+        f"if(!e)return;"
+        f"e.dispatchEvent(new Event('input',{{bubbles:true}}));"
+        f"e.dispatchEvent(new Event('change',{{bubbles:true}}));}})();"
+    )
+
 _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "Enter": (13, "Enter", "\r"), "Tab": (9, "Tab", "\t"), "Backspace": (8, "Backspace", ""),
     "Escape": (27, "Escape", ""), "Delete": (46, "Delete", ""), " ": (32, "Space", " "),
@@ -318,6 +338,45 @@ def wait_for_load(timeout=15.0):
     while time.time() < deadline:
         if js("document.readyState") == "complete": return True
         time.sleep(0.3)
+    return False
+
+def wait_for_element(selector, timeout=10.0, visible=False):
+    """Poll until querySelector(selector) exists in the DOM, or timeout.
+
+    wait_for_load() misses SPAs — the document is 'complete' before the framework renders.
+    Use this after actions that trigger async rendering (route changes, data fetches).
+    Set visible=True to also require the element to be non-hidden and in-layout.
+    Returns True if found, False on timeout.
+    """
+    if visible:
+        check = (
+            f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+            f"return !!(e&&e.offsetParent!==null&&getComputedStyle(e).visibility!=='hidden')}})()"
+        )
+    else:
+        check = f"!!document.querySelector({json.dumps(selector)})"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if js(check): return True
+        time.sleep(0.3)
+    return False
+
+def wait_for_network_idle(timeout=10.0, idle_ms=500):
+    """Wait until no Network.* events arrive for idle_ms ms, then return True.
+
+    Useful after form submits, SPA route transitions, and any action that triggers
+    XHR/fetch without a visible DOM change. Builds on drain_events() — no daemon changes.
+    Returns True if idle window reached, False on timeout.
+    """
+    deadline = time.time() + timeout
+    last_activity = time.time()
+    while time.time() < deadline:
+        events = drain_events()
+        if any(e.get("method", "").startswith("Network.") for e in events):
+            last_activity = time.time()
+        if (time.time() - last_activity) * 1000 >= idle_ms:
+            return True
+        time.sleep(0.1)
     return False
 
 def js(expression, target_id=None):
