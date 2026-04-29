@@ -88,6 +88,12 @@ rg --files domain-skills
 rg -n "tiktok|upload" domain-skills
 ```
 
+## Debugging helpers
+
+Use `browser-harness --debug-clicks` when coordinate clicks need a visual receipt. It draws a DPR-aware overlay for click debugging so retina and scaled displays do not mislead the next action.
+
+For JavaScript snippets, `run.py` sends code with Python's `-c` path rather than heredoc stdin. Top-level `return` expressions in JS snippets are auto-wrapped in an IIFE, so quick probes can stay terse without hand-writing wrapper functions.
+
 ## Always contribute back
 
 If you learned anything non-obvious about how a site works, open a PR to domain-skills/<site>/ before you finish. Default to contributing. The harness gets better only because agents file what they learn. If figuring something out cost you a few steps, the next run should not pay the same tax.
