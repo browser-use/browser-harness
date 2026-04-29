@@ -23,9 +23,12 @@ print(page_info())
 Available interaction skills:
 - interaction-skills/connection.md — startup sequence, tab visibility, omnibox popup fix
 
-Available domain skills:
-- tiktok/upload.md
-- polymarket/scraping.md
+Domain skills live under `domain-skills/`. The set changes often; search it before
+site-specific work instead of trusting a short static list. Examples:
+- `github/repo-actions.md`
+- `linkedin/invitation-manager.md`
+- `polymarket/scraping.md`
+- `tiktok/upload.md`
 
 ## Tool call shape
 
