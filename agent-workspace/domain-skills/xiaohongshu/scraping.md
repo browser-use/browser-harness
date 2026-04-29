@@ -7,7 +7,7 @@ URL patterns:
 ## Search flow
 
 - Prefer direct navigation to the desktop search results page over automating the home-page search box.
-- Reliable primary path: `https://www.xiaohongshu.com/search_result?keyword=...&source=web_explore_feed`
+- Reliable primary path: `https://www.xiaohongshu.com/search_result?keyword=<url-encoded keyword>&source=web_explore_feed`
 - This route loads the normal desktop results page and avoids home-page input flakiness.
 - The search results page can also appear with variants such as `type=51` or other `source` values after in-app navigation; do not treat those as suspicious if the rendered results are correct.
 - The top search box on `explore` can work, and searching from the home page has transitioned to `search_result` without a login wall in some sessions.
