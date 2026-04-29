@@ -202,26 +202,30 @@ class Daemon:
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
+    async def connection_status(self):
+        page = None
+        browser_connected = self.session is not None and self.target_id is not None
+        if self.target_id:
+            try:
+                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
+            except Exception:
+                browser_connected = False
+            else:
+                if is_real_page(info):
+                    page = {
+                        "targetId": info.get("targetId"),
+                        "title": info.get("title") or "(untitled)",
+                        "url": info.get("url") or "",
+                    }
+        return {"target_id": self.target_id, "session_id": self.session, "browser_connected": browser_connected, "page": page}
+
     async def handle(self, req):
         meta = req.get("meta")
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
-        if meta == "connection_status":
-            page = None
-            if self.target_id:
-                try:
-                    info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
-                    if is_real_page(info):
-                        page = {
-                            "targetId": info.get("targetId"),
-                            "title": info.get("title") or "(untitled)",
-                            "url": info.get("url") or "",
-                        }
-                except Exception:
-                    page = None
-            return {"target_id": self.target_id, "session_id": self.session, "page": page}
+        if meta == "connection_status": return await self.connection_status()
         if meta == "set_session":
             self.session = req.get("session_id")
             self.target_id = req.get("target_id") or self.target_id

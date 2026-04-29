@@ -4,7 +4,7 @@ from browser_harness import admin
 
 
 class FakeSocket:
-    def __init__(self, response=b'{"target_id":"target-1","session_id":"session-1","page":null}\n'):
+    def __init__(self, response=b'{"target_id":"target-1","session_id":"session-1","browser_connected":true,"page":null}\n'):
         self.response = response
         self.closed = False
         self.sent = b""
@@ -94,10 +94,23 @@ def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
     assert admin.active_browser_connections() == 1
 
 
+def test_active_browser_connections_skips_daemons_without_live_browser_connection(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default", "dead"])
+
+    def fake_connect(name, timeout=1.0):
+        if name == "dead":
+            return FakeSocket(b'{"target_id":"target-2","session_id":"session-2","browser_connected":false,"page":null}\n')
+        return FakeSocket()
+
+    monkeypatch.setattr(admin.ipc, "connect", fake_connect)
+
+    assert admin.active_browser_connections() == 1
+
+
 def test_browser_connections_returns_attached_page(monkeypatch):
     monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default"])
     response = (
-        b'{"target_id":"target-1","session_id":"session-1",'
+        b'{"target_id":"target-1","session_id":"session-1","browser_connected":true,'
         b'"page":{"targetId":"target-1","title":"Cat - Wikipedia","url":"https://en.wikipedia.org/wiki/Cat"}}\n'
     )
     monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout=1.0: FakeSocket(response))
@@ -106,6 +119,19 @@ def test_browser_connections_returns_attached_page(monkeypatch):
         {
             "name": "default",
             "page": {"title": "Cat - Wikipedia", "url": "https://en.wikipedia.org/wiki/Cat"},
+        }
+    ]
+
+
+def test_browser_connections_keeps_live_daemon_without_real_page(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default"])
+    response = b'{"target_id":"target-1","session_id":"session-1","browser_connected":true,"page":null}\n'
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout=1.0: FakeSocket(response))
+
+    assert admin.browser_connections() == [
+        {
+            "name": "default",
+            "page": None,
         }
     ]
 

@@ -94,24 +94,31 @@ def _daemon_endpoint_names():
     return names
 
 
+def _read_daemon_response(c):
+    data = b""
+    while not data.endswith(b"\n"):
+        chunk = c.recv(1 << 16)
+        if not chunk:
+            break
+        data += chunk
+    return json.loads(data)
+
+
+def _healthy_connection_status(name, response):
+    if "error" in response or not response.get("browser_connected"):
+        return None
+    page = response.get("page")
+    if page:
+        page = {"title": page.get("title") or "(untitled)", "url": page.get("url") or ""}
+    return {"name": name, "page": page}
+
+
 def _daemon_browser_connection(name):
     c = None
     try:
         c = ipc.connect(name, timeout=1.0)
         c.sendall(b'{"meta":"connection_status"}\n')
-        data = b""
-        while not data.endswith(b"\n"):
-            chunk = c.recv(1 << 16)
-            if not chunk:
-                break
-            data += chunk
-        response = json.loads(data)
-        if "error" in response:
-            return None
-        page = response.get("page")
-        if page:
-            page = {"title": page.get("title") or "(untitled)", "url": page.get("url") or ""}
-        return {"name": name, "page": page}
+        return _healthy_connection_status(name, _read_daemon_response(c))
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, KeyError, ValueError, json.JSONDecodeError):
         return None
     finally:
