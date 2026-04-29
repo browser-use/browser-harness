@@ -185,6 +185,40 @@ def test_start_remote_daemon_stops_created_browser_when_daemon_start_fails(monke
         ("/browsers/browser-123", "PATCH", {"action": "stop"}),
     ]
 
+
+@pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit])
+def test_start_remote_daemon_stops_created_browser_when_daemon_start_is_interrupted(monkeypatch, exc_type):
+    calls = []
+    browser = {"id": "browser-123", "cdpUrl": "http://127.0.0.1:9333", "liveUrl": "https://live.example"}
+
+    def fake_browser_use(path, method, body=None):
+        calls.append((path, method, body))
+        if (path, method) == ("/browsers", "POST"):
+            return browser
+        if (path, method) == ("/browsers/browser-123", "PATCH"):
+            return {}
+        raise AssertionError((path, method, body))
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin, "_browser_use", fake_browser_use)
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda url: "ws://example.test/devtools/browser/1")
+    monkeypatch.setattr(admin, "ensure_daemon", lambda **kwargs: (_ for _ in ()).throw(exc_type()))
+
+    with pytest.raises(exc_type):
+        admin.start_remote_daemon()
+
+    assert calls == [
+        ("/browsers", "POST", {}),
+        ("/browsers/browser-123", "PATCH", {"action": "stop"}),
+    ]
+
+
+@pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit])
+def test_stop_cloud_browser_swallows_baseexception_from_stop_request(monkeypatch, exc_type):
+    monkeypatch.setattr(admin, "_browser_use", lambda *args, **kwargs: (_ for _ in ()).throw(exc_type()))
+
+    admin._stop_cloud_browser("browser-123")
+
 def test_start_remote_daemon_does_not_stop_created_browser_on_success(monkeypatch):
     calls = []
     browser = {"id": "browser-123", "cdpUrl": "http://127.0.0.1:9333", "liveUrl": "https://live.example"}

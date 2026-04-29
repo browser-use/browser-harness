@@ -253,7 +253,7 @@ def _stop_cloud_browser(browser_id):
         return
     try:
         _browser_use(f"/browsers/{browser_id}", "PATCH", {"action": "stop"})
-    except Exception:
+    except BaseException:
         pass
 
 
@@ -352,7 +352,7 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
             name=name,
             env={"BU_CDP_WS": _cdp_ws_from_url(browser["cdpUrl"]), "BU_BROWSER_ID": browser["id"]},
         )
-    except Exception:
+    except BaseException:
         _stop_cloud_browser(browser.get("id"))
         raise
     _show_live_url(browser.get("liveUrl"))
