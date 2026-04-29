@@ -209,18 +209,19 @@ class Daemon:
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
         if meta == "connection_status":
+            if not self.target_id:
+                return {"error": "not_attached"}
+            try:
+                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
+            except Exception:
+                return {"error": "cdp_disconnected"}
             page = None
-            if self.target_id:
-                try:
-                    info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
-                    if is_real_page(info):
-                        page = {
-                            "targetId": info.get("targetId"),
-                            "title": info.get("title") or "(untitled)",
-                            "url": info.get("url") or "",
-                        }
-                except Exception:
-                    page = None
+            if is_real_page(info):
+                page = {
+                    "targetId": info.get("targetId"),
+                    "title": info.get("title") or "(untitled)",
+                    "url": info.get("url") or "",
+                }
             return {"target_id": self.target_id, "session_id": self.session, "page": page}
         if meta == "set_session":
             self.session = req.get("session_id")

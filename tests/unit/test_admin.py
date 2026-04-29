@@ -94,6 +94,19 @@ def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
     assert admin.active_browser_connections() == 1
 
 
+def test_active_browser_connections_skips_daemons_reporting_cdp_disconnected(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default", "stale"])
+
+    def fake_connect(name, timeout=1.0):
+        if name == "stale":
+            return FakeSocket(b'{"error":"cdp_disconnected"}\n')
+        return FakeSocket()
+
+    monkeypatch.setattr(admin.ipc, "connect", fake_connect)
+
+    assert admin.active_browser_connections() == 1
+
+
 def test_browser_connections_returns_attached_page(monkeypatch):
     monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default"])
     response = (
