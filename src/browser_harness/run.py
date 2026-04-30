@@ -1,4 +1,4 @@
-import os, socket, sys
+import os, sys, urllib.request
 
 # Windows default stdout encoding is cp1252, which can't encode the 🟢 marker
 # helpers prepend to tab titles (or anything else outside Latin-1). Force UTF-8
@@ -46,18 +46,15 @@ Commands:
 """
 
 
+# Probe /json/version (not a bare TCP connect) so a non-Chrome process bound to
+# 9222/9223 doesn't masquerade as Chrome and skip the cloud bootstrap. Mirrors
+# daemon.py's fallback probe.
 def _local_chrome_listening():
-    """True if Chrome appears to be running with remote debugging on a known port.
-
-    9222 is Chrome's default CDP remote debugging port; 9223 is the common
-    fallback. Consistent with the same probe in daemon.py.
-    """
     for port in (9222, 9223):
         try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.3).close()
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3).close()
             return True
-        except OSError:
-            pass
+        except OSError: pass
     return False
 
 
