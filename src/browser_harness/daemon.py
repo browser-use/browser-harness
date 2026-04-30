@@ -93,25 +93,22 @@ def get_ws_url():
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- is the dedicated automation Chrome running?")
     for base in PROFILES:
         try:
-            port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
+            port = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)[0].strip()
         except (FileNotFoundError, NotADirectoryError):
             continue
+        # Resolve the live WS URL via /json/version instead of trusting the path stored
+        # alongside the port in DevToolsActivePort: if Chrome was previously launched
+        # with a different --user-data-dir on the same port, that file is left behind
+        # with a stale browser UUID and the WS upgrade returns 404.
         deadline = time.time() + 30
-        while True:
-            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            probe.settimeout(1)
+        while time.time() < deadline:
             try:
-                probe.connect(("127.0.0.1", int(port.strip())))
-                break
-            except OSError:
-                if time.time() >= deadline:
-                    raise RuntimeError(
-                        f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port.strip()} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
-                    )
+                return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
+            except (OSError, KeyError, ValueError):
                 time.sleep(1)
-            finally:
-                probe.close()
-        return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+        raise RuntimeError(
+            f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
+        )
     for probe_port in (9222, 9223):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
