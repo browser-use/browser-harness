@@ -65,19 +65,25 @@ def test_fill_input_focuses_types_and_fires_events():
 
     def fake_js(expr, **kwargs):
         js_calls.append(expr)
-        return None
+        return True  # focus call must return True (element found)
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):
         helpers.fill_input("#my-input", "hello")
 
-    # focus call
     assert any("#my-input" in e for e in js_calls)
-    # per-character key events dispatched
     key_downs = [m for m, _ in cdp_calls if m == "Input.dispatchKeyEvent"]
     assert len(key_downs) > 0
-    # input+change events dispatched at end
     assert any("input" in e and "change" in e for e in js_calls)
+
+
+def test_fill_input_raises_when_element_not_found():
+    def fake_js(expr, **kwargs):
+        return False  # element not found
+
+    with patch("browser_harness.helpers.js", side_effect=fake_js):
+        with pytest.raises(RuntimeError, match="element not found"):
+            helpers.fill_input("#missing", "hello")
 
 
 def test_fill_input_clear_first_sends_ctrl_a_backspace():
@@ -89,14 +95,14 @@ def test_fill_input_clear_first_sends_ctrl_a_backspace():
         return {}
 
     def fake_js(expr, **kwargs):
-        return None
+        return True  # element found
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):
         helpers.fill_input("#inp", "x", clear_first=True)
 
     keys_seen = [e.get("key") for e in key_events if e.get("type") == "keyDown"]
-    assert "a" in keys_seen          # Ctrl+A
+    assert "a" in keys_seen
     assert "Backspace" in keys_seen
 
 
@@ -109,7 +115,7 @@ def test_fill_input_no_clear_skips_ctrl_a():
         return {}
 
     def fake_js(expr, **kwargs):
-        return None
+        return True  # element found
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):

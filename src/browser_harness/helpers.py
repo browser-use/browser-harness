@@ -205,14 +205,25 @@ def click_at_xy(x, y, button="left", clicks=1):
 def type_text(text):
     cdp("Input.insertText", text=text)
 
-def fill_input(selector, text, clear_first=True):
+def fill_input(selector, text, clear_first=True, timeout=0.0):
     """Fill a framework-managed input (React controlled, Vue v-model, Ember tracked).
 
     type_text() uses Input.insertText which bypasses framework event listeners and leaves
     submit buttons disabled. This helper focuses the element, clears it, types via real
     key events, then fires synthetic input+change events so the framework sees the update.
+
+    Raises RuntimeError if the element is not found. Pass timeout>0 to wait for
+    late-rendered elements (e.g. after a route change) before typing.
     """
-    js(f"document.querySelector({json.dumps(selector)})?.focus()")
+    if timeout > 0:
+        if not wait_for_element(selector, timeout=timeout):
+            raise RuntimeError(f"fill_input: element not found: {selector!r}")
+    focused = js(
+        f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+        f"if(!e)return false;e.focus();return true;}})()"
+    )
+    if not focused:
+        raise RuntimeError(f"fill_input: element not found: {selector!r}")
     if clear_first:
         press_key("a", modifiers=4 if sys.platform == "darwin" else 2)  # Cmd+A on macOS, Ctrl+A elsewhere
         press_key("Backspace")
