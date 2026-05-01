@@ -23,12 +23,17 @@ BOSS直聘 uses a hybrid messaging architecture:
 
 ```
 Left panel:
-  .chat-user.v2                  — filter tabs (全部, 未读, 新招呼, 更多, AI筛选)
-  .boss-search-input             — contact search (placeholder: "搜索30天内的联系人")
+  .chat-user.v2                  — filter bar + search input
+    .label-list > ul
+      li.selected                — active filter tab
+      li                         — "未读(N)" shows count badge in <i>
+      li > .ui-dropmenu          — "更多" dropdown (仅沟通/有交换/有面试/不感兴趣)
+      li.filter-item             — "AI筛选" dropdown with natural language input
+    .boss-search-input           — contact search (placeholder: "搜索30天内的联系人")
   .user-list
     .user-list-content
       .friend-content-warp
-        .friend-content           — conversation item
+        .friend-content           — conversation item (click to open)
           .friend-content.friend-top  — pinned/top conversation
 
 Right panel (visible after clicking a conversation):
@@ -40,6 +45,67 @@ Right panel (visible after clicking a conversation):
     .message-item.item-friend    — message from recruiter
       .item-time > .time
       .message-content > .text
+```
+
+### Filter Tabs
+
+Top-level tabs (`.chat-user.v2 .label-list li`):
+
+| Tab | Description | Class |
+|-----|-------------|-------|
+| 全部 | All conversations (default) | `li.selected` when active |
+| 未读(N) | Unread conversations, badge shows count | `<i>` in label shows count |
+| 新招呼 | New greetings from recruiters | Badge indicator via `<i class="badge">` |
+| 更多 ▾ | Dropdown with extra filters | `.ui-dropmenu` |
+
+"更多" dropdown (`.more-label li`):
+
+| Option | Description |
+|--------|-------------|
+| 仅沟通 | Conversations with messages exchanged |
+| 有交换 | Conversations with file/contact exchange |
+| 有面试 | Conversations with interview invitations |
+| 不感兴趣 | Conversations marked "not interested" |
+
+"AI筛选" (`.filter-item > .ui-dropmenu`): Opens a panel with a `<textarea>` for natural language filter input (e.g. "后端开发 上海 高薪").
+
+#### Clicking Filter Tabs
+
+```python
+def click_filter(label_text):
+    """Click a filter tab by its text label."""
+    js(f"""
+    (function() {{
+        var labels = document.querySelectorAll('.chat-user .label-list li .label-name');
+        for (var i = 0; i < labels.length; i++) {{
+            if (labels[i].textContent.trim().indexOf('{label_text}') === 0) {{
+                labels[i].closest('li').click();
+                return true;
+            }}
+        }}
+        return false;
+    }})()
+    """)
+    wait(1)
+
+def click_more_filter(label_text):
+    """Click an option inside the '更多' dropdown."""
+    # First open the dropdown
+    click_filter("更多")
+    wait(0.5)
+    js(f"""
+    (function() {{
+        var items = document.querySelectorAll('.more-label li span');
+        for (var i = 0; i < items.length; i++) {{
+            if (items[i].textContent.trim() === '{label_text}') {{
+                items[i].closest('li').click();
+                return true;
+            }}
+        }}
+        return false;
+    }})()
+    """)
+    wait(1)
 ```
 
 ### Conversation Item (DOM)
