@@ -2,6 +2,7 @@
 
 Field-tested against zhipin.com on 2026-05-01.
 Login required for API access; job browsing is accessible without auth.
+Last browser-verified: 2026-05-01 (all functions re-tested against live site).
 
 ---
 
@@ -61,16 +62,19 @@ GET /wapi/zpgeek/pc/recommend/job/list.json
 |-------|-------------|--------|
 | `page` | Page number | 1-N |
 | `pageSize` | Results per page | 15 (default) |
-| `city` | City code | `101020100` = Shanghai, `101010100` = Beijing, `101280100` = Shenzhen |
+| `city` | City code | `101020100` = Shanghai, `101010100` = Beijing, `101280100` = Guangzhou |
 | `experience` | Experience filter code | `0`=不限, `104`=1-3年, `105`=3-5年, `106`=5-10年 |
 | `degree` | Education filter code | `0`=不限 |
 | `salary` | Salary filter code | `0`=不限, `405`=10-20K, `406`=20-50K |
 | `industry` | Industry filter code | (numeric) |
 | `scale` | Company size filter code | `0`=不限, `303`=100-499人, `305`=1000-9999人 |
 | `jobType` | Job type | `0`=不限, `1`=全职, `2`=兼职 |
-| `encryptExpectId` | Saved preference ID | From user's saved preferences |
+| `encryptExpectId` | Saved preference ID | From user's saved preferences (empty string = default) |
+| `mixExpectType` | Mixed expectation type | (empty string for default) |
+| `expectInfo` | Expectation info | (empty string for default) |
 
 Filter codes come from `/wapi/zpgeek/pc/all/filter/conditions.json`.
+Setting `experience`, `salary`, or `degree` to non-zero values without a valid `encryptExpectId` may return no results. The page always sends all filter params (even empty) in its API calls.
 
 ### Response (`zpData.jobList[]`)
 
@@ -109,10 +113,22 @@ import json
 
 def fetch_job_list(page=1, page_size=15, city="101020100", **filters):
     """Fetch jobs from the BOSS直聘 API. Must be on a zhipin.com page first."""
+    # Default params (matching what the real page sends)
+    defaults = {
+        "encryptExpectId": "",
+        "mixExpectType": "",
+        "expectInfo": "",
+        "jobType": "",
+        "salary": "",
+        "experience": "",
+        "degree": "",
+        "industry": "",
+        "scale": ""
+    }
+    defaults.update(filters)
     params = f"page={page}&pageSize={page_size}&city={city}"
-    for k, v in filters.items():
-        if v:
-            params += f"&{k}={v}"
+    for k, v in defaults.items():
+        params += f"&{k}={v}"
 
     raw = js(f"""
     (async function() {{
@@ -132,7 +148,9 @@ for j in result["jobs"]:
 
 ### Pagination
 
-The API uses `hasMore` (boolean), not a total count. Loop until `hasMore` is `false`:
+The API uses `hasMore` (boolean), not a total count. **Page-based pagination is unreliable** — `page=2` often returns 0 results even when `page=1` says `hasMore: true`. Use the initial page 1 results and consider widening filters (e.g., smaller `pageSize`, different city) rather than paginating.
+
+The actual job search page loads recommendations once at `page=1` and lazy-loads more via scroll, which triggers a different API path. For bulk extraction, vary filters (city, experience, salary) to get different result sets:
 
 ```python
 def fetch_all_jobs(city="101020100", max_pages=10):
@@ -140,7 +158,7 @@ def fetch_all_jobs(city="101020100", max_pages=10):
     for page in range(1, max_pages + 1):
         result = fetch_job_list(page=page, city=city)
         all_jobs.extend(result["jobs"])
-        if not result["hasMore"]:
+        if not result["hasMore"] or len(result["jobs"]) == 0:
             break
         wait(0.5)  # polite delay
     return all_jobs
@@ -165,6 +183,7 @@ def fetch_job_detail(security_id):
         var zp = d.zpData;
         var job = zp.jobInfo;
         var boss = zp.bossInfo;
+        var brand = zp.brandComInfo;
         return JSON.stringify({{
             title: job.jobName,
             salary: job.salaryDesc,
@@ -179,11 +198,11 @@ def fetch_job_detail(security_id):
             boss_title: boss.title,
             boss_avatar: boss.large,
             boss_online: boss.online,
-            company_name: zp.brandInfo.companyName,
-            company_logo: zp.brandInfo.brandLogo,
-            company_industry: zp.brandInfo.industry,
-            company_scale: zp.brandInfo.scale,
-            company_stage: zp.brandInfo.stage
+            company_name: brand.brandName,
+            company_logo: brand.logo,
+            company_industry: brand.industryName,
+            company_scale: brand.scaleName,
+            company_stage: brand.stageName
         }});
     }})()
     """)
@@ -233,7 +252,7 @@ City is identified by numeric code, not name:
 |------|------|
 | 上海 | `101020100` |
 | 北京 | `101010100` |
-| 深圳 | `101280100` |
+| 深圳 | `101280200` |
 | 广州 | `101280100` |
 | 杭州 | `101210100` |
 | 成都 | `101270100` |
@@ -312,7 +331,11 @@ def extract_job_cards_dom():
 - **Always prefer the API** — `salaryDesc` returns human-readable salary. DOM salary uses font-encoded PUA chars that require OCR or font-file reversal to decode.
 - **API needs browser session** — `/wapi/` endpoints require cookies from a real browser page load. Use `js()` + `fetch()` inside the browser, not Python `http_get`.
 - **securityId vs encryptJobId** — the job detail API uses `securityId` (long opaque string), NOT `encryptJobId`. Both come from the job list response.
+- **`brandComInfo` not `brandInfo`** — the job detail response uses `zpData.brandComInfo` (not `brandInfo`). Company name is `brandName` (not `companyName`), logo is `logo` (not `brandLogo`). Industry/scale/stage are numeric codes — use `industryName`/`scaleName`/`stageName` for display strings.
 - **SPA routing** — URL doesn't change when filters are applied via the DOM. With the API, filters are explicit query params.
-- **hasMore pagination** — no total count. Stop when `hasMore` is `false`.
+- **Page-based pagination is unreliable** — `page=2` often returns 0 results even when `hasMore` is true on page 1. Vary filters instead of paginating deep.
+- **Filter params need context** — setting `experience`, `salary`, or `degree` to non-zero values may return `code: 200404` without a valid `encryptExpectId`. Use empty strings for default/no-preference browsing.
 - **City codes are numeric** — not city names. Use the filter conditions API or city/site.json to look up codes.
 - **`wait(2-3)` after `goto_url`** — the SPA needs time to establish the session before API calls work.
+- **Anti-bot detection** — zhipin.com may redirect to about:blank after ~1-2 seconds of page load. Run API calls immediately after navigation in the same execution context.
+- **City code 101280100 = Guangzhou, NOT Shenzhen** — the code previously documented for Shenzhen is actually Guangzhou.
