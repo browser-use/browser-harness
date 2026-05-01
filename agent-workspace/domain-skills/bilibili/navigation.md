@@ -125,7 +125,7 @@ Dropdown accessible via avatar in top-right corner:
 | 消息 | `message.bilibili.com` | Sub-items: 回复我的, @我的, 收到的赞, 系统消息, 我的消息 |
 | 动态 | `t.bilibili.com` | Following feed — most important for daily use |
 | 收藏 | `space.bilibili.com/{UID}/favlist` | Favorite folders |
-| 历史 | `bilibili.com/history` | Watch history (also contains 稍后再看 tab) |
+| 历史 | `https://www.bilibili.com/account/history` | Watch history |
 | 创作中心 | `member.bilibili.com/platform/home` | Creator dashboard |
 | 投稿 | `member.bilibili.com/platform/upload/video/frame` | Upload |
 
@@ -254,7 +254,7 @@ Tab bar:
 
 ### Ranking (`/v/popular/rank/all`)
 
-23 category tabs: 全部, 番剧, 国创, 纪录片, 电影, 电视剧, 综艺, 动画, 游戏, 鬼畜, 音乐, 舞蹈, 影视, 娱乐, 知识, 科技, 数码, 美食, 汽车, 时尚, 美妆, 体育, 运动, 动物
+24 category tabs: 全部, 番剧, 国创, 纪录片, 电影, 电视剧, 综艺, 动画, 游戏, 鬼畜, 音乐, 舞蹈, 影视, 娱乐, 知识, 科技, 数码, 美食, 汽车, 时尚, 美妆, 体育, 运动, 动物
 
 Each entry shows: rank number, title, creator, view count, interaction count.
 
