@@ -29,7 +29,8 @@ jobs = json.loads(js("""
 (async function() {
     var r = await fetch('/wapi/zpgeek/pc/recommend/job/list.json?page=1&pageSize=15&city=101020100');
     var d = await r.json();
-    return JSON.stringify(d.zpData.jobList);
+    if (d.code !== 0 || !d.zpData) { return JSON.stringify([]); }
+    return JSON.stringify(d.zpData.jobList || []);
 })()
 """))
 
@@ -134,7 +135,10 @@ def fetch_job_list(page=1, page_size=15, city="101020100", **filters):
     (async function() {{
         var r = await fetch('/wapi/zpgeek/pc/recommend/job/list.json?{params}');
         var d = await r.json();
-        return JSON.stringify({{code: d.code, hasMore: d.zpData.hasMore, jobs: d.zpData.jobList}});
+        if (d.code !== 0 || !d.zpData) {{
+            return JSON.stringify({{code: d.code, hasMore: false, jobs: [], error: d.msg || 'API error'}});
+        }}
+        return JSON.stringify({{code: d.code, hasMore: d.zpData.hasMore, jobs: d.zpData.jobList || []}});
     }})()
     """)
     return json.loads(raw)
@@ -180,11 +184,15 @@ def fetch_job_detail(security_id):
     (async function() {{
         var r = await fetch('/wapi/zpgeek/job/detail.json?securityId={security_id}');
         var d = await r.json();
+        if (d.code !== 0 || !d.zpData) {{
+            return JSON.stringify({{code: d.code, error: d.msg || 'API error'}});
+        }}
         var zp = d.zpData;
         var job = zp.jobInfo;
         var boss = zp.bossInfo;
         var brand = zp.brandComInfo;
         return JSON.stringify({{
+            code: d.code,
             title: job.jobName,
             salary: job.salaryDesc,
             experience: job.experienceName,
@@ -225,6 +233,7 @@ def get_filter_conditions():
     (async function() {
         var r = await fetch('/wapi/zpgeek/pc/all/filter/conditions.json');
         var d = await r.json();
+        if (d.code !== 0 || !d.zpData) { return JSON.stringify({}); }
         return JSON.stringify(d.zpData);
     })()
     """)

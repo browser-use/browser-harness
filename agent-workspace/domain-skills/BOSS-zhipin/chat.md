@@ -243,8 +243,12 @@ def fetch_messages(boss_id, page=1, count=20):
         var url = '/wapi/zpchat/geek/historyMsg?bossId={boss_id}&maxMsgId=0&c={count}&page={page}&src=0';
         var r = await fetch(url);
         var d = await r.json();
+        if (d.code !== 0 || !d.zpData) {{
+            return JSON.stringify({{code: d.code, hasMore: false, count: 0, messages: [], error: d.msg || 'API error'}});
+        }}
         var msgs = d.zpData.messages || [];
         return JSON.stringify({{
+            code: d.code,
             hasMore: d.zpData.hasMore,
             count: msgs.length,
             messages: msgs.map(function(m) {{
@@ -286,6 +290,9 @@ def fetch_all_messages(boss_id):
         (async function() {{
             var r = await fetch('/wapi/zpchat/geek/historyMsg?bossId={boss_id}&maxMsgId={max_msg_id}&c=20&page=1&src=0');
             var d = await r.json();
+            if (d.code !== 0 || !d.zpData) {{
+                return JSON.stringify({{messages: [], hasMore: false}});
+            }}
             return JSON.stringify(d.zpData);
         }})()
         """)
@@ -342,6 +349,7 @@ def get_current_boss_id():
         var entries = performance.getEntriesByType('resource');
         for (var i = entries.length - 1; i >= 0; i--) {
             var url = entries[i].name;
+            if (url.indexOf('/wapi/zpchat/geek/historyMsg') === -1) continue;
             var match = url.match(/bossId=([^&]+)/);
             if (match) return match[1];
         }

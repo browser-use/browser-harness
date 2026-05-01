@@ -71,5 +71,5 @@ Each expands to sub-specialties (e.g. 互联网/AI → Java, Python, 前端, AI�
 - **Root URL redirects to city** — `zhipin.com` → `zhipin.com/{city}/` based on IP. Always check final URL after navigation.
 - **Dual-mode accounts** — same account switches between job-seeker and recruiter. UI changes completely.
 - **Search is SPA-based** — `/web/geek/jobs` uses client-side routing. URL params don't reflect active filters.
-- **city slug is Chinese** — `/shanghai/`, `/beijing/`, `/shenzhen/`, `/hangzhou/`, etc.
+- **city slug is pinyin** — `/shanghai/`, `/beijing/`, `/shenzhen/`, `/hangzhou/`, etc. (English transliteration, not Chinese characters). Note: the job search API uses numeric city codes (e.g. `city=101020100`), not pinyin slugs — see the city code table in job-search.md.
 - **`wait_for_load()` may not be enough** — heavy SPA, add `wait(2)` for hydration.
