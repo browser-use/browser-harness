@@ -69,10 +69,9 @@ def _is_local_chrome_mode(env=None):
 
 
 def daemon_alive(name=None):
-    try:
-        c = ipc.connect(name or NAME, timeout=1.0); c.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError):
-        return False
+    # Ping handshake (not a bare connect) so a stale .port file + port reuse
+    # after a daemon crash doesn't make us mistake an unrelated listener for ours.
+    return ipc.ping(name or NAME, timeout=1.0)
 
 
 def _daemon_endpoint_names():
@@ -97,15 +96,8 @@ def _daemon_endpoint_names():
 def _daemon_browser_connection(name):
     c = None
     try:
-        c = ipc.connect(name, timeout=1.0)
-        c.sendall(b'{"meta":"connection_status"}\n')
-        data = b""
-        while not data.endswith(b"\n"):
-            chunk = c.recv(1 << 16)
-            if not chunk:
-                break
-            data += chunk
-        response = json.loads(data)
+        c, token = ipc.connect(name, timeout=1.0)
+        response = ipc.request(c, token, {"meta": "connection_status"})
         if "error" in response:
             return None
         page = response.get("page")
@@ -148,14 +140,9 @@ def ensure_daemon(wait=60.0, name=None, env=None, _open_inspect=True):
         # Must go through ipc.connect so this works on Windows (TCP loopback) too;
         # raw AF_UNIX here would fail on every warm call and churn the daemon.
         try:
-            s = ipc.connect(name or NAME, timeout=3.0)
-            s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
-            data = b""
-            while not data.endswith(b"\n"):
-                chunk = s.recv(1 << 16)
-                if not chunk: break
-                data += chunk
-            if b'"result"' in data: return
+            s, token = ipc.connect(name or NAME, timeout=3.0)
+            resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+            if "result" in resp: return
         except Exception: pass
         restart_daemon(name)
 
@@ -206,9 +193,8 @@ def restart_daemon(name=None):
 
     pid_path = str(ipc.pid_path(name or NAME))
     try:
-        c = ipc.connect(name or NAME, timeout=5.0)
-        c.sendall(b'{"meta":"shutdown"}\n')
-        c.recv(1024)
+        c, token = ipc.connect(name or NAME, timeout=5.0)
+        ipc.request(c, token, {"meta": "shutdown"})
         c.close()
     except Exception:
         pass

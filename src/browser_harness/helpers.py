@@ -40,15 +40,11 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 
 
 def _send(req):
-    c = ipc.connect(NAME, timeout=5.0)
-    c.sendall((json.dumps(req) + "\n").encode())
-    data = b""
-    while not data.endswith(b"\n"):
-        chunk = c.recv(1 << 20)
-        if not chunk: break
-        data += chunk
-    c.close()
-    r = json.loads(data)
+    c, token = ipc.connect(NAME, timeout=5.0)
+    try:
+        r = ipc.request(c, token, req)
+    finally:
+        c.close()
     if "error" in r: raise RuntimeError(r["error"])
     return r
 

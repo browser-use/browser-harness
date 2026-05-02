@@ -210,7 +210,16 @@ class Daemon:
         self.cdp._event_registry.handle_event = tap
 
     async def handle(self, req):
+        # Token guard for Windows TCP loopback: any local process can otherwise
+        # connect and issue CDP commands. expected_token() is None on POSIX so
+        # this check is a no-op there (AF_UNIX + chmod 600 is the boundary).
+        expected = ipc.expected_token()
+        if expected is not None and req.get("token") != expected:
+            return {"error": "unauthorized"}
         meta = req.get("meta")
+        # Liveness probe — lets clients confirm the listener is actually this
+        # daemon and not an unrelated process that reused our port post-crash.
+        if meta == "ping":        return {"pong": True}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
@@ -297,10 +306,9 @@ async def main():
 
 
 def already_running():
-    try:
-        c = ipc.connect(NAME, timeout=1.0); c.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError):
-        return False
+    # Ping handshake (not a bare connect) so a stale .port file + port reuse
+    # after a daemon crash doesn't make us mistake an unrelated listener for ours.
+    return ipc.ping(NAME, timeout=1.0)
 
 
 if __name__ == "__main__":

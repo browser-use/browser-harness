@@ -86,8 +86,8 @@ def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
         if name == "stale":
             raise ConnectionRefusedError()
         if name == "remote":
-            return FakeSocket(b'{"error":"no close frame received or sent"}\n')
-        return FakeSocket()
+            return FakeSocket(b'{"error":"no close frame received or sent"}\n'), None
+        return FakeSocket(), None
 
     monkeypatch.setattr(admin.ipc, "connect", fake_connect)
 
@@ -99,8 +99,8 @@ def test_active_browser_connections_skips_daemons_reporting_cdp_disconnected(mon
 
     def fake_connect(name, timeout=1.0):
         if name == "stale":
-            return FakeSocket(b'{"error":"cdp_disconnected"}\n')
-        return FakeSocket()
+            return FakeSocket(b'{"error":"cdp_disconnected"}\n'), None
+        return FakeSocket(), None
 
     monkeypatch.setattr(admin.ipc, "connect", fake_connect)
 
@@ -113,7 +113,7 @@ def test_browser_connections_returns_attached_page(monkeypatch):
         b'{"target_id":"target-1","session_id":"session-1",'
         b'"page":{"targetId":"target-1","title":"Cat - Wikipedia","url":"https://en.wikipedia.org/wiki/Cat"}}\n'
     )
-    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout=1.0: FakeSocket(response))
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout=1.0: (FakeSocket(response), None))
 
     assert admin.browser_connections() == [
         {
