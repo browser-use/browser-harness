@@ -107,9 +107,15 @@ return Array.from(document.querySelectorAll("a[href*=HotelDetail]"))
   .map(detailA => {
     const id = (detailA.href.match(/hotelId=([A-Z]+\d+)/i) || [])[1];
 
-    // Walk up to the smallest container that includes the hotel name <a>
+    // Walk up to the smallest container that includes the hotel-name <a>
+    // (an anchor sharing the same hotelId href but whose text is NOT
+    // "查看详情" — that text lives on the link body, not in the href, so
+    // we filter by anchor identity / innerText, not by attribute selector).
     let card = detailA.parentElement;
-    while (card && !card.querySelector("a[href*='" + id + "']:not([href*=查看详情])")) {
+    const hasNameAnchor = (el) =>
+      Array.from(el.querySelectorAll("a[href*='" + id + "']"))
+        .some(a => a !== detailA && (a.innerText || "").trim() && (a.innerText || "").trim() !== "查看详情");
+    while (card && !hasNameAnchor(card)) {
       card = card.parentElement;
     }
     if (!card) return null;

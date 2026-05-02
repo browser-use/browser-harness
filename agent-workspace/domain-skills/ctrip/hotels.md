@@ -89,6 +89,8 @@ inp = js("""
   const r = i.getBoundingClientRect();
   return {x: r.x+r.width/2, y: r.y+r.height/2};
 """)
+if not inp:
+    raise RuntimeError("ctrip homepage: destination input not found — page DOM may have changed")
 click_at_xy(inp["x"], inp["y"])
 time.sleep(0.4)
 type_text("上海")
@@ -103,6 +105,8 @@ btn = js("""
   const r = b.getBoundingClientRect();
   return {x: r.x+r.width/2, y: r.y+r.height/2};
 """)
+if not btn:
+    raise RuntimeError("ctrip homepage: 搜索 button not found — page DOM may have changed")
 click_at_xy(btn["x"], btn["y"])
 time.sleep(7)
 # now on /hotels/list?... with the full canonical schema

@@ -125,12 +125,14 @@ holds the actual hotel payload. Find it by shape, not by key:
 ```js
 const dataMap = window.__NUXT__?.data || {};
 const hotelEntry = Object.values(dataMap).find(v => v && v.hotelData);
-const meta = hotelEntry?.hotelData?._rawValue;   // _rawValue is the resolved Vue ref
+// Prefer the public Vue ref API (`.value`); fall back to `_rawValue` only
+// if a future Vue/Nuxt build changes the unwrapping shape.
+const meta = hotelEntry?.hotelData?.value ?? hotelEntry?.hotelData?._rawValue;
 // meta now has: hotelid, hotelName, hotelNameEn, hotelAddress,
 // nearestAreaPosition, hotelArea, starLevel, headPicUrl
 ```
 
-`detailBaseInfo._rawValue` adds: `openDate`, `decorateDate`, `featureInfo`
+`detailBaseInfo.value` adds: `openDate`, `decorateDate`, `featureInfo`
 (prose paragraph), and the full address again.
 
 **Prices are NOT in `__NUXT__`.** They're loaded by a separate XHR after
