@@ -140,3 +140,69 @@ Chrome / Browser Use cloud -> CDP WS -> browser_harness.daemon -> /tmp/bu-<NAME>
 - Chrome may open the profile picker before any real tab exists.
 - On macOS, prefer AppleScript `open location` over `open -a ... URL` when Chrome is already running.
 - Microsoft Edge (including Beta/Dev/Canary) works too — substitute the app name; steps are identical.
+
+## WSL → Windows Chrome
+
+Default WSL2 networking cannot reach Windows `127.0.0.1`, and Chrome's `--remote-debugging-port` binds only to loopback. Running the harness in WSL against Chrome on the Windows host therefore needs a bridge. The harness itself must stay on the WSL side — python.org's Python on Windows lacks `socket.AF_UNIX`, which `daemon.py` requires.
+
+Prerequisites on Windows:
+
+- Chrome launched with `--remote-debugging-port=9222`. If `chrome://inspect/#remote-debugging` shows "Server running at: starting" and never advances, the flag was swallowed by Chrome's singleton — fully exit Chrome (including the system-tray background app) and relaunch.
+
+Bridge Chrome's CDP onto a WSL-reachable interface. Two options:
+
+1. **Mirrored networking** (cleanest, but disrupts running WSL). Write `%UserProfile%\.wslconfig`:
+
+   ```ini
+   [wsl2]
+   networkingMode=mirrored
+   ```
+
+   Then `wsl --shutdown` and reopen. WSL's `127.0.0.1:9222` now reaches Windows's `127.0.0.1:9222` directly; no relay, no firewall rule.
+
+2. **TCP relay** (works in the current WSL session — no shutdown). Drop a Python TCP relay on the Windows side, listening on `0.0.0.0:9223` and forwarding to `127.0.0.1:9222`:
+
+   ```python
+   # C:\...\relay.py — run with Windows Python
+   import socket, threading
+   def pump(a, b):
+       try:
+           while (d := a.recv(65536)): b.sendall(d)
+       except Exception: pass
+       finally:
+           for s in (a, b):
+               try: s.close()
+               except Exception: pass
+   srv = socket.socket()
+   srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+   srv.bind(("0.0.0.0", 9223)); srv.listen(128)
+   while True:
+       c, _ = srv.accept()
+       u = socket.socket(); u.connect(("127.0.0.1", 9222))
+       threading.Thread(target=pump, args=(c, u), daemon=True).start()
+       threading.Thread(target=pump, args=(u, c), daemon=True).start()
+   ```
+
+   Add a Windows Firewall allow rule for port 9223 (admin, once):
+
+   ```powershell
+   New-NetFirewallRule -DisplayName 'WSL CDP Relay 9223' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9223 -Profile Any
+   ```
+
+From WSL, resolve the Windows host and set `BU_CDP_WS`:
+
+```bash
+HOST=$(ip route show default | awk '/default/ {print $3}')       # Windows side of WSL vEthernet
+export BU_CDP_WS=$(curl -s http://$HOST:9223/json/version | python3 -c "import sys,json;print(json.load(sys.stdin)['webSocketDebuggerUrl'])")
+browser-harness <<'PY'
+print(page_info())
+PY
+```
+
+Chrome rewrites the returned `webSocketDebuggerUrl` to include the `Host:` header of the request, so it comes back already pointing at `$HOST:9223` — no further rewriting needed.
+
+WSL gotchas:
+
+- **Do not use a PowerShell TCP relay.** `[System.Threading.Tasks.Task]::Run([Action]{...})` loses variable scope when run on a thread-pool thread in PS 5.1, so copy loops silently fail and connections close with zero bytes. `Start-ThreadJob` is PS 7+ only. Python is fine.
+- **Chrome's browser UUID changes on restart.** Re-fetch `BU_CDP_WS` via `/json/version` after any restart of the CDP Chrome instance.
+- **Domain sockets stay local to WSL.** The bridge only crosses the network boundary; the harness's `/tmp/bu-*.sock` and `daemon.py` still live on the WSL side.
