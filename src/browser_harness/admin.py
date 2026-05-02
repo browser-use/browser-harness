@@ -334,9 +334,13 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
         create_kwargs["profileId"] = _resolve_profile_name(profileName)
     browser = _browser_use("/browsers", "POST", create_kwargs)
     try:
+        cdp_ws = _cdp_ws_from_url(browser["cdpUrl"])
+        browser_id = browser["id"]
+        os.environ["BU_CDP_WS"] = cdp_ws
+        os.environ["BU_BROWSER_ID"] = browser_id
         ensure_daemon(
             name=name,
-            env={"BU_CDP_WS": _cdp_ws_from_url(browser["cdpUrl"]), "BU_BROWSER_ID": browser["id"]},
+            env={"BU_CDP_WS": cdp_ws, "BU_BROWSER_ID": browser_id},
         )
     except BaseException:
         _stop_cloud_browser(browser.get("id"))
