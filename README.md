@@ -25,24 +25,28 @@ Paste into Claude Code or Codex:
 ```text
 Set up https://github.com/browser-use/browser-harness for me.
 
-Read `install.md` first to install and connect this repo to my real browser. Then read `SKILL.md` for normal usage. Use `agent-workspace/agent_helpers.py` for task-specific edits. When you open a setup or verification tab, activate it so I can see the active browser tab. After it is installed, open this repository in my browser and, if I am logged in to GitHub, ask me whether you should star it for me as a quick demo that the interaction works — only click the star if I say yes. If I am not logged in, just go to browser-use.com.
+Read `install.md` and follow the steps to install browser-harness and connect it to my browser.
 ```
 
-When this page appears, tick the checkbox so the agent can connect to your browser:
+The agent will open `chrome://inspect/#remote-debugging`. Tick the checkbox so the agent can connect to your browser:
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
+Click Allow when the per-attach popup appears (Chrome 144+):
+
+<img src="docs/allow-remote-debugging.png" alt="Allow remote debugging popup" width="520" style="border-radius: 12px;" />
+
 See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
 
-## Free remote browsers
+## Free Browser Use Cloud browsers
 
-Useful for stealth, sub-agents, or deployment.<br>
-**Free tier: 3 concurrent browsers, proxies, captcha solving, and more. No card required.**
+Stealth, sub-agents, or headless deployment.<br>
+**Browser Use Cloud free tier: 3 concurrent browsers, proxies, captcha solving, and more. No card required.**
 
 - Grab a key at [cloud.browser-use.com/new-api-key](https://cloud.browser-use.com/new-api-key)
 - Or let the agent sign up itself via [docs.browser-use.com/llms.txt](https://docs.browser-use.com/llms.txt) (setup flow + challenge context included).
 
-## How simple is it? (~592 lines of Python)
+## Architecture (~1k lines across 4 core files)
 
 - `install.md` — first-time install and browser bootstrap
 - `SKILL.md` — day-to-day usage

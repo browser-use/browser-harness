@@ -22,9 +22,6 @@ print(page_info())
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
 
-Available interaction skills:
-- interaction-skills/connection.md — startup sequence, tab visibility, omnibox popup fix
-
 ## Tool call shape
 
 ```bash
@@ -61,6 +58,7 @@ Profiles (cookies-only login state) live in interaction-skills/profile-sync.md �
 ## Interaction skills
 
 If you start struggling with a specific mechanic while navigating, look in interaction-skills/ for helpers. They cover reusable UI mechanics like dialogs, tabs, dropdowns, iframes, and uploads. The available interaction skills are:
+- connection.md
 - cookies.md
 - cross-origin-iframes.md
 - dialogs.md
@@ -115,42 +113,8 @@ If you start struggling with a specific mechanic while navigating, look in inter
 
 ## Domain skills (opt-in)
 
-This section only applies when `BH_DOMAIN_SKILLS=1` is set. Otherwise ignore it — `agent-workspace/domain-skills/` is dormant and `goto_url` will not surface skill files.
+Only applies when `BH_DOMAIN_SKILLS=1`. Otherwise ignore — `agent-workspace/domain-skills/` is dormant and `goto_url` won't surface skill files.
 
-When enabled, search `agent-workspace/domain-skills/` first for the domain you are working on before inventing a new approach. `goto_url` also returns up to 10 skill filenames for the navigated host.
+When enabled, search `agent-workspace/domain-skills/<host>/` before inventing an approach. `goto_url` returns up to 10 skill filenames for the navigated host.
 
-Useful commands:
-
-```bash
-rg --files agent-workspace/domain-skills
-rg -n "tiktok|upload" agent-workspace/domain-skills
-```
-
-If you learned anything non-obvious about how a site works, open a PR to `agent-workspace/domain-skills/<site>/` before you finish. Default to contributing. The harness gets better only because agents file what they learn. If figuring something out cost you a few steps, the next run should not pay the same tax.
-
-Examples of what's worth a PR:
-
-- A private API the page calls (XHR/fetch endpoint, request shape, auth) — often 10× faster than DOM scraping.
-- A stable selector that beats the obvious one, or an obfuscated CSS-module class to avoid.
-- A framework quirk — "the dropdown is a React combobox that only commits on Escape", "this Vue list only renders rows inside its own scroll container, so scrollIntoView on the row doesn't work — you have to scroll the container".
-- A URL pattern — direct route, required query params (?lang=en, ?th=1), a variant that skips a loader.
-- A wait that wait_for_load() misses, with the reason.
-- A trap — stale drafts, legacy IDs that now return null, unicode quirks, beforeunload dialogs, CAPTCHA surfaces.
-
-### What a domain skill should capture
-
-The *durable* shape of the site — the map, not the diary. Focus on what the next agent on this site needs to know before it starts:
-
-- URL patterns and query params.
-- Private APIs and their payload shape.
-- Stable selectors (data-*, aria-*, role, semantic classes).
-- Site structure — containers, items per page, framework, where state lives.
-- Framework/interaction quirks unique to this site.
-- Waits and the reasons they're needed.
-- Traps and the selectors that *don't* work.
-
-### Do not write
-
-- Raw pixel coordinates. They break on viewport, zoom, and layout changes. Describe how to *locate* the target (selector, scrollIntoView, aria-label, visible text) — never where it happened to be on your screen.
-- Run narration or step-by-step of the specific task you just did.
-- Secrets, cookies, session tokens, user-specific state. `agent-workspace/domain-skills/` is shared and public.
+If you learn anything non-obvious — a private API, stable selector, framework quirk, URL pattern, hidden wait, or site-specific trap — open a PR to `agent-workspace/domain-skills/<site>/`. Capture the durable shape of the site (the map, not the diary). Don't write pixel coordinates (break on layout), task narration, or secrets — the directory is public.

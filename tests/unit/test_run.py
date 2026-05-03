@@ -16,8 +16,9 @@ def test_c_flag_executes_code():
 
 
 def test_cloud_bootstrap_on_headless_server(monkeypatch):
-    """No daemon, no local Chrome, API key set -> auto-provision cloud daemon."""
+    """No daemon, no local Chrome, API key + BU_AUTOSPAWN set -> auto-provision cloud daemon."""
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
+    monkeypatch.setenv("BU_AUTOSPAWN", "1")
     with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
          patch("browser_harness.run.daemon_alive", return_value=False), \
          patch("browser_harness.run._local_chrome_listening", return_value=False), \

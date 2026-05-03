@@ -17,7 +17,6 @@ from .admin import (
     print_update_banner,
     restart_daemon,
     run_doctor,
-    run_setup,
     run_update,
     start_remote_daemon,
     stop_remote_daemon,
@@ -40,7 +39,6 @@ Helpers are pre-imported. The daemon auto-starts and connects to the running bro
 Commands:
   browser-harness --version        print the installed version
   browser-harness --doctor         diagnose install, daemon, and browser state
-  browser-harness --setup          interactively attach to your running browser
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
 """
@@ -68,8 +66,6 @@ def main():
         return
     if args and args[0] == "--doctor":
         sys.exit(run_doctor())
-    if args and args[0] == "--setup":
-        sys.exit(run_setup())
     if args and args[0] == "--update":
         yes = any(a in {"-y", "--yes"} for a in args[1:])
         sys.exit(run_update(yes=yes))

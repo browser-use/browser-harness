@@ -132,7 +132,7 @@ def _doctor_short_text(value, limit=None):
     return value if len(value) <= limit else value[:limit - 3] + "..."
 
 
-def ensure_daemon(wait=60.0, name=None, env=None, _open_inspect=True):
+def ensure_daemon(wait=60.0, name=None, env=None):
     """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
@@ -161,9 +161,8 @@ def ensure_daemon(wait=60.0, name=None, env=None, _open_inspect=True):
             time.sleep(0.2)
         msg = _log_tail(name) or ""
         if local and attempt == 0 and _needs_chrome_remote_debugging_prompt(msg):
-            if _open_inspect:
-                _open_chrome_inspect()
-            print("browser-harness: click Allow on chrome://inspect (and tick the checkbox if shown)", file=sys.stderr)
+            _open_chrome_inspect()
+            print('browser-harness: at chrome://inspect/#remote-debugging, tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
             restart_daemon(name)
             continue
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
@@ -359,9 +358,9 @@ def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
                         include_domains=None, exclude_domains=None):
     """Sync a local profile's cookies to a cloud profile. Returns the cloud UUID.
 
-    Shells out to `profile-use sync` (v1.0.4+). Requires BROWSER_USE_API_KEY and the
-    target local Chrome profile to be closed (profile-use needs an exclusive lock on
-    the Cookies DB).
+    Shells out to `profile-use sync` (v1.0.5+). Requires BROWSER_USE_API_KEY.
+    profile-use copies the profile dir to a temp and syncs from the copy, so Chrome
+    can stay open.
 
     Args:
       profile_name:       local Chrome profile name (as shown by `list_local_profiles`).
@@ -534,56 +533,6 @@ def _open_chrome_inspect():
         pass
 
 
-def run_setup():
-    """Interactive bootstrap: attach to the running browser, guiding the user through chrome://inspect if needed.
-
-    Exit code 0 on success, 1 on failure."""
-    import sys
-    print("browser-harness setup: attaching to your browser...")
-
-    if daemon_alive():
-        print("daemon already running; nothing to do.")
-        return 0
-
-    if not _chrome_running():
-        print("no Chrome/Edge process detected. please start your browser and rerun `browser-harness --setup`.")
-        return 1
-
-    # First attach attempt.
-    try:
-        ensure_daemon(wait=20.0)
-        print("daemon is up.")
-        return 0
-    except RuntimeError as e:
-        first_err = str(e)
-
-    needs_inspect = _is_local_chrome_mode() and _needs_chrome_remote_debugging_prompt(first_err)
-    if needs_inspect:
-        print("chrome remote-debugging is not enabled on the current profile.")
-        print("opening chrome://inspect/#remote-debugging -- in the tab that opens:")
-        print("  1. if chrome shows the profile picker, pick your normal profile;")
-        print("  2. tick 'Discover network targets' and click Allow if prompted.")
-        _open_chrome_inspect()
-    else:
-        print(f"attach failed: {first_err}")
-        print("retrying for up to 60s (chrome may still be starting up)...")
-
-    deadline = time.time() + 60
-    last = first_err
-    while time.time() < deadline:
-        try:
-            ensure_daemon(wait=5.0, _open_inspect=False)
-            print("daemon is up.")
-            return 0
-        except RuntimeError as e:
-            last = str(e)
-            time.sleep(2)
-
-    print(f"setup failed: {last}", file=sys.stderr)
-    print("run `browser-harness --doctor` for diagnostics.", file=sys.stderr)
-    return 1
-
-
 def run_doctor():
     """Read-only diagnostics. Exit 0 iff everything looks healthy."""
     import platform, shutil, sys
@@ -612,8 +561,8 @@ def run_doctor():
         print(f"  latest release    {latest}" + (" (update available)" if newer else ""))
     else:
         print("  latest release    (could not reach github)")
-    row("chrome running", chrome, "" if chrome else "start chrome/edge and rerun `browser-harness --setup`")
-    row("daemon alive", daemon, "" if daemon else "run `browser-harness --setup` to attach")
+    row("chrome running", chrome, "" if chrome else "start chrome/edge")
+    row("daemon alive", daemon, "" if daemon else "see install.md")
     row("active browser connections", bool(connections), str(len(connections)))
     for conn in connections:
         page = conn.get("page")
