@@ -1,5 +1,6 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
 import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
+from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
 
@@ -77,6 +78,27 @@ async def _silent(coro):
         pass
 
 
+def _ws_from_devtools_active_port(http_url: str) -> str | None:
+    """When /json/version returns 404 (Chrome 147+ default profile), match DevToolsActivePort by port."""
+    p = urlparse(http_url)
+    want_port = str(p.port) if p.port else ""
+    if not want_port:
+        return None
+    host = p.hostname or "127.0.0.1"
+    if ":" in host:  # urlparse strips IPv6 brackets; restore them for the ws:// URL
+        host = f"[{host}]"
+    for base in PROFILES:
+        try:
+            active = (base / "DevToolsActivePort").read_text().splitlines()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        port = active[0].strip() if active else ""
+        ws_path = active[1].strip() if len(active) > 1 else ""
+        if port == want_port and ws_path:
+            return f"ws://{host}:{port}{ws_path}"
+    return None
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -86,9 +108,15 @@ def get_ws_url():
         # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
         deadline = time.time() + 30
         last_err = None
+        base_url = url.rstrip("/")
         while time.time() < deadline:
             try:
-                return json.loads(urllib.request.urlopen(f"{url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+                return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+            except urllib.error.HTTPError as e:
+                last_err = e
+                if e.code == 404 and (ws := _ws_from_devtools_active_port(url)):
+                    return ws
+                time.sleep(1)
             except Exception as e:
                 last_err = e
                 time.sleep(1)
