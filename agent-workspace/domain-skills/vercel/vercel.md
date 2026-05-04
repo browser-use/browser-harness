@@ -66,9 +66,10 @@ import json, re
 dep = deps[0]      # a deployment object from the list above; swap index as needed
 uid = dep["uid"]   # e.g. "dpl_2tySoj6ceJkTgtsWHvd5r1Hpgyd1" — already includes dpl_ prefix
 resp = http_get(
-    "https://vercel.com/api/v3/deployments/" + uid + "/events?builds=1&limit=2000&teamId=<team-slug>",
+    "https://vercel.com/api/v3/deployments/" + uid + "/events?builds=1&limit=5000&teamId=<team-slug>",
     headers=headers
 )
+# Set limit >= the "N lines" count shown in the Build Logs accordion header to avoid truncation.
 # Response is a JSON array, one object per line, separated by ",\n"
 lines = [l.strip().rstrip(",") for l in resp.strip().split("\n") if l.strip() not in ("[", "]", "")]
 events = [json.loads(l) for l in lines]
