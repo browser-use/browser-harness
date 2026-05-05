@@ -1,3 +1,7 @@
+import platform
+import subprocess
+import webbrowser
+
 import pytest
 
 from browser_harness import admin
@@ -46,6 +50,46 @@ def test_stale_websocket_does_not_open_chrome_inspect():
     msg = "no close frame received or sent"
 
     assert not admin._needs_chrome_remote_debugging_prompt(msg)
+
+
+def test_open_chrome_inspect_invokes_chrome_exe_directly_on_windows(tmp_path, monkeypatch):
+    """On Windows, webbrowser.open() can't handle chrome:// URLs (#290).
+
+    Without a registered protocol handler, ShellExecute pops a "Get an app to
+    open this" dialog instead of opening Chrome -- so the function must spawn
+    chrome.exe with the URL as a command-line argument instead.
+    """
+    chrome_exe = tmp_path / "Google" / "Chrome" / "Application" / "chrome.exe"
+    chrome_exe.parent.mkdir(parents=True)
+    chrome_exe.touch()
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path))
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    spawned, opened = [], []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: spawned.append(argv) or object())
+    monkeypatch.setattr(webbrowser, "open", lambda url, **kw: opened.append(url) or True)
+
+    admin._open_chrome_inspect()
+
+    assert spawned == [[str(chrome_exe), "chrome://inspect/#remote-debugging"]]
+    assert opened == [], "webbrowser.open fallback must not run when chrome.exe was spawned"
+
+
+def test_open_chrome_inspect_falls_back_to_webbrowser_when_no_chrome_exe_on_windows(monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.delenv("PROGRAMFILES", raising=False)
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url, **kw: opened.append(url) or True)
+
+    admin._open_chrome_inspect()
+
+    assert opened == ["chrome://inspect/#remote-debugging"]
 
 
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):

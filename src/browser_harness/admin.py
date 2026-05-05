@@ -517,7 +517,8 @@ def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
     url = "chrome://inspect/#remote-debugging"
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         try:
             subprocess.run([
                 "osascript",
@@ -527,6 +528,26 @@ def _open_chrome_inspect():
             return
         except Exception:
             pass
+    elif system == "Windows":
+        # webbrowser.open() routes chrome:// through ShellExecute, which has no
+        # registered handler for the scheme -> Windows shows a "Get an app to
+        # open this" dialog instead of opening Chrome. Hand the URL to chrome.exe
+        # directly. (#290)
+        for env_var, suffix in (
+            ("PROGRAMFILES", "Google/Chrome/Application/chrome.exe"),
+            ("PROGRAMFILES(X86)", "Google/Chrome/Application/chrome.exe"),
+            ("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
+        ):
+            base = os.environ.get(env_var)
+            if not base:
+                continue
+            candidate = Path(base) / suffix
+            if candidate.exists():
+                try:
+                    subprocess.Popen([str(candidate), url])
+                    return
+                except Exception:
+                    pass
     try:
         webbrowser.open(url, new=2)
     except Exception:
