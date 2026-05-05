@@ -418,3 +418,113 @@ def test_restart_daemon_skips_sigterm_if_pid_was_reused_during_wait(monkeypatch,
         f"returning None (PID was reused during the 15s wait). Calls: {kill_calls}"
     )
     assert not pid_path.exists()
+
+
+def test_restart_daemon_sigterms_via_start_time_fingerprint_when_socket_gone(monkeypatch, tmp_path):
+    """Slow-shutdown recovery: the daemon's serve() tears down the IPC socket
+    BEFORE the process exits (the daemon then runs slow cleanup like remote
+    `stop` PATCH calls that can hang). In that window, identify() returns None
+    even though the process is still our daemon. SIGTERM must still fire when
+    the PID's start-time fingerprint hasn't changed since we first identified
+    it — that's strong evidence of "same process, just slow to exit."
+    """
+    import signal
+
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text("99999")
+    live_pid = 4242
+
+    kill_calls = []
+
+    def fake_kill(pid, sig):
+        kill_calls.append((pid, sig))
+        # All os.kill(pid, 0) probes succeed; loop exhausts → SIGTERM gate runs.
+
+    # First identify() returns live_pid. Second identify() returns None — the
+    # daemon has torn down its IPC during shutdown but the process is still
+    # finishing up cleanup work, so the start-time fingerprint is unchanged.
+    identify_responses = iter([live_pid, None])
+    # Both _process_start_time() calls return the same fingerprint, signaling
+    # "still the same process." This is the legitimate-slow-shutdown case.
+    monkeypatch.setattr(admin, "_process_start_time", lambda pid: "STARTED_AT_X")
+    monkeypatch.setattr(admin.os, "kill", fake_kill)
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: next(identify_responses))
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: ("conn", "tok"))
+    monkeypatch.setattr(admin.ipc, "request", lambda conn, tok, msg: {"ok": True})
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.time, "sleep", lambda _s: None)
+
+    admin.restart_daemon("default")
+
+    sigterms = [(pid, sig) for pid, sig in kill_calls if sig == signal.SIGTERM]
+    assert sigterms == [(live_pid, signal.SIGTERM)], (
+        f"slow-shutdown daemon (identify=None but unchanged start-time) must "
+        f"still receive SIGTERM. signal calls: {kill_calls}"
+    )
+
+
+def test_restart_daemon_skips_sigterm_when_start_time_changed_during_wait(monkeypatch, tmp_path):
+    """If the start-time fingerprint of the original PID has CHANGED, the PID
+    was reused by another process. Even though identify() also returns None,
+    we must skip SIGTERM — start-time mismatch is the signal that protects
+    against killing an unrelated reused-PID process."""
+    import signal
+
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text("99999")
+    live_pid = 4242
+
+    kill_calls = []
+    monkeypatch.setattr(admin.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    identify_responses = iter([live_pid, None])
+    # First start-time read at top of restart_daemon: "ORIGINAL".
+    # Second start-time read in the safety gate: "DIFFERENT" — proof of reuse.
+    start_time_responses = iter(["ORIGINAL", "DIFFERENT"])
+    monkeypatch.setattr(admin, "_process_start_time", lambda pid: next(start_time_responses))
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: next(identify_responses))
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: ("conn", "tok"))
+    monkeypatch.setattr(admin.ipc, "request", lambda conn, tok, msg: {"ok": True})
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.time, "sleep", lambda _s: None)
+
+    admin.restart_daemon("default")
+
+    sigterms = [(pid, sig) for pid, sig in kill_calls if sig == signal.SIGTERM]
+    assert sigterms == [], (
+        f"start-time mismatch indicates PID reuse — restart_daemon must NOT "
+        f"SIGTERM. signal calls: {kill_calls}"
+    )
+
+
+# --- _process_start_time helper ---
+
+def test_process_start_time_returns_stable_fingerprint_for_self():
+    """The start-time of the current process should be readable on POSIX and
+    stable across two reads. (Skipped on Windows where the helper returns None
+    by design.)"""
+    import os as _os, sys
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
+        pid = _os.getpid()
+        first = admin._process_start_time(pid)
+        second = admin._process_start_time(pid)
+        assert first is not None, "expected a fingerprint for the current PID"
+        assert first == second, (
+            f"two reads of the same PID should return the same fingerprint; "
+            f"got {first!r} vs {second!r}"
+        )
+
+
+def test_process_start_time_returns_none_for_invalid_pid():
+    """Bad inputs (None, 0, negatives, non-int) and PIDs with no live process
+    must return None rather than raising."""
+    for bad in (None, 0, -1, -42, "not-an-int", 1.5, True, False):
+        assert admin._process_start_time(bad) is None, (
+            f"expected None for invalid pid {bad!r}"
+        )
+    # 2**31 - 1 is the largest pid_t; in practice no live process at that PID.
+    assert admin._process_start_time((1 << 31) - 1) is None

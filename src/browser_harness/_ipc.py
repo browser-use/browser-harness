@@ -130,10 +130,13 @@ def identify(name, timeout=1.0):
         # `type(pid) is int` (not isinstance) intentionally rejects bool: in
         # Python, isinstance(True, int) is True, so a hostile/buggy daemon
         # could reply with {"pid": True} and we'd treat that as PID 1 (init).
-        # Also reject 0 / negatives: os.kill(0, sig) signals every process in
-        # the calling process group; os.kill(-1, sig) signals every process
-        # the caller can. Only positive PIDs are safe to forward to os.kill.
-        return pid if type(pid) is int and pid > 0 else None
+        # Also reject 0/negatives — os.kill(0, sig) signals every process in
+        # the calling process group, os.kill(-1, sig) signals every process
+        # the caller can. Upper bound is 2**31 because C pid_t is typically
+        # signed 32-bit and a value outside that range makes os.kill() raise
+        # OverflowError, which would propagate out of restart_daemon() before
+        # its cleanup. Linux pid_max is also bounded at 2**22 in practice.
+        return pid if type(pid) is int and 0 < pid < (1 << 31) else None
     except (OSError, ValueError, AttributeError):
         return None
     finally:

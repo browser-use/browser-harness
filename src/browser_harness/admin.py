@@ -1,12 +1,57 @@
 import json
 import os
 import socket
+import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 from . import _ipc as ipc
+
+
+def _process_start_time(pid):
+    """Opaque process-start-time fingerprint at PID, or None if unavailable.
+
+    Two reads returning the same non-None value mean the PID still refers to
+    the same process; a different value means the PID was reused. Used by
+    restart_daemon() to keep the force-kill recovery path working even when
+    the daemon has already torn down its IPC socket (e.g. during a slow
+    remote shutdown), without falling back to "trust the pid file" — which
+    would re-introduce the PID-reuse hazard.
+
+    Linux: /proc/<pid>/stat field 22 (starttime in clock ticks since boot).
+    macOS: `ps -o lstart= -p <pid>` (an absolute timestamp string).
+    Other platforms: returns None; restart_daemon falls back to its strict
+    identify-only check, which is safer than no check at all.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                raw = f.read().decode("ascii", errors="replace")
+        except (FileNotFoundError, PermissionError, OSError):
+            return None
+        # Field 2 is `(comm)`; comm can contain spaces and parens, so split off
+        # everything after the LAST `)` and index from there.
+        try:
+            tail = raw[raw.rindex(")") + 2:].split()
+            return tail[19]  # starttime is field 22 (0-indexed: 21 - skipped 2 = 19)
+        except (ValueError, IndexError):
+            return None
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                stderr=subprocess.DEVNULL, timeout=2,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None
+        s = out.decode("ascii", errors="replace").strip()
+        return s or None
+    return None
 
 
 def _load_env():
@@ -209,6 +254,14 @@ def restart_daemon(name=None):
     #     while the process stayed alive.
     daemon_pid = ipc.identify(name, timeout=5.0)
     daemon_alive = daemon_pid is not None or ipc.ping(name, timeout=1.0)
+    # Snapshot the daemon's process start-time as a secondary identity check.
+    # The IPC socket can disappear before the process exits (e.g. the shutdown
+    # path tears down the socket and then waits on a slow remote `stop` PATCH),
+    # so identify() going None partway through is not proof of process death.
+    # Comparing start-time before SIGTERM lets us recover the original
+    # force-kill behavior for slow shutdowns without re-opening the
+    # PID-reuse hole — a reused PID would have a different start-time.
+    daemon_start = _process_start_time(daemon_pid)
 
     if daemon_alive:
         try:
@@ -223,18 +276,26 @@ def restart_daemon(name=None):
             try:
                 os.kill(daemon_pid, 0)
                 time.sleep(0.2)
-            except (ProcessLookupError, OSError, SystemError):
+            except (ProcessLookupError, OSError, SystemError, OverflowError):
                 break
         else:
-            # Re-verify identity before escalating to SIGTERM: the daemon may
-            # have exited and had its PID reused mid-wait, in which case the
-            # original PID now belongs to an unrelated process. Only signal
-            # if identify() still returns the same PID — that's the only
-            # state where the kill is provably safe.
-            if ipc.identify(name, timeout=1.0) == daemon_pid:
+            # Re-verify identity before escalating to SIGTERM. Two acceptable
+            # signals, in priority order:
+            #   1. ipc.identify() still returns the same PID — daemon's IPC is
+            #      live, daemon is wedged. Safe to kill.
+            #   2. start-time fingerprint of the original PID is unchanged —
+            #      same process, just slow to exit (e.g. stuck in remote stop).
+            #      The IPC may already be gone; that's expected.
+            # If neither holds, the PID may have been reused; skip SIGTERM.
+            verified_pid = ipc.identify(name, timeout=1.0)
+            same_process = verified_pid == daemon_pid or (
+                daemon_start is not None
+                and _process_start_time(daemon_pid) == daemon_start
+            )
+            if same_process:
                 try:
                     os.kill(daemon_pid, signal.SIGTERM)
-                except (ProcessLookupError, OSError, SystemError):
+                except (ProcessLookupError, OSError, SystemError, OverflowError):
                     pass
 
     ipc.cleanup_endpoint(name)
