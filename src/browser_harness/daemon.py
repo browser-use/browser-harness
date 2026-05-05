@@ -200,15 +200,26 @@ class Daemon:
         ))["sessionId"]
         self.target_id = pages[0]["targetId"]
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
+        await self._enable_default_domains(self.session)
+        return pages[0]
+
+    async def _enable_default_domains(self, session_id):
+        """Enable Page/DOM/Runtime/Network on a CDP session.
+
+        Used by both initial attach and set_session (called after switch_tab/
+        new_tab). Without this, helpers that depend on Network.* events —
+        notably wait_for_network_idle() — silently stop receiving events
+        after a tab switch, because each fresh CDP session starts with all
+        domains disabled.
+        """
         for d in ("Page", "DOM", "Runtime", "Network"):
             try:
                 await asyncio.wait_for(
-                    self.cdp.send_raw(f"{d}.enable", session_id=self.session),
+                    self.cdp.send_raw(f"{d}.enable", session_id=session_id),
                     timeout=5
                 )
             except Exception as e:
-                log(f"enable {d}: {e}")
-        return pages[0]
+                log(f"enable {d} on {session_id}: {e}")
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -272,8 +283,11 @@ class Daemon:
         if meta == "set_session":
             self.session = req.get("session_id")
             self.target_id = req.get("target_id") or self.target_id
+            # Mirror the initial-attach domain set so helpers that depend on
+            # Network/DOM events (e.g. wait_for_network_idle) keep working
+            # after switch_tab/new_tab. Initial attach does the same four.
+            await self._enable_default_domains(self.session)
             try:
-                await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=self.session), timeout=3)
                 await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=self.session), timeout=2)
             except Exception: pass
             return {"session_id": self.session}
