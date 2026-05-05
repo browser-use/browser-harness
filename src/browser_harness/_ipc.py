@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys, tempfile
+import asyncio, json, os, re, secrets, socket, stat, subprocess, sys, tempfile
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
@@ -33,7 +33,11 @@ def _stem(name):  # "bu" when BH_TMP_DIR isolates us, else "bu-<NAME>"
 def log_path(name):   return _TMP / f"{_stem(name)}.log"
 def pid_path(name):   return _TMP / f"{_stem(name)}.pid"
 def port_path(name):  return _TMP / f"{_stem(name)}.port"  # Windows-only: holds {"port","token"} JSON
-def _sock_path(name): return _TMP / f"{_stem(name)}.sock"
+# Socket lives inside a 0o700 private parent dir (created by serve()), not
+# directly in shared /tmp — closes the symlink-pre-plant race on bind() that
+# os.path.exists() would silently traverse.
+def _sock_dir(name):  return _TMP / f"{_stem(name)}.d"
+def _sock_path(name): return _sock_dir(name) / "sock"
 
 
 def _read_port_file(name):
@@ -144,13 +148,50 @@ def identify(name, timeout=1.0):
         except OSError: pass
 
 
+def _ensure_private_dir(p):
+    """mkdir 0o700; if it already exists, verify it's a real directory we own
+    with no group/other perms. Refusing here is the symlink-pre-plant defense:
+    once this returns, only our uid can place files inside, so the subsequent
+    unlink+bind on the socket inside is race-free."""
+    try:
+        os.mkdir(p, mode=0o700)
+        return
+    except FileExistsError:
+        pass
+    # lstat (not stat) so a hostile symlink masquerading as the dir is caught
+    # rather than silently traversed.
+    st = os.lstat(p)
+    if not stat.S_ISDIR(st.st_mode):
+        raise RuntimeError(f"{p}: not a directory (refusing — possible symlink attack)")
+    if st.st_uid != os.geteuid():
+        raise RuntimeError(f"{p}: owned by uid {st.st_uid}, expected {os.geteuid()} (refusing)")
+    if st.st_mode & 0o077:
+        os.chmod(p, 0o700)
+
+
 async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
     global _server_token
     if not IS_WINDOWS:
+        # Step 1: lock down the parent dir (0o700, owned by us). Until this
+        # succeeds, anything inside _TMP is in shared /tmp where attackers
+        # could plant symlinks at our socket path.
+        _ensure_private_dir(_sock_dir(name))
         path = str(_sock_path(name))
-        if os.path.exists(path): os.unlink(path)
-        server = await asyncio.start_unix_server(handler, path=path)
+        # Step 2: unconditional unlink (catches stale symlinks too — os.unlink
+        # never follows them, unlike os.path.exists()).
+        try: os.unlink(path)
+        except FileNotFoundError: pass
+        # Step 3: restrictive umask during bind() closes the TOCTOU window
+        # where the socket would otherwise exist on disk with the inherited
+        # umask (0o777 if umask=0) until chmod() ran. With umask 0o077 the
+        # socket is created mode 0o700 from the start; chmod below tightens
+        # to 0o600 and acts as defense-in-depth.
+        old_umask = os.umask(0o077)
+        try:
+            server = await asyncio.start_unix_server(handler, path=path)
+        finally:
+            os.umask(old_umask)
         os.chmod(path, 0o600)
         _server_token = None
         async with server: await asyncio.Event().wait()
