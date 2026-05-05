@@ -47,8 +47,28 @@ def drain_events():  return _send({"meta": "drain_events"})["events"]
 
 
 # --- navigation / page ---
+def _check_and_dismiss_dialog(accept=True, prompt_text=""):
+    """Auto-dismiss any pending native dialog. Returns the dialog dict if one was
+    dismissed, else None.
+
+    Dialogs (alert/confirm/prompt/beforeunload) freeze the JS thread, so any
+    subsequent action helper hangs silently. Action helpers call this after their
+    CDP work so a stray dialog doesn't deadlock the run. Opt out per-process with
+    BH_NO_AUTO_DISMISS=1; manual API in interaction-skills/dialogs.md."""
+    if os.environ.get("BH_NO_AUTO_DISMISS"):
+        return None
+    dialog = _send({"meta": "pending_dialog"}).get("dialog")
+    if not dialog:
+        return None
+    cdp("Page.handleJavaScriptDialog", accept=accept, promptText=prompt_text)
+    msg = (dialog.get("message") or "")[:200]
+    print(f"[auto-dismissed {dialog.get('type', 'dialog')}] {msg}")
+    return dialog
+
+
 def goto_url(url):
     r = cdp("Page.navigate", url=url)
+    _check_and_dismiss_dialog()
     d = (Path(__file__).parent / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
 
@@ -90,6 +110,7 @@ def click_at_xy(x, y, button="left", clicks=1):
         _debug_click_counter += 1
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
+    _check_and_dismiss_dialog()
 
 def type_text(text):
     cdp("Input.insertText", text=text)
@@ -112,6 +133,7 @@ def press_key(key, modifiers=0):
     if text and len(text) == 1:
         cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
+    _check_and_dismiss_dialog()
 
 def scroll(x, y, dy=-300, dx=0):
     cdp("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=dx, deltaY=dy)
@@ -226,6 +248,7 @@ def dispatch_key(selector, key="Enter", event="keypress"):
     js(
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});if(e){{e.focus();e.dispatchEvent(new KeyboardEvent({json.dumps(event)},{{key:{json.dumps(key)},code:{json.dumps(key)},keyCode:{kc},which:{kc},bubbles:true}}));}}}})()"
     )
+    _check_and_dismiss_dialog()
 
 def upload_file(selector, path):
     """Set files on a file input via CDP DOM.setFileInputFiles. `path` is an absolute filepath (use tempfile.mkstemp if needed)."""
