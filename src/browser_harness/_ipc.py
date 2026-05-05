@@ -217,6 +217,15 @@ def expected_token():
 
 
 def cleanup_endpoint(name):  # best-effort; silent if already gone
-    p = _sock_path(name) if not IS_WINDOWS else port_path(name)
-    try: p.unlink()
+    if IS_WINDOWS:
+        try: port_path(name).unlink()
+        except FileNotFoundError: pass
+        return
+    sock = _sock_path(name)
+    try: sock.unlink()
     except FileNotFoundError: pass
+    # Remove the .d/ wrapper too so stale dirs don't accumulate in /tmp.
+    # ENOTEMPTY (something else placed a file in there) or a concurrent
+    # cleanup race both leave us with nothing to do, hence the bare OSError.
+    try: sock.parent.rmdir()
+    except OSError: pass

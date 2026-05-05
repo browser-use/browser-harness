@@ -170,14 +170,24 @@ def daemon_alive(name=None):
 def _daemon_endpoint_names():
     # BH_TMP_DIR isolates one daemon per dir → no filename-prefix discovery,
     # just check whether our local endpoint exists. Without BH_TMP_DIR, _TMP
-    # is the shared default (`/tmp` etc.) and we glob `bu-*.<suffix>` to find
-    # every daemon on the machine.
-    suffix = ".port" if ipc.IS_WINDOWS else ".sock"
+    # is the shared default (`/tmp` etc.) and we glob to find every daemon
+    # on the machine.
+    #
+    # Endpoint layout differs by OS:
+    #   POSIX:   <_TMP>/<stem>.d/sock  (the .d/ wrapper is the symlink-pre-plant
+    #                                   defense; presence of the inner `sock`
+    #                                   is the real "daemon is up" signal —
+    #                                   an empty .d/ may be stale leftovers).
+    #   Windows: <_TMP>/<stem>.port    (TCP+token JSON file).
     if ipc.BH_TMP_DIR:
-        return [NAME] if (ipc._TMP / f"bu{suffix}").exists() else []
+        local = (ipc._TMP / "bu.port") if ipc.IS_WINDOWS else (ipc._TMP / "bu.d" / "sock")
+        return [NAME] if local.exists() else []
+    pattern = "bu-*.port" if ipc.IS_WINDOWS else "bu-*.d/sock"
     names = []
-    for p in sorted(ipc._TMP.glob(f"bu-*{suffix}")):
-        raw = p.name[3:-len(suffix)]
+    for p in sorted(ipc._TMP.glob(pattern)):
+        # Windows: bu-<NAME>.port      → strip "bu-" from p.name, ".port" suffix
+        # POSIX:   bu-<NAME>.d/sock    → strip "bu-" from p.parent.name, ".d" suffix
+        raw = p.name[3:-len(".port")] if ipc.IS_WINDOWS else p.parent.name[3:-len(".d")]
         try:
             ipc._check(raw)
         except ValueError:

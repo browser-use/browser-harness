@@ -48,14 +48,23 @@ def test_stale_websocket_does_not_open_chrome_inspect():
     assert not admin._needs_chrome_remote_debugging_prompt(msg)
 
 
+def _touch_sock(parent):
+    """Recreate the on-disk layout `serve()` produces: <parent>/sock inside a
+    pre-existing 0o700 dir. Tests use this to fake a running daemon."""
+    parent.mkdir(parents=True, exist_ok=True)
+    (parent / "sock").touch()
+
+
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_TMP_DIR", None)  # shared-tmpdir mode
     monkeypatch.setattr(admin.ipc, "_TMP", tmp_path)
-    (tmp_path / "bu-default.sock").touch()
-    (tmp_path / "bu-remote_1.sock").touch()
-    (tmp_path / "bu-invalid.name.sock").touch()
-    (tmp_path / "not-bu-default.sock").touch()
+    _touch_sock(tmp_path / "bu-default.d")
+    _touch_sock(tmp_path / "bu-remote_1.d")
+    _touch_sock(tmp_path / "bu-invalid.name.d")
+    _touch_sock(tmp_path / "not-bu-default.d")
+    # Empty .d/ (no inner `sock`) must not be discovered — that's stale leftovers.
+    (tmp_path / "bu-stale.d").mkdir()
 
     assert admin._daemon_endpoint_names() == ["default", "remote_1"]
 
@@ -65,9 +74,29 @@ def test_daemon_endpoint_names_with_bh_tmp_dir_returns_local_name_when_sock_exis
     monkeypatch.setattr(admin.ipc, "BH_TMP_DIR", str(tmp_path))
     monkeypatch.setattr(admin.ipc, "_TMP", tmp_path)
     monkeypatch.setattr(admin, "NAME", "session-xyz")
-    (tmp_path / "bu.sock").touch()
+    _touch_sock(tmp_path / "bu.d")
 
     assert admin._daemon_endpoint_names() == ["session-xyz"]
+
+
+def test_daemon_endpoint_names_uses_ipc_sock_path_layout(tmp_path, monkeypatch):
+    """Regression guard against the discovery glob drifting from the on-disk
+    layout that `_ipc.serve()` actually produces. If `_ipc._sock_path()`
+    moves (e.g. PR #299 moved it to <tmp>/bu-NAME.d/sock), discovery must
+    follow without a separate edit. Touching the path returned by
+    `_ipc._sock_path()` is the cheapest way to assert that coupling."""
+    from browser_harness import _ipc as ipc
+
+    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(admin.ipc, "BH_TMP_DIR", None)
+    monkeypatch.setattr(admin.ipc, "_TMP", tmp_path)
+    monkeypatch.setattr(ipc, "_TMP", tmp_path)
+
+    real = ipc._sock_path("alpha")
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.touch()
+
+    assert admin._daemon_endpoint_names() == ["alpha"]
 
 
 def test_daemon_endpoint_names_with_bh_tmp_dir_returns_empty_when_sock_missing(tmp_path, monkeypatch):

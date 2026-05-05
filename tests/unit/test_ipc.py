@@ -1,6 +1,24 @@
-import asyncio, os, stat, sys
+import asyncio, os, shutil, stat, sys, tempfile
+from pathlib import Path
+
 import pytest
+
 from browser_harness import _ipc as ipc
+
+
+@pytest.fixture
+def short_tmp(monkeypatch):
+    """An AF_UNIX-safe replacement for `tmp_path`. macOS limits `sun_path` to
+    104 bytes and pytest's tmp_path under /private/var/folders/... busts that
+    budget once we append `bu-NAME.d/sock`, so AF_UNIX tests must root in a
+    short `/tmp` dir instead. The fixture also monkey-patches `_TMP` so test
+    code can simply call `ipc._sock_path(...)` and get the short path."""
+    d = Path(tempfile.mkdtemp(prefix="bh-", dir="/tmp"))
+    monkeypatch.setattr(ipc, "_TMP", d)
+    try:
+        yield d
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # --- identify(): ping payload sanitation ---
@@ -158,7 +176,7 @@ def test_ensure_private_dir_refuses_non_directory(tmp_path):
 
 
 @skip_on_windows
-def test_serve_socket_is_mode_0o600_with_umask_zero(tmp_path, monkeypatch):
+def test_serve_socket_is_mode_0o600_with_umask_zero(short_tmp):
     """The whole point of #298: with umask 0, the socket file used to exist on
     disk briefly at 0o777 between bind() and chmod(). After the fix, set umask
     to 0 in the test, run serve() through bind(), and verify the on-disk mode
@@ -167,7 +185,6 @@ def test_serve_socket_is_mode_0o600_with_umask_zero(tmp_path, monkeypatch):
     We can't observe the *intermediate* state from Python without instrumenting
     syscalls, but the umask wrapper guarantees the kernel never wrote a wider
     mode in the first place."""
-    monkeypatch.setattr(ipc, "_TMP", tmp_path)
     old_umask = os.umask(0)
     try:
         async def runner():
@@ -199,16 +216,16 @@ def test_serve_socket_is_mode_0o600_with_umask_zero(tmp_path, monkeypatch):
 
 
 @skip_on_windows
-def test_serve_unlinks_stale_symlink_inside_private_dir(tmp_path, monkeypatch):
+def test_serve_unlinks_stale_symlink_inside_private_dir(short_tmp):
     """If a stale symlink (e.g. left over from external tampering) sits at the
     socket path, the unconditional unlink must remove it — os.path.exists()
     used to follow it and skip the unlink, leading bind() to follow the
     symlink kernel-side."""
-    monkeypatch.setattr(ipc, "_TMP", tmp_path)
     ipc._ensure_private_dir(ipc._sock_dir("default"))
     path = ipc._sock_path("default")
-    # Dangling symlink at the socket path.
-    target = tmp_path / "elsewhere"
+    # Dangling symlink at the socket path. The target itself doesn't need to
+    # be inside the short tmp dir — bind() never traverses to it.
+    target = short_tmp / "elsewhere"
     os.symlink(target, path)
     assert not os.path.exists(path)  # dangling: exists() returns False — the old bug
 
