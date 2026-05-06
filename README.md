@@ -18,6 +18,24 @@ One websocket to Chrome, nothing between. The agent writes what's missing during
 
 **You will never use the browser again.**
 
+## Prerequisites
+
+Before running browser-harness, Chrome must be running with remote debugging enabled. The harness connects to Chrome via CDP — it will not launch Chrome itself.
+
+**macOS**
+```bash
+open -a 'Google Chrome' --args --remote-debugging-port=9222
+```
+
+**Linux**
+```bash
+google-chrome --remote-debugging-port=9222
+```
+
+Then open `chrome://inspect/#remote-debugging` and enable **Discover network targets** in the Devices tab.
+
+> **Note:** On Linux, the default `chromium` package is often a Snap with restricted network access. If browser-harness cannot connect, install the official Chrome deb from google.com/chrome or use the `.tar.gz` binary instead.
+
 ## Setup prompt
 
 Paste into Claude Code or Codex:

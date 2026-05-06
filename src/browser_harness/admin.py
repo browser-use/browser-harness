@@ -666,12 +666,36 @@ def _open_chrome_inspect():
         pass
 
 
+def _snap_browser_detected():
+    """Check if Chrome/Chromium is running as a snap (restricted CDP port access)."""
+    import platform, subprocess
+    if platform.system() != "Linux":
+        return False
+    if os.environ.get("SNAP"):
+        return True
+    try:
+        # Walk /proc looking for chromium/chrome processes with a snap mount
+        for pid_dir in Path("/proc").iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            try:
+                cmdline = Path(pid_dir / "cmdline").read_text()
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+            if "/snap/chromium/" in cmdline or "/snap/google-chrome/" in cmdline:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def run_doctor():
     """Read-only diagnostics. Exit 0 iff everything looks healthy."""
     import platform, shutil, sys
     cur = _version()
     mode = _install_mode()
     chrome = _chrome_running()
+    snap = _snap_browser_detected()
     daemon = daemon_alive()
     connections = browser_connections()
     profile_use = shutil.which("profile-use") is not None
@@ -695,6 +719,7 @@ def run_doctor():
     else:
         print("  latest release    (could not reach github)")
     row("chrome running", chrome, "" if chrome else "start chrome/edge")
+    row("snap confinement", not snap, "" if not snap else "snap Chromium cannot bind CDP port — install Chrome from google.com/chrome instead")
     row("daemon alive", daemon, "" if daemon else "see install.md")
     row("active browser connections", bool(connections), str(len(connections)))
     for conn in connections:
