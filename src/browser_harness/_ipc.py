@@ -150,8 +150,10 @@ async def serve(name, handler):
     if not IS_WINDOWS:
         path = str(_sock_path(name))
         if os.path.exists(path): os.unlink(path)
-        server = await asyncio.start_unix_server(handler, path=path)
-        os.chmod(path, 0o600)
+        # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
+        old_umask = os.umask(0o077)
+        try: server = await asyncio.start_unix_server(handler, path=path)
+        finally: os.umask(old_umask)
         _server_token = None
         async with server: await asyncio.Event().wait()
         return
