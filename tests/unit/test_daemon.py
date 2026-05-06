@@ -243,3 +243,135 @@ def test_set_session_first_attach_runs_four_enables_in_parallel():
         f"first set_session must run 4 enables concurrently "
         f"(observed peak = {peak}). No Network.disable should fire."
     )
+
+
+def test_attach_first_page_skips_unresponsive_targets():
+    """If the first real page is wedged (Page.enable hangs forever), the
+    daemon must abandon it and try the next one — previously it pinned
+    self.session to the dead target and every later CDP call hung."""
+    class _SelectivelyWedgedCDP:
+        """Page.enable hangs forever for target-WEDGED, succeeds for target-LIVE."""
+        def __init__(self):
+            self.calls = []
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"targetId": "target-WEDGED", "type": "page", "url": "https://wedged.example/"},
+                    {"targetId": "target-LIVE", "type": "page", "url": "https://live.example/"},
+                ]}
+            if method == "Target.attachToTarget":
+                tid = params["targetId"]
+                return {"sessionId": f"session-{tid}"}
+            if method == "Target.detachFromTarget":
+                return {}
+            if method.endswith(".enable") and session_id == "session-target-WEDGED":
+                # Hang forever — caller must use asyncio.wait_for to escape.
+                await asyncio.Event().wait()
+            return {}
+
+    async def run():
+        d = daemon.Daemon()
+        d.cdp = _SelectivelyWedgedCDP()
+        return await d.attach_first_page()
+
+    attached = asyncio.run(run())
+    assert attached["targetId"] == "target-LIVE", (
+        f"daemon must skip the wedged target and attach to the live one. "
+        f"Got: {attached}"
+    )
+
+
+def test_attach_first_page_creates_blank_when_all_pages_unresponsive():
+    """If every real page is wedged, fall back to a fresh about:blank rather
+    than hanging or dying. about:blank is guaranteed responsive."""
+    class _AllWedgedExceptBlankCDP:
+        def __init__(self):
+            self.calls = []
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"targetId": "wedged-1", "type": "page", "url": "https://a.example/"},
+                ]}
+            if method == "Target.createTarget":
+                return {"targetId": "target-BLANK"}
+            if method == "Target.attachToTarget":
+                return {"sessionId": f"session-{params['targetId']}"}
+            if method == "Target.detachFromTarget":
+                return {}
+            if method.endswith(".enable") and session_id == "session-wedged-1":
+                await asyncio.Event().wait()  # hang forever
+            return {}
+
+    async def run():
+        d = daemon.Daemon()
+        d.cdp = _AllWedgedExceptBlankCDP()
+        return await d.attach_first_page()
+
+    attached = asyncio.run(run())
+    assert attached["targetId"] == "target-BLANK"
+    assert attached["url"] == "about:blank"
+
+
+def test_handle_times_out_wedged_cdp_call(monkeypatch):
+    """A wedged CDP call must not pin the daemon's event loop forever.
+    BU_CDP_TIMEOUT (default 45s, lowered here for test speed) bounds it.
+    Returns a clean error with a recovery hint instead of hanging."""
+    monkeypatch.setenv("BU_CDP_TIMEOUT", "0.1")
+
+    class _WedgedCDP:
+        async def send_raw(self, method, params=None, session_id=None):
+            await asyncio.Event().wait()  # hang forever
+
+    d = daemon.Daemon()
+    d.cdp = _WedgedCDP()
+    d.session = "s1"
+
+    resp = asyncio.run(d.handle({"method": "Runtime.evaluate", "params": {"expression": "1+1"}}))
+    assert "error" in resp
+    assert "timed out" in resp["error"]
+    assert "Runtime.evaluate" in resp["error"]
+
+
+def test_handle_bounds_stale_session_recovery_by_cdp_timeout(monkeypatch):
+    """Stale-session recovery (re-attach path) iterates pages with per-call
+    timeouts that stack — a browser full of wedged tabs could otherwise pin
+    one client past BU_CDP_TIMEOUT. The whole recovery must be bounded."""
+    monkeypatch.setenv("BU_CDP_TIMEOUT", "0.2")
+
+    class _StaleThenWedgedCDP:
+        """First call raises 'Session with given id not found'; reattach path
+        then sees one real page whose Page.enable hangs forever."""
+        def __init__(self):
+            self.calls = []
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Runtime.evaluate":
+                raise RuntimeError("Session with given id not found")
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"targetId": "wedged", "type": "page", "url": "https://wedged.example/"},
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-wedged"}
+            if method == "Target.createTarget":
+                # If recovery is unbounded, it would fall through to creating
+                # about:blank (also wedged below) and keep hanging.
+                return {"targetId": "blank"}
+            if method.endswith(".enable"):
+                await asyncio.Event().wait()  # every enable hangs
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _StaleThenWedgedCDP()
+    d.session = "stale-session"
+
+    resp = asyncio.run(d.handle({"method": "Runtime.evaluate", "params": {"expression": "1+1"}}))
+    assert "error" in resp
+    assert "re-attach timed out" in resp["error"], (
+        f"recovery must surface a clean re-attach timeout, got: {resp['error']}"
+    )
