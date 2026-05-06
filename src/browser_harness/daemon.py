@@ -390,11 +390,17 @@ class Daemon:
             if "Session with given id not found" in msg and sid == self.session and sid:
                 log(f"stale session {sid}, re-attaching")
                 try:
-                    if await self.attach_first_page():
+                    # attach_first_page() iterates pages with per-call timeouts
+                    # that stack — bound the whole recovery by cdp_timeout so a
+                    # browser full of wedged tabs can't keep one client waiting
+                    # past the contract.
+                    if await asyncio.wait_for(self.attach_first_page(), timeout=cdp_timeout):
                         return {"result": await asyncio.wait_for(
                             self.cdp.send_raw(method, params, session_id=self.session),
                             timeout=cdp_timeout,
                         )}
+                except asyncio.TimeoutError:
+                    return {"error": f"re-attach timed out after {cdp_timeout}s — every tab unresponsive; try restart_daemon()"}
                 except Exception as e2:
                     return {"error": f"re-attach failed: {e2}"}
             return {"error": msg}

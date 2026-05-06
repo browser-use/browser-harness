@@ -334,3 +334,44 @@ def test_handle_times_out_wedged_cdp_call(monkeypatch):
     assert "error" in resp
     assert "timed out" in resp["error"]
     assert "Runtime.evaluate" in resp["error"]
+
+
+def test_handle_bounds_stale_session_recovery_by_cdp_timeout(monkeypatch):
+    """Stale-session recovery (re-attach path) iterates pages with per-call
+    timeouts that stack — a browser full of wedged tabs could otherwise pin
+    one client past BU_CDP_TIMEOUT. The whole recovery must be bounded."""
+    monkeypatch.setenv("BU_CDP_TIMEOUT", "0.2")
+
+    class _StaleThenWedgedCDP:
+        """First call raises 'Session with given id not found'; reattach path
+        then sees one real page whose Page.enable hangs forever."""
+        def __init__(self):
+            self.calls = []
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Runtime.evaluate":
+                raise RuntimeError("Session with given id not found")
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"targetId": "wedged", "type": "page", "url": "https://wedged.example/"},
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-wedged"}
+            if method == "Target.createTarget":
+                # If recovery is unbounded, it would fall through to creating
+                # about:blank (also wedged below) and keep hanging.
+                return {"targetId": "blank"}
+            if method.endswith(".enable"):
+                await asyncio.Event().wait()  # every enable hangs
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _StaleThenWedgedCDP()
+    d.session = "stale-session"
+
+    resp = asyncio.run(d.handle({"method": "Runtime.evaluate", "params": {"expression": "1+1"}}))
+    assert "error" in resp
+    assert "re-attach timed out" in resp["error"], (
+        f"recovery must surface a clean re-attach timeout, got: {resp['error']}"
+    )
