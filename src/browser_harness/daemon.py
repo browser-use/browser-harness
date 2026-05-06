@@ -187,23 +187,54 @@ class Daemon:
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self):
-        """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
+        """Attach to a real page (or any page). Sets self.session. Returns attached target or None.
+
+        Iterates real pages so a single wedged tab (busy renderer, sleeping tab,
+        unresponsive page) does not pin the daemon to a dead session — previously
+        the daemon picked pages[0] unconditionally, silently swallowed Page.enable
+        timeouts, and every later CDP call against that session hung forever.
+        Falls back to a fresh about:blank if every existing page is unresponsive.
+        """
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
-        if not pages:
-            # No real pages — create one instead of attaching to omnibox popup
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
-            log(f"no real pages found, created about:blank ({tid})")
-            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
-        self.session = (await self.cdp.send_raw(
-            "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
-        ))["sessionId"]
-        self.target_id = pages[0]["targetId"]
-        log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
-        await self._enable_default_domains(self.session)
-        return pages[0]
+        for p in pages:
+            sid = await self._try_attach(p)
+            if sid:
+                self.session = sid
+                self.target_id = p["targetId"]
+                log(f"attached {p['targetId']} ({p.get('url','')[:80]}) session={sid}")
+                return p
+            log(f"target {p['targetId']} ({p.get('url','')[:80]}) unresponsive, trying next")
+        # Either no real pages, or every real page was unresponsive — create a fresh tab.
+        tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+        fresh = {"targetId": tid, "url": "about:blank", "type": "page"}
+        sid = await self._try_attach(fresh)
+        if not sid:
+            raise RuntimeError(f"could not attach to any page (created about:blank {tid} but it also failed to enable)")
+        self.session = sid
+        self.target_id = tid
+        log(f"no responsive pages found, created+attached about:blank ({tid}) session={sid}")
+        return fresh
 
-    async def _enable_default_domains(self, session_id):
+    async def _try_attach(self, target):
+        """Attach to a single target and enable Page/DOM/Runtime/Network.
+        Returns sessionId on success, None if attach or any enable hangs/fails
+        (target is unresponsive — caller should try the next one)."""
+        try:
+            sid = (await asyncio.wait_for(
+                self.cdp.send_raw("Target.attachToTarget", {"targetId": target["targetId"], "flatten": True}),
+                timeout=5,
+            ))["sessionId"]
+        except Exception as e:
+            log(f"attach {target['targetId']} failed: {type(e).__name__}: {e}")
+            return None
+        if not await self._enable_default_domains(sid, strict=True):
+            try: await asyncio.wait_for(self.cdp.send_raw("Target.detachFromTarget", {"sessionId": sid}), timeout=2)
+            except Exception: pass
+            return None
+        return sid
+
+    async def _enable_default_domains(self, session_id, strict=False):
         """Enable Page/DOM/Runtime/Network on a CDP session.
 
         Used by both initial attach and set_session (called after switch_tab/
@@ -216,16 +247,25 @@ class Daemon:
         bounded by a single CDP round trip rather than four sequential ones —
         important on the set_session path, where the helper's IPC socket has
         a 5s read timeout.
+
+        With strict=True (used during initial attach), returns False if any
+        enable failed so the caller can abandon the unresponsive target.
+        Without strict, returns True regardless — set_session has already
+        committed to the new target and partial enable is better than nothing.
         """
+        results = []
         async def enable_one(d):
             try:
                 await asyncio.wait_for(
                     self.cdp.send_raw(f"{d}.enable", session_id=session_id),
                     timeout=4,
                 )
+                results.append(True)
             except Exception as e:
-                log(f"enable {d} on {session_id}: {e}")
+                log(f"enable {d} on {session_id}: {type(e).__name__}: {e}")
+                results.append(False)
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+        return all(results) if strict else True
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -331,14 +371,32 @@ class Daemon:
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        # Per-call CDP timeout. A wedged renderer (sleeping tab, infinite JS,
+        # frozen iframe) would otherwise block the daemon's event loop forever,
+        # starving every other connected client. The IPC layer's 5s read timeout
+        # protects the *calling* client, but the daemon itself stays jammed
+        # without this. Override via BU_CDP_TIMEOUT for legitimately slow calls
+        # (large captureBeyondViewport screenshots, long Runtime.evaluate scripts).
+        cdp_timeout = float(os.environ.get("BU_CDP_TIMEOUT", "45"))
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            return {"result": await asyncio.wait_for(
+                self.cdp.send_raw(method, params, session_id=sid),
+                timeout=cdp_timeout,
+            )}
+        except asyncio.TimeoutError:
+            return {"error": f"CDP {method} timed out after {cdp_timeout}s (session={sid}) — tab may be unresponsive; try ensure_real_tab() or restart_daemon()"}
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid == self.session and sid:
                 log(f"stale session {sid}, re-attaching")
-                if await self.attach_first_page():
-                    return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
+                try:
+                    if await self.attach_first_page():
+                        return {"result": await asyncio.wait_for(
+                            self.cdp.send_raw(method, params, session_id=self.session),
+                            timeout=cdp_timeout,
+                        )}
+                except Exception as e2:
+                    return {"error": f"re-attach failed: {e2}"}
             return {"error": msg}
 
 
