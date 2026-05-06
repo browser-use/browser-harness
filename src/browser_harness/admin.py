@@ -631,16 +631,16 @@ def print_update_banner(out=None):
 
 
 def _chrome_running():
-    """Cross-platform best-effort check for a running Chrome/Edge process."""
+    """Cross-platform best-effort check for a running Chromium-based browser."""
     import platform, subprocess
     system = platform.system()
     try:
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, timeout=5)
-            names = ("chrome.exe", "msedge.exe")
+            names = ("chrome.exe", "msedge.exe", "helium.exe")
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge")
+            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
