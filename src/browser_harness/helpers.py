@@ -223,15 +223,10 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
     if not focused:
         raise RuntimeError(f"fill_input: element not found: {selector!r}")
     if clear_first:
-        # Dispatch select-all directly — NOT via press_key, which always emits a
-        # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
-        # makes Chrome treat the input as a printable "a" instead of firing the
-        # select-all shortcut, leaving the field uncleared.
-        mods = 4 if sys.platform == "darwin" else 2  # Cmd on macOS, Ctrl elsewhere
-        select_all = {"key": "a", "code": "KeyA", "modifiers": mods,
-                      "windowsVirtualKeyCode": 65, "nativeVirtualKeyCode": 65}
-        cdp("Input.dispatchKeyEvent", type="rawKeyDown", **select_all)
-        cdp("Input.dispatchKeyEvent", type="keyUp", **select_all)
+        # press_key now suppresses the printable text/char event when a
+        # shortcut modifier (Alt/Ctrl/Meta) is held, so this dispatches a
+        # real Cmd+A / Ctrl+A instead of typing the letter "a".
+        press_key("a", modifiers=4 if sys.platform == "darwin" else 2)
         press_key("Backspace")
     for ch in text:
         press_key(ch)
@@ -250,15 +245,54 @@ _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "Home": (36, "Home", ""), "End": (35, "End", ""),
     "PageUp": (33, "PageUp", ""), "PageDown": (34, "PageDown", ""),
 }
+def _key_metadata(key):
+    """(windowsVirtualKeyCode, code, text) for a key arg to press_key.
+
+    Letters and digits resolve to canonical CDP physical-key codes ("KeyA",
+    "Digit0") and the upper-case-derived virtual key code, so Chrome
+    recognises them as the same physical key a real keyboard would emit.
+    Without this, shortcuts like Cmd+A see code="a" / vk=97 and don't
+    fire — Chrome's shortcut handlers expect code="KeyA" / vk=65.
+    """
+    if key in _KEYS:
+        return _KEYS[key]
+    if len(key) != 1:
+        return (0, key, "")
+    upper = key.upper()
+    if "A" <= upper <= "Z":
+        # vk for letters is the uppercase ASCII codepoint, regardless of case.
+        return (ord(upper), f"Key{upper}", key)
+    if "0" <= key <= "9":
+        return (ord(key), f"Digit{key}", key)
+    # Punctuation / symbols — best-effort; Chrome may still recognise the
+    # shortcut from the printable text and the modifier flags alone.
+    return (ord(key), key, key)
+
+
+# Modifier bitmask: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift. Any of the first
+# three implies the keypress is a shortcut, not text input — the `char`
+# event must be suppressed and `text` left out of keyDown so Chrome doesn't
+# insert the printable form alongside firing the shortcut.
+_SHORTCUT_MODIFIERS = 0b0111
+
+
 def press_key(key, modifiers=0):
     """Modifiers bitfield: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift.
-    Special keys (Enter, Tab, Arrow*, Backspace, etc.) carry their virtual key codes
-    so listeners checking e.keyCode / e.key all fire."""
-    vk, code, text = _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
+
+    For shortcut presses (any of Alt/Ctrl/Meta), `text` is omitted from
+    keyDown and no `char` event is dispatched — otherwise Chrome inserts
+    the printable form (e.g. typing "a" instead of triggering Cmd+A).
+    Letter/digit keys carry canonical CDP `code` ("KeyA", "Digit0") and
+    upper-case-derived `windowsVirtualKeyCode` so `e.code`/`e.keyCode`
+    match what a real keyboard emits.
+    """
+    vk, code, text = _key_metadata(key)
+    is_shortcut = bool(modifiers & _SHORTCUT_MODIFIERS)
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
-    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
-    if text and len(text) == 1:
-        cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
+    keydown_extra = {"text": text} if text and not is_shortcut else {}
+    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **keydown_extra)
+    if text and len(text) == 1 and not is_shortcut:
+        cdp("Input.dispatchKeyEvent", type="char", text=text, **base)
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
 def scroll(x, y, dy=-300, dx=0):
