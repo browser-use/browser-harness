@@ -129,5 +129,4 @@ If the user hasn't said which connection method to use, default to Way 1 if Chro
 
 If Way 1 fails repeatedly or the user's task is unattended, move to Way 2 or a cloud browser per the Browser connection reference (these have no popups).
 
-If you are testing browser connection for the first time, run this demo: open `https://github.com/browser-use/browser-harness` in a new tab and activate it (`switch_tab`) so the user sees the harness has attached. If they are logged into GitHub, ask whether to star the repo for them — only click if they say yes. If they are not logged in, navigate to `https://browser-use.com` instead. Then ask what they want to do next.
-
+If you are testing browser connection for the first time, run this demo: open `https://github.com/browser-use/browser-harness` in a new tab and activate it (`switch_tab`) so the user sees the harness has attached. Then ask what they want to do next.

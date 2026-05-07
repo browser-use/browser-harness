@@ -1,5 +1,6 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
 import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
+from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
 
@@ -34,6 +35,7 @@ PID = str(ipc.pid_path(NAME))
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
+    Path.home() / "Library/Application Support/Google/Chrome Canary",
     Path.home() / "Library/Application Support/Comet",
     Path.home() / "Library/Application Support/Arc/User Data",
     Path.home() / "Library/Application Support/Dia/User Data",
@@ -53,6 +55,7 @@ PROFILES = [
     Path.home() / ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
     Path.home() / ".var/app/com.microsoft.Edge/config/microsoft-edge",
     Path.home() / "AppData/Local/Google/Chrome/User Data",
+    Path.home() / "AppData/Local/Google/Chrome SxS/User Data",
     Path.home() / "AppData/Local/Chromium/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge/User Data",
     Path.home() / "AppData/Local/Microsoft/Edge Beta/User Data",
@@ -77,6 +80,27 @@ async def _silent(coro):
         pass
 
 
+def _ws_from_devtools_active_port(http_url: str) -> str | None:
+    """When /json/version returns 404 (Chrome 147+ default profile), match DevToolsActivePort by port."""
+    p = urlparse(http_url)
+    want_port = str(p.port) if p.port else ""
+    if not want_port:
+        return None
+    host = p.hostname or "127.0.0.1"
+    if ":" in host:  # urlparse strips IPv6 brackets; restore them for the ws:// URL
+        host = f"[{host}]"
+    for base in PROFILES:
+        try:
+            active = (base / "DevToolsActivePort").read_text().splitlines()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        port = active[0].strip() if active else ""
+        ws_path = active[1].strip() if len(active) > 1 else ""
+        if port == want_port and ws_path:
+            return f"ws://{host}:{port}{ws_path}"
+    return None
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -86,9 +110,15 @@ def get_ws_url():
         # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
         deadline = time.time() + 30
         last_err = None
+        base_url = url.rstrip("/")
         while time.time() < deadline:
             try:
-                return json.loads(urllib.request.urlopen(f"{url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+                return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+            except urllib.error.HTTPError as e:
+                last_err = e
+                if e.code == 404 and (ws := _ws_from_devtools_active_port(url)):
+                    return ws
+                time.sleep(1)
             except Exception as e:
                 last_err = e
                 time.sleep(1)
@@ -172,15 +202,32 @@ class Daemon:
         ))["sessionId"]
         self.target_id = pages[0]["targetId"]
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
-        for d in ("Page", "DOM", "Runtime", "Network"):
+        await self._enable_default_domains(self.session)
+        return pages[0]
+
+    async def _enable_default_domains(self, session_id):
+        """Enable Page/DOM/Runtime/Network on a CDP session.
+
+        Used by both initial attach and set_session (called after switch_tab/
+        new_tab). Without this, helpers that depend on Network.* events —
+        notably wait_for_network_idle() — silently stop receiving events
+        after a tab switch, because each fresh CDP session starts with all
+        domains disabled.
+
+        Runs the four enables in parallel via gather so the worst-case time is
+        bounded by a single CDP round trip rather than four sequential ones —
+        important on the set_session path, where the helper's IPC socket has
+        a 5s read timeout.
+        """
+        async def enable_one(d):
             try:
                 await asyncio.wait_for(
-                    self.cdp.send_raw(f"{d}.enable", session_id=self.session),
-                    timeout=5
+                    self.cdp.send_raw(f"{d}.enable", session_id=session_id),
+                    timeout=4,
                 )
             except Exception as e:
-                log(f"enable {d}: {e}")
-        return pages[0]
+                log(f"enable {d} on {session_id}: {e}")
+        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -199,7 +246,7 @@ class Daemon:
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
-        mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
+        mark_js = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
             if method == "Page.javascriptDialogOpening":
@@ -221,11 +268,25 @@ class Daemon:
         meta = req.get("meta")
         # Liveness probe — lets clients confirm the listener is actually this
         # daemon and not an unrelated process that reused our port post-crash.
-        if meta == "ping":        return {"pong": True}
+        # `pid` lets restart_daemon() verify the live daemon's identity before
+        # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
+        if meta == "ping":        return {"pong": True, "pid": os.getpid()}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
+        if meta == "current_tab":
+            # Resolve the attached page's target info server-side. Helpers can't
+            # send Target.getTargetInfo themselves: daemon strips session_id for
+            # any Target.* method (browser-level call), and without a targetId
+            # Chrome silently returns the *browser* target.
+            if not self.target_id:
+                return {"error": "not_attached"}
+            try:
+                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
+            except Exception:
+                return {"error": "cdp_disconnected"}
+            return {"targetId": info.get("targetId"), "url": info.get("url", ""), "title": info.get("title", "")}
         if meta == "connection_status":
             if not self.target_id:
                 return {"error": "not_attached"}
@@ -242,12 +303,39 @@ class Daemon:
                 }
             return {"target_id": self.target_id, "session_id": self.session, "page": page}
         if meta == "set_session":
+            old_session = self.session
             self.session = req.get("session_id")
             self.target_id = req.get("target_id") or self.target_id
-            try:
-                await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=self.session), timeout=3)
-                await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=self.session), timeout=2)
-            except Exception: pass
+            # Run the old-session Network.disable (defense in depth — keeps
+            # background-tab traffic out of the global event buffer; the
+            # consumer-side filter in wait_for_network_idle is the actual
+            # correctness gate) in parallel with the four enables on the new
+            # session. Different sessions, independent CDP requests. Keeps
+            # the synchronous reply under the helper's 5s IPC read timeout
+            # even on a remote daemon — sequentially these would have stacked
+            # to ~22s worst case.
+            tasks = []
+            if old_session and old_session != self.session:
+                async def disable_old():
+                    try:
+                        await asyncio.wait_for(
+                            self.cdp.send_raw("Network.disable", session_id=old_session),
+                            timeout=2,
+                        )
+                    except Exception: pass
+                tasks.append(disable_old())
+            tasks.append(self._enable_default_domains(self.session))
+            await asyncio.gather(*tasks)
+            # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
+            # it doesn't add to the synchronous IPC budget.
+            asyncio.create_task(_silent(asyncio.wait_for(
+                self.cdp.send_raw(
+                    "Runtime.evaluate",
+                    {"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"},
+                    session_id=self.session,
+                ),
+                timeout=2,
+            )))
             return {"session_id": self.session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}

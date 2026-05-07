@@ -1,6 +1,6 @@
 import os, sys, urllib.request
 
-# Windows default stdout encoding is cp1252, which can't encode the 🟢 marker
+# Windows default stdout encoding is cp1252, which can't encode the 🐴 marker
 # helpers prepend to tab titles (or anything else outside Latin-1). Force UTF-8
 # so `print(page_info())` doesn't UnicodeEncodeError on Windows. Issue #124(4).
 if hasattr(sys.stdout, "reconfigure"):
@@ -56,6 +56,15 @@ def _local_chrome_listening():
     return False
 
 
+# BU_CDP_URL / BU_CDP_WS are documented to override local Chrome discovery
+# (install.md:58-59), so they must also block cloud auto-bootstrap. Without this
+# guard, start_remote_daemon() in admin.py overwrites BU_CDP_WS in the daemon
+# env with a cloud WebSocket URL, silently replacing the user's explicit endpoint
+# *and* billing them for a cloud browser they never asked for.
+def _explicit_cdp_configured():
+    return bool(os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS"))
+
+
 def main():
     args = sys.argv[1:]
     if args and args[0] in {"-h", "--help"}:
@@ -83,10 +92,12 @@ def main():
     print_update_banner()
     # Auto-bootstrap a cloud browser is opt-in via BU_AUTOSPAWN — BROWSER_USE_API_KEY alone
     # is not enough, since the key is commonly set for unrelated reasons (profile sync,
-    # cloud API calls, parent agents managing their own session).
+    # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
+    # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
     if (
         not daemon_alive()
         and not _local_chrome_listening()
+        and not _explicit_cdp_configured()
         and os.environ.get("BROWSER_USE_API_KEY")
         and os.environ.get("BU_AUTOSPAWN")
     ):

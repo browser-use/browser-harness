@@ -303,3 +303,50 @@ def test_wait_for_network_idle_returns_false_on_timeout():
 
     assert result is False
 
+
+
+def test_wait_for_network_idle_filters_events_to_active_session():
+    """Background tabs (e.g. a polling page the agent switched away from) keep
+    emitting Network events into the daemon's global buffer. The wait must
+    filter by session_id of the currently-attached tab — otherwise it would
+    see the background tab's traffic and either fail to return idle or wait
+    on the wrong tab's requests."""
+    active = "session-ACTIVE"
+    background = "session-BACKGROUND"
+
+    # First /drain_events/ payload: rWS + lF on the BACKGROUND session that we
+    # must ignore, plus zero events on the active session. With filtering, the
+    # active session sees no traffic and the idle window can elapse.
+    events_seq = [
+        [
+            {"session_id": background, "method": "Network.requestWillBeSent", "params": {"requestId": "bg1"}},
+            {"session_id": background, "method": "Network.loadingFinished",   "params": {"requestId": "bg1"}},
+        ],
+        [],  # second drain — quiet on both sessions; idle window should fire here
+    ]
+    drain_idx = 0
+
+    def fake_send(req):
+        nonlocal drain_idx
+        if req.get("meta") == "session":
+            return {"session_id": active}
+        if req.get("meta") == "drain_events":
+            evs = events_seq[min(drain_idx, len(events_seq) - 1)]
+            drain_idx += 1
+            return {"events": evs}
+        return {}
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.time") as mock_time:
+        start = 1000.0
+        # No inflight on active session → idle check uses time.time().
+        mock_time.time.side_effect = [start, start, start, start + 0.6, start + 0.6]
+        mock_time.sleep = lambda _: None
+        result = helpers.wait_for_network_idle(timeout=5.0, idle_ms=500)
+
+    assert result is True, (
+        "wait_for_network_idle must return True even when the BACKGROUND "
+        "session is busy, as long as the ACTIVE session is idle. Without the "
+        "session filter, the background rWS/lF pair would have updated "
+        "last_activity and prevented the idle window from elapsing."
+    )

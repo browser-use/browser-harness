@@ -9,6 +9,8 @@ Direct browser control via CDP. For task-specific edits, use `agent-workspace/ag
 
 Domain skills (community-contributed per-site playbooks under `agent-workspace/domain-skills/`) are off by default. Set `BH_DOMAIN_SKILLS=1` to enable them; see the bottom section.
 
+**If `BH_DOMAIN_SKILLS=1` and the task is site-specific, read every file in the matching `agent-workspace/domain-skills/<site>/` directory before inventing an approach.**
+
 ## Usage
 
 ```bash
