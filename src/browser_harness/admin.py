@@ -666,12 +666,37 @@ def _open_chrome_inspect():
         pass
 
 
+def _snap_browser_detected():
+    """Check if Chrome/Chromium is running as a snap (restricted CDP port access)."""
+    import platform
+    if platform.system() != "Linux":
+        return False
+    try:
+        # Walk /proc looking for chromium/chrome processes with a snap mount.
+        # Unlike the SNAP env var (which only tells us if *this* process is snap-wrapped),
+        # scanning cmdline correctly identifies whether the actual browser is snap-confined.
+        for pid_dir in Path("/proc").iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            try:
+                cmdline = Path(pid_dir / "cmdline").read_text()
+            except (FileNotFoundError, PermissionError, OSError, ValueError):
+                # ValueError covers UnicodeDecodeError from non-UTF-8 cmdline bytes
+                continue
+            if "/snap/chromium/" in cmdline or "/snap/google-chrome/" in cmdline:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def run_doctor():
     """Read-only diagnostics. Exit 0 iff everything looks healthy."""
     import platform, shutil, sys
     cur = _version()
     mode = _install_mode()
     chrome = _chrome_running()
+    snap = _snap_browser_detected() if chrome else False  # only scan /proc when chrome is running
     daemon = daemon_alive()
     connections = browser_connections()
     profile_use = shutil.which("profile-use") is not None
@@ -695,6 +720,7 @@ def run_doctor():
     else:
         print("  latest release    (could not reach github)")
     row("chrome running", chrome, "" if chrome else "start chrome/edge")
+    row("snap confinement", not snap, "" if not snap else "snap Chromium cannot bind CDP port — install Chrome from google.com/chrome instead")
     row("daemon alive", daemon, "" if daemon else "see install.md")
     row("active browser connections", bool(connections), str(len(connections)))
     for conn in connections:
@@ -707,8 +733,8 @@ def run_doctor():
             print(f"        {conn['name']} — active page: (no real page)")
     row("profile-use installed", profile_use, "" if profile_use else "optional: curl -fsSL https://browser-use.com/profile.sh | sh")
     row("BROWSER_USE_API_KEY set", api_key, "" if api_key else "optional: needed only for cloud browsers / profile sync")
-    # Core health = chrome + daemon. Profile-use/api-key are optional.
-    return 0 if (chrome and daemon) else 1
+    # Core health = chrome + daemon + no snap confinement. Profile-use/api-key are optional.
+    return 0 if (chrome and daemon and not snap) else 1
 
 
 def _prompt_yes(question, default_yes=True, yes=False):
