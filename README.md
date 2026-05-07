@@ -22,19 +22,31 @@ One websocket to Chrome, nothing between. The agent writes what's missing during
 
 Before running browser-harness, Chrome must be running with remote debugging enabled. The harness connects to Chrome via CDP — it will not launch Chrome itself.
 
-**macOS**
+There are two supported connection methods. Use **Way 1** if you want your real browser profile (logins, extensions, history). Use **Way 2** for an isolated profile with no interruptions.
+
+**Way 1 — your real profile, no command-line**
+
+1. Launch Chrome normally (or `open -a 'Google Chrome'` on macOS / `google-chrome` on Linux)
+2. Open `chrome://inspect/#remote-debugging`
+3. Tick **"Allow remote debugging for this browser instance"** — this setting is per-profile and sticky
+
+On Chrome 144+, the first attach by the harness triggers a per-attach "Allow remote debugging?" popup. Click Allow. See `install.md` for full details.
+
+**Way 2 — isolated profile, no popups, command-line only**
+
 ```bash
-open -a 'Google Chrome' --args --remote-debugging-port=9222
+# macOS
+open -a 'Google Chrome' --args --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-harness
+
+# Linux
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-harness
 ```
 
-**Linux**
-```bash
-google-chrome --remote-debugging-port=9222
-```
+On Chrome 136+, the port flag is silently ignored when `--user-data-dir` points to Chrome's platform default. Use an explicit non-default directory (empty or new — a fresh profile will be created there). Set `BU_CDP_URL=http://127.0.0.1:9222` before running `browser-harness`.
 
-Then open `chrome://inspect/#remote-debugging` and enable **Discover network targets** in the Devices tab.
+> **Linux snap users:** If the harness doctor reports snap confinement, install Chrome from [google.com/chrome](https://www.google.com/chrome/) or use the `.tar.gz` binary. Snap Chromium cannot bind the CDP port.
 
-> **Note:** On Linux, the default `chromium` package is often a Snap with restricted network access. If browser-harness cannot connect, install the official Chrome deb from google.com/chrome or use the `.tar.gz` binary instead.
+See `install.md` for the canonical setup reference.
 
 ## Setup prompt
 
