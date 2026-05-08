@@ -18,25 +18,44 @@ One websocket to Chrome, nothing between. The agent writes what's missing during
 
 **You will never use the browser again.**
 
-## Setup prompt
+## Quickstart
 
-Paste into Claude Code or Codex:
+Install once from a durable checkout:
 
-```text
-Set up https://github.com/browser-use/browser-harness for me.
-
-Read `install.md` and follow the steps to install browser-harness and connect it to my browser.
+```bash
+git clone https://github.com/browser-use/browser-harness
+cd browser-harness
+uv tool install -e .
+command -v browser-harness
 ```
 
-The agent will open `chrome://inspect/#remote-debugging`. Tick the checkbox so the agent can connect to your browser:
+Connect Chrome using one of these paths:
+
+- Real profile: open `chrome://inspect/#remote-debugging` in Chrome, tick "Allow remote debugging for this browser instance", then click Allow when Chrome asks.
+- Isolated profile: launch Chrome with `--remote-debugging-port=9222 --user-data-dir=/tmp/browser-harness-profile`, then run commands with `BU_CDP_URL=http://127.0.0.1:9222`.
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
-Click Allow when the per-attach popup appears (Chrome 144+):
-
 <img src="docs/allow-remote-debugging.png" alt="Allow remote debugging popup" width="520" style="border-radius: 12px;" />
 
-See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
+Run a smoke test:
+
+```bash
+browser-harness -c 'print(page_info())'
+```
+
+Use it from an agent or shell:
+
+```bash
+browser-harness -c '
+new_tab("https://example.com")
+wait_for_load()
+capture_screenshot()
+print(page_info())
+'
+```
+
+Helpers are pre-imported. `capture_screenshot()` saves a PNG and returns it inline to image-aware agent loops, so the agent can inspect the page without a second file-read call. Put custom helpers in `agent-workspace/agent_helpers.py`; see `SKILL.md` for day-to-day agent instructions and `install.md` for detailed troubleshooting.
 
 ## Free Browser Use Cloud browsers
 
