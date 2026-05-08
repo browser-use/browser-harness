@@ -1,5 +1,5 @@
 """CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.request
+import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -61,6 +61,29 @@ def log(msg):
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
+    if base_url := os.environ.get("BU_CDP_HTTP"):
+        # Opt-in: resolve the authoritative browser ws URL by fetching
+        # /json/version from a known local CDP HTTP endpoint. Useful when
+        # Chrome is launched with a custom --user-data-dir, which on some
+        # platforms/builds does not write a DevToolsActivePort file that
+        # the PROFILES loop below can discover.
+        version_url = f"{base_url.rstrip('/')}/json/version"
+        deadline = time.time() + 30
+        last_err = None
+        while True:
+            try:
+                data = urllib.request.urlopen(version_url, timeout=2).read()
+                ws = json.loads(data).get("webSocketDebuggerUrl")
+                if ws:
+                    return ws
+                last_err = f"{version_url} returned no webSocketDebuggerUrl"
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                last_err = f"{type(e).__name__}: {e}"
+            if time.time() >= deadline:
+                raise RuntimeError(
+                    f"BU_CDP_HTTP={base_url} did not yield a ws URL within 30s ({last_err}) — is Chrome running with --remote-debugging-port on that port?"
+                )
+            time.sleep(1)
     for base in PROFILES:
         try:
             port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)

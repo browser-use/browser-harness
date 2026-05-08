@@ -162,6 +162,7 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 - Responses are `{result}` / `{error}` / `{events}` / `{session_id}`.
 - `BU_NAME` namespaces socket, pid, and log files.
 - `BU_CDP_WS` overrides local Chrome discovery for remote browsers.
+- `BU_CDP_HTTP` (e.g. `http://127.0.0.1:9222`) opts into HTTP-based ws discovery via `/json/version`. Use this when Chrome is launched with a custom `--user-data-dir` that doesn't produce a `DevToolsActivePort` file the PROFILES loop can find. Takes precedence over the PROFILES loop; `BU_CDP_WS` still wins over both.
 - `BU_BROWSER_ID` + `BROWSER_USE_API_KEY` lets the daemon stop a Browser Use cloud browser on shutdown.
 
 ## Gotchas (field-tested)
