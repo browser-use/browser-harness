@@ -82,6 +82,23 @@ def get_ws_url():
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+    # Fallback: no DevToolsActivePort file was found in any known profile
+    # (e.g. Chrome launched with a --user-data-dir outside the list, or a Chrome
+    # build that doesn't write the file at all). Probe the common CDP ports and
+    # read the authoritative ws URL from /json/version.
+    for probe_port in (9222, 9223, 9224):
+        try:
+            data = urllib.request.urlopen(
+                f"http://127.0.0.1:{probe_port}/json/version", timeout=2
+            ).read()
+        except Exception:
+            continue
+        try:
+            ws = json.loads(data).get("webSocketDebuggerUrl")
+            if ws:
+                return ws
+        except Exception:
+            continue
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
