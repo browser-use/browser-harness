@@ -80,7 +80,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 
 ## What actually works
 
-- Screenshots first: use capture_screenshot() to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation.
+- Screenshots first: use capture_screenshot() to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation. After navigation, clicks, form submissions, or other actions that may visibly change the page, prefer capture_screenshot() to inspect the result before deciding the next step. Screenshots are returned inline in the tool result.
 - Clicking: capture_screenshot() → read the pixel off the image → click_at_xy(x, y) → capture_screenshot() to verify. Suppress the Playwright-habit reflex of "locate first, then click" — no getBoundingClientRect, no selector hunt. Drop to DOM only when the target has no visible geometry (hidden input, 0×0 node). Hit-testing happens in Chrome's browser process, so clicks go through iframes / shadow DOM / cross-origin without extra work.
 - Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
 - After goto: wait_for_load().
