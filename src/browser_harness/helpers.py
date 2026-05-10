@@ -250,15 +250,25 @@ _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "Home": (36, "Home", ""), "End": (35, "End", ""),
     "PageUp": (33, "PageUp", ""), "PageDown": (34, "PageDown", ""),
 }
+
+def _key_metadata(key):
+    if len(key) == 1 and key.isalpha():
+        upper = key.upper()
+        return ord(upper), f"Key{upper}", key
+    if len(key) == 1 and key.isdigit():
+        return ord(key), f"Digit{key}", key
+    return _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
+
 def press_key(key, modifiers=0):
     """Modifiers bitfield: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift.
     Special keys (Enter, Tab, Arrow*, Backspace, etc.) carry their virtual key codes
     so listeners checking e.keyCode / e.key all fire."""
-    vk, code, text = _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
+    vk, code, text = _key_metadata(key)
+    printable_text = text if text and not (modifiers & 0b0111) else ""
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
-    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
-    if text and len(text) == 1:
-        cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
+    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": printable_text} if printable_text else {}))
+    if printable_text and len(printable_text) == 1:
+        cdp("Input.dispatchKeyEvent", type="char", text=printable_text, **{k: v for k, v in base.items() if k != "text"})
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
 def scroll(x, y, dy=-300, dx=0):
