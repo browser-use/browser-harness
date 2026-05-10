@@ -137,6 +137,7 @@ def test_run_doctor_prints_active_browser_connections_and_active_pages(monkeypat
     monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
     monkeypatch.setattr(admin, "_install_mode", lambda: "git")
     monkeypatch.setattr(admin, "_chrome_running", lambda: True)
+    monkeypatch.setattr(admin, "_detect_snap_browser", lambda: None)
     monkeypatch.setattr(admin, "daemon_alive", lambda: True)
     monkeypatch.setattr(admin, "browser_connections", lambda: [
         {
@@ -537,3 +538,109 @@ def test_process_start_time_returns_none_for_invalid_pid():
         )
     # 2**31 - 1 is the largest pid_t; in practice no live process at that PID.
     assert admin._process_start_time((1 << 31) - 1) is None
+
+
+def test_detect_snap_browser_returns_none_on_non_linux(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    assert admin._detect_snap_browser() is None
+
+
+def test_detect_snap_browser_returns_none_when_ps_fails(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    def boom(*args, **kwargs):
+        raise OSError("ps not found")
+
+    monkeypatch.setattr("subprocess.check_output", boom)
+    assert admin._detect_snap_browser() is None
+
+
+def test_detect_snap_browser_returns_none_when_no_browser_running(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "/usr/lib/systemd/systemd\n/usr/bin/dbus-daemon\n",
+    )
+    assert admin._detect_snap_browser() is None
+
+
+def test_detect_snap_browser_flags_snap_chromium(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: (
+            "/usr/lib/systemd/systemd\n"
+            "/snap/chromium/2876/usr/lib/chromium-browser/chromium --type=renderer\n"
+            "/usr/bin/dbus-daemon\n"
+        ),
+    )
+    path = admin._detect_snap_browser()
+    assert path is not None
+    assert "/snap/chromium/" in path
+
+
+def test_detect_snap_browser_flags_snap_firefox(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "/snap/firefox/4848/usr/lib/firefox/firefox\n",
+    )
+    path = admin._detect_snap_browser()
+    assert path is not None
+    assert "/snap/firefox/" in path
+
+
+def test_detect_snap_browser_ignores_non_browser_snaps(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "/snap/code/198/usr/share/code/code\n",
+    )
+    assert admin._detect_snap_browser() is None
+
+
+def test_detect_snap_browser_ignores_non_snap_chromium(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "/usr/bin/chromium --type=renderer\n",
+    )
+    assert admin._detect_snap_browser() is None
+
+
+def test_run_doctor_emits_snap_warning_when_snap_browser_detected(monkeypatch, capsys):
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_chrome_running", lambda: True)
+    monkeypatch.setattr(
+        admin, "_detect_snap_browser",
+        lambda: "/snap/chromium/2876/usr/lib/chromium-browser/chromium",
+    )
+    monkeypatch.setattr(admin, "daemon_alive", lambda: True)
+    monkeypatch.setattr(admin, "browser_connections", lambda: [])
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+
+    admin.run_doctor()
+
+    out = capsys.readouterr().out
+    assert "[WARN] snap-confined browser detected" in out
+    assert "/snap/chromium/" in out
+
+
+def test_run_doctor_skips_snap_warning_when_no_snap_browser(monkeypatch, capsys):
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_chrome_running", lambda: True)
+    monkeypatch.setattr(admin, "_detect_snap_browser", lambda: None)
+    monkeypatch.setattr(admin, "daemon_alive", lambda: True)
+    monkeypatch.setattr(admin, "browser_connections", lambda: [])
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+
+    admin.run_doctor()
+
+    out = capsys.readouterr().out
+    assert "snap-confined" not in out
