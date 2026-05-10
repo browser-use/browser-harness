@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
+import asyncio, hmac, json, os, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -262,9 +262,14 @@ class Daemon:
         # Token guard for Windows TCP loopback: any local process can otherwise
         # connect and issue CDP commands. expected_token() is None on POSIX so
         # this check is a no-op there (AF_UNIX + chmod 600 is the boundary).
+        # hmac.compare_digest is constant-time so the per-character timing of
+        # `!=` can't be used to recover the token byte-by-byte; isinstance
+        # gate is required because compare_digest raises TypeError on non-str.
         expected = ipc.expected_token()
-        if expected is not None and req.get("token") != expected:
-            return {"error": "unauthorized"}
+        if expected is not None:
+            received = req.get("token")
+            if not isinstance(received, str) or not hmac.compare_digest(received, expected):
+                return {"error": "unauthorized"}
         meta = req.get("meta")
         # Liveness probe — lets clients confirm the listener is actually this
         # daemon and not an unrelated process that reused our port post-crash.
