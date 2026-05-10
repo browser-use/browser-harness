@@ -172,6 +172,8 @@ async def serve(name, handler):
         old_umask = os.umask(0o077)
         try: server = await asyncio.start_unix_server(handler, path=path)
         finally: os.umask(old_umask)
+        # Belt-and-braces in case a future asyncio backend doesn't honour umask.
+        os.chmod(path, 0o600)
         _server_token = None
         async with server: await asyncio.Event().wait()
         return
