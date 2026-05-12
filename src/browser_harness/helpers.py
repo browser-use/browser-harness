@@ -117,43 +117,13 @@ def _runtime_evaluate(expression, session_id=None, await_promise=False):
     return _runtime_value(r, expression)
 
 
-def _has_return_statement(expression):
-    i = 0
-    n = len(expression)
-    state = "code"
-    quote = ""
-    while i < n:
-        ch = expression[i]
-        nxt = expression[i + 1] if i + 1 < n else ""
-        if state == "code":
-            if ch in ("'", '"', "`"):
-                state = "string"; quote = ch; i += 1; continue
-            if ch == "/" and nxt == "/":
-                state = "line_comment"; i += 2; continue
-            if ch == "/" and nxt == "*":
-                state = "block_comment"; i += 2; continue
-            if expression.startswith("return", i):
-                before = expression[i - 1] if i > 0 else ""
-                after = expression[i + 6] if i + 6 < n else ""
-                if not (before == "_" or before.isalnum()) and not (after == "_" or after.isalnum()):
-                    return True
-            i += 1; continue
-        if state == "line_comment":
-            if ch == "\n":
-                state = "code"
-            i += 1; continue
-        if state == "block_comment":
-            if ch == "*" and nxt == "/":
-                state = "code"; i += 2; continue
-            i += 1; continue
-        if state == "string":
-            if ch == "\\":
-                i += 2; continue
-            if ch == quote:
-                state = "code"; quote = ""
-            i += 1; continue
-    return False
+def _wrap_js_return_statement(expression):
+    return f"(function(){{{expression}}})()"
 
+
+def _is_illegal_return_statement(error):
+    message = str(error)
+    return "SyntaxError" in message and "Illegal return statement" in message
 
 # --- navigation / page ---
 def goto_url(url):
@@ -426,13 +396,18 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
 def js(expression, target_id=None):
     """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
 
-    Expressions with top-level `return` are automatically wrapped in an IIFE, so both
-    `document.title` and `const x = 1; return x` are valid inputs.
+    The browser accepts expression snippets directly. If Chrome reports a
+    top-level `return` syntax error, retry as an IIFE so snippets like
+    `const x = 1; return x` still work without mistaking nested function returns
+    for top-level returns.
     """
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
-    if _has_return_statement(expression) and not expression.strip().startswith("("):
-        expression = f"(function(){{{expression}}})()"
-    return _runtime_evaluate(expression, session_id=sid, await_promise=True)
+    try:
+        return _runtime_evaluate(expression, session_id=sid, await_promise=True)
+    except RuntimeError as e:
+        if expression.strip().startswith("(") or not _is_illegal_return_statement(e):
+            raise
+        return _runtime_evaluate(_wrap_js_return_statement(expression), session_id=sid, await_promise=True)
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
