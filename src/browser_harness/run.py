@@ -41,6 +41,9 @@ Commands:
   browser-harness --doctor         diagnose install, daemon, and browser state
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
+  browser-harness --model-info <n> print registry details for a model name
+  browser-harness models list [--min-size <n>b] [--status <s>]
+                                 list tested self-host / third-party models (see model-compatibility.json)
 """
 
 USAGE = """Usage:
@@ -88,6 +91,17 @@ def main():
         restart_daemon()
         print("daemon stopped — will restart fresh on next call")
         return
+    if args and args[0] == "--model-info":
+        if len(args) < 2:
+            print("error: --model-info requires a model name", file=sys.stderr)
+            sys.exit(2)
+        from .model_compatibility import print_model_info
+
+        sys.exit(print_model_info(args[1]))
+    if args and args[0] == "models":
+        from .model_compatibility import models_main
+
+        sys.exit(models_main(args[1:]))
     if args and args[0] == "--debug-clicks":
         os.environ["BH_DEBUG_CLICKS"] = "1"
         args = args[1:]
