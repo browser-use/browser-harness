@@ -23,7 +23,25 @@ from .admin import (
     stop_remote_daemon,
     sync_local_profile,
 )
-from .helpers import *
+
+
+def _execution_globals():
+    """Globals for stdin scripts, with helpers loaded only for execution.
+
+    Maintenance commands like --version and --help must not import
+    BH_AGENT_WORKSPACE/agent_helpers.py. That file is user-editable and can have
+    arbitrary side effects, so keep it out of the CLI control path and expose it
+    only to scripts that explicitly execute through stdin.
+    """
+    from . import helpers
+
+    namespace = dict(globals())
+    namespace.update(
+        (name, value)
+        for name, value in vars(helpers).items()
+        if not name.startswith("_")
+    )
+    return namespace
 
 HELP = """Browser Harness
 
@@ -122,7 +140,7 @@ def main():
     ):
         start_remote_daemon(NAME)
     ensure_daemon()
-    exec(code, globals())
+    exec(code, _execution_globals())
 
 
 if __name__ == "__main__":
