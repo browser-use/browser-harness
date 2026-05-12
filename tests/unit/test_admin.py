@@ -123,6 +123,26 @@ def test_browser_connections_returns_attached_page(monkeypatch):
     ]
 
 
+def test_browser_connections_skips_daemon_that_closes_without_response(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default", "stale"])
+
+    def fake_connect(name, timeout=1.0):
+        if name == "stale":
+            return FakeSocket(b""), None
+        return FakeSocket(), None
+
+    monkeypatch.setattr(admin.ipc, "connect", fake_connect)
+
+    assert admin.browser_connections() == [{"name": "default", "page": None}]
+
+
+def test_browser_connections_skips_non_dict_connection_status_response(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["stale"])
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout=1.0: (FakeSocket(b"[]\n"), None))
+
+    assert admin.browser_connections() == []
+
+
 def test_chrome_running_detects_helium_on_linux(monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr(
