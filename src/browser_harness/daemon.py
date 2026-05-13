@@ -179,6 +179,25 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+STALE_SESSION_MARKERS = (
+    "Session with given id not found",
+)
+
+
+def _is_recoverable_current_session_error(msg, sid, current_session):
+    """True when daemon-owned re-attach is safe for a stale default session.
+
+    Recovery changes the daemon's default tab/session, so only do it for calls
+    that used the current default session. Browser-level calls (sid=None) and
+    caller-specified stale sessions should surface the original error instead.
+    """
+    return bool(
+        sid
+        and sid == current_session
+        and any(marker in (msg or "") for marker in STALE_SESSION_MARKERS)
+    )
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -349,7 +368,7 @@ class Daemon:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
-            if "Session with given id not found" in msg and sid == self.session and sid:
+            if _is_recoverable_current_session_error(msg, sid, self.session):
                 log(f"stale session {sid}, re-attaching")
                 if await self.attach_first_page():
                     return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}

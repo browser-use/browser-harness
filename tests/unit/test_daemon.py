@@ -245,6 +245,71 @@ def test_set_session_first_attach_runs_four_enables_in_parallel():
     )
 
 
+def test_recoverable_current_session_error_requires_current_default_session():
+    """Stale-session recovery is only safe for the daemon's current default
+    session. Browser-level calls and explicit stale session IDs should surface
+    their original error instead of silently changing the caller's target."""
+    assert daemon._is_recoverable_current_session_error(
+        "Session with given id not found", "session-A", "session-A"
+    ) is True
+    assert daemon._is_recoverable_current_session_error(
+        "Session with given id not found", None, "session-A"
+    ) is False
+    assert daemon._is_recoverable_current_session_error(
+        "Session with given id not found", "session-OLD", "session-NEW"
+    ) is False
+    assert daemon._is_recoverable_current_session_error(
+        "CDP WS handshake failed", "session-A", "session-A"
+    ) is False
+
+
+def test_handle_reattaches_and_retries_current_session_after_stale_error():
+    """First contract slice for #352: if a renderer-bound helper uses the
+    daemon's current session and Chrome reports that session as stale, the
+    daemon owns re-attach + retry so callers don't need per-helper recovery."""
+    class _StaleOnceCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.failed_once = False
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if (
+                method == "Runtime.evaluate"
+                and session_id == "session-OLD"
+                and not self.failed_once
+            ):
+                self.failed_once = True
+                raise RuntimeError("Session with given id not found")
+            if method == "Runtime.evaluate" and session_id == "session-NEW":
+                return {"type": "number", "value": 2}
+            return {}
+
+    async def run():
+        d = daemon.Daemon()
+        d.cdp = _StaleOnceCDP()
+        d.session = "session-OLD"
+        d.target_id = "target-OLD"
+
+        async def attach_first_page():
+            d.session = "session-NEW"
+            d.target_id = "target-NEW"
+            return {"targetId": "target-NEW", "type": "page", "url": "about:blank"}
+
+        d.attach_first_page = attach_first_page
+        result = await d.handle({
+            "method": "Runtime.evaluate",
+            "params": {"expression": "1 + 1"},
+        })
+        return result, d.cdp.calls
+
+    result, calls = asyncio.run(run())
+
+    assert result == {"result": {"type": "number", "value": 2}}
+    runtime_sessions = [sid for (method, _params, sid) in calls if method == "Runtime.evaluate"]
+    assert runtime_sessions == ["session-OLD", "session-NEW"]
+
+
 def test_current_tab_meta_passes_attached_target_id():
     """Regression for issue #304: helpers.current_tab() previously sent
     Target.getTargetInfo with no targetId. The daemon strips session_id for
