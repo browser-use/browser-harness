@@ -103,7 +103,11 @@ def main():
     ):
         start_remote_daemon(NAME)
     ensure_daemon()
-    exec(args[1], globals())
+    try:
+        exec(args[1], globals())
+    finally:
+        if os.environ.get("BH_KEEP_TABS") not in {"1", "true", "TRUE", "yes", "YES"}:
+            close_opened_tabs()
 
 
 if __name__ == "__main__":

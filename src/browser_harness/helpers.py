@@ -282,6 +282,9 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 
 
 # --- tabs ---
+_OPENED_TABS = set()
+_KEEP_OPENED_TABS = False
+
 def list_tabs(include_chrome=True):
     out = []
     for t in cdp("Target.getTargets")["targetInfos"]:
@@ -319,10 +322,54 @@ def new_tab(url="about:blank"):
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
     tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    _OPENED_TABS.add(tid)
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
     return tid
+
+def opened_tabs():
+    """Return targetIds opened by new_tab() in this CLI process."""
+    return list(_OPENED_TABS)
+
+def keep_opened_tabs(keep=True):
+    """Opt out of automatic cleanup for tabs opened by this CLI process."""
+    global _KEEP_OPENED_TABS
+    _KEEP_OPENED_TABS = keep
+
+def close_opened_tabs(force=False):
+    """Close tabs opened by new_tab() in this CLI process.
+
+    browser-harness is commonly used from agents and cron jobs; leaving every
+    investigation tab open makes the visible profile unusable over time. This
+    helper intentionally only closes tabs created through new_tab() in the
+    current Python process, so pre-existing user/agent tabs are not touched.
+    """
+    if _KEEP_OPENED_TABS and not force:
+        return []
+    closed = []
+    for tid in list(_OPENED_TABS):
+        try:
+            result = cdp("Target.closeTarget", targetId=tid)
+            if result.get("success", True):
+                closed.append(tid)
+        except Exception:
+            pass
+        finally:
+            _OPENED_TABS.discard(tid)
+    # Target.closeTarget is asynchronous in Chrome. Give it a short chance to
+    # settle so a follow-up browser-harness command does not see zombie tabs.
+    if closed:
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            try:
+                remaining = {t["targetId"] for t in list_tabs(include_chrome=True)}
+            except Exception:
+                break
+            if not any(tid in remaining for tid in closed):
+                break
+            time.sleep(0.05)
+    return closed
 
 def ensure_real_tab():
     """Switch to a real user tab if current is chrome:// / internal / stale."""
