@@ -34,6 +34,23 @@ After the repo is installed, register this repo's `SKILL.md` with the agent you 
 
 This makes new Codex or Claude Code sessions in other folders load the runtime browser harness instructions automatically.
 
+### Hermes Agent
+
+Install the Hermes-native skill from this repo:
+
+```bash
+# Option A: Symlink for auto-updates (recommended)
+mkdir -p "${HERMES_HOME:-$HOME/.hermes}/skills/browser-harness"
+ln -sf "$PWD/hermes/SKILL.md" "${HERMES_HOME:-$HOME/.hermes}/skills/browser-harness/SKILL.md"
+
+# Option B: Install via hermes skills install (one-time, no auto-update)
+hermes skills install https://raw.githubusercontent.com/browser-use/browser-harness/main/hermes/SKILL.md
+```
+
+Then load the skill in any Hermes session with `/skill browser-harness` or `hermes -s browser-harness`.
+
+Domain skills are shared across all agents — `agent-workspace/domain-skills/` works identically with Hermes when `BH_DOMAIN_SKILLS=1`.
+
 ## Keeping the harness current
 
 - On each run, `browser-harness` prints `[browser-harness] update available: X -> Y` (once per day) when a newer GitHub release exists.

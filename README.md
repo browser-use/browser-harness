@@ -20,12 +20,18 @@ One websocket to Chrome, nothing between. The agent writes what's missing during
 
 ## Setup prompt
 
-Paste into Claude Code or Codex:
+Paste into Claude Code, Codex, or Hermes Agent:
 
 ```text
 Set up https://github.com/browser-use/browser-harness for me.
 
 Read `install.md` and follow the steps to install browser-harness and connect it to my browser.
+```
+
+For Hermes Agent, also load the native skill after setup:
+
+```bash
+hermes -s browser-harness
 ```
 
 The agent will open `chrome://inspect/#remote-debugging`. Tick the checkbox so the agent can connect to your browser:
@@ -49,7 +55,8 @@ Stealth, sub-agents, or headless deployment.<br>
 ## Architecture (~1k lines across 4 core files)
 
 - `install.md` — first-time install and browser bootstrap
-- `SKILL.md` — day-to-day usage
+- `SKILL.md` — day-to-day usage (generic agent)
+- `hermes/SKILL.md` — day-to-day usage (Hermes Agent native format)
 - `src/browser_harness/` — protected core package
 - `agent-workspace/agent_helpers.py` — helper code the agent edits
 - `agent-workspace/domain-skills/` — reusable site-specific skills the agent edits
