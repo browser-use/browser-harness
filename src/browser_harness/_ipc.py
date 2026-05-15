@@ -76,6 +76,25 @@ def spawn_kwargs():  # subprocess.Popen flags so the daemon detaches from this t
     return {"start_new_session": True}
 
 
+def _replace_surrogates(value):
+    """Return a JSON-compatible value with lone surrogates replaced in strings."""
+    if isinstance(value, str):
+        return value.encode("utf-8", errors="replace").decode("utf-8")
+    if isinstance(value, dict):
+        return {_replace_surrogates(k): _replace_surrogates(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_replace_surrogates(v) for v in value]
+    return value
+
+
+def json_dumps(value, **kwargs):
+    return json.dumps(_replace_surrogates(value), **kwargs)
+
+
+def json_loads(value, **kwargs):
+    return _replace_surrogates(json.loads(value, **kwargs))
+
+
 def connect(name, timeout=1.0):
     """Blocking client. Returns (sock, token); token is None on POSIX, hex string on Windows.
     Callers sending JSON requests MUST include the token as req["token"] on Windows."""
@@ -93,13 +112,13 @@ def request(c, token, req):
     """One-shot send + recv + parse on an open socket. Injects token on Windows.
     Returns the parsed JSON response. Caller closes the socket."""
     if token: req = {**req, "token": token}
-    c.sendall((json.dumps(req) + "\n").encode())
+    c.sendall((json_dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
         chunk = c.recv(1 << 16)
         if not chunk: break
         data += chunk
-    return json.loads(data or b"{}")
+    return json_loads(data or b"{}")
 
 
 def ping(name, timeout=1.0):
@@ -177,7 +196,7 @@ async def serve(name, handler):
     pf = port_path(name)
     # Atomic write so a concurrent reader never sees a half-written file.
     tmp = pf.with_name(pf.name + ".tmp")
-    tmp.write_text(json.dumps({"port": port, "token": _server_token}))
+    tmp.write_text(json_dumps({"port": port, "token": _server_token}))
     os.replace(tmp, pf)
     try:
         async with server: await asyncio.Event().wait()
