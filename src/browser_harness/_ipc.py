@@ -185,7 +185,9 @@ async def serve(name, handler):
         _server_token = None
         async with server: await asyncio.Event().wait()
         return
-    server = await asyncio.start_server(handler, "127.0.0.1", 0, limit=1024 * 1024 * 16)
+    # Windows TCP loopback: keep the default 64KB limit to prevent unauthenticated
+    # local clients from forcing large pre-auth memory allocations (DoS).
+    server = await asyncio.start_server(handler, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     _server_token = secrets.token_hex(32)
     pf = port_path(name)
