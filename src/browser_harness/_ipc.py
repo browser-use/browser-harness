@@ -59,6 +59,19 @@ def _read_port_file(name):
         return None, None
 
 
+def safe_open_write(path, append=False):
+    """Securely open a file for writing, refusing to follow symlinks where supported."""
+    flags = os.O_WRONLY | os.O_CREAT
+    flags |= os.O_APPEND if append else os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(str(path), flags, 0o600)
+        return open(fd, "a" if append else "w")
+    except OSError:
+        raise RuntimeError(f"Refusing to write to {path} as it may be a symlink attack.")
+
+
 def sock_addr(name):  # display-only, used in log lines
     if not IS_WINDOWS: return str(_sock_path(name))
     port, _ = _read_port_file(name)
@@ -163,15 +176,16 @@ async def serve(name, handler):
     global _server_token
     if not IS_WINDOWS:
         path = str(_sock_path(name))
-        if os.path.exists(path): os.unlink(path)
+        try: os.unlink(path)
+        except OSError: pass
         # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
         old_umask = os.umask(0o077)
-        try: server = await asyncio.start_unix_server(handler, path=path)
+        try: server = await asyncio.start_unix_server(handler, path=path, limit=1024 * 1024 * 16)
         finally: os.umask(old_umask)
         _server_token = None
         async with server: await asyncio.Event().wait()
         return
-    server = await asyncio.start_server(handler, "127.0.0.1", 0)
+    server = await asyncio.start_server(handler, "127.0.0.1", 0, limit=1024 * 1024 * 16)
     port = server.sockets[0].getsockname()[1]
     _server_token = secrets.token_hex(32)
     pf = port_path(name)
@@ -194,4 +208,4 @@ def expected_token():
 def cleanup_endpoint(name):  # best-effort; silent if already gone
     p = _sock_path(name) if not IS_WINDOWS else port_path(name)
     try: p.unlink()
-    except FileNotFoundError: pass
+    except OSError: pass
