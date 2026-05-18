@@ -293,3 +293,36 @@ def test_current_tab_meta_returns_not_attached_when_no_target_id():
     assert result == {"error": "not_attached"}
     # No CDP call should have been issued.
     assert d.cdp.calls == []
+
+
+def test_regular_cdp_calls_timeout_before_client_socket_deadline(monkeypatch):
+    """If Chrome/CDP stops answering, daemon.handle() must return a useful
+    error before the helpers.py IPC client hits its 5s socket timeout.
+
+    Otherwise the helper sees only a client-side timeout at _ipc.request(),
+    and the daemon can later log ``conn: Connection lost`` when it finally
+    tries to write to a socket the helper already closed.
+    """
+    class _HangingCDP:
+        def __init__(self):
+            self.calls = []
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            await asyncio.Event().wait()
+
+    d = daemon.Daemon()
+    d.cdp = _HangingCDP()
+    d.session = "session-current"
+    monkeypatch.setattr(daemon, "CDP_CALL_TIMEOUT", 0.01, raising=False)
+
+    async def run():
+        return await asyncio.wait_for(
+            d.handle({"method": "Page.navigate", "params": {"url": "https://example.com"}}),
+            timeout=0.5,
+        )
+
+    result = asyncio.run(run())
+
+    assert result == {"error": "Page.navigate timed out after 0.01s"}
+    assert d.cdp.calls == [("Page.navigate", {"url": "https://example.com"}, "session-current")]
