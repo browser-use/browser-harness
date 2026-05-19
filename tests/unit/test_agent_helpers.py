@@ -262,6 +262,33 @@ def test_reviewops_invocation_template_command_success_without_guard_fails_close
     assert code == 124
 
 
+def test_reviewops_invocation_template_default_lock_is_wrapper_specific(tmp_path):
+    template = load_reviewops_template()
+    status_file = tmp_path / "status.json"
+    out = tmp_path / "response.md"
+    out.write_text("ok", encoding="utf-8")
+    status_file.write_text(json.dumps({"status": "watching"}), encoding="utf-8")
+    child_lock = tmp_path / ".retriever.lock"
+    child_lock.write_text("child retriever owns this lock", encoding="utf-8")
+
+    code = template.main(
+        [
+            "--status-file",
+            str(status_file),
+            "--out-file",
+            str(out),
+            "--watchdog-timeout",
+            "0.01",
+            "--watchdog-interval",
+            "0.01",
+        ]
+    )
+
+    assert code == 124
+    assert child_lock.read_text(encoding="utf-8") == "child retriever owns this lock"
+    assert not (tmp_path / ".retriever-wrapper.lock").exists()
+
+
 def test_reviewops_single_retriever_lock_rejects_duplicate(tmp_path):
     h = load_agent_helpers()
     lock_file = tmp_path / "retriever.lock"

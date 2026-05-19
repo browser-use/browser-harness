@@ -8,7 +8,7 @@ conditions:
 
 1. status-file status is downloaded/captured (or the supported captured variants),
 2. out-file exists and is non-empty,
-3. export_identity_guard_last_result.accepted is true.
+3. export_identity_guard_enabled is true and export_identity_guard_last_result.accepted is true.
 
 Example shape for the next invocation:
 
