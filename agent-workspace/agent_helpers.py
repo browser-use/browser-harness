@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json as _json
 import os as _os
-import sys as _sys
 import time as _time
 from contextlib import contextmanager as _contextmanager
 from pathlib import Path as _Path
@@ -18,6 +17,7 @@ from typing import Any as _Any
 
 REVIEWOPS_TERMINAL_DOWNLOAD_STATUSES = frozenset(
     {
+        "captured",
         "downloaded",
         "captured_markdown_export",
         "captured_native_markdown",
@@ -48,7 +48,7 @@ class ReviewOpsRetrieverLock:
         payload = {
             "pid": _os.getpid(),
             "created_at": _time.time(),
-            "argv": _sys.argv,
+            "argv_redacted": True,
         }
         try:
             fd = _os.open(self.path, flags)
@@ -140,18 +140,27 @@ def _status_output_path(status: dict[str, _Any], explicit_output: str | _os.Path
     return None
 
 
-def _identity_guard_allows_completion(status: dict[str, _Any]) -> bool:
+def _identity_guard_allows_completion(
+    status: dict[str, _Any], *, require_accepted: bool = False
+) -> bool:
     """Return False when a reported identity guard exists but did not accept.
 
     Older/local retrievers may not write identity-guard fields; those remain
-    caller-governed. If the fields are present, the watchdog must not turn a stale
-    or rejected export into a successful completion merely because a file exists.
+    caller-governed by default. For ReviewOps invocation templates that must prove
+    the current response before exiting, pass ``require_accepted=True`` so missing
+    or disabled identity-guard evidence fails closed too. If the fields are
+    present, the watchdog must not turn a stale or rejected export into a
+    successful completion merely because a file exists.
     """
 
-    if not status.get("export_identity_guard_enabled"):
-        return True
     result = status.get("export_identity_guard_last_result")
-    return isinstance(result, dict) and result.get("accepted") is True
+    accepted = isinstance(result, dict) and result.get("accepted") is True
+    guard_enabled = status.get("export_identity_guard_enabled") is True
+    if require_accepted:
+        return guard_enabled and accepted
+    if not guard_enabled:
+        return True
+    return accepted
 
 
 def reviewops_download_is_complete(
@@ -160,19 +169,25 @@ def reviewops_download_is_complete(
     *,
     terminal_statuses=REVIEWOPS_TERMINAL_DOWNLOAD_STATUSES,
     min_bytes: int = 1,
+    require_identity_guard_accepted: bool = False,
 ) -> bool:
     """True only when status says downloaded/captured and the output file exists.
 
     This is intentionally narrow. It does not click, export, send, or bypass
     current-response identity checks. If the status file reports an enabled
-    identity guard, completion is allowed only when that guard accepted.
+    identity guard, completion is allowed only when that guard accepted. Pass
+    ``require_identity_guard_accepted=True`` from ReviewOps retriever invocation
+    templates so completion requires all three conditions: terminal
+    downloaded/captured status, non-empty output file, and accepted identity guard.
     """
 
     if not status:
         return False
     if str(status.get("status", "")).strip() not in set(terminal_statuses):
         return False
-    if not _identity_guard_allows_completion(status):
+    if not _identity_guard_allows_completion(
+        status, require_accepted=require_identity_guard_accepted
+    ):
         return False
     output = _status_output_path(status, out_file)
     if output is None:
@@ -191,6 +206,7 @@ def wait_for_reviewops_download(
     interval: float = 1.0,
     terminal_statuses=REVIEWOPS_TERMINAL_DOWNLOAD_STATUSES,
     min_bytes: int = 1,
+    require_identity_guard_accepted: bool = False,
 ) -> dict[str, _Any]:
     """Short-poll a retriever status file until download completion or timeout.
 
@@ -199,7 +215,9 @@ def wait_for_reviewops_download(
     captured status) and the output file exists, this returns immediately so the
     parent process can exit 0 and Hermes `notify_on_complete` fires. On timeout it
     returns the last status dict with `watchdog_status: timeout` and does not click
-    or send anything.
+    or send anything. New ReviewOps invocation templates should pass
+    ``require_identity_guard_accepted=True`` so this exits only after the stale
+    export/current-response identity guard has accepted the output.
     """
 
     deadline = _time.time() + timeout
@@ -211,6 +229,7 @@ def wait_for_reviewops_download(
             out_file,
             terminal_statuses=terminal_statuses,
             min_bytes=min_bytes,
+            require_identity_guard_accepted=require_identity_guard_accepted,
         ):
             result = dict(last_status or {})
             result["watchdog_status"] = "downloaded"
@@ -231,15 +250,22 @@ def exit_if_reviewops_downloaded(
     out_file: str | _os.PathLike[str] | None = None,
     *,
     code: int = 0,
+    require_identity_guard_accepted: bool = False,
 ) -> None:
     """Exit the current retriever once status/output prove the download is done.
 
     Drop this near the top of a retriever loop after the identity/stale-export
     guards have written a terminal status. It fixes the lifecycle bug where the
     status file says downloaded and the output exists, but a background process
-    keeps polling forever.
+    keeps polling forever. New ReviewOps invocation templates should pass
+    ``require_identity_guard_accepted=True`` and call this after the identity/stale
+    guard status has been updated.
     """
 
     status = read_reviewops_status_file(status_file)
-    if reviewops_download_is_complete(status, out_file):
+    if reviewops_download_is_complete(
+        status,
+        out_file,
+        require_identity_guard_accepted=require_identity_guard_accepted,
+    ):
         raise SystemExit(code)
