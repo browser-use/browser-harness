@@ -68,6 +68,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - downloads.md
 - drag-and-drop.md
 - dropdowns.md
+- forms.md
 - iframes.md
 - network-requests.md
 - print-as-pdf.md
@@ -112,7 +113,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - After every meaningful action, re-screenshot before assuming it worked. Use the image to verify changed state, open menus, navigation, visible errors, and whether the page is in the state you expected.
 - Use screenshots to drive exploration. They are often the fastest way to find the next click target, notice hidden blockers, and decide if a selector is even worth writing.
 - Prefer compositor-level actions over framework hacks. Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.
-- If you need framework-specific DOM tricks, check interaction-skills/ first. That is where dropdown, dialog, iframe, shadow DOM, and form-specific guidance belongs.
+- If you need framework-specific DOM tricks, check interaction-skills/ first. That is where dropdown, dialog, form/input, iframe, shadow DOM, and other mechanic-specific guidance belongs.
 
 ## Domain skills (opt-in)
 
