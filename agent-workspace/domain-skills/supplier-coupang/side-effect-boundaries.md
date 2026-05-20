@@ -30,6 +30,7 @@ Before deciding to click a business save button again, verify state:
 - Bulk milkrun registration: `completeRegistration_*` count.
 - Split milkrun: milkrun list has the expected `양주시_1` row.
 - Pallet company: saved form/list shows the expected pallet rental company.
+- Shipment bulk registration: jobs page latest relevant row is `완료`, has no failure button, and has generated shipment button.
 - Downloads: deterministic target file exists, has non-zero size, and downstream merge/upload saw the expected file.
 
 If the saved state cannot be proven, fail fast and report artifacts instead of retrying through a fallback.
@@ -40,7 +41,7 @@ Known retained Selenium areas in `bot_coupang_1p.py` include:
 
 - Login/cookie compatibility helpers.
 - Older milkrun Selenium helper variants retained for comparison.
-- Shipment registration/upload/status helpers.
+- Older shipment registration/upload/status Selenium helper variants retained for comparison; public shipment registration is CDP-only.
 - Some raw order/SKU/order-list Selenium variants retained as legacy helper code even when public routes are CDP.
 - Non-Supplier-Hub or adjacent automation such as Sabanet/fullfillment should be classified separately before applying this skill.
 

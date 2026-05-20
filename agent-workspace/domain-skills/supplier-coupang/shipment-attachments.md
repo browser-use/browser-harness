@@ -28,13 +28,8 @@ The public shipment attachment document path is CDP-only and must not fall back 
 4. Preserve existing filenames, merge behavior if any, and S3 key generation.
 5. Clear or reset download state after completion.
 
-## Remaining Legacy Area
+## Registration Boundary
 
-Shipment registration/upload/status helpers still have retained Selenium variants in the bot. Treat them as legacy boundaries until each workflow has:
+Do not use the shipment attachment download conversion as proof for other shipment workflows. Shipment bulk registration is its own side-effecting route; use `shipment-bulk-register.md`.
 
-- A fake CDP/session contract test.
-- A side-effect-safe saved-state verification marker.
-- Failure artifacts on all CDP errors.
-- No Selenium fallback for the public side-effecting route.
-
-Do not use the shipment attachment download conversion as proof that shipment registration/upload is already browser-harness complete.
+Retained `_selenium` helper variants may still exist in the bot for legacy comparison, but the public shipment attachment download and public shipment bulk registration routes are CDP-only and should fail fast with artifacts rather than falling back.

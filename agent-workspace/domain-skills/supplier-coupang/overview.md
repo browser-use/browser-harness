@@ -18,7 +18,8 @@ This directory mirrors the same page and workflow knowledge in browser-harness `
 - `milkrun-pallet-attachment.md` — pallet attachment `window.open`/print/PDF path.
 - `milkrun-bulk-register.md` — bulk registration, modal handling, save verification.
 - `milkrun-split.md` — split order, location modal, pallet company save.
-- `shipment-attachments.md` — shipment attachment downloads and remaining upload boundary.
+- `shipment-bulk-register.md` — shipment bulk register upload and jobs status verification.
+- `shipment-attachments.md` — shipment attachment downloads.
 - `failure-artifacts.md` — screenshot/DOM/JSON/selector probe evidence contract.
 - `side-effect-boundaries.md` — no Selenium fallback and remaining legacy map.
 
