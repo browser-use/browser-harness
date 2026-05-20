@@ -70,7 +70,11 @@ API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
 def log(msg):
-    open(LOG, "a").write(f"{msg}\n")
+    try:
+        with ipc.safe_open_write(LOG, append=True) as f:
+            f.write(f"{msg}\n")
+    except RuntimeError:
+        pass
 
 
 async def _silent(coro):
@@ -405,8 +409,13 @@ if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
-    open(LOG, "w").close()
-    open(PID, "w").write(str(os.getpid()))
+    try:
+        ipc.safe_open_write(LOG).close()
+        with ipc.safe_open_write(PID) as f:
+            f.write(str(os.getpid()))
+    except RuntimeError as e:
+        print(f"fatal: {e}", file=sys.stderr)
+        sys.exit(1)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
