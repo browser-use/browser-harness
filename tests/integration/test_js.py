@@ -19,6 +19,25 @@ def _evaluated_expression(captured):
     return next(kw["expression"] for m, kw in captured if m == "Runtime.evaluate")
 
 
+def _evaluated_expressions(captured):
+    return [kw["expression"] for m, kw in captured if m == "Runtime.evaluate"]
+
+
+def _illegal_return_response():
+    return {
+        "result": {
+            "type": "object",
+            "subtype": "error",
+            "description": "SyntaxError: Illegal return statement",
+        },
+        "exceptionDetails": {
+            "text": "Uncaught SyntaxError: Illegal return statement",
+            "lineNumber": 0,
+            "columnNumber": 0,
+        },
+    }
+
+
 def test_simple_expression_passes_through():
     fake_cdp, captured = _capture_cdp()
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
@@ -26,11 +45,19 @@ def test_simple_expression_passes_through():
     assert _evaluated_expression(captured) == "document.title"
 
 
-def test_return_statement_gets_wrapped():
-    fake_cdp, captured = _capture_cdp()
+def test_return_statement_gets_wrapped_after_illegal_return():
+    captured = []
+    expr = "const x = 1; return x"
+    responses = [_illegal_return_response(), {"result": {"value": 1}}]
+
+    def fake_cdp(method, **kwargs):
+        captured.append((method, kwargs))
+        return responses.pop(0)
+
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
-        helpers.js("const x = 1; return x")
-    assert _evaluated_expression(captured) == "(function(){const x = 1; return x})()"
+        assert helpers.js(expr) == 1
+
+    assert _evaluated_expressions(captured) == [expr, "(function(){const x = 1; return x})()"]
 
 
 def test_iife_with_internal_return_is_not_double_wrapped():
@@ -38,6 +65,14 @@ def test_iife_with_internal_return_is_not_double_wrapped():
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         helpers.js("(function(){ return document.title; })()")
     assert _evaluated_expression(captured) == "(function(){ return document.title; })()"
+
+
+def test_nested_arrow_return_is_not_wrapped():
+    fake_cdp, captured = _capture_cdp()
+    expr = "const f = () => { return 1 }; f()"
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.js(expr)
+    assert _evaluated_expression(captured) == expr
 
 
 def test_js_raises_on_syntax_error_exception_details():
@@ -112,11 +147,18 @@ def test_return_word_inside_comment_does_not_trigger_wrapping():
 
 
 @pytest.mark.parametrize("expr", ["return\t1", "return\n1"])
-def test_top_level_return_with_whitespace_gets_wrapped(expr):
-    fake_cdp, captured = _capture_cdp()
+def test_top_level_return_with_whitespace_gets_wrapped_after_illegal_return(expr):
+    captured = []
+    responses = [_illegal_return_response(), {"result": {"value": 1}}]
+
+    def fake_cdp(method, **kwargs):
+        captured.append((method, kwargs))
+        return responses.pop(0)
+
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
-        helpers.js(expr)
-    assert _evaluated_expression(captured) == f"(function(){{{expr}}})()"
+        assert helpers.js(expr) == 1
+
+    assert _evaluated_expressions(captured) == [expr, f"(function(){{{expr}}})()"]
 
 
 @pytest.mark.parametrize(
