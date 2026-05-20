@@ -716,6 +716,38 @@ def _chrome_running():
         return False
 
 
+def _detect_snap_browser():
+    """On Linux, return the snap-confined browser path if a Chromium-based
+    browser is running from /snap/. Returns None on non-Linux, when no
+    matching process is found, or when the process check fails. Snap
+    confinement on Ubuntu/Lubuntu prevents binding to the CDP port (9222)
+    even with --no-sandbox, so the harness's auto-discovery fails silently
+    or with "Connection Refused"; surface this as a doctor warning so users
+    can install a non-snap browser before debugging the connection error.
+    """
+    import platform, subprocess
+    if platform.system() != "Linux":
+        return None
+    try:
+        out = subprocess.check_output(
+            ["ps", "-A", "-o", "args="], text=True, timeout=5,
+        )
+    except Exception:
+        return None
+    snap_path_markers = ("/snap/chromium/", "/snap/firefox/", "/snap/google-chrome/")
+    browser_basenames = ("chrome", "chromium", "msedge", "firefox")
+    for line in out.splitlines():
+        first = line.strip().split()
+        if not first:
+            continue
+        path = first[0]
+        if any(marker in path for marker in snap_path_markers):
+            basename = path.rsplit("/", 1)[-1].lower()
+            if any(b in basename for b in browser_basenames):
+                return path
+    return None
+
+
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
@@ -773,6 +805,18 @@ def run_doctor():
             print(f"  Fix: Install Chrome natively (see docs/snap-linux-headless.md)")
             print(f"  Docs: {doc_url}")
     row("chrome running", chrome, "" if chrome else "start chrome/edge")
+    snap_path = _detect_snap_browser()
+    if snap_path:
+        # Snap confinement runs the browser in a restricted mount namespace
+        # that blocks binding to CDP port 9222. The user will see the
+        # connection fail later; flagging it here saves the troubleshooting
+        # round-trip. Issue #191 has the long-form context.
+        print(
+            "  [WARN] snap-confined browser detected — "
+            f"{snap_path}: install a non-snap chromium/chrome (e.g. "
+            "https://www.google.com/chrome/?platform=linux or `apt install "
+            "chromium-browser` from a non-snap PPA) for reliable CDP attach"
+        )
     row("daemon alive", daemon, "" if daemon else "see install.md")
     row("active browser connections", bool(connections), str(len(connections)))
     for conn in connections:
