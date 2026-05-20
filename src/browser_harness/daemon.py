@@ -349,7 +349,7 @@ class Daemon:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
-            if "Session with given id not found" in msg and sid == self.session and sid:
+            if ("Session with given id not found" in msg or "no close frame" in msg) and sid == self.session and sid:
                 log(f"stale session {sid}, re-attaching")
                 if await self.attach_first_page():
                     return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
