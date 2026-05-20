@@ -90,6 +90,22 @@ def _decode_unserializable_js_value(value):
     return value
 
 
+def _replace_lone_surrogates(value):
+    if isinstance(value, str):
+        return "".join(
+            "\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch
+            for ch in value
+        )
+    if isinstance(value, list):
+        return [_replace_lone_surrogates(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            _replace_lone_surrogates(k): _replace_lone_surrogates(v)
+            for k, v in value.items()
+        }
+    return value
+
+
 def _runtime_value(response, expression):
     result = response.get("result", {})
     details = response.get("exceptionDetails")
@@ -103,7 +119,7 @@ def _runtime_value(response, expression):
             loc = ""
         raise RuntimeError(f"JavaScript evaluation failed{loc}: {desc}; expression: {_js_snippet(expression)}")
     if "value" in result:
-        return result["value"]
+        return _replace_lone_surrogates(result["value"])
     if "unserializableValue" in result:
         return _decode_unserializable_js_value(result["unserializableValue"])
     return None

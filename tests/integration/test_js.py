@@ -169,3 +169,24 @@ def test_js_timeout_error_includes_expression_context():
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         with pytest.raises(RuntimeError, match="Runtime.evaluate.*document.title"):
             helpers.js("document.title")
+
+
+def test_js_replaces_lone_surrogates_in_returned_values():
+    def fake_cdp(method, **kwargs):
+        return {
+            "result": {
+                "type": "object",
+                "value": {
+                    "title": "中文\udc80content",
+                    "items": ["ok", "\udc81"],
+                },
+            }
+        }
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        value = helpers.js("return document.body.innerText")
+
+    assert value == {
+        "title": "中文\ufffdcontent",
+        "items": ["ok", "\ufffd"],
+    }
