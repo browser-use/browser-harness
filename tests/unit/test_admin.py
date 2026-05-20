@@ -133,6 +133,44 @@ def test_chrome_running_detects_helium_on_linux(monkeypatch):
     assert admin._chrome_running()
 
 
+def test_open_chrome_inspect_uses_chrome_executable_on_windows(monkeypatch, tmp_path):
+    program_files = tmp_path / "Program Files"
+    chrome = program_files / "Google" / "Chrome" / "Application" / "chrome.exe"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_text("chrome")
+    popen_calls = []
+    webbrowser_calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setenv("PROGRAMFILES", str(program_files))
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr("subprocess.Popen", lambda args: popen_calls.append(args))
+    monkeypatch.setattr("webbrowser.open", lambda *args, **kwargs: webbrowser_calls.append((args, kwargs)))
+
+    admin._open_chrome_inspect()
+
+    assert popen_calls == [[str(chrome), "chrome://inspect/#remote-debugging"]]
+    assert webbrowser_calls == []
+
+
+def test_open_chrome_inspect_falls_back_to_webbrowser_when_windows_chrome_missing(monkeypatch):
+    popen_calls = []
+    webbrowser_calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.delenv("PROGRAMFILES", raising=False)
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr("subprocess.Popen", lambda args: popen_calls.append(args))
+    monkeypatch.setattr("webbrowser.open", lambda *args, **kwargs: webbrowser_calls.append((args, kwargs)))
+
+    admin._open_chrome_inspect()
+
+    assert popen_calls == []
+    assert webbrowser_calls == [(("chrome://inspect/#remote-debugging",), {"new": 2})]
+
+
 @pytest.mark.parametrize(
     "path, expected",
     [
