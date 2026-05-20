@@ -1,4 +1,28 @@
+import pytest
+
 from browser_harness import _ipc as ipc
+
+
+# --- request(): EOF handling ---
+
+class _EOFConn:
+    def __init__(self):
+        self.sent = b""
+
+    def sendall(self, data):
+        self.sent += data
+
+    def recv(self, _size):
+        return b""
+
+
+def test_request_raises_connection_error_when_peer_closes_without_response():
+    conn = _EOFConn()
+
+    with pytest.raises(ConnectionError, match="closed without a response"):
+        ipc.request(conn, None, {"meta": "ping"})
+
+    assert conn.sent
 
 
 # --- identify(): ping payload sanitation ---

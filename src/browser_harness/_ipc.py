@@ -91,15 +91,19 @@ def connect(name, timeout=1.0):
 
 def request(c, token, req):
     """One-shot send + recv + parse on an open socket. Injects token on Windows.
-    Returns the parsed JSON response. Caller closes the socket."""
+    Returns the parsed JSON response. Caller closes the socket.
+    Raises ConnectionError if the peer closes before sending any response."""
     if token: req = {**req, "token": token}
     c.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
         chunk = c.recv(1 << 16)
-        if not chunk: break
+        if not chunk:
+            if not data:
+                raise ConnectionError("IPC peer closed without a response")
+            break
         data += chunk
-    return json.loads(data or b"{}")
+    return json.loads(data)
 
 
 def ping(name, timeout=1.0):
