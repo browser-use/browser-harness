@@ -1,4 +1,78 @@
+import asyncio
+import os
+import stat
+import sys
+
+import pytest
+
 from browser_harness import _ipc as ipc
+
+
+# --- serve(): AF_UNIX socket created with owner-only permissions ---
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: AF_UNIX socket perms")
+def test_serve_posix_socket_is_created_with_owner_only_perms(tmp_path, monkeypatch):
+    """The AF_UNIX socket file must be mode 0o600 from the moment bind()
+    creates it, not just after the explicit chmod. asyncio.start_unix_server
+    begins accepting connections immediately, so a co-located unprivileged
+    user racing connect() against the chmod could otherwise issue CDP
+    commands during that window. Tightening the umask around bind() makes
+    the permissions correct atomically; this test asserts (a) umask is set
+    to 0o077 by the time start_unix_server's bind() runs, and (b) chmod
+    0o600 fires on the resulting path as a defence-in-depth follow-up."""
+    monkeypatch.setattr(ipc, "BH_TMP_DIR", str(tmp_path))
+    monkeypatch.setattr(ipc, "_TMP", tmp_path)
+
+    captured = {"umask_during_bind": None}
+    chmod_calls = []
+    real_start = asyncio.start_unix_server
+    real_chmod = os.chmod
+
+    async def spy_start(handler, path):
+        # Snapshot the umask the kernel will see when bind() creates the
+        # socket file. os.umask(0) flips to 0 and returns the prior value;
+        # restore immediately so we don't disturb the run.
+        current = os.umask(0)
+        os.umask(current)
+        captured["umask_during_bind"] = current
+        return await real_start(handler, path)
+
+    def spy_chmod(path, mode):
+        chmod_calls.append((str(path), mode))
+        return real_chmod(path, mode)
+
+    monkeypatch.setattr(asyncio, "start_unix_server", spy_start)
+    monkeypatch.setattr(os, "chmod", spy_chmod)
+
+    async def run():
+        async def handler(reader, writer):
+            writer.close()
+
+        task = asyncio.create_task(ipc.serve("default", handler))
+        # Yield until serve() has reached its blocking point — chmod is the
+        # last sync step before `await asyncio.Event().wait()`, so seeing
+        # the chmod call is the cleanest "serve is past setup" signal.
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if chmod_calls and captured["umask_during_bind"] is not None:
+                break
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, BaseException):
+            pass
+
+    asyncio.run(run())
+    assert captured["umask_during_bind"] == 0o077, (
+        f"serve() must tighten umask to 0o077 before start_unix_server's "
+        f"bind() creates the socket file. Saw umask="
+        f"{oct(captured['umask_during_bind']) if captured['umask_during_bind'] is not None else 'unset'}."
+    )
+    sock_path = str(tmp_path / "bu.sock")
+    assert (sock_path, 0o600) in chmod_calls, (
+        f"serve() must chmod the socket file to 0o600 as a belt-and-braces "
+        f"defence after umask. Got chmod calls: {chmod_calls}"
+    )
 
 
 # --- identify(): ping payload sanitation ---

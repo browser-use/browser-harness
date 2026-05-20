@@ -1,5 +1,7 @@
 import asyncio
+import hmac
 
+from browser_harness import _ipc as ipc
 from browser_harness import daemon
 
 
@@ -196,6 +198,75 @@ def test_set_session_runs_disable_and_enables_in_parallel():
     methods = sorted({m for (m, _p, _s) in calls})
     assert "Network.disable" in methods
     assert {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}.issubset(methods)
+
+
+def test_handle_token_compare_uses_constant_time_compare(monkeypatch):
+    """Windows TCP loopback path requires every request to carry an opaque
+    token (secrets.token_hex(32) — 256 bits). The previous comparison was
+    `req.get("token") != expected`, which short-circuits at the first
+    differing byte and leaks the prefix length via timing. Use
+    hmac.compare_digest, which the stdlib documents as constant-time."""
+    monkeypatch.setattr(ipc, "expected_token", lambda: "a" * 64)
+    calls = []
+    real_compare = hmac.compare_digest
+
+    def spy(a, b):
+        calls.append((a, b))
+        return real_compare(a, b)
+
+    monkeypatch.setattr(daemon.hmac, "compare_digest", spy)
+
+    d = _fresh_daemon()
+    resp = asyncio.run(d.handle({"meta": "ping", "token": "b" * 64}))
+
+    assert resp == {"error": "unauthorized"}
+    assert calls and calls[0] == ("b" * 64, "a" * 64), (
+        f"handle() must call hmac.compare_digest(received, expected) before "
+        f"accepting a request. Got call list: {calls}"
+    )
+
+
+def test_handle_rejects_non_string_token_without_crashing(monkeypatch):
+    """req is parsed JSON: req.get('token') can be None, list, dict, int —
+    hmac.compare_digest raises TypeError on non-str/bytes. The handler must
+    type-check and reject cleanly instead of letting that TypeError bubble
+    out of the IPC dispatch loop."""
+    monkeypatch.setattr(ipc, "expected_token", lambda: "a" * 64)
+    d = _fresh_daemon()
+
+    for bad in (None, 0, 1, True, False, ["a"], {"a": 1}, b"a" * 64):
+        resp = asyncio.run(d.handle({"meta": "ping", "token": bad}))
+        assert resp == {"error": "unauthorized"}, (
+            f"handle() must reject non-str token {bad!r} as unauthorized."
+        )
+
+
+def test_handle_accepts_correct_token(monkeypatch):
+    """Sanity check the constant-time path lets the right token through —
+    otherwise the compare_digest swap would silently lock everyone out."""
+    expected = "a" * 64
+    monkeypatch.setattr(ipc, "expected_token", lambda: expected)
+    d = _fresh_daemon()
+
+    resp = asyncio.run(d.handle({"meta": "ping", "token": expected}))
+    assert resp.get("pong") is True
+
+
+def test_handle_skips_token_check_on_posix_when_expected_is_none(monkeypatch):
+    """expected_token() is None on POSIX (AF_UNIX + chmod 600 is the
+    boundary). The handler must short-circuit *before* touching token
+    fields, so a missing or hostile token shape never trips the type guard
+    and a legitimate POSIX request reaches its meta branch."""
+    monkeypatch.setattr(ipc, "expected_token", lambda: None)
+    d = _fresh_daemon()
+
+    # No token at all.
+    resp = asyncio.run(d.handle({"meta": "ping"}))
+    assert resp.get("pong") is True
+
+    # Token of a wrong type — must still pass (no Windows guard active).
+    resp = asyncio.run(d.handle({"meta": "ping", "token": [1, 2, 3]}))
+    assert resp.get("pong") is True
 
 
 def test_set_session_first_attach_runs_four_enables_in_parallel():
