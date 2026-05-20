@@ -1,11 +1,57 @@
+import os
+import subprocess
 import sys
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from browser_harness import run
 
+
+def test_maintenance_commands_do_not_load_agent_helpers(tmp_path):
+    (tmp_path / "agent_helpers.py").write_text(
+        "raise RuntimeError('agent_helpers should not load for maintenance commands')\n"
+    )
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["BH_AGENT_WORKSPACE"] = str(tmp_path)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root / "src"), env.get("PYTHONPATH", "")]
+    )
+
+    for arg in ("--version", "--help"):
+        result = subprocess.run(
+            [sys.executable, "-m", "browser_harness.run", arg],
+            cwd=repo_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "agent_helpers should not load" not in result.stderr
+
+
+def test_execution_globals_load_agent_workspace_helpers(tmp_path, monkeypatch):
+    import browser_harness
+
+    (tmp_path / "agent_helpers.py").write_text("CUSTOM_AGENT_HELPER = 'loaded'\n")
+    monkeypatch.setenv("BH_AGENT_WORKSPACE", str(tmp_path))
+    original_helpers = sys.modules.pop("browser_harness.helpers", None)
+    original_package_helper = getattr(browser_harness, "helpers", None)
+    if hasattr(browser_harness, "helpers"):
+        delattr(browser_harness, "helpers")
+    try:
+        namespace = run._execution_globals()
+        assert namespace["CUSTOM_AGENT_HELPER"] == "loaded"
+    finally:
+        sys.modules.pop("browser_harness.helpers", None)
+        if original_helpers is not None:
+            sys.modules["browser_harness.helpers"] = original_helpers
+        if original_package_helper is not None:
+            browser_harness.helpers = original_package_helper
 
 def test_stdin_executes_code():
     stdout = StringIO()
@@ -237,4 +283,3 @@ def test_cli_doctor_rejects_unknown_flags():
             run.main()
     assert ei.value.code == 2
     assert "usage" in err.getvalue().lower()
-
