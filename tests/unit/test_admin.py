@@ -20,6 +20,22 @@ class FakeSocket:
         self.closed = True
 
 
+def test_chrome_running_detects_brave_on_windows(monkeypatch):
+    import platform, subprocess
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **kw: "Image Name\nbrave.exe                  1234 Console\n")
+
+    assert admin._chrome_running()
+
+
+def test_chrome_running_detects_brave_on_posix(monkeypatch):
+    import platform, subprocess
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **kw: "init\nbrave-browser\nbash\n")
+
+    assert admin._chrome_running()
+
+
 def test_local_chrome_mode_is_false_when_env_provides_remote_cdp():
     assert not admin._is_local_chrome_mode({"BU_CDP_WS": "ws://example.test/devtools/browser/1"})
 
