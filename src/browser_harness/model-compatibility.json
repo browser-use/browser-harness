@@ -1,0 +1,58 @@
+[
+  {
+    "model": "qwen3.6 35b-a3b",
+    "provider": "ollama",
+    "status": "verified",
+    "parameter_size_b": 35,
+    "notes": "Works well for simple click/type tasks. Struggles with complex multi-step flows.",
+    "last_tested": "2026-05-01"
+  },
+  {
+    "model": "qwen3:8b",
+    "provider": "ollama",
+    "status": "works",
+    "parameter_size_b": 8,
+    "notes": "Usable for very short scripts; frequent tool-call mistakes on longer flows.",
+    "last_tested": "2026-05-01"
+  },
+  {
+    "model": "qwen2.5:32b",
+    "provider": "ollama",
+    "status": "verified",
+    "parameter_size_b": 32,
+    "notes": "Works well for simple click/type tasks. Struggles with complex multi-step flows.",
+    "last_tested": "2026-05-01"
+  },
+  {
+    "model": "mistral-small",
+    "provider": "anyscale",
+    "status": "verified",
+    "parameter_size_b": 22,
+    "notes": "Good balance of speed and capability for headless deployments.",
+    "last_tested": "2026-05-01"
+  },
+  {
+    "model": "llama3.1:70b",
+    "provider": "ollama",
+    "status": "verified",
+    "parameter_size_b": 70,
+    "notes": "Strong reliability on multi-step automation when VRAM permits.",
+    "last_tested": "2026-05-01"
+  },
+  {
+    "model": "phi4",
+    "provider": "ollama",
+    "status": "unknown",
+    "parameter_size_b": 14,
+    "notes": "Community reports only; not yet re-verified on current harness.",
+    "last_tested": "2026-04-15"
+  },
+  {
+    "model": "tinyllama",
+    "provider": "ollama",
+    "status": "broken",
+    "parameter_size_b": 1,
+    "notes": "Too small for reliable tool use; not recommended for harness workflows.",
+    "last_tested": "2026-05-01"
+  }
+]
