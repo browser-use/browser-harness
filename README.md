@@ -38,6 +38,11 @@ Click Allow when the per-attach popup appears (Chrome 144+):
 
 See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
 
+Read [Self-modifying Browser Harness](docs/self-modifying-harness.md) for the
+core workflow: when a task hits an edge case, the agent patches the harness and
+retries. The guide walks through file uploads, drag-and-drop, signature/canvas
+drawing, coordinate-only controls, and a local edge-case benchmark page.
+
 ## Free Browser Use Cloud browsers
 
 Stealth, sub-agents, or headless deployment.<br>
