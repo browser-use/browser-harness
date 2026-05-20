@@ -1,10 +1,10 @@
 import os, sys, urllib.request
 
-# Windows default stdout encoding is cp1252, which can't encode the 🐴 marker
+# Windows default terminal encoding is often cp1252, which can't encode the 🐴 marker
 # helpers prepend to tab titles (or anything else outside Latin-1). Force UTF-8
-# so `print(page_info())` doesn't UnicodeEncodeError on Windows. Issue #124(4).
-if hasattr(sys.stdout, "reconfigure"):
-    try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# so `print(page_info())` doesn't UnicodeEncodeError on Windows. Issue #124(4), #359.
+for _stream in (sys.stdout, sys.stderr):
+    try: _stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception: pass
 
 from .admin import (
