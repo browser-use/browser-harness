@@ -117,7 +117,7 @@ def get_ws_url():
             except (OSError, KeyError, ValueError):
                 time.sleep(1)
         raise RuntimeError(
-            f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
+            f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port} (profile: {base}) — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
         )
     for probe_port in (9222, 9223):
         try:
@@ -185,16 +185,33 @@ class Daemon:
         url = get_ws_url()
         log(f"connecting to {url}")
         self.cdp = CDPClient(url)
-        try:
-            await self.cdp.start()
-        except Exception as e:
+        _ATTEMPTS = 3
+        _RETRY_DELAY = 5  # seconds between WS handshake retries
+        last_exc = None
+        for attempt in range(_ATTEMPTS):
+            if attempt > 0:
+                await asyncio.sleep(_RETRY_DELAY)
+                try:
+                    url = get_ws_url()
+                except Exception:
+                    pass  # reuse previous URL if refresh fails
+                log(f"retry {attempt}: connecting to {url}")
+                self.cdp = CDPClient(url)
+            try:
+                await self.cdp.start()
+                break
+            except Exception as e:
+                last_exc = e
+                if attempt < _ATTEMPTS - 1:
+                    log(f"handshake attempt {attempt + 1} failed ({e}); retrying in {_RETRY_DELAY}s")
+        else:
             if os.environ.get("BU_CDP_WS"):
                 raise RuntimeError(
-                    f"CDP WS handshake failed: {e} -- remote browser WebSocket connection failed. "
+                    f"CDP WS handshake failed: {last_exc} -- remote browser WebSocket connection failed. "
                     "This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "
                     "If you use Browser Use cloud, verify BROWSER_USE_API_KEY and get a fresh URL via start_remote_daemon()."
                 )
-            raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
+            raise RuntimeError(f"CDP WS handshake failed ({url}): {last_exc} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
