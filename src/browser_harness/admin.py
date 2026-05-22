@@ -125,8 +125,10 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
 GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
+GH_COMMITS_MAIN = "https://api.github.com/repos/browser-use/browser-harness/commits/main"
 VERSION_CACHE = Path(tempfile.gettempdir()) / "bu-version-cache.json"
 VERSION_CACHE_TTL = 24 * 3600
+SHORT_SHA_LEN = 12
 DOCTOR_TEXT_LIMIT = 140
 
 
@@ -618,9 +620,12 @@ def _version():
 
 
 def _repo_dir():
-    """Return the repo root if this install is an editable git clone, else None."""
+    """Return the repo root if this install is an editable git clone, else None.
+
+    Accepts both regular clones (`.git/` directory) and linked worktrees
+    (`.git` gitlink file) so editable installs in either still detect as git."""
     for p in Path(__file__).resolve().parents:
-        if (p / ".git").is_dir():
+        if (p / ".git").exists():
             return p
     return None
 
@@ -662,6 +667,38 @@ def _latest_release_tag(force=False):
     return tag or None
 
 
+def _local_head_sha():
+    """Short SHA of HEAD for an editable clone. None if not a git install or git is unavailable."""
+    repo = _repo_dir()
+    if not repo:
+        return None
+    try:
+        import subprocess
+        out = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, timeout=2)
+    except Exception:
+        return None
+    return out.strip()[:SHORT_SHA_LEN] or None
+
+
+def _latest_main_sha(force=False):
+    """Return short SHA of origin/main from GitHub, or None. Cached for 24h.
+
+    Used in place of `_latest_release_tag` for editable git installs, so the
+    update banner works before the project has cut any GitHub Releases."""
+    cache = _cache_read()
+    now = time.time()
+    if not force and cache.get("main_sha") and now - cache.get("main_sha_fetched_at", 0) < VERSION_CACHE_TTL:
+        return cache["main_sha"]
+    try:
+        req = urllib.request.Request(GH_COMMITS_MAIN, headers={"Accept": "application/vnd.github+json"})
+        sha = json.loads(urllib.request.urlopen(req, timeout=5).read()).get("sha") or ""
+    except Exception:
+        return cache.get("main_sha")  # fall back to last known
+    sha = sha[:SHORT_SHA_LEN]
+    _cache_write({**cache, "main_sha": sha, "main_sha_fetched_at": now})
+    return sha or None
+
+
 def _version_tuple(v):
     """Best-effort semver parse. Non-numeric components sort as 0, so pre-releases may not rank perfectly."""
     parts = []
@@ -677,7 +714,16 @@ def _version_tuple(v):
 
 
 def check_for_update():
-    """(current, latest, newer_available). latest may be None if the API was unreachable and no cache exists."""
+    """(current, latest, newer_available). latest may be None if the API was unreachable and no cache exists.
+
+    For editable git installs, compares local HEAD SHA against origin/main —
+    this works even when the project hasn't tagged releases yet. Falls back to
+    the release-tag check for pypi installs (or when the git probe fails)."""
+    if _install_mode() == "git":
+        local = _local_head_sha()
+        remote = _latest_main_sha()
+        if local and remote:
+            return local, remote, local != remote
     cur = _version()
     latest = _latest_release_tag()
     newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
@@ -746,10 +792,6 @@ def run_doctor():
     connections = browser_connections()
     profile_use = shutil.which("profile-use") is not None
     api_key = bool(os.environ.get("BROWSER_USE_API_KEY"))
-    latest = _latest_release_tag()
-    # Only claim an update when we know the installed version — `cur or "(unknown)"`
-    # for display would otherwise be parsed as (0,) and flag every latest as newer.
-    newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
     cur_display = cur or "(unknown)"
     doc_url = _snap_linux_headless_doc_url()
 
@@ -761,10 +803,25 @@ def run_doctor():
     print(f"  platform          {platform.system()} {platform.release()}")
     print(f"  python            {sys.version.split()[0]}")
     print(f"  version           {cur_display} ({mode})")
-    if latest:
-        print(f"  latest release    {latest}" + (" (update available)" if newer else ""))
+    if mode == "git":
+        local_sha = _local_head_sha()
+        remote_sha = _latest_main_sha()
+        if remote_sha and local_sha:
+            suffix = " (update available)" if local_sha != remote_sha else " (up to date)"
+            print(f"  origin/main       {remote_sha}{suffix}")
+        elif remote_sha:
+            print(f"  origin/main       {remote_sha}")
+        else:
+            print("  origin/main       (could not reach github)")
     else:
-        print("  latest release    (could not reach github)")
+        latest = _latest_release_tag()
+        # Only claim an update when we know the installed version — `cur or "(unknown)"`
+        # for display would otherwise be parsed as (0,) and flag every latest as newer.
+        newer = bool(cur and latest and _version_tuple(latest) > _version_tuple(cur))
+        if latest:
+            print(f"  latest release    {latest}" + (" (update available)" if newer else ""))
+        else:
+            print("  latest release    (could not reach github)")
     if platform.system() == "Linux":
         bname, bpath = _doctor_probe_chrome_binary_for_snap()
         if bname and bpath and _is_snap_browser(bpath):
