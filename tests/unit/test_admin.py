@@ -196,6 +196,8 @@ def test_run_doctor_prints_snap_detect_on_linux_when_probe_is_snap(monkeypatch, 
     monkeypatch.setattr(admin, "daemon_alive", lambda: False)
     monkeypatch.setattr(admin, "browser_connections", lambda: [])
     monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "abcdef012345")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: "abcdef012345")
     monkeypatch.setattr(admin, "_doctor_probe_chrome_binary_for_snap", lambda: ("chromium", "/snap/chromium/1/usr/bin/chromium"))
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
@@ -217,6 +219,8 @@ def test_run_doctor_skips_snap_detect_on_non_linux(monkeypatch, capsys):
     monkeypatch.setattr(admin, "daemon_alive", lambda: True)
     monkeypatch.setattr(admin, "browser_connections", lambda: [])
     monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "abcdef012345")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: "abcdef012345")
     monkeypatch.setattr(admin, "_doctor_probe_chrome_binary_for_snap", lambda: ("chromium", "/snap/chromium/1/usr/bin/chromium"))
     monkeypatch.setattr("platform.system", lambda: "Darwin")
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
@@ -253,6 +257,8 @@ def test_run_doctor_prints_active_browser_connections_and_active_pages(monkeypat
         },
     ])
     monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "abcdef012345")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: "abcdef012345")
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
     monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
 
@@ -277,6 +283,8 @@ def test_doctor_page_output_truncates_long_text(monkeypatch, capsys):
         }
     ])
     monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "abcdef012345")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: "abcdef012345")
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
     monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
 
@@ -285,6 +293,135 @@ def test_doctor_page_output_truncates_long_text(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "A very long page ..." in out
     assert "https://example.t..." in out
+
+
+def _stub_doctor(monkeypatch):
+    """Set up the rest of run_doctor's side effects so SHA-comparison tests only exercise that code path."""
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_chrome_running", lambda: True)
+    monkeypatch.setattr(admin, "daemon_alive", lambda: True)
+    monkeypatch.setattr(admin, "browser_connections", lambda: [])
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+
+
+def test_repo_dir_detects_regular_clone(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    pkg = tmp_path / "src" / "browser_harness"
+    pkg.mkdir(parents=True)
+    fake_file = pkg / "admin.py"
+    fake_file.write_text("")
+    monkeypatch.setattr(admin, "__file__", str(fake_file))
+
+    assert admin._repo_dir() == tmp_path
+
+
+def test_repo_dir_detects_linked_worktree(tmp_path, monkeypatch):
+    # Linked worktrees store `.git` as a gitlink *file*, not a directory.
+    (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/foo\n")
+    pkg = tmp_path / "src" / "browser_harness"
+    pkg.mkdir(parents=True)
+    fake_file = pkg / "admin.py"
+    fake_file.write_text("")
+    monkeypatch.setattr(admin, "__file__", str(fake_file))
+
+    assert admin._repo_dir() == tmp_path
+
+
+def test_check_for_update_git_uses_sha_comparison(monkeypatch):
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "aaaaaaaaaaaa")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: "bbbbbbbbbbbb")
+    # _latest_release_tag must not be consulted in git mode when SHA is available
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: pytest.fail("should not fetch release tag in git mode"))
+
+    cur, latest, newer = admin.check_for_update()
+
+    assert cur == "aaaaaaaaaaaa"
+    assert latest == "bbbbbbbbbbbb"
+    assert newer is True
+
+
+def test_check_for_update_git_reports_up_to_date_when_shas_match(monkeypatch):
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "abcdef012345")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: "abcdef012345")
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: pytest.fail("should not fetch release tag in git mode"))
+
+    cur, latest, newer = admin.check_for_update()
+
+    assert (cur, latest, newer) == ("abcdef012345", "abcdef012345", False)
+
+
+def test_check_for_update_git_falls_back_to_release_tag_when_sha_unavailable(monkeypatch):
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: None)
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: None)
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.2.0")
+
+    cur, latest, newer = admin.check_for_update()
+
+    assert (cur, latest, newer) == ("0.1.0", "0.2.0", True)
+
+
+def test_check_for_update_pypi_still_uses_release_tag(monkeypatch):
+    monkeypatch.setattr(admin, "_install_mode", lambda: "pypi")
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: pytest.fail("should not probe git in pypi mode"))
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: pytest.fail("should not probe origin/main in pypi mode"))
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.2.0")
+
+    cur, latest, newer = admin.check_for_update()
+
+    assert (cur, latest, newer) == ("0.1.0", "0.2.0", True)
+
+
+def test_run_doctor_prints_origin_main_with_update_available(monkeypatch, capsys):
+    _stub_doctor(monkeypatch)
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "aaaaaaaaaaaa")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: "bbbbbbbbbbbb")
+
+    admin.run_doctor()
+
+    out = capsys.readouterr().out
+    assert "origin/main       bbbbbbbbbbbb (update available)" in out
+    assert "latest release" not in out
+
+
+def test_run_doctor_prints_origin_main_up_to_date_when_shas_match(monkeypatch, capsys):
+    _stub_doctor(monkeypatch)
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "abcdef012345")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: "abcdef012345")
+
+    admin.run_doctor()
+
+    out = capsys.readouterr().out
+    assert "origin/main       abcdef012345 (up to date)" in out
+
+
+def test_run_doctor_prints_could_not_reach_github_for_git_install(monkeypatch, capsys):
+    _stub_doctor(monkeypatch)
+    monkeypatch.setattr(admin, "_local_head_sha", lambda: "abcdef012345")
+    monkeypatch.setattr(admin, "_latest_main_sha", lambda: None)
+
+    admin.run_doctor()
+
+    out = capsys.readouterr().out
+    assert "origin/main       (could not reach github)" in out
+
+
+def test_run_doctor_pypi_install_still_shows_latest_release(monkeypatch, capsys):
+    _stub_doctor(monkeypatch)
+    monkeypatch.setattr(admin, "_install_mode", lambda: "pypi")
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.2.0")
+
+    admin.run_doctor()
+
+    out = capsys.readouterr().out
+    assert "latest release    0.2.0 (update available)" in out
+    assert "origin/main" not in out
 
 
 def test_start_remote_daemon_stops_created_browser_when_daemon_start_fails(monkeypatch):
