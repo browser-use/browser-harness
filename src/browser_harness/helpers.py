@@ -50,7 +50,12 @@ def _send(req):
 
 
 def cdp(method, session_id=None, **params):
-    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
+    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1).
+
+    session_id is a top-level kwarg, NOT a CDP param. Don't pass it inside params —
+    that will cause 'Message may have string sessionId property' errors from the
+    Chrome DevTools Protocol.
+    """
     return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
 
 
@@ -397,6 +402,27 @@ def wait_for_element(selector, timeout=10.0, visible=False):
         time.sleep(0.3)
     return False
 
+def wait_for_condition(js_expr, timeout=15.0, poll=0.5):
+    """Poll a JS expression until it returns a truthy value, or timeout.
+
+    Useful for waiting on states that don't map to a single CSS selector:
+    spinner gone, streaming response complete, specific text appeared, etc.
+
+    Examples::
+
+        wait_for_condition("!document.querySelector('.arco-spin-loading')")
+        wait_for_condition("document.querySelectorAll('.markdown-body h3').length >= 3")
+        wait_for_condition("document.querySelector('textarea')?.disabled === false")
+
+    Returns the truthy value on success, or False on timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = js(js_expr)
+        if result: return result
+        time.sleep(poll)
+    return False
+
 def wait_for_network_idle(timeout=10.0, idle_ms=500):
     """Wait until all in-flight requests finish and no Network.* events arrive for idle_ms ms.
 
@@ -458,12 +484,22 @@ def dispatch_key(selector, key="Enter", event="keypress"):
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});if(e){{e.focus();e.dispatchEvent(new KeyboardEvent({json.dumps(event)},{{key:{json.dumps(key)},code:{json.dumps(key)},keyCode:{kc},which:{kc},bubbles:true}}));}}}})()"
     )
 
-def upload_file(selector, path):
-    """Set files on a file input via CDP DOM.setFileInputFiles. `path` is an absolute filepath (use tempfile.mkstemp if needed)."""
+def upload_file(selector, path, dispatch_change=True):
+    """Set files on a file input via CDP DOM.setFileInputFiles.
+
+    ``path`` is an absolute filepath or a list of paths.
+
+    ``dispatch_change``: when True (default), dispatches a synthetic ``change``
+    event on the input after setting the files.  React component libraries
+    (Arco Design DragUpload, Ant Design Upload, etc.) typically rely on this
+    event to pick up selected files; without it the upload stays at 0%.
+    """
     doc = cdp("DOM.getDocument", depth=-1)
     nid = cdp("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector=selector)["nodeId"]
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
+    if dispatch_change:
+        js(f"document.querySelector({json.dumps(selector)})?.dispatchEvent(new Event('change',{{bubbles:true}}))")
 
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.
