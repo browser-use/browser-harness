@@ -144,7 +144,7 @@ Search button locators:
 After clicking, wait for results:
 ```python
 page.wait_for_url("**/Flights-Search**", timeout=15000)
-page.wait_for_selector('[data-testid*="flight"]', timeout=30000)
+page.wait_for_selector('div[data-stid*="listing"]', timeout=30000)
 ```
 
 ---
