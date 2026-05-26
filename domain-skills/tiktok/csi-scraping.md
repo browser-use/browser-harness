@@ -21,6 +21,33 @@ if "/login" in page_info()["url"]:
     sys.exit(0)
 ```
 
+## Regional targeting via `tt-target-idc` cookie
+
+CSI is geo-personalized — the feed reflects the **logged-in account's
+region**, not your IP and not anything in the filter UI (there is no
+audience/country selector). Israeli accounts default to `tt-target-idc=alisg`
+(Alibaba Singapore IDC) and surface heavily Israel-flavored results
+("brunch tel aviv", "ethiopian tik toks"). Forcing a different IDC works:
+
+1. Pull cookies via CDP — `cdp("Network.getCookies", urls=["https://www.tiktok.com/"])`.
+2. Replace `tt-target-idc` and `store-idc` with the target IDC (e.g.
+   `useast1a` for US-East, `useast2a` for US-East-2).
+3. **Drop `tt-target-idc-sign`** — it's an HMAC bound to the original IDC
+   value; TikTok will fall back to deriving routing from the unsigned
+   `tt-target-idc` cookie alone.
+4. POST the API endpoint via Python `requests` with the rewritten cookie
+   header. No proxy needed — TikTok routes to the requested IDC and
+   returns region-appropriate data.
+
+Some personalization still bleeds through deeper offsets (~10–20% of
+items can carry account-region keywords like a city name). The `tt-target-idc`
+swap gets you most of the way; post-filter obvious geo markers in your
+own code rather than trying to fight it further in the API call.
+
+`language_filters: ["en"]` in the body is the sweet spot — `["en-US"]`
+sometimes returns 0 items (over-restrictive), and an empty/missing
+`language_filters` field surfaces 40%+ non-English-region noise.
+
 ## Page structure
 
 Two top-level tabs: **Suggested** (default) and **Trending**. The
