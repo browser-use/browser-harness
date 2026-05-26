@@ -74,6 +74,7 @@ Only if you start struggling with a specific mechanic while navigating, look in 
 - `downloads.md`
 - `drag-and-drop.md`
 - `dropdowns.md`
+- `headless-automation.md`
 - `iframes.md`
 - `network-requests.md`
 - `print-as-pdf.md`
@@ -161,6 +162,8 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 ## Gotchas (field-tested)
 
 - **Chrome 144+ `chrome://inspect/#remote-debugging` does NOT serve `/json/version`.** Read `DevToolsActivePort` instead.
+- **Chrome 148+ silently ignores `--remote-debugging-port` on the default user-data-dir.** Stderr logs `DevTools remote debugging requires a non-default data directory`. For unattended automation, use a dedicated `--user-data-dir` and headless mode — see `interaction-skills/headless-automation.md`.
+- **`--headless=new` does not write `DevToolsActivePort`.** The harness's discovery loop won't find it. Synthesise the file after Chrome is up, or set `BU_CDP_WS` directly.
 - **Try attaching before asking for setup.** If `uv run browser-harness` already works, skip the remote-debugging instructions entirely. Decide what to escalate from the harness's error message, not from whether Chrome is visibly running.
 - **The remote-debugging checkbox is per-profile sticky in Chrome.** Once ticked on a profile, every future Chrome launch auto-enables CDP — only navigate to `chrome://inspect/#remote-debugging` when `DevToolsActivePort` is genuinely missing on a fresh profile.
 - **The first connect may block on Chrome's Allow dialog.** If setup hangs, explicitly tell the user to click `Allow` in Chrome if it appears, then keep polling for up to 30 seconds instead of treating follow-on errors as a new failure.
