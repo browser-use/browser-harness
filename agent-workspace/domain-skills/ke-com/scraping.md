@@ -122,36 +122,48 @@ def ke_search_zufang(city="bj"):
         city: City subdomain, e.g. 'bj', 'sh', 'gz'
 
     Returns up to 30 rental listings from the first page.
-    Note: ke.com issues a 302 on first hit; http_get follows the redirect
-    automatically and the final response contains full listing HTML.
+    Each listing's fields are extracted from its own HTML chunk keyed by
+    data-house_code, so price and description always correspond to the
+    correct listing with no index misalignment.
     """
     html = http_get(f"https://{city}.ke.com/zufang/")
 
+    # Split on each listing boundary so that price/desc are extracted from
+    # the same chunk as href/title — avoids silent misalignment from
+    # independent global regex scans.
+    chunks = re.split(r'(?=data-house_code=")', html)
     listings = []
-    # Rental pages use a different HTML structure from resale pages
-    blocks = re.findall(
-        r'href="(/zufang/[A-Z]{2}[\w]+\.html)"[^>]*title="([^"]+)"',
-        html
-    )
-    prices = re.findall(r'(\d+)</em>', html)
-    descs  = re.findall(
-        r'class="content__list--item--des"[^>]*>(.*?)</p>',
-        html, re.DOTALL
-    )
+    for chunk in chunks:
+        if not chunk.startswith('data-house_code="'):
+            continue
+        href  = re.search(r'href="(/zufang/[A-Z]{2}[\w]+\.html)"', chunk)
+        title = re.search(r'title="([^"]+)"', chunk)
+        # Price lives in: <span class="content__list--item-price"><em>6300</em> 元/月</span>
+        price = re.search(r'class="content__list--item-price"><em>(\d+)</em>', chunk)
+        desc  = re.search(
+            r'class="content__list--item--des"[^>]*>(.*?)</p>',
+            chunk, re.DOTALL
+        )
+        if not href or not title:
+            continue
 
-    for i, (path_url, title) in enumerate(blocks):
-        desc_raw = descs[i] if i < len(descs) else ""
-        desc_clean = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '|', desc_raw)).strip()
-        parts = [p for p in (x.strip() for x in desc_clean.split('|')) if p and p != '/']
+        desc_clean = district = area_name = community = None
+        if desc:
+            desc_clean = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '|', desc.group(1))).strip()
+            parts = [p for p in (x.strip() for x in desc_clean.split('|'))
+                     if p and p not in ('/', '-')]
+            district  = parts[0] if parts else None           # e.g. "海淀区"
+            area_name = parts[1] if len(parts) > 1 else None  # e.g. "马甸"
+            community = parts[2] if len(parts) > 2 else None  # e.g. "月季园"
 
         listings.append({
-            "title":       title,
-            "url":         f"https://{city}.ke.com{path_url}",
-            "price":       f"{prices[i]}元/月" if i < len(prices) else None,
-            "district":    parts[0] if len(parts) > 0 else None,   # e.g. "海淀区"
-            "area_name":   parts[1] if len(parts) > 1 else None,   # e.g. "马甸"
-            "community":   parts[2] if len(parts) > 2 else None,   # e.g. "月季园"
-            "desc":        desc_clean,
+            "title":     title.group(1).strip(),
+            "url":       f"https://{city}.ke.com{href.group(1)}",
+            "price":     f"{price.group(1)}元/月" if price else None,
+            "district":  district,
+            "area_name": area_name,
+            "community": community,
+            "desc":      desc_clean,
         })
     return listings
 
