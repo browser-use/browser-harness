@@ -1,0 +1,38 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":disableDependencyDashboard",
+  ],
+  "baseBranchPatterns": ["main"],
+  "schedule": ["on the 2nd day of the month"],
+  "timezone": "America/Sao_Paulo",
+  "prConcurrentLimit": 10,
+  "prHourlyLimit": 0,
+  "labels": ["dependencies"],
+  "separateMajorMinor": false,
+  "minimumReleaseAge": "14 days",
+  "internalChecksFilter": "strict",
+  "commitMessagePrefix": "[RENOVATE]",
+  "packageRules": [
+    {
+      "matchManagers": ["pep621"],
+      "groupName": "python-deps",
+      "commitMessagePrefix": "[RENOVATE] [PY]",
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "matchManagers": ["pep621"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "python-major",
+      "commitMessagePrefix": "[RENOVATE] [PY] [MAJOR]",
+      "automerge": false
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "commitMessagePrefix": "[RENOVATE] [CI]",
+      "pinDigests": true
+    }
+  ]
+}
