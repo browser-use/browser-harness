@@ -22,6 +22,7 @@ import types
 
 EVENTS = []          # captured CDP calls: list of (method, kwargs)
 SLEEPS = []          # captured sleep durations
+BATCHES = []         # captured dispatch_input_sequence event lists
 
 
 def _fake_cdp(method, **kw):
@@ -29,6 +30,15 @@ def _fake_cdp(method, **kw):
     if method == "Page.getLayoutMetrics":
         return {"layoutViewport": {"clientWidth": 1200, "clientHeight": 800}}
     return {}
+
+
+def _fake_dispatch_seq(events, session_id=None):
+    # Record the batch AND expand it into EVENTS, mirroring what the daemon does
+    # server-side, so the existing per-event assertions keep working.
+    BATCHES.append(events)
+    for ev in events:
+        EVENTS.append((ev["method"], ev.get("params") or {}))
+    return {"ok": True, "count": len(events)}
 
 
 _FAKE_KEYS = {
@@ -43,6 +53,7 @@ def _install_fake_helpers():
     pkg = types.ModuleType("browser_harness")
     helpers = types.ModuleType("browser_harness.helpers")
     helpers.cdp = _fake_cdp
+    helpers.dispatch_input_sequence = _fake_dispatch_seq
     helpers._KEYS = _FAKE_KEYS
     helpers.new_tab = lambda url: EVENTS.append(("new_tab", {"url": url}))
     helpers.goto_url = lambda url: EVENTS.append(("goto_url", {"url": url}))
@@ -74,6 +85,7 @@ _time.sleep = lambda d=0: SLEEPS.append(d)
 def _reset():
     EVENTS.clear()
     SLEEPS.clear()
+    BATCHES.clear()
     ah.human_session("paced", fresh=True)
 
 
@@ -293,6 +305,91 @@ def test_no_public_config_leak():
     assert leaked == [], leaked
     assert set(human) >= {"human_session", "human_wait", "human_move",
                           "human_click", "human_type", "human_scroll", "human_navigate"}
+
+
+def test_move_dispatched_as_single_batch():
+    _reset()
+    ah.human_move(900, 600)
+    assert len(BATCHES) == 1, "human_move should dispatch ONE server-side batch"
+    evs = BATCHES[0]
+    assert len(evs) >= 8
+    for e in evs:
+        assert e["method"] == "Input.dispatchMouseEvent"
+        assert e["params"]["type"] == "mouseMoved"
+        assert isinstance(e["params"]["x"], int) and isinstance(e["params"]["y"], int)
+        assert isinstance(e["delay_ms"], (int, float)) and e["delay_ms"] >= 0
+    assert evs[0]["delay_ms"] == 0.0                       # first event fires immediately
+    assert evs[-1]["params"]["x"] == 900 and evs[-1]["params"]["y"] == 600  # exact endpoint
+
+
+def test_move_event_rate_near_60hz():
+    _reset()
+    ah.human_move(1000, 700)
+    nz = [e["delay_ms"] for e in BATCHES[0] if e["delay_ms"] > 0]
+    avg = sum(nz) / len(nz)
+    # paced move_step_ms=16 -> ~62Hz. Assert mean inter-event delay is 10-25ms:
+    # NOT the old ~35ms (28Hz), and not absurdly fast (which would look uncoalesced).
+    assert 10 <= avg <= 25, avg
+
+
+def test_click_single_batch_press_release_invariant():
+    _reset()
+    ah.human_move(100, 100)
+    BATCHES.clear(); EVENTS.clear()
+    ah.human_click(700, 400)
+    assert len(BATCHES) == 1, "the whole click is one batch"
+    evs = BATCHES[0]
+    types_ = [e["params"]["type"] for e in evs]
+    assert types_.count("mousePressed") == 1 and types_.count("mouseReleased") == 1
+    assert types_[-1] == "mouseReleased"
+    pi = types_.index("mousePressed")
+    assert types_[pi - 1] == "mouseMoved"                 # press follows a move
+    assert evs[pi - 1]["params"]["x"] == evs[pi]["params"]["x"]   # at identical coords
+    assert evs[pi - 1]["params"]["y"] == evs[pi]["params"]["y"]
+
+
+def test_emit_falls_back_when_daemon_lacks_op():
+    _reset()
+    helpers = sys.modules["browser_harness.helpers"]
+    orig = helpers.dispatch_input_sequence
+
+    def _raise(events, session_id=None):
+        raise RuntimeError("'method'")  # old daemon: unknown meta -> error
+
+    helpers.dispatch_input_sequence = _raise
+    try:
+        EVENTS.clear(); BATCHES.clear()
+        ah.human_move(800, 500)
+        assert BATCHES == [], "raising batch op must not record a batch"
+        moved = [k for m, k in _mouse_events() if k.get("type") == "mouseMoved"]
+        assert len(moved) >= 8, "fallback must still dispatch via cdp()"
+        assert moved[-1]["x"] == 800 and moved[-1]["y"] == 500
+    finally:
+        helpers.dispatch_input_sequence = orig
+
+
+def test_emit_resumes_from_count_no_double_dispatch():
+    # Daemon ran K events then failed (e.g. stale session). _emit must re-dispatch
+    # ONLY events[K:] client-side, never the already-sent prefix (no double-fire).
+    _reset()
+    helpers = sys.modules["browser_harness.helpers"]
+    orig = helpers.dispatch_input_sequence
+    K = 3
+
+    def _partial(events, session_id=None):
+        BATCHES.append(events)  # the attempted batch (full list)
+        return {"error": "Session with given id not found", "count": K}
+
+    helpers.dispatch_input_sequence = _partial
+    try:
+        EVENTS.clear(); BATCHES.clear()
+        ah.human_move(900, 600)
+        n = len(BATCHES[0])
+        moved = [k for m, k in _mouse_events() if k.get("type") == "mouseMoved"]
+        assert len(moved) == n - K, (len(moved), n)   # remainder only, prefix NOT resent
+        assert moved[-1]["x"] == 900 and moved[-1]["y"] == 600
+    finally:
+        helpers.dispatch_input_sequence = orig
 
 
 def _run_all():

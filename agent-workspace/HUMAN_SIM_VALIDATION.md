@@ -14,7 +14,8 @@ is genuinely the user's own. This layer addresses the residual **behavioral** su
 ## How to run the tests
 
 ```bash
-python3 tests/unit/test_human_behavior.py     # 17/17, hermetic (no browser/daemon)
+python3 tests/unit/test_human_behavior.py        # 22/22 — behavior + dispatch invariants
+python3 tests/unit/test_daemon_input_sequence.py # 3/3  — daemon batch handler + Runtime omit
 ```
 
 The suite injects a fake `browser_harness.helpers` (capturing every CDP call) so the module's
@@ -50,17 +51,35 @@ to land at ~0.795px (inside the human band), with the realized per-step angle fa
 Rationale: micro-jitter RMS is a directly-measured detector signal; the 8.2° figure is an asserted
 aggregate. Both metrics now sit in a plausible region rather than one being wildly off.
 
-## Known ceilings — NOT fixable in this layer (documented honestly in the module docstring)
+## Ceilings — what the 2026-05-29 daemon/core update fixed, and what it cannot
 
-1. **Event rate 20–40Hz** — each CDP call is a per-call IPC round-trip; real pointing devices emit
-   60–1000Hz. A rate-binning detector flags this regardless of trajectory shape. Fixing it requires
-   daemon-side vector batching (core change, out of scope for `agent-workspace/`).
-2. **`getCoalescedEvents().length == 1`** and no PointerEvent pressure/tilt — `Input.dispatchMouseEvent`
-   emits MouseEvents only; pointer-fidelity detectors see synthetic input.
-3. **CDP / remote-debugging presence** is detectable independent of behavior (anti-debugger probes).
+Researched against Chromium source + fingerprinting literature.
 
-Net: this layer lowers per-action risk against heuristic/weak-ML detectors and buys time; it does
-**not** make a session indistinguishable to a top-tier 200–2000-signal ensemble.
+1. **Event RATE — FIXED.** High-frequency mouse/wheel dispatch now runs server-side via the
+   daemon's persistent CDP WS (new `meta:"input_sequence"` handler in `daemon.py` +
+   `helpers.dispatch_input_sequence`), so top-level events reach the page at ~60Hz instead of
+   the ~28–30Hz the per-call IPC client path tops out at. A mid-batch send failure resumes the
+   remainder client-side (resume-from-count; never re-sends the dispatched prefix); a pre-batch
+   daemon falls back to the client path automatically (restart the daemon for the fast path).
+2. **Coalesced events — NOT fixable in software.** CDP `Input.dispatchMouseEvent` injects via
+   `RenderWidgetHostImpl::ForwardMouseEvent`, bypassing the compositor coalescing queue, so
+   `PointerEvent.getCoalescedEvents()` stays empty at *any* injection rate. (This is precisely
+   why we target ~60Hz, not higher — extra uncoalesced events look more anomalous, not less.)
+   Closing it requires a patched Chromium binary.
+3. **screenX/screenY — residual tell.** CDP sets `screenX==clientX` (no window/desktop offset),
+   which a real windowed browser never produces; Cloudflare Turnstile checks this. Not settable
+   via CDP and not safely patchable from page JS. Unfixed.
+4. **pressure / tilt / pointerType — NOT a tell.** pressure 0 (no button) / 0.5 (button), tilt 0,
+   pointerType "mouse" are exactly the W3C defaults a real mouse reports. (Corrects an earlier
+   over-statement that the absence of a pressure/tilt stream was synthetic.)
+5. **CDP-presence — mitigated.** The daemon omits `Runtime.enable` by default
+   (`BH_CDP_ENABLE_RUNTIME=1` restores it), removing the console-serialization detection class;
+   `Runtime.evaluate` works without it and nothing in browser-harness consumes Runtime events.
+   An attached remote-debugging client remains fundamentally detectable by other means.
+
+Net: defeats heuristic/weak-ML detectors and the event-rate signal. The coalesced-events and
+screenX tells mean a top-tier ensemble inspecting CDP input fidelity can still identify the
+session; full parity needs a patched Chromium, out of scope for this pure-Python layer.
 
 ## Backward compatibility
 

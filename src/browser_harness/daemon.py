@@ -179,6 +179,24 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+def _enabled_domains():
+    """CDP domains to enable on each session.
+
+    Runtime is OMITTED by default: enabling it activates console-serialization
+    side effects that historically leaked CDP presence (the console.log-getter /
+    error-getter detection). The classic getter variant was patched in V8 ~M127,
+    but the Proxy-trap variant and pre-M127 Chrome remain, and nothing in
+    browser-harness consumes Runtime events — Runtime.evaluate (used by js()/the
+    title marker) works WITHOUT Runtime.enable. Page/DOM/Network are required
+    (notably for wait_for_network_idle). Set BH_CDP_ENABLE_RUNTIME=1 to restore
+    Runtime.enable if a downstream use ever needs Runtime events.
+    """
+    domains = ["Page", "DOM", "Network"]
+    if os.environ.get("BH_CDP_ENABLE_RUNTIME") == "1":
+        domains.append("Runtime")
+    return domains
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -227,7 +245,7 @@ class Daemon:
                 )
             except Exception as e:
                 log(f"enable {d} on {session_id}: {e}")
-        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+        await asyncio.gather(*(enable_one(d) for d in _enabled_domains()))
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -274,6 +292,29 @@ class Daemon:
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
+        if meta == "input_sequence":
+            # Dispatch a precomputed list of input events server-side over the
+            # persistent CDP WS, sleeping delay_ms BEFORE each event. This decouples
+            # the event rate from the per-call client<->daemon IPC round-trip, so a
+            # mouse trajectory reaches Chrome at a realistic ~60Hz instead of the
+            # ~30Hz the one-socket-per-call client path tops out at. Events:
+            #   [{"method": "Input.dispatchMouseEvent", "params": {...}, "delay_ms": 16}, ...]
+            events = req.get("events") or []
+            sid = req.get("session_id") or self.session
+            n = 0
+            for ev in events:
+                dly = ev.get("delay_ms") or 0
+                if dly > 0:
+                    await asyncio.sleep(dly / 1000.0)
+                m = ev.get("method")
+                if not m:
+                    continue
+                try:
+                    await self.cdp.send_raw(m, ev.get("params") or {}, session_id=sid)
+                except Exception as e:
+                    return {"error": str(e), "count": n}
+                n += 1
+            return {"ok": True, "count": n}
         if meta == "session":     return {"session_id": self.session}
         if meta == "current_tab":
             # Resolve the attached page's target info server-side. Helpers can't

@@ -16,17 +16,31 @@ Session state (cursor, click bias, tremor orientation) persists across separate
 `browser-harness -c '...'` invocations via a per-BU_NAME state file, so the cursor
 does not teleport to a fresh random point on every call.
 
-KNOWN CEILINGS — NOT fixable inside this layer; documented honestly:
-  * Event rate is floored ~20-40Hz by the per-call CDP/IPC round-trip and time.sleep
-    granularity. Real pointing devices report at 60-1000Hz. A detector that bins
-    inter-event intervals can flag the low rate regardless of trajectory shape.
-  * Input.dispatchMouseEvent emits MouseEvents only: getCoalescedEvents().length == 1
-    and there is no PointerEvent pressure/tilt stream. Pointer-fidelity detectors see
-    synthetic input even with a perfect trajectory.
-  * A CDP/remote-debugging attachment is itself detectable (anti-debugger probes,
-    Runtime/Page domain side-effects) independent of behavior.
-This layer targets heuristic and weak-ML detectors; against top-tier ensembles it
-lowers per-action risk and buys time, it does not make a session indistinguishable.
+KNOWN CEILINGS — researched (Chromium source + fingerprinting literature, 2026-05):
+  * Event RATE — FIXED. High-frequency mouse trajectories and wheel streams now
+    dispatch server-side via the daemon's persistent CDP WS (helpers
+    .dispatch_input_sequence), so top-level mouse/pointer events reach the page at
+    ~60Hz (a plausible delivered rate; higher would only add uncoalesced events that
+    look more anomalous, see below), not the ~30Hz the per-call IPC client path tops
+    out at. Falls back to client-side dispatch if the daemon predates the batch op
+    (restart the daemon for the fast path); a mid-batch failure resumes the remainder
+    rather than re-sending the dispatched prefix.
+  * COALESCED EVENTS — NOT fixable in software. CDP Input.dispatchMouseEvent injects
+    via RenderWidgetHostImpl::ForwardMouseEvent, bypassing the compositor coalescing
+    queue, so PointerEvent.getCoalescedEvents() stays empty regardless of injection
+    rate. (This is why we target ~60Hz, not higher: extra uncoalesced events would
+    only look more anomalous.) Closing it requires a patched Chromium binary.
+  * screenX/screenY — residual tell. CDP sets screenX==clientX (no window/desktop
+    offset), which a real windowed browser never produces; Cloudflare Turnstile
+    checks this. Not settable via CDP and not safely patchable from page JS.
+  * pressure/tilt/pointerType — NOT a tell: pressure 0 (no button) / 0.5 (button),
+    tilt 0, pointerType "mouse" are exactly the W3C defaults a real mouse reports.
+  * CDP-presence — Runtime.enable is omitted by default at the daemon (kills the
+    console-serialization detection class); but an attached remote-debugging client
+    is fundamentally detectable by other means.
+Net: defeats heuristic/weak-ML detectors and the event-rate signal. The coalesced
+and screenX tells mean a top-tier ensemble inspecting CDP input fidelity can still
+identify the session; full parity needs a patched Chromium (out of scope here).
 """
 
 import json, math, os, random, tempfile, time
@@ -42,7 +56,7 @@ from browser_harness.helpers import cdp, _KEYS as _CORE_KEYS
 
 _PACING = {
     "fast": {
-        "move_step_ms": 25,
+        "move_step_ms": 14,
         "move_time_mult": 0.7,
         "hover_range": (0.02, 0.05),
         "dwell_mean": 45,
@@ -52,7 +66,7 @@ _PACING = {
         "event_jitter_ms": 1.5,
     },
     "paced": {
-        "move_step_ms": 35,
+        "move_step_ms": 16,
         "move_time_mult": 1.0,
         "hover_range": (0.08, 0.20),
         "dwell_mean": 85,
@@ -62,7 +76,7 @@ _PACING = {
         "event_jitter_ms": 3.0,
     },
     "physical": {
-        "move_step_ms": 50,
+        "move_step_ms": 20,
         "move_time_mult": 1.3,
         "hover_range": (0.10, 0.25),
         "dwell_mean": 95,
@@ -374,13 +388,6 @@ def _vk_for_char(ch):
 # Timing / dispatch helpers
 # ---------------------------------------------------------------------------
 
-def _jittered_sleep(base_ms, sigma_ms=None):
-    if sigma_ms is None:
-        sigma_ms = _s().profile["event_jitter_ms"]
-    delay = max(_IPC_FLOOR_MS, base_ms + random.gauss(0, sigma_ms)) / 1000.0
-    time.sleep(delay)
-
-
 def _dispatch_char(ch, hold_s):
     """One keystroke: keyDown [+ char] -> hold -> keyUp, with correct keycodes."""
     vk, code, t = _vk_for_char(ch)
@@ -391,6 +398,95 @@ def _dispatch_char(ch, hold_s):
             **{k: v for k, v in base.items() if k != "text"})
     time.sleep(max(0.01, hold_s))
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
+
+
+# ---------------------------------------------------------------------------
+# Server-side batched dispatch
+# ---------------------------------------------------------------------------
+
+def _emit(events):
+    """Dispatch a precomputed input-event list in ONE IPC call (server-side, ~60Hz).
+
+    Prefers helpers.dispatch_input_sequence so the daemon emits events over its
+    persistent CDP WS, decoupling the event rate from per-call IPC. Falls back to
+    client-side cdp() (respecting the IPC floor) if the daemon predates the batch
+    op. Each event is {"method","params","delay_ms"}; delay is applied BEFORE it.
+    """
+    if not events:
+        return
+    seq = None
+    try:
+        from browser_harness.helpers import dispatch_input_sequence as seq
+    except Exception:
+        seq = None
+    if seq is not None:
+        try:
+            r = seq(events)
+        except Exception:
+            r = None  # transport/connect failure -> dispatch the whole thing client-side
+        if isinstance(r, dict):
+            if r.get("ok"):
+                return  # fully dispatched server-side
+            if "count" in r:
+                # The daemon ran the batch but a send failed mid-sequence (e.g. a
+                # stale session after navigation). It already emitted r["count"]
+                # events — resume ONLY the remainder client-side (cdp() auto-reattaches
+                # on a stale session). Re-sending the dispatched prefix would
+                # double-fire events (a correctness bug AND a detection tell).
+                events = events[int(r["count"]):]
+            # else: error WITHOUT count == op unsupported (pre-batch daemon) ->
+            # nothing was dispatched, so fall through to full client-side dispatch.
+    for ev in events:
+        d = ev.get("delay_ms") or 0
+        if d:
+            time.sleep(max(_IPC_FLOOR_MS, d) / 1000.0)
+        cdp(ev["method"], **(ev.get("params") or {}))
+
+
+def _move_events(s, start, end, width=None):
+    """Build (without dispatching) the mouseMoved event list for a ballistic move.
+
+    Returns (events, end_xy). Per-event delays are ~move_step_ms with jitter; the
+    final event lands exactly on `end` (preserving the click teleport invariant).
+    """
+    p = s.profile
+    sx, sy = start
+    ex, ey = end
+    dist = math.hypot(ex - sx, ey - sy)
+    if dist < 2:
+        return [], (float(ex), float(ey))
+
+    step_ms = p["move_step_ms"]
+    dt = step_ms / 1000.0
+    duration_ms = _fitts_ms(dist, width) * p["move_time_mult"]
+    n = max(8, min(120, int(duration_ms / step_ms)))
+
+    segments = []
+    if dist > 400 and random.random() < 0.15:
+        over = min(dist * abs(random.gauss(0.06, 0.02)), 60.0)
+        ux = sx + (ex - sx) / dist * (dist + over)
+        uy = sy + (ey - sy) / dist * (dist + over)
+        ux, uy = _clamp(ux, uy, s)
+        n1 = max(6, int(n * 0.8))
+        n2 = max(4, n - n1)
+        segments.append(_bezier_trajectory((sx, sy), (ux, uy), n1, dt, s.tremor_angle))
+        segments.append(_bezier_trajectory((ux, uy), (ex, ey), n2, dt, s.tremor_angle))
+    else:
+        segments.append(_bezier_trajectory((sx, sy), (ex, ey), n, dt, s.tremor_angle))
+
+    jit = p["event_jitter_ms"]
+    events = []
+    first = True
+    for seg in segments:
+        for px, py in seg:
+            delay = 0.0 if first else max(4.0, step_ms + random.gauss(0, jit))
+            events.append({
+                "method": "Input.dispatchMouseEvent",
+                "params": {"type": "mouseMoved", "x": int(round(px)), "y": int(round(py))},
+                "delay_ms": round(delay, 2),
+            })
+            first = False
+    return events, (float(ex), float(ey))
 
 
 # ---------------------------------------------------------------------------
@@ -451,40 +547,12 @@ def human_move(x, y, width=None):
     cursor where the pointer actually stopped.
     """
     s = _s()
-    p = s.profile
     cur = _ensure_cursor(s)
-
     x, y = _clamp(x, y, s)
-    dist = math.hypot(x - cur[0], y - cur[1])
-    if dist < 2:
-        s.cursor = [float(x), float(y)]
-        return
-
-    dt = p["move_step_ms"] / 1000.0
-    duration_ms = _fitts_ms(dist, width) * p["move_time_mult"]
-    n = max(8, min(120, int(duration_ms / p["move_step_ms"])))
-
-    segments = []
-    if dist > 400 and random.random() < 0.15:
-        over = min(dist * abs(random.gauss(0.06, 0.02)), 60.0)
-        ux = cur[0] + (x - cur[0]) / dist * (dist + over)
-        uy = cur[1] + (y - cur[1]) / dist * (dist + over)
-        ux, uy = _clamp(ux, uy, s)
-        n1 = max(6, int(n * 0.8))
-        n2 = max(4, n - n1)
-        segments.append(_bezier_trajectory((cur[0], cur[1]), (ux, uy), n1, dt, s.tremor_angle))
-        segments.append(_bezier_trajectory((ux, uy), (x, y), n2, dt, s.tremor_angle))
-    else:
-        segments.append(_bezier_trajectory((cur[0], cur[1]), (x, y), n, dt, s.tremor_angle))
-
-    for seg in segments:
-        for px, py in seg:
-            ix, iy = int(round(px)), int(round(py))
-            cdp("Input.dispatchMouseEvent", type="mouseMoved", x=ix, y=iy)
-            s.cursor = [float(ix), float(iy)]
-            _jittered_sleep(p["move_step_ms"])
-
-    s.cursor = [float(x), float(y)]
+    events, end = _move_events(s, (cur[0], cur[1]), (x, y), width)
+    if events:
+        _emit(events)
+    s.cursor = [end[0], end[1]]
     s._save()
 
 
@@ -499,32 +567,48 @@ def human_click(x, y, button="left", width=None):
     """
     s = _s()
     p = s.profile
+    cur = _ensure_cursor(s)
 
     cx, cy = _target_offset(x, y, s)
     cx, cy = _clamp(cx, cy, s)
 
-    human_move(cx, cy, width=width)
-
-    hover_lo, hover_hi = p["hover_range"]
-    time.sleep(random.uniform(hover_lo, hover_hi))
-
+    events, _ = _move_events(s, (cur[0], cur[1]), (cx, cy), width)
     ix, iy = int(round(cx)), int(round(cy))
-    cdp("Input.dispatchMouseEvent",
-        type="mousePressed", x=ix, y=iy, button=button, clickCount=1)
 
-    dwell = _lognormal(p["dwell_mean"], p["dwell_mean"] * 0.28) / 1000.0
-    time.sleep(max(0.02, dwell * 0.5))
+    hover_ms = random.uniform(*p["hover_range"]) * 1000.0
+    dwell_ms = _lognormal(p["dwell_mean"], p["dwell_mean"] * 0.28)
 
+    # mousePressed at EXACTLY the final move coordinate (no teleport-on-click).
+    events.append({
+        "method": "Input.dispatchMouseEvent",
+        "params": {"type": "mousePressed", "x": ix, "y": iy, "button": button, "clickCount": 1},
+        "delay_ms": round(hover_ms, 2),
+    })
+
+    # <=1px release micro-drift during the dwell, clamped in-viewport.
     ddx = max(-1, min(1, int(round(random.gauss(0, 0.6)))))
     ddy = max(-1, min(1, int(round(random.gauss(0, 0.6)))))
     rx, ry = _clamp(ix + ddx, iy + ddy, s)
     rx, ry = int(round(rx)), int(round(ry))
     if (rx, ry) != (ix, iy):
-        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=rx, y=ry)
-    time.sleep(max(0.02, dwell * 0.5))
+        events.append({
+            "method": "Input.dispatchMouseEvent",
+            "params": {"type": "mouseMoved", "x": rx, "y": ry},
+            "delay_ms": round(dwell_ms * 0.5, 2),
+        })
+        events.append({
+            "method": "Input.dispatchMouseEvent",
+            "params": {"type": "mouseReleased", "x": rx, "y": ry, "button": button, "clickCount": 1},
+            "delay_ms": round(dwell_ms * 0.5, 2),
+        })
+    else:
+        events.append({
+            "method": "Input.dispatchMouseEvent",
+            "params": {"type": "mouseReleased", "x": ix, "y": iy, "button": button, "clickCount": 1},
+            "delay_ms": round(dwell_ms, 2),
+        })
 
-    cdp("Input.dispatchMouseEvent",
-        type="mouseReleased", x=rx, y=ry, button=button, clickCount=1)
+    _emit(events)
     s.cursor = [float(rx), float(ry)]
     s._save()
 
@@ -622,7 +706,8 @@ def human_scroll(x, y, distance=3000, direction="down", device="trackpad"):
     speed = s.profile["scroll_speed"]
 
     x, y = _clamp(x, y, s)
-    human_move(x, y)
+    cur = _ensure_cursor(s)
+    events, _ = _move_events(s, (cur[0], cur[1]), (x, y), None)  # anchor the pointer first
     ix, iy = int(round(x)), int(round(y))
 
     if device == "wheel":
@@ -630,10 +715,11 @@ def human_scroll(x, y, distance=3000, direction="down", device="trackpad"):
         interval_mean = 101
         reading_prob = 0.12
     else:
-        interval_mean = 40
+        interval_mean = 16  # ~60Hz trackpad momentum (server-side dispatch enables it)
         reading_prob = 0.04
 
     scrolled = 0
+    first_wheel = True
     while scrolled < distance:
         if device == "wheel":
             # Always a whole-notch multiple — never clamped to the remainder, so
@@ -648,16 +734,21 @@ def human_scroll(x, y, distance=3000, direction="down", device="trackpad"):
         if d == 0:
             break
 
-        cdp("Input.dispatchMouseEvent", type="mouseWheel",
-            x=ix, y=iy, deltaX=0, deltaY=d)
-        scrolled += abs(d)
-
-        if random.random() < reading_prob:
-            time.sleep(random.uniform(0.8, 3.0))
+        if first_wheel:
+            dly = 0.0
+        elif random.random() < reading_prob:
+            dly = random.uniform(0.8, 3.0) * 1000.0
         else:
-            interval = _lognormal(interval_mean, interval_mean * 0.3) / speed / 1000.0
-            time.sleep(max(0.025, interval))
+            dly = max(8.0, _lognormal(interval_mean, interval_mean * 0.3) / speed)
+        events.append({
+            "method": "Input.dispatchMouseEvent",
+            "params": {"type": "mouseWheel", "x": ix, "y": iy, "deltaX": 0, "deltaY": d},
+            "delay_ms": round(dly, 2),
+        })
+        scrolled += abs(d)
+        first_wheel = False
 
+    _emit(events)
     s.cursor = [float(ix), float(iy)]
     s._save()
 
