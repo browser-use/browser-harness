@@ -392,6 +392,61 @@ def test_emit_resumes_from_count_no_double_dispatch():
         helpers.dispatch_input_sequence = orig
 
 
+def test_selftest_detects_exposed_tells():
+    import json as _j
+    _reset()
+    canned = {"moves": [{"t": 0, "sx": 100, "cx": 100, "sy": 50, "cy": 50, "trusted": True, "coalesced": 1},
+                        {"t": 16, "sx": 110, "cx": 110, "sy": 55, "cy": 55, "trusted": True, "coalesced": 1}],
+              "clicks": [{"t": 40, "sx": 120, "cx": 120, "sy": 60, "cy": 60, "trusted": True, "coalesced": -1}]}
+
+    def fake_eval(expr, await_promise=False):
+        if "userAgent" in expr:
+            return "Mozilla/5.0 (Macintosh) Chrome/120.0.0.0 Safari/537.36"
+        if "JSON.stringify" in expr:
+            return _j.dumps(canned)
+        return True
+
+    orig = ah._eval
+    ah._eval = fake_eval
+    try:
+        r = ah.human_selftest(verbose=False)
+        assert r["chrome_major"] == 120
+        assert r["t2_screenx_exposed"] is True       # screenX==clientX (delta 0) on Chrome <142
+        assert r["screen_client_max_delta_px"] == 0
+        assert r["t1_coalesced_exposed"] is True      # all coalesced == 1
+        assert r["is_trusted"] is True
+    finally:
+        ah._eval = orig
+
+
+def test_selftest_detects_fixed_chrome():
+    import json as _j
+    _reset()
+    canned = {"moves": [{"t": 0, "sx": 172, "cx": 100, "sy": 130, "cy": 50, "trusted": True, "coalesced": 3},
+                        {"t": 16, "sx": 182, "cx": 110, "sy": 135, "cy": 55, "trusted": True, "coalesced": 2},
+                        {"t": 33, "sx": 192, "cx": 120, "sy": 140, "cy": 60, "trusted": True, "coalesced": 2}],
+              "clicks": [{"t": 50, "sx": 202, "cx": 130, "sy": 145, "cy": 65, "trusted": True, "coalesced": -1}]}
+
+    def fake_eval(expr, await_promise=False):
+        if "userAgent" in expr:
+            return "Mozilla/5.0 Chrome/148.0.0.0 Safari/537.36"
+        if "JSON.stringify" in expr:
+            return _j.dumps(canned)
+        return True
+
+    orig = ah._eval
+    ah._eval = fake_eval
+    try:
+        r = ah.human_selftest(verbose=False)
+        assert r["chrome_major"] == 148
+        assert r["t2_screenx_exposed"] is False       # window offset present
+        assert r["screen_client_max_delta_px"] == 152  # |172-100| + |130-50| (manhattan x+y)
+        assert r["t1_coalesced_exposed"] is False      # coalesced max 3 > 1
+        assert r["delivered_rate_hz"] is not None
+    finally:
+        ah._eval = orig
+
+
 def _run_all():
     fns = [g for n, g in sorted(globals().items()) if n.startswith("test_") and callable(g)]
     passed = 0

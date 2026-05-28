@@ -14,8 +14,15 @@ is genuinely the user's own. This layer addresses the residual **behavioral** su
 ## How to run the tests
 
 ```bash
-python3 tests/unit/test_human_behavior.py        # 22/22 — behavior + dispatch invariants
+python3 tests/unit/test_human_behavior.py        # 24/24 — behavior + dispatch + selftest logic
 python3 tests/unit/test_daemon_input_sequence.py # 3/3  — daemon batch handler + Runtime omit
+```
+
+To measure what YOUR Chrome actually exposes (T1 coalesced / T2 screenX / delivered rate /
+isTrusted), run `human_selftest()` on a normal http(s) page — see `CEILING_DECISIONS.md`:
+
+```bash
+browser-harness -c 'new_tab("https://example.com"); wait_for_load(); import json; print(json.dumps(human_selftest(), indent=2))'
 ```
 
 The suite injects a fake `browser_harness.helpers` (capturing every CDP call) so the module's

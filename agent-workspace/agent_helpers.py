@@ -43,7 +43,7 @@ and screenX tells mean a top-tier ensemble inspecting CDP input fidelity can sti
 identify the session; full parity needs a patched Chromium (out of scope here).
 """
 
-import json, math, os, random, tempfile, time
+import json, math, os, random, re, tempfile, time
 
 from browser_harness.helpers import cdp, _KEYS as _CORE_KEYS
 
@@ -776,3 +776,132 @@ def human_navigate(url):
         except Exception:
             pass
     human_wait(random.uniform(2.0, 5.0))
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics — empirically measure what THIS Chrome + layer actually expose
+# (turns the residual-tell discussion from speculation into measurement)
+# ---------------------------------------------------------------------------
+
+def _eval(expr, await_promise=False):
+    """Runtime.evaluate in the page main world. Works WITHOUT Runtime.enable."""
+    r = cdp("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=await_promise)
+    if r.get("exceptionDetails"):
+        raise RuntimeError("selftest JS failed: %s" % r["exceptionDetails"])
+    return r.get("result", {}).get("value")
+
+
+def chrome_version():
+    """(major:int|None, user_agent:str).
+
+    T2 (screenX==clientX) was a CDP bug fixed upstream in Chrome >= 142
+    (crbug 40280325, ConvertWidgetPointToScreenPoint), so on a current Chrome it
+    needs no mitigation. Read via the UA string (no Runtime.enable required).
+    """
+    ua = _eval("navigator.userAgent") or ""
+    m = re.search(r"Chrome/(\d+)", ua)
+    return (int(m.group(1)) if m else None, ua)
+
+
+_PROBE_JS = r"""
+(() => {
+  const P = (window.__bh_probe = {moves: [], clicks: []});
+  let ov = document.getElementById('__bh_probe_overlay');
+  if (ov) ov.remove();
+  ov = document.createElement('div');
+  ov.id = '__bh_probe_overlay';
+  ov.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;' +
+    'z-index:2147483647;background:transparent;pointer-events:auto;cursor:default;';
+  (document.body || document.documentElement).appendChild(ov);
+  const rec = (arr, e) => {
+    let coalesced = -1;
+    try { coalesced = (typeof e.getCoalescedEvents === 'function') ? e.getCoalescedEvents().length : -1; } catch (_) {}
+    arr.push({t: e.timeStamp, sx: e.screenX, cx: e.clientX, sy: e.screenY, cy: e.clientY,
+              trusted: e.isTrusted, coalesced: coalesced});
+  };
+  ov.addEventListener('pointermove', e => rec(P.moves, e), {passive: true});
+  ov.addEventListener('pointerdown', e => rec(P.clicks, e), {passive: true});
+  ov.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); }, true);
+  return true;
+})()
+"""
+
+_READ_JS = "JSON.stringify(window.__bh_probe || null)"
+_CLEAN_JS = ("(()=>{const o=document.getElementById('__bh_probe_overlay');if(o)o.remove();"
+             "try{delete window.__bh_probe;}catch(e){}return true;})()")
+
+
+def human_selftest(verbose=True):
+    """Measure what the connected Chrome + this layer actually expose to a page:
+    T1 (getCoalescedEvents length), T2 (screenX vs clientX), delivered pointer-event
+    rate, and isTrusted — by instrumenting the live page while driving real human_*
+    input. Converts the residual-tell question into a measurement on YOUR Chrome.
+
+    Run on an ordinary http(s) page (NOT chrome://) with the tab focused. Installs a
+    transparent full-viewport overlay (clicks are swallowed, no navigation), drives a
+    move+click, reads back per-event metrics, then removes the overlay. Returns a dict;
+    prints a verdict when verbose.
+    """
+    s = _s()
+    try:
+        major, ua = chrome_version()
+    except Exception:
+        major, ua = None, ""
+    w, h = _viewport(s)
+
+    _eval(_PROBE_JS)
+    raw = None
+    try:
+        human_move(int(w * 0.30), int(h * 0.40))
+        human_move(int(w * 0.70), int(h * 0.60))
+        human_click(int(w * 0.50), int(h * 0.50))
+        time.sleep(0.15)  # let the renderer flush the input events before reading
+        raw = _eval(_READ_JS)
+    finally:
+        try:
+            _eval(_CLEAN_JS)
+        except Exception:
+            pass
+
+    data = json.loads(raw) if raw else {"moves": [], "clicks": []}
+    moves = data.get("moves", [])
+    clicks = data.get("clicks", [])
+    allev = moves + clicks
+
+    deltas = [abs(e["sx"] - e["cx"]) + abs(e["sy"] - e["cy"]) for e in allev]
+    max_delta = max(deltas) if deltas else 0
+    t2_exposed = bool(allev) and max_delta == 0  # screenX==clientX -> CDP screen-coord bug present
+
+    cl = [e["coalesced"] for e in moves if e.get("coalesced", -1) >= 0]
+    t1_max = max(cl) if cl else 0
+    t1_exposed = bool(cl) and t1_max <= 1  # getCoalescedEvents never >1 -> coalescing bypassed
+
+    rate = None
+    if len(moves) >= 2:
+        span = (moves[-1]["t"] - moves[0]["t"]) / 1000.0
+        rate = round((len(moves) - 1) / span, 1) if span > 0 else None
+
+    trusted = all(e["trusted"] for e in allev) if allev else None
+
+    res = {
+        "chrome_major": major, "user_agent": ua,
+        "moves_captured": len(moves), "clicks_captured": len(clicks),
+        "t2_screenx_exposed": t2_exposed, "screen_client_max_delta_px": max_delta,
+        "t1_coalesced_exposed": t1_exposed, "coalesced_len_max": t1_max,
+        "delivered_rate_hz": rate, "is_trusted": trusted,
+    }
+
+    if verbose:
+        v_major = major if major is not None else "?"
+        print("=== human_selftest ===")
+        print("Chrome major: %s   (T2 fixed upstream in >= 142)" % v_major)
+        print("captured: %d moves, %d clicks; isTrusted=%s" % (len(moves), len(clicks), trusted))
+        if not allev:
+            print("WARNING: no events captured — run on a normal http(s) page with the tab focused.")
+        else:
+            print("T2 screenX: %s" % ("EXPOSED (screenX==clientX bug)" if t2_exposed
+                  else "OK (window offset present, delta=%dpx)" % max_delta))
+            print("T1 coalesced: %s" % ("EXPOSED (getCoalescedEvents<=1; CDP bypasses coalescing)"
+                  if t1_exposed else "has coalescing (max=%d)" % t1_max))
+        print("delivered pointer rate: %s Hz  (~60 => fast server-side path; ~30 => old daemon/fallback)" % rate)
+    return res
