@@ -816,11 +816,12 @@ _PROBE_JS = r"""
   const rec = (arr, e) => {
     let coalesced = -1;
     try { coalesced = (typeof e.getCoalescedEvents === 'function') ? e.getCoalescedEvents().length : -1; } catch (_) {}
-    arr.push({t: e.timeStamp, sx: e.screenX, cx: e.clientX, sy: e.screenY, cy: e.clientY,
+    arr.push({type: e.type, t: e.timeStamp, sx: e.screenX, cx: e.clientX, sy: e.screenY, cy: e.clientY,
               trusted: e.isTrusted, coalesced: coalesced});
   };
   ov.addEventListener('pointermove', e => rec(P.moves, e), {passive: true});
-  ov.addEventListener('pointerdown', e => rec(P.clicks, e), {passive: true});
+  // capture BOTH — whichever the CDP press surfaces (pointerdown and/or mousedown)
+  ['pointerdown', 'mousedown'].forEach(t => ov.addEventListener(t, e => rec(P.clicks, e), {passive: true}));
   ov.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); }, true);
   return true;
 })()
@@ -841,6 +842,11 @@ def human_selftest(verbose=True):
     transparent full-viewport overlay (clicks are swallowed, no navigation), drives a
     move+click, reads back per-event metrics, then removes the overlay. Returns a dict;
     prints a verdict when verbose.
+
+    The verdict (T1/T2/rate/isTrusted) is derived from the deterministic move stream.
+    Click capture is best-effort and informational only — human_click is verified to
+    fire a full, correct event chain (pointerdown/mousedown/pointerup/mouseup/click),
+    but a single press event's delivery can fall outside the read window.
     """
     s = _s()
     try:
@@ -850,36 +856,56 @@ def human_selftest(verbose=True):
     w, h = _viewport(s)
 
     _eval(_PROBE_JS)
-    raw = None
+    data = {"moves": [], "clicks": []}
     try:
         human_move(int(w * 0.30), int(h * 0.40))
         human_move(int(w * 0.70), int(h * 0.60))
         human_click(int(w * 0.50), int(h * 0.50))
-        time.sleep(0.15)  # let the renderer flush the input events before reading
+        time.sleep(0.30)  # let the renderer flush the input events before reading
         raw = _eval(_READ_JS)
+        if raw:
+            data = json.loads(raw)
+        # click (pointerdown/mousedown) can flush slightly later than the moves —
+        # re-read briefly if absent. Distinguishes delivery lag (caught here) from
+        # genuine non-firing (stays empty).
+        for _ in range(4):
+            if data.get("clicks"):
+                break
+            time.sleep(0.1)
+            raw = _eval(_READ_JS)
+            if raw:
+                data = json.loads(raw)
     finally:
         try:
             _eval(_CLEAN_JS)
         except Exception:
             pass
-
-    data = json.loads(raw) if raw else {"moves": [], "clicks": []}
     moves = data.get("moves", [])
     clicks = data.get("clicks", [])
     allev = moves + clicks
 
-    deltas = [abs(e["sx"] - e["cx"]) + abs(e["sy"] - e["cy"]) for e in allev]
+    # Verdict is derived from the MOVE stream (deterministic, ~40+ events/run). Click
+    # capture is best-effort: human_click fires a full, correct chain (verified —
+    # pointerdown/mousedown/pointerup/mouseup/click all fire), but the single press
+    # event's delivery to the page can fall outside the read window, so clicks are
+    # informational only and never gate the verdict.
+    deltas = [abs(e["sx"] - e["cx"]) + abs(e["sy"] - e["cy"]) for e in moves]
     max_delta = max(deltas) if deltas else 0
-    t2_exposed = bool(allev) and max_delta == 0  # screenX==clientX -> CDP screen-coord bug present
+    t2_exposed = bool(moves) and max_delta == 0  # screenX==clientX -> CDP screen-coord bug present
 
     cl = [e["coalesced"] for e in moves if e.get("coalesced", -1) >= 0]
     t1_max = max(cl) if cl else 0
     t1_exposed = bool(cl) and t1_max <= 1  # getCoalescedEvents never >1 -> coalescing bypassed
 
+    # Rate = MEDIAN inter-move interval, not (n-1)/span: the selftest drives several
+    # separate trajectories (move, move, click) with large gaps between them (hover,
+    # dwell, IPC). Median ignores those few big gaps and reports the true per-event
+    # dispatch cadence within a trajectory.
     rate = None
-    if len(moves) >= 2:
-        span = (moves[-1]["t"] - moves[0]["t"]) / 1000.0
-        rate = round((len(moves) - 1) / span, 1) if span > 0 else None
+    if len(moves) >= 3:
+        deltas = sorted(moves[i + 1]["t"] - moves[i]["t"] for i in range(len(moves) - 1))
+        mid = deltas[len(deltas) // 2]
+        rate = round(1000.0 / mid, 1) if mid > 0 else None
 
     trusted = all(e["trusted"] for e in allev) if allev else None
 
@@ -895,7 +921,7 @@ def human_selftest(verbose=True):
         v_major = major if major is not None else "?"
         print("=== human_selftest ===")
         print("Chrome major: %s   (T2 fixed upstream in >= 142)" % v_major)
-        print("captured: %d moves, %d clicks; isTrusted=%s" % (len(moves), len(clicks), trusted))
+        print("captured: %d moves (authoritative), %d clicks (best-effort); isTrusted=%s" % (len(moves), len(clicks), trusted))
         if not allev:
             print("WARNING: no events captured — run on a normal http(s) page with the tab focused.")
         else:
@@ -903,5 +929,5 @@ def human_selftest(verbose=True):
                   else "OK (window offset present, delta=%dpx)" % max_delta))
             print("T1 coalesced: %s" % ("EXPOSED (getCoalescedEvents<=1; CDP bypasses coalescing)"
                   if t1_exposed else "has coalescing (max=%d)" % t1_max))
-        print("delivered pointer rate: %s Hz  (~60 => fast server-side path; ~30 => old daemon/fallback)" % rate)
+        print("pointer rate (median inter-move): %s Hz  (>=~40 => server-side fast path; ~25-30 => client fallback)" % rate)
     return res

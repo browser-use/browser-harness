@@ -58,14 +58,17 @@ browser-harness -c 'new_tab("https://example.com"); wait_for_load(); import json
 **Phase 0 result — measured 2026-05-29 on the live machine (Chrome 148.0.7778.181):**
 - **T2 screenX: NOT exposed** — screen-vs-client delta = 121px. The upstream fix is live; no action.
 - **T1 coalesced: EXPOSED** — getCoalescedEvents max = 1 (CDP bypass confirmed on Chrome 148; matches research).
-- isTrusted = true. Delivered pointer rate = **41Hz** (server-side fast path verified active:
-  `dispatch_input_sequence(...)` returned `{ok:True, count:2}` on a fresh daemon against real Chrome;
-  ~24ms/event = 16ms delay + WS send latency, up from the ~28Hz baseline).
+- isTrusted = true. Delivered pointer rate = **~48-56Hz** (median inter-move; server-side fast path
+  verified active — `dispatch_input_sequence(...)` returned `{ok:True, count:2}` on a fresh daemon
+  against real Chrome — ~18-21ms/event, up from the ~28Hz baseline).
 - **Conclusion CONFIRMED by measurement:** the ONLY exposed tell (T1) is the one with zero production
   deployment → no fork, no OS-injection. Phases 1 and 2 are NOT triggered.
-- Minor: the probe's click-capture returned 0 (diagnostic gap, not a finding — the 36-move stream
-  supplied every metric). Optional polish: also capture `mousedown` / lengthen the settle.
-- Optional future tune: subtract estimated WS send time from each delay to lift 41Hz toward ~60Hz —
+- Selftest polish: the verdict is now derived from the deterministic move stream (40+ events/run);
+  the rate uses the **median** inter-move interval (the prior `(n-1)/span` swung 19-41Hz because it
+  counted the gaps between the move/move/click trajectories). A catch-all probe verified **human_click
+  fires a full, correct chain** (pointerdown/mousedown/pointerup/mouseup/click) — so it really clicks;
+  the selftest's own click capture is best-effort/informational and never gates the verdict.
+- Optional future tune: subtract estimated WS send time from each delay to lift ~50Hz toward ~60Hz —
   low value while T1 (coalesced) betrays CDP regardless of rate.
 
 **Phase 1 — T2 remediation (conditional).** Only if the selftest shows T2 exposed (Chrome <142):
