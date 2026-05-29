@@ -202,7 +202,10 @@ def _viewport(s):
     if s.viewport is None:
         try:
             m = cdp("Page.getLayoutMetrics")
-            vp = m.get("layoutViewport", {})
+            # cssLayoutViewport is CSS px; layoutViewport is DEVICE px (x devicePixelRatio).
+            # CDP Input.dispatchMouseEvent coords are CSS px, so we must use the CSS one or
+            # every coordinate is 2x too large on a Retina (dpr>1) display.
+            vp = m.get("cssLayoutViewport") or m.get("layoutViewport", {})
             s.viewport = (
                 int(vp.get("clientWidth", 1200)),
                 int(vp.get("clientHeight", 800)),

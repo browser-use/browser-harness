@@ -28,7 +28,9 @@ BATCHES = []         # captured dispatch_input_sequence event lists
 def _fake_cdp(method, **kw):
     EVENTS.append((method, kw))
     if method == "Page.getLayoutMetrics":
-        return {"layoutViewport": {"clientWidth": 1200, "clientHeight": 800}}
+        # model a Retina display: layoutViewport is DEVICE px (2x), cssLayoutViewport is CSS px
+        return {"cssLayoutViewport": {"clientWidth": 1200, "clientHeight": 800},
+                "layoutViewport": {"clientWidth": 2400, "clientHeight": 1600}}
     return {}
 
 
@@ -624,6 +626,15 @@ def test_os_calibrate_error_computation():
         assert r["error_px"] == [0.0, 0.0]
     finally:
         ah._eval = orig
+
+
+def test_viewport_uses_css_pixels_on_retina():
+    # Regression: _viewport must read cssLayoutViewport (CSS px), not layoutViewport
+    # (device px x dpr), or fractional coords are 2x too large on Retina and map off-screen.
+    _reset()
+    ah._s().viewport = None
+    w, h = ah._viewport(ah._s())
+    assert (w, h) == (1200, 800), (w, h)  # CSS px, NOT the device-px 2400x1600
 
 
 def _run_all():

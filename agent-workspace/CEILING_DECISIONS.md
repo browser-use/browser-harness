@@ -86,11 +86,18 @@ move = Accessibility not granted) → click with `kCGMouseEventClickState=1`. Th
 the client→screen mapping matches the browser's reported screenX/screenY EXACTLY on the primary display, so
 clicks land where intended. Reviewed across two adversarial passes (APPROVE; the missing clickState,
 off-screen, wrong-app, and silent-no-op risks were caught and fixed).
-**Not yet exercised live:** the real CGEvent path needs `pip install pyobjc-framework-Quartz` into the
-browser-harness env + Accessibility granted to the terminal/python; then `os_selftest()` measures whether
-`getCoalescedEvents() > 1` actually results (the gated proof). Multi-monitor mapping is unvalidated
-(os_calibrate only covered the primary display). COST stands — foreground + physical-cursor move → reserve
-for the rare detection-sensitive click; keep CDP (`human_click`) for navigation/reading/bulk. The private
-SkyLight `SLEventPostToPid` (cursor-stationary, background) is fragile/unbound — not pursued.
+**PROVEN LIVE 2026-05-30:** with `pyobjc-framework-Quartz` installed in the tool env + Accessibility
+granted, `os_selftest()` drove real CGEvent moves and the page reported `getCoalescedEvents()` **max = 2
+(> 1)** with a real screenX offset (delta 164px) — **T1 is genuinely CLOSED via the OS path**, the one
+thing CDP cannot do (CDP moves always report coalesced ≤ 1). The OS click really clicks (catch-all probe
+earlier confirmed the full pointerdown/mousedown/up/click chain).
+Finding from the live run: it exposed a latent **Retina bug** — `_viewport` read `layoutViewport` =
+DEVICE px (2x at devicePixelRatio 2), so fractional targets (e.g. 0.65·w) mapped off-screen and the
+display-bounds guard (correctly) refused. Fixed to use `cssLayoutViewport` = CSS px, the units CDP and
+CGEvent both expect. This also corrected `_clamp`/cursor-init on any dpr>1 display.
+Still unvalidated: multi-monitor mapping (single 1728×1117 display here). COST stands — foreground +
+physical-cursor move → reserve for the rare detection-sensitive click; keep CDP (`human_click`) for
+navigation/reading/bulk. The private SkyLight `SLEventPostToPid` (cursor-stationary, background) is
+fragile/unbound — not pursued.
 
 **Phase 3 — Chromium fork. Rejected** (see table). Recorded only so the decision isn't relitigated.
