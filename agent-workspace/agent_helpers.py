@@ -43,7 +43,7 @@ and screenX tells mean a top-tier ensemble inspecting CDP input fidelity can sti
 identify the session; full parity needs a patched Chromium (out of scope here).
 """
 
-import json, math, os, random, re, tempfile, time
+import json, math, os, random, re, sys, tempfile, time
 
 from browser_harness.helpers import cdp, _KEYS as _CORE_KEYS
 
@@ -930,4 +930,275 @@ def human_selftest(verbose=True):
             print("T1 coalesced: %s" % ("EXPOSED (getCoalescedEvents<=1; CDP bypasses coalescing)"
                   if t1_exposed else "has coalescing (max=%d)" % t1_max))
         print("pointer rate (median inter-move): %s Hz  (>=~40 => server-side fast path; ~25-30 => client fallback)" % rate)
+    return res
+
+
+# ---------------------------------------------------------------------------
+# OS-level input injection (macOS, opt-in) — the ONLY way to close the
+# getCoalescedEvents() tell (T1) that CDP Input.dispatchMouseEvent cannot.
+#
+# Real Quartz CGEvents traverse the full HID -> compositor -> renderer pipeline,
+# so the page sees genuine coalesced pointer events, correct screenX/screenY, and
+# isTrusted. COST: brings Chrome to the foreground and moves the PHYSICAL cursor,
+# so reserve it for the rare detection-sensitive click — keep human_click / CDP for
+# navigation, reading, and bulk. Requires: macOS, `pyobjc-framework-Quartz`, and
+# Accessibility permission for the terminal/python (System Settings > Privacy &
+# Security > Accessibility). NOT loaded/used unless you call these functions.
+# ---------------------------------------------------------------------------
+
+_OS_STEP_MS = 8  # ~125Hz post rate so Chrome's compositor coalesces the moves (the T1 win)
+
+
+def os_input_available():
+    """(ok: bool, reason: str). macOS + importable Quartz. Accessibility can't be
+    cheaply probed here; if events don't land, grant it (the reason hints at this)."""
+    if sys.platform != "darwin":
+        return (False, "OS input injection is macOS-only (this platform: %s)" % sys.platform)
+    try:
+        import Quartz  # noqa: F401
+    except Exception:
+        return (False, "missing dependency: pip install pyobjc-framework-Quartz "
+                       "(into the browser-harness env), and grant Accessibility")
+    return (True, "ok (ensure Accessibility is granted if clicks don't land)")
+
+
+def _os_screen_point(s, cx, cy):
+    """Map viewport (client) CSS px -> global screen points (CGEvent space) using the
+    page's own window geometry. CSS px == screen points for CGEvent, so devicePixelRatio
+    does not enter — no Retina scaling needed."""
+    geo = _eval("JSON.stringify([window.screenX, window.screenY, "
+                "window.outerHeight - window.innerHeight, window.outerWidth - window.innerWidth])")
+    sx0, sy0, top_chrome, side_chrome = json.loads(geo)
+    # modern Chrome has no side borders (side_chrome ~ 0); top_chrome = tabstrip+toolbar.
+    return (sx0 + side_chrome / 2.0 + cx, sy0 + top_chrome + cy)
+
+
+def _os_cursor(Quartz):
+    return Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))  # CGPoint (.x, .y), top-left origin
+
+
+def _os_post_move(Quartz, x, y):
+    e = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventMouseMoved, (x, y), Quartz.kCGMouseButtonLeft)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
+
+
+def _os_post_button(Quartz, x, y, down, button):
+    if button == "right":
+        et = Quartz.kCGEventRightMouseDown if down else Quartz.kCGEventRightMouseUp
+        bt = Quartz.kCGMouseButtonRight
+    else:
+        et = Quartz.kCGEventLeftMouseDown if down else Quartz.kCGEventLeftMouseUp
+        bt = Quartz.kCGMouseButtonLeft
+    e = Quartz.CGEventCreateMouseEvent(None, et, (x, y), bt)
+    # clickState 1 = single click. Without it the event defaults to clickState 0, which
+    # can fail to synthesize a real 'click' and exposes MouseEvent.detail===0 (a tell).
+    Quartz.CGEventSetIntegerValueField(e, Quartz.kCGMouseEventClickState, 1)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
+
+
+def _within_displays(Quartz, x, y):
+    """True if the global point falls on some active display — guards against driving a
+    REAL click off-screen / onto the wrong monitor (the mapped point is not re-clamped)."""
+    try:
+        err, ids, n = Quartz.CGGetActiveDisplayList(16, None, None)
+    except Exception:
+        return True  # can't enumerate displays -> best-effort, don't block
+    for did in list(ids)[:n]:
+        b = Quartz.CGDisplayBounds(did)
+        ox, oy, w, h = b.origin.x, b.origin.y, b.size.width, b.size.height
+        if ox - 1 <= x <= ox + w + 1 and oy - 1 <= y <= oy + h + 1:
+            return True
+    return False
+
+
+def _os_trajectory(s, Quartz, start, end):
+    sx, sy = (start.x, start.y) if hasattr(start, "x") else (start[0], start[1])
+    dist = math.hypot(end[0] - sx, end[1] - sy)
+    if dist < 2:
+        _os_post_move(Quartz, end[0], end[1])
+        return
+    dt = _OS_STEP_MS / 1000.0
+    n = max(8, min(150, int(_fitts_ms(dist) * s.profile["move_time_mult"] / _OS_STEP_MS)))
+    for px, py in _bezier_trajectory((sx, sy), end, n, dt, s.tremor_angle):
+        _os_post_move(Quartz, px, py)
+        time.sleep(max(0.003, _OS_STEP_MS / 1000.0 + random.gauss(0, 0.002)))
+
+
+def _activate_chrome(app_name="Google Chrome"):
+    """Foreground the browser app; return the resulting frontmost process name ('' if
+    undeterminable). Used to refuse posting a real click into the wrong app."""
+    import subprocess
+    safe = app_name.replace("\\", "").replace('"', "")  # app names carry no quotes; avoid AppleScript breakage
+    try:
+        subprocess.run(["osascript", "-e", 'tell application "%s" to activate' % safe],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
+    time.sleep(0.2)
+    try:
+        r = subprocess.run(
+            ["osascript", "-e",
+             "tell application \"System Events\" to get name of first application process whose frontmost is true"],
+            capture_output=True, text=True, timeout=5)
+        return (r.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _os_prepare(x, y, activate, app_name):
+    """Shared pre-flight for the OS-injection path: capability gate, lazy Quartz import,
+    foreground + frontmost verification, client->screen mapping, and display-bounds check.
+    Raises (never posts blind) if anything is wrong. Returns (Quartz, s, x, y, tx, ty)."""
+    ok, reason = os_input_available()
+    if not ok:
+        raise RuntimeError("OS input unavailable: %s" % reason)
+    import Quartz
+    s = _s()
+    x, y = _clamp(x, y, s)
+    if activate:
+        front = _activate_chrome(app_name)
+        if front and app_name.lower() not in front.lower() and front.lower() not in app_name.lower():
+            raise RuntimeError("foreground app is %r, not %r — refusing to inject a real click "
+                               "into the wrong app (set BH_BROWSER_APP or pass app_name)" % (front, app_name))
+    tx, ty = _os_screen_point(s, x, y)
+    if not _within_displays(Quartz, tx, ty):
+        raise RuntimeError("target screen point (%.0f, %.0f) is outside all displays — refusing to "
+                           "click off-screen / on the wrong monitor; run os_calibrate() here" % (tx, ty))
+    return Quartz, s, x, y, tx, ty
+
+
+def _os_goto(s, Quartz, tx, ty):
+    """Move the physical cursor to (tx, ty) and VERIFY it arrived — a no-move means
+    Accessibility is not granted (CGEventPost silently drops), so raise instead of
+    returning a false success."""
+    _os_trajectory(s, Quartz, _os_cursor(Quartz), (tx, ty))
+    pos = _os_cursor(Quartz)
+    px, py = (pos.x, pos.y) if hasattr(pos, "x") else (pos[0], pos[1])
+    if abs(px - tx) > 4 or abs(py - ty) > 4:
+        raise RuntimeError("OS cursor did not reach target (got %.0f,%.0f want %.0f,%.0f) — grant "
+                           "Accessibility to your terminal/python in System Settings > Privacy & "
+                           "Security > Accessibility" % (px, py, tx, ty))
+
+
+def human_move_os(x, y, activate=True, app_name=None):
+    """Move the physical cursor to viewport (x, y) via real Quartz CGEvents. macOS only;
+    see the section header for constraints and prerequisites."""
+    app_name = app_name or os.environ.get("BH_BROWSER_APP", "Google Chrome")
+    Quartz, s, x, y, tx, ty = _os_prepare(x, y, activate, app_name)
+    _os_goto(s, Quartz, tx, ty)
+    s.cursor = [float(x), float(y)]
+    s._save()
+    return {"screen_point": [round(tx, 1), round(ty, 1)]}
+
+
+def human_click_os(x, y, button="left", activate=True, app_name=None):
+    """High-stealth click at viewport (x, y) via REAL macOS OS events (Quartz CGEvent).
+    Real HID events traverse the full pipeline, so the page is INTENDED to see genuine
+    coalesced pointer events, correct screenX/screenY, and isTrusted — the path CDP
+    cannot take. Verify the coalescing actually results on your setup with os_selftest()
+    (it has not been measured here). macOS only.
+
+    COST: brings the browser to the foreground (refuses if the wrong app is frontmost) and
+    moves the physical cursor (refuses if the cursor doesn't reach the target, i.e.
+    Accessibility not granted, or if the point is off all displays). Use sparingly for the
+    rare detection-sensitive click; use human_click (CDP) for navigation/reading/bulk. The
+    target tab MUST be the active/visible tab of the frontmost browser window.
+    """
+    app_name = app_name or os.environ.get("BH_BROWSER_APP", "Google Chrome")
+    Quartz, s, x, y, tx, ty = _os_prepare(x, y, activate, app_name)
+    p = s.profile
+    _os_goto(s, Quartz, tx, ty)
+    time.sleep(random.uniform(*p["hover_range"]))
+    _os_post_button(Quartz, tx, ty, True, button)
+    time.sleep(max(0.03, _lognormal(p["dwell_mean"], p["dwell_mean"] * 0.28) / 1000.0))
+    _os_post_button(Quartz, tx, ty, False, button)
+    s.cursor = [float(x), float(y)]
+    s._save()
+    return {"screen_point": [round(tx, 1), round(ty, 1)]}
+
+
+def os_calibrate():
+    """Validate the client->screen mapping WITHOUT moving the physical cursor (no Quartz
+    needed): drive CDP moves through the same overlay probe human_selftest uses, capture
+    the screenX/screenY Chrome reports for them (ground truth on Chrome >= 142), and
+    compare to _os_screen_point() at the same client point. A small error means
+    human_click_os will land where intended. Run on a normal http(s) page. Returns a dict.
+    """
+    s = _s()
+    _eval(_PROBE_JS)
+    data = {"moves": []}
+    try:
+        w, h = _viewport(s)
+        human_move(int(w * 0.40), int(h * 0.40))
+        human_move(int(w * 0.60), int(h * 0.60))
+        time.sleep(0.20)
+        raw = _eval(_READ_JS)
+        if raw:
+            data = json.loads(raw)
+    finally:
+        try:
+            _eval(_CLEAN_JS)
+        except Exception:
+            pass
+
+    moves = [m for m in data.get("moves", []) if "sx" in m and "cx" in m]
+    if not moves:
+        return {"ok": False, "reason": "no moves captured (run on a normal http(s) page, tab focused)"}
+    m = moves[len(moves) // 2]
+    pred = _os_screen_point(s, m["cx"], m["cy"])
+    err = (abs(pred[0] - m["sx"]), abs(pred[1] - m["sy"]))
+    return {
+        "ok": err[0] <= 3 and err[1] <= 3,
+        "client": [m["cx"], m["cy"]],
+        "predicted_screen": [round(pred[0], 1), round(pred[1], 1)],
+        "browser_screen": [m["sx"], m["sy"]],
+        "error_px": [round(err[0], 1), round(err[1], 1)],
+    }
+
+
+def os_selftest(verbose=True):
+    """Prove (or disprove) that the OS-injection path actually closes T1: drive REAL OS
+    moves (human_move_os) through the same overlay probe human_selftest uses, then read
+    getCoalescedEvents() on the resulting pointermoves. coalesced_len_max > 1 means real
+    coalescing happened — the tell CDP cannot close is closed. Requires pyobjc +
+    Accessibility + foreground; moves the physical cursor. Run on a normal http(s) page.
+    """
+    ok, reason = os_input_available()
+    if not ok:
+        raise RuntimeError("os_selftest unavailable: %s" % reason)
+    s = _s()
+    w, h = _viewport(s)
+    _eval(_PROBE_JS)
+    data = {"moves": []}
+    try:
+        human_move_os(int(w * 0.35), int(h * 0.45))
+        human_move_os(int(w * 0.65), int(h * 0.55))
+        time.sleep(0.30)
+        raw = _eval(_READ_JS)
+        if raw:
+            data = json.loads(raw)
+    finally:
+        try:
+            _eval(_CLEAN_JS)
+        except Exception:
+            pass
+
+    moves = [m for m in data.get("moves", []) if m.get("coalesced", -1) >= 0]
+    cl = [m["coalesced"] for m in moves]
+    deltas = [abs(m["sx"] - m["cx"]) + abs(m["sy"] - m["cy"]) for m in moves if "sx" in m]
+    res = {
+        "moves_captured": len(moves),
+        "coalesced_len_max": max(cl) if cl else 0,
+        "t1_coalesced_closed": bool(cl) and max(cl) > 1,
+        "screen_client_max_delta_px": max(deltas) if deltas else 0,
+    }
+    if verbose:
+        print("=== os_selftest (REAL OS input via CGEvent) ===")
+        print("moves captured: %d" % len(moves))
+        print("getCoalescedEvents max: %d -> T1 %s" % (
+            res["coalesced_len_max"],
+            "CLOSED (real coalescing observed!)" if res["t1_coalesced_closed"]
+            else "NOT closed (no coalescing > 1 seen)"))
+        if not moves:
+            print("WARNING: no moves captured — Accessibility not granted, or run on a normal http(s) page.")
     return res

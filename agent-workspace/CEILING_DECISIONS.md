@@ -74,12 +74,23 @@ browser-harness -c 'new_tab("https://example.com"); wait_for_load(); import json
 **Phase 1 — T2 remediation (conditional).** Only if the selftest shows T2 exposed (Chrome <142):
 update Chrome (the free, undetectable fix). A JS getter override is detectable (toString/worker) — avoid.
 
-**Phase 2 — T1 OS-injection mode (on the shelf; build only if a confirmed target checks coalesced).**
-Scoped `human_click_os(x, y)` using pyobjc Quartz `CGEventPost` so the click is a real OS event
-(real coalescing + screenX + isTrusted). Design: resolve the Chrome window's screen rect
-(`CGWindowListCopyWindowInfo`), map viewport→screen, foreground-activate, post down/up, optionally
-restore. Constraints: TCC Accessibility grant; foreground + physical-cursor move (so reserve it for the
-rare detection-sensitive click; keep CDP for navigation/reading/bulk). The private SkyLight
-`SLEventPostToPid` (cursor-stationary, background) is fragile/unbound — not pursued.
+**Phase 2 — T1 OS-injection mode — IMPLEMENTED 2026-05-30 (opt-in, macOS).**
+`human_click_os(x, y)` / `human_move_os(x, y)` post real Quartz `CGEvent`s (lazy pyobjc import; the core
+stays pure-stdlib) so the page sees genuine coalesced events + correct screenX + isTrusted. Pipeline:
+capability gate → foreground the browser (`BH_BROWSER_APP`; refuses if the wrong app is frontmost) →
+client→screen map → display-bounds check (refuses off-screen / wrong monitor) → Fitts/Bezier trajectory of
+real moves at ~125Hz (to trigger compositor coalescing) → cursor-arrival verify (refuses if it did not
+move = Accessibility not granted) → click with `kCGMouseEventClickState=1`. The three-layer guard
+(frontmost / display-bounds / cursor-arrival) means it never posts a blind real click.
+**Validated:** 30 hermetic tests (mocked Quartz) + `os_calibrate()` run LIVE returned error_px [0.0, 0] —
+the client→screen mapping matches the browser's reported screenX/screenY EXACTLY on the primary display, so
+clicks land where intended. Reviewed across two adversarial passes (APPROVE; the missing clickState,
+off-screen, wrong-app, and silent-no-op risks were caught and fixed).
+**Not yet exercised live:** the real CGEvent path needs `pip install pyobjc-framework-Quartz` into the
+browser-harness env + Accessibility granted to the terminal/python; then `os_selftest()` measures whether
+`getCoalescedEvents() > 1` actually results (the gated proof). Multi-monitor mapping is unvalidated
+(os_calibrate only covered the primary display). COST stands — foreground + physical-cursor move → reserve
+for the rare detection-sensitive click; keep CDP (`human_click`) for navigation/reading/bulk. The private
+SkyLight `SLEventPostToPid` (cursor-stationary, background) is fragile/unbound — not pursued.
 
 **Phase 3 — Chromium fork. Rejected** (see table). Recorded only so the decision isn't relitigated.

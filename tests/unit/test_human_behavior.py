@@ -447,6 +447,185 @@ def test_selftest_detects_fixed_chrome():
         ah._eval = orig
 
 
+class _FakeCGPoint:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
+class _FakeSize:
+    def __init__(self, w, h):
+        self.width = w
+        self.height = h
+
+
+class _FakeRect:
+    def __init__(self, ox, oy, w, h):
+        self.origin = _FakeCGPoint(ox, oy)
+        self.size = _FakeSize(w, h)
+
+
+class _FakeQuartz:
+    kCGEventMouseMoved = 5
+    kCGEventLeftMouseDown = 1
+    kCGEventLeftMouseUp = 2
+    kCGEventRightMouseDown = 3
+    kCGEventRightMouseUp = 4
+    kCGMouseButtonLeft = 0
+    kCGMouseButtonRight = 1
+    kCGHIDEventTap = 0
+    kCGMouseEventClickState = 1
+
+    def __init__(self, display=(0.0, 0.0, 3000.0, 3000.0), move_cursor=True):
+        self.posted = []
+        self.cursor = _FakeCGPoint(50.0, 50.0)
+        self._display = display
+        self._move_cursor = move_cursor
+
+    def CGEventCreate(self, src):
+        return ("create",)
+
+    def CGEventGetLocation(self, e):
+        return self.cursor
+
+    def CGEventCreateMouseEvent(self, src, etype, pos, btn):
+        return {"type": etype, "x": float(pos[0]), "y": float(pos[1]), "btn": btn, "clickState": 0}
+
+    def CGEventSetIntegerValueField(self, e, field, val):
+        if field == self.kCGMouseEventClickState:
+            e["clickState"] = val
+
+    def CGEventPost(self, tap, e):
+        self.posted.append(e)
+        if self._move_cursor and e["type"] == self.kCGEventMouseMoved:
+            self.cursor = _FakeCGPoint(e["x"], e["y"])  # model the real cursor moving
+
+    def CGGetActiveDisplayList(self, maxd, a, b):
+        return (0, [1], 1)
+
+    def CGDisplayBounds(self, did):
+        return _FakeRect(*self._display)
+
+
+def test_os_input_available_without_quartz():
+    sys.modules.pop("Quartz", None)
+    ok, reason = ah.os_input_available()
+    # on darwin without pyobjc -> missing-dependency; on non-darwin -> macOS-only
+    assert ok is False
+    assert ("pyobjc" in reason) or ("macOS-only" in reason), reason
+
+
+def test_os_screen_point_mapping():
+    _reset()
+    orig = ah._eval
+    # window.screenX=10, screenY=80, top_chrome=80, side_chrome=0
+    ah._eval = lambda expr, await_promise=False: "[10, 80, 80, 0]"
+    try:
+        sx, sy = ah._os_screen_point(ah._s(), 600, 400)
+        assert sx == 610.0 and sy == 560.0, (sx, sy)  # 10+0+600, 80+80+400
+    finally:
+        ah._eval = orig
+
+
+def test_human_click_os_posts_real_event_sequence():
+    import sys as _sys
+    if _sys.platform != "darwin":
+        return  # OS path is macOS-only
+    _reset()
+    fake = _FakeQuartz()
+    _sys.modules["Quartz"] = fake
+    orig_eval, orig_act = ah._eval, ah._activate_chrome
+    ah._eval = lambda expr, await_promise=False: "[10, 80, 80, 0]"   # window geometry
+    ah._activate_chrome = lambda *a, **k: "Google Chrome"            # frontmost matches app_name
+    try:
+        r = ah.human_click_os(600, 400)
+        assert r["screen_point"] == [610.0, 560.0]
+        types_ = [e["type"] for e in fake.posted]
+        assert fake.kCGEventLeftMouseDown in types_ and fake.kCGEventLeftMouseUp in types_
+        di = types_.index(fake.kCGEventLeftMouseDown)
+        ui = types_.index(fake.kCGEventLeftMouseUp)
+        assert di < ui                                                # down before up
+        assert all(t == fake.kCGEventMouseMoved for t in types_[:di])  # moves precede press
+        down, up = fake.posted[di], fake.posted[ui]
+        assert down["x"] == 610.0 and down["y"] == 560.0              # press at mapped screen point
+        assert down["clickState"] == 1 and up["clickState"] == 1      # D1 fix: single-click state set
+        last_move = fake.posted[di - 1]
+        assert last_move["x"] == 610.0 and last_move["y"] == 560.0    # final move == press (no teleport)
+    finally:
+        ah._eval, ah._activate_chrome = orig_eval, orig_act
+        _sys.modules.pop("Quartz", None)
+
+
+def test_human_click_os_refuses_offscreen_point():
+    import sys as _sys
+    if _sys.platform != "darwin":
+        return
+    _reset()
+    fake = _FakeQuartz(display=(0.0, 0.0, 100.0, 100.0))  # tiny display; (610,560) is outside
+    _sys.modules["Quartz"] = fake
+    orig_eval, orig_act = ah._eval, ah._activate_chrome
+    ah._eval = lambda expr, await_promise=False: "[10, 80, 80, 0]"
+    ah._activate_chrome = lambda *a, **k: "Google Chrome"
+    try:
+        raised = False
+        try:
+            ah.human_click_os(600, 400)
+        except RuntimeError as e:
+            raised = "outside all displays" in str(e)
+        assert raised, "must refuse to click off all displays"
+        assert fake.posted == [], "no events may be posted when the target is off-screen"
+    finally:
+        ah._eval, ah._activate_chrome = orig_eval, orig_act
+        _sys.modules.pop("Quartz", None)
+
+
+def test_os_goto_raises_when_cursor_does_not_move():
+    import sys as _sys
+    if _sys.platform != "darwin":
+        return
+    _reset()
+    fake = _FakeQuartz(move_cursor=False)  # model Accessibility-denied: posts no-op, cursor stuck
+    _sys.modules["Quartz"] = fake
+    orig_eval, orig_act = ah._eval, ah._activate_chrome
+    ah._eval = lambda expr, await_promise=False: "[10, 80, 80, 0]"
+    ah._activate_chrome = lambda *a, **k: "Google Chrome"
+    try:
+        raised = False
+        try:
+            ah.human_click_os(600, 400)
+        except RuntimeError as e:
+            raised = "did not reach target" in str(e)
+        assert raised, "must raise when the cursor never reaches the target (Accessibility denied)"
+    finally:
+        ah._eval, ah._activate_chrome = orig_eval, orig_act
+        _sys.modules.pop("Quartz", None)
+
+
+def test_os_calibrate_error_computation():
+    _reset()
+    orig = ah._eval
+
+    import json as _j
+
+    def fake_eval(expr, await_promise=False):
+        if "outerHeight" in expr:
+            return "[10, 80, 80, 0]"            # geometry -> pred (610, 560) for client (600,400)
+        if "__bh_probe" in expr and "JSON.stringify" in expr:   # _READ_JS
+            return _j.dumps({"moves": [{"sx": 610, "sy": 560, "cx": 600, "cy": 400,
+                                        "coalesced": 1, "trusted": True}], "clicks": []})
+        return True                             # probe install / cleanup
+
+    ah._eval = fake_eval
+    try:
+        r = ah.os_calibrate()
+        assert r["ok"] is True
+        assert r["predicted_screen"] == [610.0, 560.0]
+        assert r["browser_screen"] == [610, 560]
+        assert r["error_px"] == [0.0, 0.0]
+    finally:
+        ah._eval = orig
+
+
 def _run_all():
     fns = [g for n, g in sorted(globals().items()) if n.startswith("test_") and callable(g)]
     passed = 0
