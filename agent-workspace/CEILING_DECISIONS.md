@@ -55,6 +55,19 @@ Run on a normal http(s) page:
 browser-harness -c 'new_tab("https://example.com"); wait_for_load(); import json; print(json.dumps(human_selftest(), indent=2))'
 ```
 
+**Phase 0 result — measured 2026-05-29 on the live machine (Chrome 148.0.7778.181):**
+- **T2 screenX: NOT exposed** — screen-vs-client delta = 121px. The upstream fix is live; no action.
+- **T1 coalesced: EXPOSED** — getCoalescedEvents max = 1 (CDP bypass confirmed on Chrome 148; matches research).
+- isTrusted = true. Delivered pointer rate = **41Hz** (server-side fast path verified active:
+  `dispatch_input_sequence(...)` returned `{ok:True, count:2}` on a fresh daemon against real Chrome;
+  ~24ms/event = 16ms delay + WS send latency, up from the ~28Hz baseline).
+- **Conclusion CONFIRMED by measurement:** the ONLY exposed tell (T1) is the one with zero production
+  deployment → no fork, no OS-injection. Phases 1 and 2 are NOT triggered.
+- Minor: the probe's click-capture returned 0 (diagnostic gap, not a finding — the 36-move stream
+  supplied every metric). Optional polish: also capture `mousedown` / lengthen the settle.
+- Optional future tune: subtract estimated WS send time from each delay to lift 41Hz toward ~60Hz —
+  low value while T1 (coalesced) betrays CDP regardless of rate.
+
 **Phase 1 — T2 remediation (conditional).** Only if the selftest shows T2 exposed (Chrome <142):
 update Chrome (the free, undetectable fix). A JS getter override is detectable (toString/worker) — avoid.
 
