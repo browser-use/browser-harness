@@ -1093,12 +1093,19 @@ def _os_goto(s, Quartz, tx, ty):
     Accessibility is not granted (CGEventPost silently drops), so raise instead of
     returning a false success."""
     _os_trajectory(s, Quartz, _os_cursor(Quartz), (tx, ty))
-    pos = _os_cursor(Quartz)
-    px, py = (pos.x, pos.y) if hasattr(pos, "x") else (pos[0], pos[1])
-    if abs(px - tx) > 4 or abs(py - ty) > 4:
-        raise RuntimeError("OS cursor did not reach target (got %.0f,%.0f want %.0f,%.0f) — grant "
-                           "Accessibility to your terminal/python in System Settings > Privacy & "
-                           "Security > Accessibility" % (px, py, tx, ty))
+    px = py = None
+    for _ in range(3):
+        # CGEventPost can be asynchronous under renderer/WindowServer load. Re-post
+        # the final landing point and let the OS settle before declaring failure.
+        _os_post_move(Quartz, tx, ty)
+        time.sleep(0.03)
+        pos = _os_cursor(Quartz)
+        px, py = (pos.x, pos.y) if hasattr(pos, "x") else (pos[0], pos[1])
+        if abs(px - tx) <= 4 and abs(py - ty) <= 4:
+            return
+    raise RuntimeError("OS cursor did not reach target (got %.0f,%.0f want %.0f,%.0f) — grant "
+                       "Accessibility to your terminal/python in System Settings > Privacy & "
+                       "Security > Accessibility" % (px, py, tx, ty))
 
 
 def human_move_os(x, y, activate=True, app_name=None):
