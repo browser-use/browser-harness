@@ -478,10 +478,10 @@ class _FakeQuartz:
     kCGHIDEventTap = 0
     kCGMouseEventClickState = 1
 
-    def __init__(self, display=(0.0, 0.0, 3000.0, 3000.0), move_cursor=True):
+    def __init__(self, display=(0.0, 0.0, 3000.0, 3000.0), displays=None, move_cursor=True):
         self.posted = []
         self.cursor = _FakeCGPoint(50.0, 50.0)
-        self._display = display
+        self._displays = list(displays or [display])
         self._move_cursor = move_cursor
 
     def CGEventCreate(self, src):
@@ -503,10 +503,11 @@ class _FakeQuartz:
             self.cursor = _FakeCGPoint(e["x"], e["y"])  # model the real cursor moving
 
     def CGGetActiveDisplayList(self, maxd, a, b):
-        return (0, [1], 1)
+        ids = list(range(1, len(self._displays) + 1))
+        return (0, ids[:maxd], min(len(ids), maxd))
 
     def CGDisplayBounds(self, did):
-        return _FakeRect(*self._display)
+        return _FakeRect(*self._displays[int(did) - 1])
 
 
 def test_os_input_available_without_quartz():
@@ -527,6 +528,24 @@ def test_os_screen_point_mapping():
         assert sx == 610.0 and sy == 560.0, (sx, sy)  # 10+0+600, 80+80+400
     finally:
         ah._eval = orig
+
+
+def test_os_selftest_has_renderer_stress_probe_for_coalescing_proof():
+    # Unstressed Chrome can legitimately report getCoalescedEvents()==1 even for
+    # real OS moves. The self-test uses transient renderer load to prove the
+    # compositor path without changing the actual movement model.
+    assert "__bh_os_stress_stop" in ah._OS_STRESS_JS
+    assert "performance.now()" in ah._OS_STRESS_JS
+
+
+def test_within_displays_accepts_secondary_monitor_bounds():
+    fake = _FakeQuartz(displays=[
+        (0.0, 0.0, 1728.0, 1117.0),
+        (-1440.0, 100.0, 1440.0, 900.0),
+    ])
+    assert ah._within_displays(fake, 100.0, 100.0) is True
+    assert ah._within_displays(fake, -100.0, 200.0) is True
+    assert ah._within_displays(fake, -1500.0, 200.0) is False
 
 
 def test_human_click_os_posts_real_event_sequence():

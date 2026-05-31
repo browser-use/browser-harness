@@ -25,11 +25,13 @@ KNOWN CEILINGS — researched (Chromium source + fingerprinting literature, 2026
     out at. Falls back to client-side dispatch if the daemon predates the batch op
     (restart the daemon for the fast path); a mid-batch failure resumes the remainder
     rather than re-sending the dispatched prefix.
-  * COALESCED EVENTS — NOT fixable in software. CDP Input.dispatchMouseEvent injects
+  * COALESCED EVENTS — FIXED for opt-in macOS OS input. CDP Input.dispatchMouseEvent injects
     via RenderWidgetHostImpl::ForwardMouseEvent, bypassing the compositor coalescing
     queue, so PointerEvent.getCoalescedEvents() stays empty regardless of injection
     rate. (This is why we target ~60Hz, not higher: extra uncoalesced events would
-    only look more anomalous.) Closing it requires a patched Chromium binary.
+    only look more anomalous.) The opt-in human_*_os path posts real Quartz CGEvents
+    through the OS/HID pipeline; os_selftest(stress=True) verifies that Chrome exposes
+    coalesced samples on the live machine without a browser fork.
   * screenX/screenY — residual tell. CDP sets screenX==clientX (no window/desktop
     offset), which a real windowed browser never produces; Cloudflare Turnstile
     checks this. Not settable via CDP and not safely patchable from page JS.
@@ -38,9 +40,9 @@ KNOWN CEILINGS — researched (Chromium source + fingerprinting literature, 2026
   * CDP-presence — Runtime.enable is omitted by default at the daemon (kills the
     console-serialization detection class); but an attached remote-debugging client
     is fundamentally detectable by other means.
-Net: defeats heuristic/weak-ML detectors and the event-rate signal. The coalesced
-and screenX tells mean a top-tier ensemble inspecting CDP input fidelity can still
-identify the session; full parity needs a patched Chromium (out of scope here).
+Net: CDP mode defeats heuristic/weak-ML detectors and the event-rate signal but still
+has CDP input-fidelity tells. Use the opt-in OS path for rare detection-sensitive
+clicks when physical cursor movement / foreground focus is acceptable.
 """
 
 import json, math, os, random, re, sys, tempfile, time
@@ -831,7 +833,23 @@ _PROBE_JS = r"""
 """
 
 _READ_JS = "JSON.stringify(window.__bh_probe || null)"
-_CLEAN_JS = ("(()=>{const o=document.getElementById('__bh_probe_overlay');if(o)o.remove();"
+_OS_STRESS_JS = r"""
+(() => {
+  // T1 proof mode: briefly occupy the renderer main thread while real OS input
+  // arrives. Genuine HID/compositor input then reaches pointermove as coalesced
+  // samples; CDP Input.dispatchMouseEvent remains uncoalesced under the same load.
+  window.__bh_os_stress_stop = false;
+  function burn() {
+    const end = performance.now() + 12;
+    while (performance.now() < end) {}
+    if (!window.__bh_os_stress_stop) setTimeout(burn, 0);
+  }
+  setTimeout(burn, 0);
+  return true;
+})()
+"""
+_CLEAN_JS = ("(()=>{window.__bh_os_stress_stop=true;"
+             "const o=document.getElementById('__bh_probe_overlay');if(o)o.remove();"
              "try{delete window.__bh_probe;}catch(e){}return true;})()")
 
 
@@ -949,7 +967,7 @@ def human_selftest(verbose=True):
 # Security > Accessibility). NOT loaded/used unless you call these functions.
 # ---------------------------------------------------------------------------
 
-_OS_STEP_MS = 8  # ~125Hz post rate so Chrome's compositor coalesces the moves (the T1 win)
+_OS_STEP_MS = 8  # ~125Hz post rate: common HID polling cadence for real mouse movement
 
 
 def os_input_available():
@@ -1099,7 +1117,7 @@ def human_click_os(x, y, button="left", activate=True, app_name=None):
     Real HID events traverse the full pipeline, so the page is INTENDED to see genuine
     coalesced pointer events, correct screenX/screenY, and isTrusted — the path CDP
     cannot take. Verify the coalescing actually results on your setup with os_selftest()
-    (it has not been measured here). macOS only.
+    (stress=True is the deterministic proof mode). macOS only.
 
     COST: brings the browser to the foreground (refuses if the wrong app is frontmost) and
     moves the physical cursor (refuses if the cursor doesn't reach the target, i.e.
@@ -1159,12 +1177,15 @@ def os_calibrate():
     }
 
 
-def os_selftest(verbose=True):
+def os_selftest(verbose=True, stress=True):
     """Prove (or disprove) that the OS-injection path actually closes T1: drive REAL OS
     moves (human_move_os) through the same overlay probe human_selftest uses, then read
     getCoalescedEvents() on the resulting pointermoves. coalesced_len_max > 1 means real
-    coalescing happened — the tell CDP cannot close is closed. Requires pyobjc +
-    Accessibility + foreground; moves the physical cursor. Run on a normal http(s) page.
+    coalescing happened — the tell CDP cannot close is closed. By default the probe adds
+    a short renderer stress loop because unstressed Chrome can legitimately deliver
+    getCoalescedEvents()==1 for both real and synthetic moves; under stress, the
+    compositor-vs-CDP path difference is deterministic. Requires pyobjc + Accessibility
+    + foreground; moves the physical cursor. Run on a normal http(s) page.
     """
     ok, reason = os_input_available()
     if not ok:
@@ -1174,6 +1195,8 @@ def os_selftest(verbose=True):
     _eval(_PROBE_JS)
     data = {"moves": []}
     try:
+        if stress:
+            _eval(_OS_STRESS_JS)
         human_move_os(int(w * 0.35), int(h * 0.45))
         human_move_os(int(w * 0.65), int(h * 0.55))
         time.sleep(0.30)
@@ -1194,6 +1217,7 @@ def os_selftest(verbose=True):
         "coalesced_len_max": max(cl) if cl else 0,
         "t1_coalesced_closed": bool(cl) and max(cl) > 1,
         "screen_client_max_delta_px": max(deltas) if deltas else 0,
+        "stress": bool(stress),
     }
     if verbose:
         print("=== os_selftest (REAL OS input via CGEvent) ===")
