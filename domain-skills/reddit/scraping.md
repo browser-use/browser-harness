@@ -29,6 +29,21 @@ Fails on:
 - Private / quarantined subreddits (401)
 - NSFW posts without an authenticated session
 - Anti-scraping 429s under load — back off or switch to the browser path
+- **`http_get()` against `www.reddit.com/.json` now returns `403 Blocked`** (datacenter-IP block), even with a browser `User-Agent`. A same-origin `fetch()` from a `www.reddit.com` tab also returns an HTML block page. **Fix: use `old.reddit.com`** — navigate a tab there, then same-origin `fetch()` the `.json` endpoints (served with the user's cookies, not blocked).
+
+### Listing endpoints (discover concerns / mine a sub, not just one post)
+
+```python
+# on an old.reddit.com tab — same-origin fetch dodges the datacenter block
+goto_url("https://old.reddit.com/"); wait_for_load(); wait(2)
+# /r/<sub>/{top,hot,new,controversial}.json?limit=100&t={hour,day,week,month,year,all}
+expr = ('fetch("/r/ExperiencedDevs/top.json?limit=100&t=year",{headers:{Accept:"application/json"}})'
+        '.then(r=>r.json()).then(j=>JSON.stringify(j.data.children.map(c=>('
+        '{t:c.data.title,s:c.data.score,c:c.data.num_comments,f:c.data.link_flair_text||"",self:(c.data.selftext||"").slice(0,600),id:c.data.id}))))')
+posts = json.loads(js(expr))   # note: avoid the word "return" in js() expressions using await/promises — it triggers a sync-IIFE wrap that breaks top-level await; use .then() chains instead
+```
+
+Rank by `num_comments` (engagement = nerve hit). To fan out over many subs/sorts in one `js()` call, wrap the per-URL fetches in `Promise.all([...].map(u => fetch(u)...)).then(a=>JSON.stringify(a))` — all arrow/implicit-return, no `return` keyword.
 
 ## Path 2: Browser DOM extraction (logged-in)
 
