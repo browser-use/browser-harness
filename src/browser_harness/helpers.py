@@ -299,7 +299,12 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    # BH_NO_ACTIVATE=1 skips raising the tab/window to the foreground — activation only
+    # affects OS focus (the 🐴 title marker already shows the controlled tab) and
+    # stealing focus on every new_tab is disruptive when driving a visible browser.
+    # set_session below still routes cdp()/js() to this tab regardless.
+    if os.environ.get("BH_NO_ACTIVATE") != "1":
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
