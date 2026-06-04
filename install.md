@@ -32,7 +32,13 @@ After the repo is installed, register this repo's `SKILL.md` with the agent you 
 
 - **Claude Code**: add an import to `~/.claude/CLAUDE.md` that points at this repo's `SKILL.md`, for example `@~/Developer/browser-harness/SKILL.md`.
 
-This makes new Codex or Claude Code sessions in other folders load the runtime browser harness instructions automatically.
+- **Pi**: symlink this repository folder into your Pi global skills directory (`~/.agents/skills/` or `~/.pi/agent/skills/`):
+
+  ```bash
+  ln -sf "$PWD" ~/.agents/skills/browser-harness
+  ```
+
+This makes new Codex, Claude Code, or Pi sessions in other folders load the runtime browser harness instructions automatically.
 
 ## Keeping the harness current
 
