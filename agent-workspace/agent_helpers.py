@@ -95,10 +95,6 @@ def laz_detail():
     d = {"title": "", "brand": "", "pack_size": "", "origin": "",
          "ptype": "", "price": "", "soldby": "", "breadcrumb": ""}
     import re
-    # breadcrumb line contains tab-joined path ending in the title
-    for l in lines:
-        if "Groceries" in l and "\t" not in l and len(l) > 20:
-            pass
     # title: the heading repeats right after breadcrumb; take the longest
     # line that looks like a product title
     def nextval(i):
