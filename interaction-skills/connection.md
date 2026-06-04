@@ -28,6 +28,32 @@ for t in tabs:
 tab = ensure_real_tab()
 ```
 
+## The Allow-dialog race (agents)
+
+Every NEW WebSocket connection to Chrome's CDP port pops a per-connection "Allow remote
+debugging?" dialog, and the daemon's handshake gives up after ~10s (websockets'
+`open_timeout`). Clicking Allow on a *stale* dialog does nothing for the next attempt —
+each retry spawns a fresh dialog tied to that one connection. For an agent whose
+tool-call roundtrips are slower than the timeout, sequencing "connect, then click" as
+two separate steps always loses the race.
+
+Win it inside ONE shell command: launch the connection in the background, then click
+the dialog with `cliclick` (or any native clicker) while the handshake is pending.
+The dialog renders at a fixed position — centred horizontally, vertically offset —
+with Allow at the bottom right (on a 1920×1080 screen that's ≈ `1017,592`; derive it
+from the dialog window bounds: x+391, y+201 of a 448×240 window).
+
+```bash
+( browser-harness <<'PY' > /tmp/bu-race.out 2>&1 &
+ensure_real_tab()
+print("CONNECTED:", page_info())
+PY
+) ; sleep 3.5 && cliclick c:1017,592 && sleep 2 && cliclick c:1017,592 && sleep 6 && cat /tmp/bu-race.out
+```
+
+The second click covers a late-rendering dialog. Stacked leftover dialogs from earlier
+failed attempts can be dismissed at the same coordinates — they're harmless either way.
+
 ## Bringing Chrome to front
 
 If Chrome is behind other windows or on another desktop:
