@@ -6,12 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "browser-harness"
 version = "0.1.0"
 description = "The simplest, thinnest, and most powerful harness to control your real browser with your agent."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "cdp-use==1.4.5",
     "fetch-use==0.4.0",
-    "pillow==12.2.0",
+    "pillow>=10.4.0,<12.0",
     "websockets==15.0.1",
+    "stirrup>=0.1.9",
 ]
 
 [project.scripts]
