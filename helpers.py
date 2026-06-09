@@ -18,6 +18,31 @@ def _load_env():
 
 _load_env()
 
+
+def ensure_daemon():
+    """Start the daemon if it's not running. Returns the socket path."""
+    from admin import ensure_daemon as _ensure
+    return _ensure(name=os.environ.get("BU_NAME") or "default")
+
+
+def restart_daemon():
+    """Kill and restart the daemon."""
+    from admin import restart_daemon as _restart
+    return _restart(name=os.environ.get("BU_NAME") or "default")
+
+
+def start_remote_daemon(name=None, **kwargs):
+    """Start a remote (cloud) browser daemon."""
+    from admin import start_remote_daemon as _start
+    return _start(name or os.environ.get("BU_NAME") or "default", **kwargs)
+
+
+def stop_remote_daemon(name=None):
+    """Stop a remote daemon."""
+    from admin import stop_remote_daemon as _stop
+    return _stop(name or os.environ.get("BU_NAME") or "default")
+
+
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = f"/tmp/bu-{NAME}.sock"
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
