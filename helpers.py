@@ -143,6 +143,14 @@ def new_tab(url="about:blank"):
         goto(url)
     return tid
 
+def close_tab(target_id=None):
+    # Close a tab (default: the agent's current one) and clean up after
+    # yourself in the user's Chrome. Target.closeTarget must get the page
+    # targetId — the attached session's id is not closable directly.
+    tid = target_id or current_tab()["targetId"]
+    cdp("Target.closeTarget", targetId=tid)
+    ensure_real_tab()
+
 def ensure_real_tab():
     """Switch to a real user tab if current is chrome:// / internal / stale."""
     tabs = list_tabs(include_chrome=False)
