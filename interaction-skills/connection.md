@@ -28,6 +28,25 @@ for t in tabs:
 tab = ensure_real_tab()
 ```
 
+## Brave (and Chromium 144+) on a fixed debug port
+
+The brave://settings "Remote debugging" checkbox opens CDP on `127.0.0.1:9222`, but the HTTP discovery endpoints (`/json/version`, `/json/list`) return **404** — an empty curl response does NOT mean the port is dead. Read the websocket path from the profile dir instead:
+
+```bash
+cat "$HOME/Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort"
+# line 1: port, line 2: /devtools/browser/<uuid>
+```
+
+Then connect with an explicit ws override and a dedicated daemon namespace:
+
+```bash
+BU_NAME=brave BU_CDP_WS="ws://127.0.0.1:9222/devtools/browser/<uuid>" browser-harness <<'PY'
+new_tab("https://example.com")
+PY
+```
+
+If the first call fails with `no close frame received or sent`, remove the stale `/tmp/bu-brave.sock` and `/tmp/bu-brave.pid` and retry — the daemon reconnects cleanly. The browser uuid changes on every Brave restart, so re-read `DevToolsActivePort` when reconnecting after a restart.
+
 ## Bringing Chrome to front
 
 If Chrome is behind other windows or on another desktop:
