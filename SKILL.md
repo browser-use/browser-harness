@@ -23,7 +23,9 @@ PY
 
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
 - Use the heredoc form for every multi-line command. It prevents shell quote mangling inside Python strings and JavaScript snippets.
+- In PowerShell, use a single-quoted here-string instead: `@'` on its own line, then Python code, then `'@ | browser-harness`.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
+- On Windows, never try to open the user's existing Chrome window through a `chrome:`/`chrome://` shell link or protocol handler. Windows may show "Get an app to open this 'chrome' link". Connect through browser-harness/CDP and open web pages with `new_tab("https://...")`.
 
 ## Tool call shape
 
@@ -89,7 +91,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - Verification: print(page_info()) is the simplest "is this alive?" check, but screenshots are the default way to verify whether a visible action actually worked.
 - DOM reads: use js(...) for inspection and extraction when the screenshot shows that coordinates are the wrong tool.
 - Iframe sites (Azure blades, Salesforce): click_at_xy(x, y) passes through; only drop to iframe DOM work when coordinate clicks are the wrong tool.
-- Auth wall: redirected to login → stop and ask the user. Don't type credentials from screenshots.
+- Auth wall: redirected to login → stop and ask the user unless the user already explicitly authorized a credential source for this task, such as local E2E credentials. Don't infer or type credentials from screenshots.
 - Raw CDP for anything helpers don't cover: cdp("Domain.method", params).
 
 ## Design constraints

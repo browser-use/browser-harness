@@ -227,7 +227,8 @@ def _doctor_short_text(value, limit=None):
 
 def _is_snap_browser(path: str) -> bool:
     """True when a Chrome binary path lives under /snap/ (Snap confinement on Linux)."""
-    return bool(path) and "/snap/" in path.lower()
+    normalized = str(path or "").replace("\\", "/").lower()
+    return "/snap/" in normalized
 
 
 def _doctor_snap_probe_path(path: str) -> str:
@@ -700,6 +701,24 @@ def print_update_banner(out=None):
     _cache_write({**cache, "banner_shown_on": today})
 
 
+def _windows_chromium_binaries():
+    """Known Chromium browser executable locations on Windows."""
+    import os
+    candidates = [
+        os.environ.get("BH_CHROME_PATH"),
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+    ]
+    return [p for p in candidates if p and os.path.exists(p)]
+
+
 def _chrome_running():
     """Cross-platform best-effort check for a running Chromium-based browser."""
     import platform, subprocess
@@ -707,7 +726,7 @@ def _chrome_running():
     try:
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, timeout=5)
-            names = ("chrome.exe", "msedge.exe", "helium.exe")
+            names = ("chrome.exe", "brave.exe", "msedge.exe", "helium.exe")
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
             names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
@@ -720,6 +739,14 @@ def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
     url = "chrome://inspect/#remote-debugging"
+    if platform.system() == "Windows":
+        for binary in _windows_chromium_binaries():
+            try:
+                subprocess.Popen([binary, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
+        return
     if platform.system() == "Darwin":
         try:
             subprocess.run([
