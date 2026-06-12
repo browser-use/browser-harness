@@ -24,3 +24,6 @@ In the editor, the Version History sidebar opens past versions in a "Viewing Ver
 
 - The editor opens on whatever mode it was left in (e.g. "Viewing Version N" with history sidebar) — click the top-left back arrow to return to the editable draft before importing.
 - Version history "Ran in X minutes" includes queue-free GPU time only; a queued commit shows no duration.
+- Committing can fail with `ConcurrencyViolation: Sequence number must match Draft record` ("Failed to save draft" in the title bar) when the draft sequence desyncs — typically after bouncing between version views and imports in one long editor session. The import that preceded the failed commit is **rolled back**. Recover with: `Page.reload` → verify your content is gone (check a new section name in the Table of Contents) → re-import → Save Version again.
+- The viewer's default version ("Version N of M") lags behind the latest successful run and can even point at an old version; always select the version explicitly before scraping its output.
+- A multi-iteration loop that works: edit the .ipynb locally (json + `ast.parse` each cell), re-import, Save & Run All, poll the Active Events widget, then scrape the new `kf/` iframe (pick the highest numeric kf id across targets — older version views keep their iframes alive in other tabs).
