@@ -13,6 +13,7 @@ dependencies = [
     "pillow>=10.4.0,<12.0",
     "websockets==15.0.1",
     "stirrup>=0.1.9",
+    "ace-framework>=0.12.0",
 ]
 
 [project.scripts]
