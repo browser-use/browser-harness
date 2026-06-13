@@ -350,3 +350,130 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+# --- press_key: shortcut and key-metadata behavior ---
+
+def _capture_press_key(key, modifiers=0):
+    """Run press_key with a fake cdp that records every dispatchKeyEvent."""
+    events = []
+
+    def fake_cdp(method, **kwargs):
+        if method == "Input.dispatchKeyEvent":
+            events.append(kwargs)
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.press_key(key, modifiers=modifiers)
+    return events
+
+
+def test_press_key_letter_uses_canonical_code_and_vk():
+    """Letters must resolve to CDP physical-key codes (KeyA) and the
+    upper-case ASCII codepoint as vk (65). Without that, Chrome's shortcut
+    handlers don't recognise the press as the same physical key a real
+    keyboard would emit."""
+    events = _capture_press_key("a")
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert keydown["code"] == "KeyA"
+    assert keydown["windowsVirtualKeyCode"] == 65
+    assert keydown["nativeVirtualKeyCode"] == 65
+    # Uppercase letter still maps to KeyA / 65 — vk is case-insensitive.
+    events = _capture_press_key("Z")
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert keydown["code"] == "KeyZ"
+    assert keydown["windowsVirtualKeyCode"] == 90
+
+
+def test_press_key_digit_uses_canonical_code_and_vk():
+    events = _capture_press_key("5")
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert keydown["code"] == "Digit5"
+    assert keydown["windowsVirtualKeyCode"] == ord("5")  # 53
+
+
+def test_press_key_special_key_uses_kkeys_table():
+    """Pre-existing behavior preserved: special keys carry their virtual
+    key codes from _KEYS so listeners checking e.keyCode/e.key still fire."""
+    events = _capture_press_key("Enter")
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert keydown["code"] == "Enter"
+    assert keydown["windowsVirtualKeyCode"] == 13
+    assert keydown.get("text") == "\r"  # Enter inserts a CR
+
+
+def test_press_key_no_modifiers_emits_text_and_char_event():
+    """For ordinary text input, keyDown carries `text` and a `char` event
+    fires — Chrome inserts the printable character into the focused input."""
+    events = _capture_press_key("a")
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert keydown.get("text") == "a"
+    chars = [e for e in events if e["type"] == "char"]
+    assert len(chars) == 1
+    assert chars[0].get("text") == "a"
+
+
+def test_press_key_with_ctrl_suppresses_text_and_char():
+    """Holding Ctrl makes the press a shortcut, not text input. The keyDown
+    must omit `text` and no `char` event must fire — otherwise Chrome
+    inserts the printable letter alongside firing the shortcut handler."""
+    events = _capture_press_key("a", modifiers=2)  # Ctrl
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert "text" not in keydown, (
+        f"keyDown must NOT carry text when Ctrl is held — Chrome would "
+        f"insert the letter. Got: {keydown}"
+    )
+    assert keydown["modifiers"] == 2
+    chars = [e for e in events if e["type"] == "char"]
+    assert chars == [], f"expected zero char events with Ctrl held, got: {chars}"
+
+
+def test_press_key_with_meta_suppresses_text_and_char():
+    """Same as Ctrl, but for Cmd on macOS (modifier 4 = Meta)."""
+    events = _capture_press_key("s", modifiers=4)  # Cmd
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert "text" not in keydown
+    assert keydown["modifiers"] == 4
+    assert keydown["code"] == "KeyS"
+    assert keydown["windowsVirtualKeyCode"] == ord("S")
+    assert not any(e["type"] == "char" for e in events)
+
+
+def test_press_key_with_alt_suppresses_text_and_char():
+    """Alt-shortcuts also should not insert text (e.g. browser/menu shortcuts
+    on Linux/Windows)."""
+    events = _capture_press_key("f", modifiers=1)  # Alt
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert "text" not in keydown
+    assert not any(e["type"] == "char" for e in events)
+
+
+def test_press_key_shift_alone_still_emits_text_and_char():
+    """Shift alone is text input (Shift+A still types whatever the caller
+    asked for). Only Alt/Ctrl/Meta turn the press into a shortcut."""
+    events = _capture_press_key("A", modifiers=8)  # Shift
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert keydown.get("text") == "A"
+    assert keydown["modifiers"] == 8
+    chars = [e for e in events if e["type"] == "char"]
+    assert len(chars) == 1
+    assert chars[0].get("text") == "A"
+
+
+def test_press_key_ctrl_shift_combo_still_suppresses():
+    """Multi-modifier shortcuts (e.g. Ctrl+Shift+P for command palette) must
+    also suppress text/char — Ctrl wins over Shift's text-input semantics."""
+    events = _capture_press_key("p", modifiers=2 | 8)  # Ctrl+Shift
+    keydown = next(e for e in events if e["type"] == "keyDown")
+    assert "text" not in keydown
+    assert keydown["modifiers"] == 10
+    assert not any(e["type"] == "char" for e in events)
+
+
+def test_press_key_emits_keyup_with_consistent_metadata():
+    """Every press emits a matching keyUp regardless of modifiers."""
+    events = _capture_press_key("a", modifiers=2)
+    keyup = next(e for e in events if e["type"] == "keyUp")
+    assert keyup["code"] == "KeyA"
+    assert keyup["windowsVirtualKeyCode"] == 65
+    assert keyup["modifiers"] == 2
