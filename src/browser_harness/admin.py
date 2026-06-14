@@ -7,27 +7,7 @@ import urllib.request
 from pathlib import Path
 
 from . import _ipc as ipc
-
-
-def _load_env():
-    repo_root = Path(__file__).resolve().parents[2]
-    workspace = Path(os.environ.get("BH_AGENT_WORKSPACE", repo_root / "agent-workspace")).expanduser()
-    for p in (repo_root / ".env", workspace / ".env"):
-        if not p.exists():
-            continue
-        _load_env_file(p)
-
-
-def _load_env_file(p):
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
-_load_env()
+from .helpers import _load_env, _load_env_file
 
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
