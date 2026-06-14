@@ -11,6 +11,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .helpers import _load_env
 
 
 def _process_start_time(pid):
