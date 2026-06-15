@@ -2,7 +2,7 @@
 
 Reddit's "new" web UI (`reddit.com`) is a Lit / web-components SPA built around custom elements (`shreddit-post`, `shreddit-comment`, `faceplate-*`). This makes DOM extraction unusually reliable — the custom element tags are stable and exposed on the element itself (no hashed class names).
 
-Use the browser when you're logged in (private subreddits, NSFW gates, rate-limit avoidance). For fully public content, the JSON API path below is faster.
+Use the browser when you're logged in (private subreddits, NSFW gates, rate-limit avoidance). **As of 2026 the browser DOM path is also the only reliable path for anonymous public content** — Reddit now hard-blocks the `.json` API for anonymous clients (see Path 1).
 
 ## URL patterns
 
@@ -11,24 +11,39 @@ Use the browser when you're logged in (private subreddits, NSFW gates, rate-limi
 - Old Reddit: append `/.json` to any post URL for anonymous JSON: `https://www.reddit.com/r/<sub>/comments/<id>/.json`.
 - Old UI (simpler DOM, no web components): `https://old.reddit.com/r/<sub>/comments/<id>/` — useful fallback when `shreddit-*` selectors change.
 
-## Path 1: JSON API (fastest for public posts)
+## Path 1: JSON API — ⚠️ DEAD for anonymous clients (2026)
+
+The old `append /.json` trick **no longer works anonymously**. Reddit returns **HTTP 403** with a block page (`"You've been blocked by network security. To continue, log in to your Reddit account or use your developer token"`) for `www.reddit.com/.../​.json` and `old.reddit.com/.../​.json` alike. Confirmed dead even with:
+
+- A real browser User-Agent or unique descriptive UA
+- Full browser request headers (Accept, Referer, etc.)
+- `curl_cffi` Chrome/Safari **TLS impersonation** (still 403 — it's not just a TLS-fingerprint check)
+- Fresh **residential proxy** IPs (the IP isn't the trip — the *endpoint* is gated)
+
+The block is endpoint-level: Reddit wants OAuth (a developer token) or a logged-in session for the JSON API. So for anonymous scraping there are two live options:
+
+1. **Browser DOM extraction** (Path 2) — works anonymously. From a datacenter IP you still need a residential proxy *and* a real browser (see the headless+proxy recipe below); the fingerprint and IP must both look human.
+2. **Official OAuth API** — register a script app at `reddit.com/prefs/apps`, get `client_id`/`secret`, exchange for a bearer token, then hit `https://oauth.reddit.com/r/<sub>/new?limit=...` with `Authorization: bearer <token>` + a unique UA. Supported, ~100 QPM free, works from datacenter IPs.
+
+### Headless browser + residential proxy (cron-friendly, no GUI)
+
+What revived a server-side bot (Playwright Chromium through an IPRoyal residential proxy). A datacenter-IP browser alone gets the same 403 block page; the residential proxy is what gets you past the network wall.
 
 ```python
-from helpers import http_get
-import json
-
-url = "https://www.reddit.com/r/cursor/comments/1l0u9y7/claude_code_prompt_to_autogenerate_full_cursor/.json"
-data = json.loads(http_get(url, headers={"User-Agent": "Mozilla/5.0"}))
-post = data[0]["data"]["children"][0]["data"]
-# post fields: title, selftext, author, score, num_comments, created_utc, url, permalink
-comments = data[1]["data"]["children"]  # list of { kind: "t1", data: {...} } or { kind: "more" }
+from playwright.sync_api import sync_playwright
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+with sync_playwright() as p:
+    b = p.chromium.launch(headless=True, args=["--no-sandbox"],
+        proxy={"server": "http://geo.iproyal.com:12321", "username": "<user>", "password": "<pass>"})
+    ctx = b.new_context(user_agent=UA, locale="en-US", viewport={"width": 1280, "height": 1400})
+    pg = ctx.new_page()
+    pg.goto("https://www.reddit.com/r/<sub>/new/", wait_until="domcontentloaded", timeout=45000)
+    pg.wait_for_timeout(3500)  # SPA hydration
+    blocked = pg.evaluate("document.body.innerText.indexOf('blocked by network security') >= 0")
+    posts = pg.evaluate("document.querySelectorAll('shreddit-post').length")  # 0 + blocked => bad proxy, rotate
 ```
 
-Fails on:
-
-- Private / quarantined subreddits (401)
-- NSFW posts without an authenticated session
-- Anti-scraping 429s under load — back off or switch to the browser path
+Probe each proxy session by checking `blocked` / `shreddit-post count`, and rotate to the next session on failure. `pip install playwright` then `python -m playwright install chromium` — note Playwright pins an exact build revision; a version bump that isn't followed by `playwright install` leaves the browser binary missing (`Executable doesn't exist at .../chromium_headless_shell-<rev>`).
 
 ## Path 2: Browser DOM extraction (logged-in)
 
@@ -87,6 +102,23 @@ PY
 | Top-level comment      | `shreddit-comment[depth="0"]`                                         | Depth is an attribute — `depth="1"` is a reply, etc.                                                    |
 | Comment body           | `shreddit-comment [slot="comment"] .md`                               | Same pattern as post body.                                                                              |
 | Comment author / score | `shreddit-comment` attributes: `author`, `score`, `created-timestamp` | Use `getAttribute`, not DOM descendants.                                                                |
+
+### Feed / listing extraction (`/r/<sub>/new/`, `/hot/`, etc.)
+
+The feed renders one `<shreddit-post>` per card with everything you need as **attributes** (no detail-page visit required for a listing digest):
+
+| Attribute            | Example                                    |
+| -------------------- | ------------------------------------------ |
+| `id`                 | `t3_1ts8jb7` (strip `t3_` for the bare id) |
+| `post-title`         | `Kids sports or summer camp?`              |
+| `permalink`          | `/r/ThunderBay/comments/1ts8jb7/.../`      |
+| `score`              | `5` (exact, not abbreviated)               |
+| `comment-count`      | `2`                                        |
+| `created-timestamp`  | `2026-05-30T19:08:22.655000+0000`          |
+| `post-type`          | `text` / `image` / `link`                  |
+| `author`             | `Double-Control7332`                       |
+
+`/new/` is newest-first and lazy-loads on scroll — `page.mouse.wheel(0, 24000)` + wait, looping until the oldest loaded `created-timestamp` passes your time window. Parse the timestamp by normalizing `+0000`→`+00:00` then `datetime.fromisoformat`. Promoted/ad cards may carry a `promoted` attribute or lack a `t3_` id — filter those out.
 
 ### Share links
 
