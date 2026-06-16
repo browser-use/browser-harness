@@ -23,5 +23,8 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+browser_harness = ["model-compatibility.json"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
