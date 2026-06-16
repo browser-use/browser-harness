@@ -1,11 +1,15 @@
 ---
-name: browser-harness
+name: browser
 description: Direct browser control via CDP. Use when the user wants to automate, scrape, test, or interact with web pages. Connects to the user's already-running Chrome.
 ---
 
 # browser-harness
 
-Direct browser control via CDP. Read helpers.py — that's where the functions live. For setup, install, or connection problems, read install.md.
+Direct browser control via CDP. For task-specific edits, use `agent-workspace/agent_helpers.py`. For setup, install, or connection problems, read install.md.
+
+Domain skills (community-contributed per-site playbooks under `agent-workspace/domain-skills/`) are off by default. Set `BH_DOMAIN_SKILLS=1` to enable them; see the bottom section.
+
+**If `BH_DOMAIN_SKILLS=1` and the task is site-specific, read every file in the matching `agent-workspace/domain-skills/<site>/` directory before inventing an approach.**
 
 ## Usage
 
@@ -18,17 +22,8 @@ PY
 ```
 
 - Invoke as browser-harness — it's on $PATH. No cd, no uv run.
+- Use the heredoc form for every multi-line command. It prevents shell quote mangling inside Python strings and JavaScript snippets.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
-
-Available interaction skills:
-- interaction-skills/connection.md — startup sequence, tab visibility, omnibox popup fix
-
-Domain skills live under `domain-skills/`. The set changes often; search it before
-site-specific work instead of trusting a short static list. Examples:
-- `github/repo-actions.md`
-- `linkedin/invitation-manager.md`
-- `polymarket/scraping.md`
-- `tiktok/upload.md`
 
 ## Tool call shape
 
@@ -63,11 +58,10 @@ start_remote_daemon prints liveUrl and auto-opens it in the local browser (if a 
 
 Profiles (cookies-only login state) live in interaction-skills/profile-sync.md — covers list_cloud_profiles(), the chat-driven "which profile?" pattern, and sync_local_profile() for uploading a local Chrome profile.
 
-## Search first
+## Interaction skills
 
-Search domain-skills/ first for the domain you are working on before inventing a new approach.
-
-Only if you start struggling with a specific mechanic while navigating, look in interaction-skills/ for helpers. The available interaction skills are:
+If you start struggling with a specific mechanic while navigating, look in interaction-skills/ for helpers. They cover reusable UI mechanics like dialogs, tabs, dropdowns, iframes, and uploads. The available interaction skills are:
+- connection.md
 - cookies.md
 - cross-origin-iframes.md
 - dialogs.md
@@ -84,44 +78,6 @@ Only if you start struggling with a specific mechanic while navigating, look in 
 - tabs.md
 - uploads.md
 - viewport.md
-
-Useful commands:
-
-```bash
-rg --files domain-skills
-rg -n "tiktok|upload" domain-skills
-```
-
-## Always contribute back
-
-If you learned anything non-obvious about how a site works, open a PR to domain-skills/<site>/ before you finish. Default to contributing. The harness gets better only because agents file what they learn. If figuring something out cost you a few steps, the next run should not pay the same tax.
-
-Examples of what's worth a PR:
-
-- A private API the page calls (XHR/fetch endpoint, request shape, auth) — often 10× faster than DOM scraping.
-- A stable selector that beats the obvious one, or an obfuscated CSS-module class to avoid.
-- A framework quirk — "the dropdown is a React combobox that only commits on Escape", "this Vue list only renders rows inside its own scroll container, so scrollIntoView on the row doesn't work — you have to scroll the container".
-- A URL pattern — direct route, required query params (?lang=en, ?th=1), a variant that skips a loader.
-- A wait that wait_for_load() misses, with the reason.
-- A trap — stale drafts, legacy IDs that now return null, unicode quirks, beforeunload dialogs, CAPTCHA surfaces.
-
-### What a domain skill should capture
-
-The *durable* shape of the site — the map, not the diary. Focus on what the next agent on this site needs to know before it starts:
-
-- URL patterns and query params.
-- Private APIs and their payload shape.
-- Stable selectors (data-*, aria-*, role, semantic classes).
-- Site structure — containers, items per page, framework, where state lives.
-- Framework/interaction quirks unique to this site.
-- Waits and the reasons they're needed.
-- Traps and the selectors that *don't* work.
-
-### Do not write
-
-- Raw pixel coordinates. They break on viewport, zoom, and layout changes. Describe how to *locate* the target (selector, scrollIntoView, aria-label, visible text) — never where it happened to be on your screen.
-- Run narration or step-by-step of the specific task you just did.
-- Secrets, cookies, session tokens, user-specific state. domain-skills/ is shared and public.
 
 ## What actually works
 
@@ -142,7 +98,7 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 - Connect to the user's running Chrome. Don't launch your own browser.
 - cdp-use is only for CDPClient.send_raw. Prefer raw CDP strings over typed wrappers.
 - run.py stays tiny. No argparse, subcommands, or extra control layer.
-- Helpers stay short. Browser primitives in helpers.py; daemon/bootstrap and remote session admin live in admin.py.
+- Core helpers stay short. Put task-specific helper additions in `agent-workspace/agent_helpers.py`; daemon/bootstrap and remote session admin live in the core package.
 - Don't add a manager layer. No retries framework, session manager, daemon supervisor, config system, or logging framework.
 
 ## Gotchas (field-tested)
@@ -158,7 +114,10 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 - Prefer compositor-level actions over framework hacks. Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.
 - If you need framework-specific DOM tricks, check interaction-skills/ first. That is where dropdown, dialog, iframe, shadow DOM, and form-specific guidance belongs.
 
-## Interaction notes
+## Domain skills (opt-in)
 
-- interaction-skills/ holds reusable UI mechanics such as dialogs, tabs, dropdowns, iframes, and uploads.
-- domain-skills/ holds site-specific workflows and should be updated when you discover reusable patterns for a website.
+Only applies when `BH_DOMAIN_SKILLS=1`. Otherwise ignore — `agent-workspace/domain-skills/` is dormant and `goto_url` won't surface skill files.
+
+When enabled, search `agent-workspace/domain-skills/<host>/` before inventing an approach. `goto_url` returns up to 10 skill filenames for the navigated host.
+
+If you learn anything non-obvious — a private API, stable selector, framework quirk, URL pattern, hidden wait, or site-specific trap — open a PR to `agent-workspace/domain-skills/<site>/`. Capture the durable shape of the site (the map, not the diary). Don't write pixel coordinates (break on layout), task narration, or secrets — the directory is public.

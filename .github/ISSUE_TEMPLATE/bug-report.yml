@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible bug in browser-harness.
+labels: [bug]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: I ran `browser-harness --doctor` and read the output.
+          required: true
+        - label: I read the troubleshooting section of `install.md`.
+          required: true
+        - label: This is a reproducible bug in browser-harness — not a question, feature request, or `cloud.browser-use.com` issue.
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What's broken, in one or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: Numbered steps. Include the exact command and the output you saw.
+      placeholder: |
+        1. Chrome 147 on default profile, remote debugging on
+        2. browser-harness -c 'print(page_info())'
+        3. RuntimeError: DevTools is not live yet on 127.0.0.1:9222
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        OS:
+        Chrome version:
+        browser-harness --version:
+        browser-harness --doctor output:
+    validations:
+      required: true

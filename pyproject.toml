@@ -15,7 +15,13 @@ dependencies = [
 ]
 
 [project.scripts]
-browser-harness = "run:main"
+browser-harness = "browser_harness.run:main"
 
 [tool.setuptools]
-py-modules = ["run", "helpers", "daemon", "admin"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
