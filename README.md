@@ -2,6 +2,17 @@
 
 # Browser Harness ♞
 
+<!-- Keep these links, translations synced daily. -->
+
+[Deutsch](https://zdoc.app/de/browser-use/browser-harness) |
+[Español](https://zdoc.app/es/browser-use/browser-harness) |
+[français](https://zdoc.app/fr/browser-use/browser-harness) |
+[日本語](https://zdoc.app/ja/browser-use/browser-harness) |
+[한국어](https://zdoc.app/ko/browser-use/browser-harness) |
+[Português](https://zdoc.app/pt/browser-use/browser-harness) |
+[Русский](https://zdoc.app/ru/browser-use/browser-harness) |
+[中文](https://zdoc.app/zh/browser-use/browser-harness)
+
 Connect an LLM directly to your real browser with a thin, editable CDP harness. For browser tasks where you need **complete freedom**.
 
 One websocket to Chrome, nothing between. The agent writes what's missing during execution. The harness improves itself every run.
