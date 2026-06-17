@@ -82,6 +82,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 ## What actually works
 
 - Screenshots first: use capture_screenshot() to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation.
+- If an interaction helper is missing, treat that as editable harness work, not a task failure. Reproduce, inspect, add the smallest helper in `agent-workspace/agent_helpers.py`, retry, and keep the reusable pattern. See `docs/self-modifying-harness.md` and `docs/edge-case-benchmark.html` for upload, drag/drop, signature canvas, and coordinate-only examples.
 - Clicking: capture_screenshot() → read the pixel off the image → click_at_xy(x, y) → capture_screenshot() to verify. Suppress the Playwright-habit reflex of "locate first, then click" — no getBoundingClientRect, no selector hunt. Drop to DOM only when the target has no visible geometry (hidden input, 0×0 node). Hit-testing happens in Chrome's browser process, so clicks go through iframes / shadow DOM / cross-origin without extra work.
 - Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
 - After goto: wait_for_load().

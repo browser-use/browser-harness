@@ -37,6 +37,10 @@ Click Allow when the per-attach popup appears (Chrome 144+):
 <img src="docs/allow-remote-debugging.png" alt="Allow remote debugging popup" width="520" style="border-radius: 12px;" />
 
 See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
+For the core pattern behind hard browser tasks, read
+[Self-modifying browser harness](docs/self-modifying-harness.md). It includes
+concrete examples for signature canvases, file uploads, drag/drop, and
+coordinate-only controls, plus a local edge-case benchmark page.
 
 ## Free Browser Use Cloud browsers
 

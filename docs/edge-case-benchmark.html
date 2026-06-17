@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser Harness edge-case benchmark</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f7faf9;
+      color: #17211f;
+    }
+    body {
+      margin: 0;
+      padding: 32px;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 32px;
+      margin: 0 0 8px;
+    }
+    .intro {
+      margin: 0 0 28px;
+      color: #4b5d58;
+      max-width: 760px;
+      line-height: 1.45;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .task {
+      background: #ffffff;
+      border: 1px solid #d8e3df;
+      border-radius: 8px;
+      padding: 20px;
+      min-height: 250px;
+      box-shadow: 0 1px 2px rgba(11, 36, 31, 0.06);
+    }
+    .task h2 {
+      font-size: 18px;
+      margin: 0 0 12px;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      margin-top: 14px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #edf2f0;
+      color: #4b5d58;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .status.pass {
+      background: #d9f8e7;
+      color: #126236;
+    }
+    .upload-label, .drag-card {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 150px;
+      height: 46px;
+      border-radius: 6px;
+      background: #17211f;
+      color: white;
+      font-weight: 800;
+      cursor: pointer;
+      user-select: none;
+    }
+    input[type="file"] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0.01;
+    }
+    .drop-zone {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 92px;
+      margin-top: 14px;
+      border: 2px dashed #87a49d;
+      border-radius: 8px;
+      color: #587069;
+      background: #f1f6f4;
+      font-weight: 700;
+    }
+    .drop-zone.hot {
+      border-color: #168a54;
+      background: #e4f9ed;
+      color: #126236;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      max-width: 420px;
+      height: 140px;
+      border: 1px solid #b9c8c3;
+      border-radius: 6px;
+      background: white;
+      touch-action: none;
+    }
+    #coordinate-canvas {
+      cursor: crosshair;
+    }
+    .summary {
+      margin-top: 22px;
+      padding: 16px 18px;
+      background: #eaf2ef;
+      border-radius: 8px;
+      color: #31423e;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px;
+    }
+    @media (max-width: 760px) {
+      body {
+        padding: 18px;
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Browser Harness edge-case benchmark</h1>
+    <p class="intro">
+      Four small browser tasks that usually force agents to switch tactics:
+      hidden file input, drag/drop event payloads, canvas signature input, and a
+      coordinate-only canvas target.
+    </p>
+
+    <section class="grid">
+      <article class="task" data-task="file">
+        <h2>1. File upload</h2>
+        <label class="upload-label" for="file-input">Choose file</label>
+        <input id="file-input" type="file">
+        <div id="file-status" class="status">waiting for file</div>
+      </article>
+
+      <article class="task" data-task="drag">
+        <h2>2. Drag and drop</h2>
+        <div id="drag-source" class="drag-card" draggable="true">drag token</div>
+        <div id="drop-target" class="drop-zone">drop token here</div>
+        <div id="drag-status" class="status">waiting for drop</div>
+      </article>
+
+      <article class="task" data-task="signature">
+        <h2>3. Canvas signature</h2>
+        <canvas id="signature-canvas" width="420" height="140"></canvas>
+        <div id="signature-status" class="status">waiting for stroke</div>
+      </article>
+
+      <article class="task" data-task="coordinate">
+        <h2>4. Coordinate target</h2>
+        <canvas id="coordinate-canvas" width="420" height="140"></canvas>
+        <div id="coordinate-status" class="status">waiting for target click</div>
+      </article>
+    </section>
+
+    <pre id="summary" class="summary">window.bhBenchmarkResults() -> pending</pre>
+  </main>
+
+  <script>
+    (() => {
+    const state = {
+      file: false,
+      drag: false,
+      signature: false,
+      coordinate: false,
+    };
+
+    function mark(name, detail) {
+      state[name] = true;
+      const node = document.getElementById(`${name}-status`);
+      node.textContent = detail || "passed";
+      node.classList.add("pass");
+      renderSummary();
+    }
+
+    function renderSummary() {
+      document.getElementById("summary").textContent =
+        JSON.stringify(window.bhBenchmarkResults(), null, 2);
+    }
+
+    window.bhBenchmarkResults = () => ({
+      ...state,
+      passed: Object.values(state).every(Boolean),
+    });
+
+    document.getElementById("file-input").addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (file && file.name) mark("file", `uploaded: ${file.name}`);
+    });
+
+    const source = document.getElementById("drag-source");
+    const target = document.getElementById("drop-target");
+    source.addEventListener("dragstart", (event) => {
+      event.dataTransfer.setData("text/plain", "browser-harness-token");
+    });
+    target.addEventListener("dragenter", () => target.classList.add("hot"));
+    target.addEventListener("dragover", (event) => event.preventDefault());
+    target.addEventListener("dragleave", () => target.classList.remove("hot"));
+    target.addEventListener("drop", (event) => {
+      event.preventDefault();
+      target.classList.remove("hot");
+      if (event.dataTransfer.getData("text/plain") === "browser-harness-token") {
+        target.textContent = "token dropped";
+        mark("drag", "dropped token");
+      }
+    });
+
+    const signature = document.getElementById("signature-canvas");
+    const sigCtx = signature.getContext("2d");
+    sigCtx.lineWidth = 4;
+    sigCtx.lineCap = "round";
+    sigCtx.strokeStyle = "#17211f";
+    let drawing = false;
+    let last = null;
+    let pathLength = 0;
+    let pointCount = 0;
+
+    function sigPoint(event) {
+      const rect = signature.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) * (signature.width / rect.width),
+        y: (event.clientY - rect.top) * (signature.height / rect.height),
+      };
+    }
+
+    function startSignature(event) {
+      drawing = true;
+      last = sigPoint(event);
+      pointCount = 1;
+      pathLength = 0;
+      sigCtx.beginPath();
+      sigCtx.moveTo(last.x, last.y);
+    }
+    function moveSignature(event) {
+      if (!drawing) return;
+      const next = sigPoint(event);
+      sigCtx.lineTo(next.x, next.y);
+      sigCtx.stroke();
+      pathLength += Math.hypot(next.x - last.x, next.y - last.y);
+      pointCount += 1;
+      last = next;
+    }
+    function endSignature() {
+      drawing = false;
+      if (pathLength > 120 && pointCount >= 5) mark("signature", "signature captured");
+    }
+    signature.addEventListener("pointerdown", startSignature);
+    signature.addEventListener("pointermove", moveSignature);
+    signature.addEventListener("pointerup", endSignature);
+    signature.addEventListener("mousedown", startSignature);
+    signature.addEventListener("mousemove", moveSignature);
+    window.addEventListener("mouseup", endSignature);
+
+    const coordinate = document.getElementById("coordinate-canvas");
+    const coordCtx = coordinate.getContext("2d");
+    const targetPoint = { x: 312, y: 82, radius: 18 };
+    coordCtx.fillStyle = "#f1f6f4";
+    coordCtx.fillRect(0, 0, coordinate.width, coordinate.height);
+    coordCtx.fillStyle = "#168a54";
+    coordCtx.beginPath();
+    coordCtx.arc(targetPoint.x, targetPoint.y, targetPoint.radius, 0, Math.PI * 2);
+    coordCtx.fill();
+    coordCtx.fillStyle = "#17211f";
+    coordCtx.font = "700 16px system-ui";
+    coordCtx.fillText("click the green target", 24, 42);
+
+    coordinate.addEventListener("click", (event) => {
+      const rect = coordinate.getBoundingClientRect();
+      const x = (event.clientX - rect.left) * (coordinate.width / rect.width);
+      const y = (event.clientY - rect.top) * (coordinate.height / rect.height);
+      if (Math.hypot(x - targetPoint.x, y - targetPoint.y) <= targetPoint.radius) {
+        mark("coordinate", "target clicked");
+      }
+    });
+
+    renderSummary();
+    })();
+  </script>
+</body>
+</html>
