@@ -26,6 +26,19 @@ PY
 - First navigation is `new_tab(url)`, not `goto_url(url)` — goto runs in the user's active tab and clobbers their work.
 - Helpers are pre-imported and the daemon auto-starts; you never start/stop it manually unless you want to.
 
+## Target a Specific Local Profile
+
+When multiple local Chrome profiles exist, do not choose one yourself. Run:
+
+```bash
+browser-harness local-profiles
+browser-harness default-profile
+```
+
+If `default-profile` says no default is configured, show the profile list to the user and ask which profile to use before running any page work. Only run `browser-harness default-profile --profile <id-or-name>` after the user explicitly names or confirms the profile. If a default already exists, use it unless the user asks to switch.
+
+After a default is configured, normal startup handles profile targeting in code: it opens a temporary marker tab in the selected profile, waits for that marker target over CDP, attaches to it to capture the Chrome `browserContextId`, then the first `new_tab()` opens the task tab in that same context and closes the marker tab. That task tab remains the controlled target across later commands. Future `new_tab()` calls stay pinned to that context, stale context ids are reacquired with a new marker, and switches to targets from another profile context are refused.
+
 ## What actually works
 
 - **Screenshots first.** `capture_screenshot()` to understand the page, find visible targets, and decide whether you need a click, a selector, or more navigation.
