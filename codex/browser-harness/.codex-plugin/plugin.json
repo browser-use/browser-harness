@@ -1,0 +1,17 @@
+{
+  "name": "browser-harness",
+  "version": "0.1.0",
+  "description": "Direct CDP browser control for coding agents: coordinate clicks, screenshots, a persistent Python session, and bulk HTTP — driving the user's real Chrome or a Browser Use cloud browser. Ships a skill only; the browser-harness CLI is a one-time install prerequisite.",
+  "author": {
+    "name": "Browser Use",
+    "url": "https://browser-use.com"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "browser-harness",
+    "shortDescription": "Direct CDP browser control — local Chrome or a Browser Use cloud browser.",
+    "longDescription": "Drive a browser directly over the Chrome DevTools Protocol: coordinate clicks, screenshots, a persistent Python session, and bulk HTTP — against the user's real Chrome or a Browser Use cloud browser. Ships a skill only; install the browser-harness CLI once (uv/pip). Repo: https://github.com/browser-use/browser-harness",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/browser-use/browser-harness"
+  }
+}

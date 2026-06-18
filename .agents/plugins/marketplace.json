@@ -1,0 +1,19 @@
+{
+  "name": "browser-harness",
+  "interface": {
+    "displayName": "browser-harness"
+  },
+  "plugins": [
+    {
+      "name": "browser-harness",
+      "source": {
+        "source": "local",
+        "path": "./codex/browser-harness"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
