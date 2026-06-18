@@ -240,6 +240,58 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
     return browser
 
 
+def run_agent_task(task, *, model="gpt-5.4-mini", proxy_country_code="us",
+                   output_schema=None, session_id=None, max_cost_usd=None,
+                   timeout=240, poll=2.0, watch=False):
+    """Run a Browser Use AI-AGENT task and return the finished session dict.
+
+    The FAST path for WAF-walled sites: Browser Use's own agent drives the browser
+    autonomously (navigate, click, solve the WAF/CAPTCHA via residential proxy +
+    stealth, extract) instead of you scripting CDP. Choose the model for speed —
+    ``gpt-5.4-mini`` (default) flies through simple/well-defined tasks; switch to
+    ``claude-sonnet-4.6`` only for gnarly multi-step navigation.
+
+      task               — natural-language instruction; be specific about what to extract.
+      model              — "gpt-5.4-mini" (fast) | "claude-sonnet-4.6" (smart).
+      proxy_country_code — ISO2 (default "us"); None disables the BU proxy.
+      output_schema      — a JSON-Schema dict for structured extraction; None = free text.
+      session_id         — REUSE a warm session: the browser's page/cookies/tabs carry over,
+                           so you pay the WAF-challenge + startup tax ONCE. Pass the ``id`` of
+                           a prior run to run the next task on the same warm browser (10x on
+                           multi-query sweeps of one site).
+      timeout/poll       — poll GET /sessions/{id} every ``poll``s up to ``timeout``s.
+      watch              — False (default): print the liveUrl but DON'T open a browser tab
+                           (quiet for automated/parallel lanes). True: print + auto-open the
+                           live view so you can watch the agent drive.
+
+    Returns the final session dict: ``status`` (stopped/finished/failed), ``output``,
+    ``isTaskSuccessful``, ``totalCostUsd``, ``liveUrl``. Blocks until terminal/timeout."""
+    body = {"task": task, "model": model}
+    if proxy_country_code is not None:
+        body["proxyCountryCode"] = proxy_country_code
+    if output_schema is not None:
+        body["outputSchema"] = output_schema
+    if session_id is not None:
+        body["sessionId"] = session_id          # warm reuse — browser state carries over
+    if max_cost_usd is not None:
+        body["maxCostUsd"] = max_cost_usd
+    sess = _browser_use("/sessions", "POST", body)
+    sid = sess.get("id") or sess.get("sessionId")
+    live = sess.get("liveUrl")
+    if watch:
+        _show_live_url(live)          # human watching — print + auto-open the live view
+    elif live:
+        print(live)                   # automated lane — print only, don't grab a browser tab
+    terminal = {"stopped", "finished", "completed", "failed", "error"}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        s = _browser_use(f"/sessions/{sid}", "GET")
+        if s.get("status") in terminal:
+            return s
+        time.sleep(poll)
+    return _browser_use(f"/sessions/{sid}", "GET")  # last read on timeout
+
+
 def list_local_profiles():
     """Detected local browser profiles on this machine. Shells out to `profile-use list --json`.
     Returns [{BrowserName, BrowserPath, ProfileName, ProfilePath, DisplayName}, ...].

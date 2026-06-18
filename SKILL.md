@@ -61,6 +61,33 @@ PY
 
 `start_remote_daemon` prints `liveUrl` and auto-opens it in the local browser (if a GUI is detected) so the user can watch along. Headless servers print only — share the URL with the user. The daemon `PATCH`es the cloud browser to `stop` on shutdown, which persists profile state. Running remote daemons bill until timeout.
 
+#### Fly through WAF-walled sites — `run_agent_task`
+
+For a site that blocks scripted CDP (Akamai / Cloudflare / CAPTCHA), don't fight it tab-by-tab. `run_agent_task` hands the goal to Browser Use's own AI agent, which drives a residential-proxy + stealth browser autonomously and returns the extracted result. It's pre-imported. No daemon needed — it's a direct cloud call.
+
+```bash
+browser-harness <<'PY'
+SCHEMA = {"type":"object","properties":{"filings":{"type":"array","items":{
+    "type":"object","properties":{"case_no":{"type":"string"},"apn":{"type":"string"}}}}}}
+r = run_agent_task(
+    "Go to <county records search>, search recorded NOD filings in the last 30 days, "
+    "return every case number and APN.",
+    model="gpt-5.4-mini",          # fast; switch to "claude-sonnet-4.6" for gnarly multi-step nav
+    output_schema=SCHEMA,           # structured extraction; omit for free text
+)
+print(r["status"], r.get("isTaskSuccessful"), r.get("totalCostUsd"))
+print(r["output"])
+sid = r["id"]                       # reuse this warm session on the next query
+PY
+```
+
+Three levers make it fast:
+- **Model** — `gpt-5.4-mini` (default) flies through well-defined tasks; reserve `claude-sonnet-4.6` for multi-step navigation it keeps failing.
+- **Warm reuse** — pass a prior run's `id` as `session_id=` so the browser's page/cookies carry over. You pay the WAF-challenge + startup tax ONCE, then sweep many queries of one site ~10x faster.
+- **Parallel** — fire many `run_agent_task` calls at once (each is its own cloud session) to cover N sources concurrently; gather the dicts.
+
+`watch=False` (default) keeps it quiet — prints the `liveUrl` but won't grab a browser tab, so it's safe in automated/parallel lanes. Pass `watch=True` to auto-open the live view and watch the agent drive. Each session bills by run; `max_cost_usd=` caps a single task. Use this for the WAF-walled lane; stay on coordinate clicks + CDP for everything that loads normally.
+
 Profiles (cookies-only login state) live in `interaction-skills/profile-sync.md` — covers `list_cloud_profiles()`, the chat-driven "which profile?" pattern, and `sync_local_profile()` for uploading a local Chrome profile.
 
 ## Search first

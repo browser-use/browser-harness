@@ -5,6 +5,7 @@ from admin import (
     list_cloud_profiles,
     list_local_profiles,
     restart_daemon,
+    run_agent_task,
     start_remote_daemon,
     stop_remote_daemon,
     sync_local_profile,
