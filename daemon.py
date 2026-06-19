@@ -63,6 +63,9 @@ def get_ws_url():
             port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
         except (FileNotFoundError, NotADirectoryError):
             continue
+        except ValueError:
+            # malformed/empty DevToolsActivePort (stale profile) — skip, try next
+            continue
         deadline = time.time() + 30
         while True:
             probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
