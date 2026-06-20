@@ -165,6 +165,59 @@ def test_fill_input_no_clear_skips_ctrl_a():
     assert "Backspace" not in keys_seen
 
 
+# --- press_key ---
+
+def test_press_key_with_ctrl_modifier_does_not_emit_printable_text():
+    key_events = []
+
+    def fake_cdp(method, **kwargs):
+        if method == "Input.dispatchKeyEvent":
+            key_events.append(kwargs)
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.press_key("a", modifiers=2)
+
+    assert [e["type"] for e in key_events] == ["keyDown", "keyUp"]
+    assert all("text" not in e for e in key_events), (
+        "Ctrl/Cmd/Alt shortcuts must not emit printable text; Chrome can treat "
+        "that as typing a character instead of invoking the shortcut"
+    )
+    assert all(e["code"] == "KeyA" for e in key_events)
+    assert all(e["windowsVirtualKeyCode"] == 65 for e in key_events)
+
+
+def test_press_key_letter_uses_canonical_code_and_vk():
+    key_events = []
+
+    def fake_cdp(method, **kwargs):
+        if method == "Input.dispatchKeyEvent":
+            key_events.append(kwargs)
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.press_key("z")
+
+    assert key_events[0]["key"] == "z"
+    assert key_events[0]["code"] == "KeyZ"
+    assert key_events[0]["windowsVirtualKeyCode"] == 90
+
+
+def test_press_key_digit_uses_canonical_code_and_vk():
+    key_events = []
+
+    def fake_cdp(method, **kwargs):
+        if method == "Input.dispatchKeyEvent":
+            key_events.append(kwargs)
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.press_key("5")
+
+    assert key_events[0]["code"] == "Digit5"
+    assert key_events[0]["windowsVirtualKeyCode"] == 53
+
+
 # --- wait_for_element ---
 
 def test_wait_for_element_returns_true_when_found_immediately():
