@@ -35,6 +35,7 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
+CDP_CALL_TIMEOUT = 4.5
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
     Path.home() / "Library/Application Support/Google/Chrome Canary",
@@ -236,6 +237,17 @@ class Daemon:
                 log(f"enable {d} on {session_id}: {e}")
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
 
+    async def send_cdp(self, method, params=None, session_id=None):
+        if self.cdp is None:
+            raise RuntimeError("CDP client not started")
+        try:
+            return await asyncio.wait_for(
+                self.cdp.send_raw(method, params, session_id=session_id),
+                timeout=CDP_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"{method} timed out after {CDP_CALL_TIMEOUT:g}s") from None
+
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
@@ -353,13 +365,13 @@ class Daemon:
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            return {"result": await self.send_cdp(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid == self.session and sid:
                 log(f"stale session {sid}, re-attaching")
                 if await self.attach_first_page():
-                    return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
+                    return {"result": await self.send_cdp(method, params, session_id=self.session)}
             return {"error": msg}
 
 
