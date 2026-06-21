@@ -40,19 +40,39 @@ SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
-def _send(req):
-    c, token = ipc.connect(NAME, timeout=5.0)
+def _send(req, timeout=5.0, raise_on_error=True):
+    c, token = ipc.connect(NAME, timeout=timeout)
     try:
         r = ipc.request(c, token, req)
     finally:
         c.close()
-    if "error" in r: raise RuntimeError(r["error"])
+    if raise_on_error and "error" in r: raise RuntimeError(r["error"])
     return r
 
 
 def cdp(method, session_id=None, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
     return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
+
+
+def dispatch_input_sequence(events, session_id=None):
+    """Dispatch a list of input events server-side, at a realistic rate, in ONE IPC call.
+
+    events: [{"method": "Input.dispatchMouseEvent", "params": {...}, "delay_ms": 16}, ...]
+    The daemon sleeps delay_ms BEFORE each event and emits it over its persistent
+    CDP WebSocket, so the realized inter-event interval is bounded by the local WS
+    (sub-ms) rather than a fresh client socket per event (which tops out ~30Hz).
+    Use for high-frequency mouse trajectories / wheel streams; ordinary calls keep
+    using cdp(). The client read timeout is sized to the sequence's total delay plus
+    a per-event allowance for the daemon's CDP round-trips. Returns the daemon reply
+    dict WITHOUT raising: {"ok": True, "count": N} on success, or {"error", "count"}
+    if a send failed mid-sequence (count = events already dispatched) — the caller
+    uses count to resume the remainder instead of re-dispatching the whole batch.
+    """
+    total_s = sum((e.get("delay_ms") or 0) for e in events) / 1000.0
+    timeout = max(5.0, total_s + 10.0 + 0.01 * len(events))
+    return _send({"meta": "input_sequence", "events": events, "session_id": session_id},
+                 timeout=timeout, raise_on_error=False)
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
