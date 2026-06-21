@@ -6,3 +6,14 @@ uv.lock
 *.egg-info/
 .idea/
 .claude/
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+coverage/
+htmlcov/
