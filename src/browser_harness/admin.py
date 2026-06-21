@@ -738,7 +738,8 @@ def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
     url = "chrome://inspect/#remote-debugging"
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         try:
             subprocess.run([
                 "osascript",
@@ -748,6 +749,22 @@ def _open_chrome_inspect():
             return
         except Exception:
             pass
+    if system == "Windows":
+        for root in (
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMFILES(X86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ):
+            if not root:
+                continue
+            chrome = Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if not chrome.exists():
+                continue
+            try:
+                subprocess.Popen([str(chrome), url])
+                return
+            except Exception:
+                pass
     try:
         webbrowser.open(url, new=2)
     except Exception:
