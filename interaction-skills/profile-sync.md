@@ -1,6 +1,8 @@
 # Profile sync
 
-Make a remote Browser Use browser start already logged in, by uploading cookies from a local Chrome profile.
+Advanced only. Use this when the user explicitly asks to upload local Chrome cookies into Browser Use cloud profiles. For normal cloud browser work, use `start_remote_daemon(...)`.
+
+This file manages cloud cookie profiles. It does not affect how local browser connections are selected.
 
 ## One-time install
 
@@ -17,7 +19,7 @@ list_cloud_profiles()
 # [{id, name, userId, cookieDomains, lastUsedAt}, ...] — every profile under this API key
 
 list_local_profiles()
-# [{BrowserName, ProfileName, DisplayName, ProfilePath, ...}, ...] — detected on this machine
+# profile-use JSON list of local browser profiles
 
 sync_local_profile(profile_name, browser=None,
                    cloud_profile_id=None,      # update an existing cloud profile instead of creating new
@@ -51,7 +53,7 @@ start_remote_daemon("work", profileName="browser-use.com")
 
 # 2b. Sync local first. Show the options:
 for lp in list_local_profiles():
-    print(lp["DisplayName"])
+    print(lp.get("DisplayName") or lp.get("ProfileName") or lp)
 ```
 → Agent: *"Which local profile?"* → user picks → before syncing, inspect domain-level cookie counts with `profile-use inspect --profile <name>` (or `--verbose` for individual cookies) and report the summary; never dump 500 cookies into chat.
 
@@ -73,7 +75,7 @@ sync_local_profile("browser-use.com",
 
 **Cookies only.** No localStorage, no IndexedDB, no extensions. Enough for session-cookie sites (Google, GitHub, Stripe, most SaaS); not for sites that store auth in localStorage.
 
-Cookies mutated during a remote session only persist on a clean `PATCH /browsers/{id} {"action":"stop"}` — the daemon does this on shutdown when `BU_BROWSER_ID` + `BROWSER_USE_API_KEY` are set (default for remote daemons). Sessions that hit the timeout lose in-session state.
+Cookies mutated during a remote session only persist on a clean `PATCH /browsers/{id} {"action":"stop"}` — the daemon does this on shutdown when `BU_BROWSER_ID` and cloud auth are available. Sessions that hit the timeout lose in-session state.
 
 ## Cloud profile CRUD
 

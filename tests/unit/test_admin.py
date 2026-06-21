@@ -63,6 +63,7 @@ def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatc
 def test_daemon_endpoint_names_with_bh_runtime_dir_returns_local_name_when_sock_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
     monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
     monkeypatch.setattr(admin, "NAME", "session-xyz")
     (tmp_path / "bu.sock").touch()
@@ -73,10 +74,24 @@ def test_daemon_endpoint_names_with_bh_runtime_dir_returns_local_name_when_sock_
 def test_daemon_endpoint_names_with_bh_runtime_dir_returns_empty_when_sock_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
     monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
     monkeypatch.setattr(admin, "NAME", "session-xyz")
 
     assert admin._daemon_endpoint_names() == []
+
+
+def test_daemon_endpoint_names_with_shared_bh_runtime_dir_discovers_named_sockets(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", True)
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    (tmp_path / "bu-default.sock").touch()
+    (tmp_path / "bu-work.sock").touch()
+    (tmp_path / "bu-invalid.name.sock").touch()
+    (tmp_path / "bu.sock").touch()  # stale isolated-runtime endpoint
+
+    assert admin._daemon_endpoint_names() == ["default", "work"]
 
 
 def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
