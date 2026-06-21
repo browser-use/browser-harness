@@ -295,6 +295,15 @@ def current_tab():
     r = _send({"meta": "current_tab"})
     return {"targetId": r["targetId"], "url": r["url"], "title": r["title"]}
 
+def profile_marker(marker=None):
+    """Return a marker URL for opening/identifying a specific Chrome profile.
+
+    Open the returned URL in the desired Chrome profile/window, then restart or
+    start the daemon. On attach, the daemon waits for that marker target and
+    pins future new_tab()/switch_tab() calls to the same browser context.
+    """
+    return _send({"meta": "profile_marker", "marker": marker})
+
 def _mark_tab():
     """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
@@ -318,7 +327,7 @@ def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    tid = _send({"meta": "create_target", "url": "about:blank"})["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)

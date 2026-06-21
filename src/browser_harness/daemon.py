@@ -1,10 +1,11 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
-from urllib.parse import urlparse
+import asyncio, json, os, socket, sys, urllib.request
 from collections import deque
 from pathlib import Path
+from uuid import uuid4
 
 from . import _ipc as ipc
+from .browser import get_browser_endpoint, open_configured_profile_marker, open_local_profile_marker
 from cdp_use.client import CDPClient
 
 
@@ -33,37 +34,8 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
-PROFILES = [
-    Path.home() / "Library/Application Support/Google/Chrome",
-    Path.home() / "Library/Application Support/Google/Chrome Canary",
-    Path.home() / "Library/Application Support/Comet",
-    Path.home() / "Library/Application Support/Arc/User Data",
-    Path.home() / "Library/Application Support/Dia/User Data",
-    Path.home() / "Library/Application Support/Microsoft Edge",
-    Path.home() / "Library/Application Support/Microsoft Edge Beta",
-    Path.home() / "Library/Application Support/Microsoft Edge Dev",
-    Path.home() / "Library/Application Support/Microsoft Edge Canary",
-    Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser",
-    Path.home() / ".config/google-chrome",
-    Path.home() / ".config/chromium",
-    Path.home() / ".config/chromium-browser",
-    Path.home() / ".config/microsoft-edge",
-    Path.home() / ".config/microsoft-edge-beta",
-    Path.home() / ".config/microsoft-edge-dev",
-    Path.home() / ".var/app/org.chromium.Chromium/config/chromium",
-    Path.home() / ".var/app/com.google.Chrome/config/google-chrome",
-    Path.home() / ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
-    Path.home() / ".var/app/com.microsoft.Edge/config/microsoft-edge",
-    Path.home() / "AppData/Local/Google/Chrome/User Data",
-    Path.home() / "AppData/Local/Google/Chrome SxS/User Data",
-    Path.home() / "AppData/Local/Chromium/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge Beta/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge Dev/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge SxS/User Data",
-    Path.home() / "AppData/Local/BraveSoftware/Brave-Browser/User Data",
-]
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+PROFILE_MARKER_URL_PREFIX = "https://browser-use.com/browser-use-profile-target/"
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 API_KEY = os.environ.get("BROWSER_USE_API_KEY")
@@ -78,86 +50,6 @@ async def _silent(coro):
         await coro
     except Exception:
         pass
-
-
-def _ws_from_devtools_active_port(http_url: str) -> str | None:
-    """When /json/version returns 404 (Chrome 147+ default profile), match DevToolsActivePort by port."""
-    p = urlparse(http_url)
-    want_port = str(p.port) if p.port else ""
-    if not want_port:
-        return None
-    host = p.hostname or "127.0.0.1"
-    if ":" in host:  # urlparse strips IPv6 brackets; restore them for the ws:// URL
-        host = f"[{host}]"
-    for base in PROFILES:
-        try:
-            active = (base / "DevToolsActivePort").read_text().splitlines()
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        port = active[0].strip() if active else ""
-        ws_path = active[1].strip() if len(active) > 1 else ""
-        if port == want_port and ws_path:
-            return f"ws://{host}:{port}{ws_path}"
-    return None
-
-
-def get_ws_url():
-    if url := os.environ.get("BU_CDP_WS"):
-        return url
-    if url := os.environ.get("BU_CDP_URL"):
-        # HTTP DevTools endpoint (e.g. http://127.0.0.1:9333) — resolve to ws via /json/version.
-        # Use this for a dedicated automation Chrome on a non-default profile, which avoids the
-        # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
-        deadline = time.time() + 30
-        last_err = None
-        base_url = url.rstrip("/")
-        while time.time() < deadline:
-            try:
-                return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
-            except urllib.error.HTTPError as e:
-                last_err = e
-                if e.code == 404 and (ws := _ws_from_devtools_active_port(url)):
-                    return ws
-                time.sleep(1)
-            except Exception as e:
-                last_err = e
-                time.sleep(1)
-        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- is the dedicated automation Chrome running?")
-    for base in PROFILES:
-        try:
-            active = (base / "DevToolsActivePort").read_text().splitlines()
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        port = active[0].strip() if active else ""
-        ws_path = active[1].strip() if len(active) > 1 else ""
-        if not port:
-            continue
-        # Resolve the live WS URL via /json/version instead of trusting the path stored
-        # alongside the port in DevToolsActivePort: if Chrome was previously launched
-        # with a different --user-data-dir on the same port, that file is left behind
-        # with a stale browser UUID and the WS upgrade returns 404.
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            try:
-                return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
-            except urllib.error.HTTPError as e:
-                # Chrome 147+ disables /json/* HTTP discovery on the default user-data-dir;
-                # the ws path Chrome wrote to DevToolsActivePort still works.
-                if e.code == 404 and ws_path:
-                    return f"ws://127.0.0.1:{port}{ws_path}"
-                time.sleep(1)
-            except (OSError, KeyError, ValueError):
-                time.sleep(1)
-        raise RuntimeError(
-            f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
-        )
-    for probe_port in (9222, 9223):
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
-                return json.loads(r.read())["webSocketDebuggerUrl"]
-        except (OSError, KeyError, ValueError):
-            continue
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
 def stop_remote():
@@ -179,6 +71,35 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+def is_page_target(t):
+    return t.get("type") == "page"
+
+
+def is_profile_marker_target(t):
+    return is_page_target(t) and "browser-use-profile-target" in t.get("url", "")
+
+
+def profile_marker_target_url(marker):
+    return f"{PROFILE_MARKER_URL_PREFIX}{marker}"
+
+
+def target_url_contains_marker(t, marker):
+    return is_profile_marker_target(t) and marker in t.get("url", "")
+
+
+def stale_browser_context_error(msg):
+    lower = str(msg).lower()
+    return "failed to find browser context with id" in lower or ("browser context" in lower and "not found" in lower)
+
+
+def select_initial_page_target(targets):
+    real = [t for t in targets if is_real_page(t) and not is_profile_marker_target(t)]
+    if real:
+        return real[0]
+    pages = [t for t in targets if is_page_target(t)]
+    return pages[0] if pages else None
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -187,23 +108,170 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        self.managed_browser = None
+        self.preferred_target_marker = os.environ.get("BH_TARGET_MARKER") or None
+        self.preferred_browser_context_id = None
 
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
-        targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-        pages = [t for t in targets if is_real_page(t)]
-        if not pages:
+        target = None
+        attached_marker = False
+        if self.preferred_target_marker:
+            deadline = asyncio.get_running_loop().time() + 8
+            while asyncio.get_running_loop().time() < deadline:
+                targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+                target = next(
+                    (t for t in targets if target_url_contains_marker(t, self.preferred_target_marker)),
+                    None,
+                )
+                if target:
+                    self.preferred_target_marker = None
+                    self.preferred_browser_context_id = target.get("browserContextId")
+                    attached_marker = True
+                    break
+                await asyncio.sleep(0.15)
+            if target is None:
+                raise RuntimeError("selected Chrome profile target did not appear; refusing to attach to an arbitrary existing profile")
+        else:
+            targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+            target = select_initial_page_target(targets)
+            self.preferred_browser_context_id = None
+        if not target:
             # No real pages — create one instead of attaching to omnibox popup
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            params = {"url": "about:blank"}
+            if self.preferred_browser_context_id:
+                params["browserContextId"] = self.preferred_browser_context_id
+            tid = (await self.cdp.send_raw("Target.createTarget", params))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
-            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
+            target = {"targetId": tid, "url": "about:blank", "type": "page"}
         self.session = (await self.cdp.send_raw(
-            "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
+            "Target.attachToTarget", {"targetId": target["targetId"], "flatten": True}
         ))["sessionId"]
-        self.target_id = pages[0]["targetId"]
-        log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
+        self.target_id = target["targetId"]
+        log(f"attached {target['targetId']} ({target.get('url','')[:80]}) session={self.session}")
         await self._enable_default_domains(self.session)
-        return pages[0]
+        if attached_marker:
+            log("profile marker attached; waiting for first task target before closing marker")
+        return target
+
+    async def close_profile_marker_targets(self, browser_context_id=None, keep_target_id=None):
+        try:
+            targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        except Exception:
+            return
+        for target in targets:
+            if not is_profile_marker_target(target):
+                continue
+            if browser_context_id and target.get("browserContextId") != browser_context_id:
+                continue
+            target_id = target.get("targetId")
+            if not target_id or target_id == keep_target_id:
+                continue
+            try:
+                await self.cdp.send_raw("Target.closeTarget", {"targetId": target_id})
+            except Exception:
+                pass
+
+    async def target_context_id(self, target_id):
+        info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": target_id}))["targetInfo"]
+        return info.get("browserContextId")
+
+    async def ensure_target_context(self, target_id):
+        if not self.preferred_browser_context_id:
+            return
+        actual = await self.target_context_id(target_id)
+        if actual and actual != self.preferred_browser_context_id:
+            raise RuntimeError("refusing to switch to a target from a different Chrome profile context")
+
+    async def reacquire_profile_context(self):
+        opened = await asyncio.to_thread(open_configured_profile_marker)
+        if not opened:
+            raise RuntimeError("cannot recover stale Chrome profile context: no default profile is configured")
+        marker = opened["marker"]
+        deadline = asyncio.get_running_loop().time() + 8
+        while asyncio.get_running_loop().time() < deadline:
+            targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+            target = next((t for t in targets if target_url_contains_marker(t, marker)), None)
+            if target:
+                self.preferred_browser_context_id = target.get("browserContextId")
+                log(f"reacquired profile context {self.preferred_browser_context_id or '(none)'} via marker {marker}")
+                return target
+            await asyncio.sleep(0.15)
+        raise RuntimeError("selected Chrome profile target did not appear while recovering stale browser context")
+
+    async def verify_profile_target(self):
+        """Re-anchor the controlled target into the selected profile if it has
+        drifted to another context or closed. The daemon is reused across CLI
+        commands, so without this it could keep driving a tab in the wrong
+        profile. Uses only Target.* calls over the existing websocket, so it
+        can't trigger Chrome's debugging popup. If the target still exists in the
+        selected context it's left as-is (we keep the same tab across commands).
+        """
+        if not self.preferred_browser_context_id:
+            return {"status": "no-profile"}
+        try:
+            targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        except Exception as e:
+            return {"status": "cdp_disconnected", "reason": str(e)}
+        by_id = {t.get("targetId"): t for t in targets}
+        current = by_id.get(self.target_id) if self.target_id else None
+        if current and current.get("browserContextId") == self.preferred_browser_context_id:
+            return {"status": "ok", "target_id": self.target_id}
+        previous = self.target_id
+        # Prefer a real page in the selected context, then any non-marker page;
+        # if none, re-open a marker to reacquire the context (closed window).
+        in_ctx = [
+            t for t in targets
+            if is_page_target(t) and t.get("browserContextId") == self.preferred_browser_context_id
+        ]
+        chosen = next((t for t in in_ctx if is_real_page(t) and not is_profile_marker_target(t)), None)
+        chosen = chosen or next((t for t in in_ctx if not is_profile_marker_target(t)), None)
+        if chosen is None:
+            try:
+                target = await self.reacquire_profile_context()
+            except Exception as e:
+                return {"status": "context-stale", "previous": previous, "reason": str(e)}
+            chosen = target
+        self.session = (await self.cdp.send_raw(
+            "Target.attachToTarget", {"targetId": chosen["targetId"], "flatten": True}
+        ))["sessionId"]
+        self.target_id = chosen["targetId"]
+        await self._enable_default_domains(self.session)
+        await self.close_profile_marker_targets(self.preferred_browser_context_id, keep_target_id=self.target_id)
+        reason = "target-gone" if previous and previous not in by_id else "wrong-context"
+        log(f"reanchored controlled target {previous} -> {self.target_id} ({reason}) in profile context {self.preferred_browser_context_id}")
+        return {"status": "reanchored", "target_id": self.target_id, "previous": previous, "reason": reason}
+
+    async def recover_controlled_session(self):
+        """Refresh the CDP session after a stale-session error. Re-attaches the
+        same controlled target when it's still open in the selected context (so
+        we don't switch tabs on a dropped session); re-anchors only when it's
+        gone or drifted. Returns True when a usable session was restored.
+        """
+        if self.target_id:
+            try:
+                targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+            except Exception:
+                targets = []
+            current = next((t for t in targets if t.get("targetId") == self.target_id), None)
+            in_context = current is not None and (
+                not self.preferred_browser_context_id
+                or current.get("browserContextId") == self.preferred_browser_context_id
+            )
+            if in_context:
+                try:
+                    self.session = (await self.cdp.send_raw(
+                        "Target.attachToTarget", {"targetId": self.target_id, "flatten": True}
+                    ))["sessionId"]
+                    await self._enable_default_domains(self.session)
+                    log(f"reattached same controlled target {self.target_id} session={self.session}")
+                    return True
+                except Exception as e:
+                    log(f"reattach same target {self.target_id} failed: {e}")
+        if self.preferred_browser_context_id:
+            res = await self.verify_profile_target()
+            return res.get("status") in ("ok", "reanchored")
+        return bool(await self.attach_first_page())
 
     async def _enable_default_domains(self, session_id):
         """Enable Page/DOM/Runtime/Network on a CDP session.
@@ -231,9 +299,12 @@ class Daemon:
 
     async def start(self):
         self.stop = asyncio.Event()
-        url = get_ws_url()
-        log(f"connecting to {url}")
-        self.cdp = CDPClient(url)
+        endpoint = get_browser_endpoint()
+        self.managed_browser = endpoint.managed
+        if endpoint.target_marker:
+            self.preferred_target_marker = endpoint.target_marker
+        log(f"connecting to {endpoint.ws_url} (kind={endpoint.kind}, http={endpoint.http_url or ''})")
+        self.cdp = CDPClient(endpoint.ws_url)
         try:
             await self.cdp.start()
         except Exception as e:
@@ -243,7 +314,13 @@ class Daemon:
                     "This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "
                     "If you use Browser Use cloud, verify BROWSER_USE_API_KEY and get a fresh URL via start_remote_daemon()."
                 )
-            raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
+            raise RuntimeError(f"CDP WS handshake failed: {e}")
+        # Open the marker now that the websocket is live, so a failed connection
+        # leaves no stray tab. profile-target pre-opens its own (target_marker).
+        if not self.preferred_target_marker and endpoint.marker_profile_id:
+            opened = await asyncio.to_thread(open_local_profile_marker, endpoint.marker_profile_id)
+            self.preferred_target_marker = opened["marker"]
+            log(f"opened profile marker {opened['marker']} in {endpoint.marker_profile_id} after connect")
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
@@ -271,10 +348,18 @@ class Daemon:
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
         if meta == "ping":        return {"pong": True, "pid": os.getpid()}
+        if meta == "capabilities":
+            return {"capabilities": ["create_target", "profile_marker", "context_guard", "verify_profile"]}
+        if meta == "verify_profile":
+            return await self.verify_profile_target()
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
+        if meta == "profile_marker":
+            marker = req.get("marker") or uuid4().hex
+            self.preferred_target_marker = marker
+            return {"marker": marker, "url": profile_marker_target_url(marker)}
         if meta == "current_tab":
             # Resolve the attached page's target info server-side. Helpers can't
             # send Target.getTargetInfo themselves: daemon strips session_id for
@@ -304,8 +389,14 @@ class Daemon:
             return {"target_id": self.target_id, "session_id": self.session, "page": page}
         if meta == "set_session":
             old_session = self.session
+            new_target_id = req.get("target_id") or self.target_id
+            if new_target_id:
+                try:
+                    await self.ensure_target_context(new_target_id)
+                except Exception as e:
+                    return {"error": str(e)}
             self.session = req.get("session_id")
-            self.target_id = req.get("target_id") or self.target_id
+            self.target_id = new_target_id
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
             # consumer-side filter in wait_for_network_idle is the actual
@@ -337,6 +428,26 @@ class Daemon:
                 timeout=2,
             )))
             return {"session_id": self.session}
+        if meta == "create_target":
+            params = {"url": req.get("url") or "about:blank"}
+            if self.preferred_browser_context_id:
+                params["browserContextId"] = self.preferred_browser_context_id
+            for attempt in (0, 1):
+                try:
+                    target_id = (await self.cdp.send_raw("Target.createTarget", params))["targetId"]
+                    await self.close_profile_marker_targets(self.preferred_browser_context_id, keep_target_id=target_id)
+                    return {"targetId": target_id}
+                except Exception as e:
+                    if attempt == 0 and self.preferred_browser_context_id and stale_browser_context_error(e):
+                        try:
+                            await self.reacquire_profile_context()
+                        except Exception as recover_error:
+                            return {"error": f"{e}; failed to recover selected Chrome profile context: {recover_error}"}
+                        params = {"url": req.get("url") or "about:blank"}
+                        if self.preferred_browser_context_id:
+                            params["browserContextId"] = self.preferred_browser_context_id
+                        continue
+                    return {"error": str(e)}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
 
@@ -351,7 +462,7 @@ class Daemon:
             msg = str(e)
             if "Session with given id not found" in msg and sid == self.session and sid:
                 log(f"stale session {sid}, re-attaching")
-                if await self.attach_first_page():
+                if await self.recover_controlled_session():
                     return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
             return {"error": msg}
 
@@ -391,8 +502,12 @@ async def serve(d):
 
 async def main():
     d = Daemon()
-    await d.start()
-    await serve(d)
+    try:
+        await d.start()
+        await serve(d)
+    finally:
+        if d.managed_browser:
+            d.managed_browser.stop()
 
 
 def already_running():

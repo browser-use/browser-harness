@@ -24,6 +24,14 @@ from .admin import (
     sync_local_profile,
 )
 from .helpers import *
+from .browser import (
+    default_profile as native_default_profile,
+    find_existing_endpoint,
+    list_local_browsers as native_local_browsers,
+    list_local_profiles as native_local_profiles,
+    open_local_profile_marker,
+    set_default_profile as native_set_default_profile,
+)
 
 HELP = """Browser Harness
 
@@ -44,6 +52,14 @@ Commands:
   browser-harness doctor --fix-snap   print how to fix Snap Chromium blocking CDP (Linux)
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
+  browser-harness profile-target --profile NAME [--browser NAME]
+                                   open a local profile marker and pin daemon to it
+  browser-harness local-profiles [--json]
+                                   list detected local browser profiles
+  browser-harness local-browsers [--json]
+                                   list detected local browsers
+  browser-harness default-profile [--profile NAME_OR_ID] [--browser NAME] [--json]
+                                   show or set deterministic default local profile
 """
 
 USAGE = """Usage:
@@ -62,6 +78,10 @@ def _local_chrome_listening():
             urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3).close()
             return True
         except OSError: pass
+    try:
+        return find_existing_endpoint() is not None
+    except Exception:
+        return False
     return False
 
 
@@ -98,6 +118,72 @@ def main():
     if args and args[0] == "--reload":
         restart_daemon()
         print("daemon stopped — will restart fresh on next call")
+        return
+    if args and args[0] == "profile-target":
+        rest = args[1:]
+        profile = None
+        browser = None
+        marker = None
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--profile" and i + 1 < len(rest):
+                profile = rest[i + 1]; i += 2; continue
+            if rest[i] == "--browser" and i + 1 < len(rest):
+                browser = rest[i + 1]; i += 2; continue
+            if rest[i] == "--marker" and i + 1 < len(rest):
+                marker = rest[i + 1]; i += 2; continue
+            print("usage: browser-harness profile-target --profile NAME [--browser NAME] [--marker MARKER]", file=sys.stderr)
+            sys.exit(2)
+        if not profile:
+            print("usage: browser-harness profile-target --profile NAME [--browser NAME] [--marker MARKER]", file=sys.stderr)
+            sys.exit(2)
+        opened = open_local_profile_marker(profile, browser_name=browser, marker=marker)
+        restart_daemon()
+        ensure_daemon(env={"BH_TARGET_MARKER": opened["marker"]})
+        print(opened["url"])
+        return
+    if args and args[0] == "local-profiles":
+        data = native_local_profiles()
+        if "--json" in args[1:]:
+            import json
+            print(json.dumps(data, indent=2))
+        else:
+            for profile in data:
+                print(f"{profile['id']}\t{profile['displayName']}\t{profile['profilePath']}")
+        return
+    if args and args[0] == "local-browsers":
+        data = native_local_browsers()
+        if "--json" in args[1:]:
+            import json
+            print(json.dumps(data, indent=2))
+        else:
+            for browser in data:
+                print(f"{browser['name']}\tprofiles={browser['profileCount']}\t{browser.get('browserPath') or ''}")
+        return
+    if args and args[0] == "default-profile":
+        rest = args[1:]
+        profile = None
+        browser = None
+        as_json = "--json" in rest
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--json":
+                i += 1; continue
+            if rest[i] == "--profile" and i + 1 < len(rest):
+                profile = rest[i + 1]; i += 2; continue
+            if rest[i] == "--browser" and i + 1 < len(rest):
+                browser = rest[i + 1]; i += 2; continue
+            print("usage: browser-harness default-profile [--profile NAME_OR_ID] [--browser NAME] [--json]", file=sys.stderr)
+            sys.exit(2)
+        selected = native_set_default_profile(profile, browser_name=browser) if profile else native_default_profile()
+        if as_json:
+            import json
+            print(json.dumps(selected, indent=2))
+        elif selected:
+            print(f"{selected['id']}\t{selected['displayName']}\t{selected['profilePath']}")
+        else:
+            print("no default profile configured", file=sys.stderr)
+            sys.exit(1)
         return
     if args and args[0] == "--debug-clicks":
         os.environ["BH_DEBUG_CLICKS"] = "1"

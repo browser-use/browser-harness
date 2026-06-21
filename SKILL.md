@@ -25,6 +25,12 @@ PY
 - Use the heredoc form for every multi-line command. It prevents shell quote mangling inside Python strings and JavaScript snippets.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
 
+## Local profiles
+
+When multiple local Chrome profiles exist, do not choose one yourself. Run `browser-harness local-profiles` and `browser-harness default-profile`. If no default is configured, ask the user which listed profile to use before any page work. Only run `browser-harness default-profile --profile <id-or-name>` after the user explicitly names or confirms the profile.
+
+Once a default is configured, startup opens a temporary marker tab in that profile, waits for the marker target over CDP, attaches to it to capture the Chrome `browserContextId`, then the first `new_tab()` opens the task tab in that same context and closes the marker tab. That task tab remains the controlled target across later commands. Future `new_tab()` calls stay pinned to that context, stale context ids are reacquired with a new marker, and target switches into a different profile context are refused.
+
 ## Tool call shape
 
 ```bash

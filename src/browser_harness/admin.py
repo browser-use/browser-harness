@@ -141,7 +141,11 @@ def _needs_chrome_remote_debugging_prompt(msg):
     """True when Chrome needs the inspect-page permission/profile flow."""
     lower = (msg or "").lower()
     return (
-        "devtoolsactiveport not found" in lower
+        # state tokens from browser.py's connection classifier
+        "permission-blocked" in lower
+        or "cdp-disabled" in lower
+        or "browser-closed" in lower
+        or "devtoolsactiveport not found" in lower
         or "enable chrome://inspect" in lower
         or "not live yet" in lower
         or (
@@ -153,6 +157,32 @@ def _needs_chrome_remote_debugging_prompt(msg):
                 or "timeout" in lower
             )
         )
+    )
+
+
+def _configured_profile_remote_debugging_enabled():
+    try:
+        from .browser import configured_profile_remote_debugging_enabled
+        return configured_profile_remote_debugging_enabled()
+    except Exception:
+        return None
+
+
+def _focus_configured_profile():
+    try:
+        from .browser import open_configured_profile
+        return open_configured_profile()
+    except Exception:
+        return None
+
+
+def _permission_blocked(msg):
+    lower = (msg or "").lower()
+    return (
+        "permission-blocked" in lower
+        or "403" in lower
+        or "forbidden" in lower
+        or "server rejected websocket connection" in lower
     )
 
 
@@ -298,15 +328,23 @@ def run_doctor_fix_snap():
 def ensure_daemon(wait=60.0, name=None, env=None):
     """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
     if daemon_alive(name):
-        # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
-        # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
+        # Warm startup must not re-probe Chrome with fresh CDP command
+        
         # Must go through ipc.connect so this works on Windows (TCP loopback) too;
         # raw AF_UNIX here would fail on every warm call and churn the daemon.
+        s = None
         try:
             s, token = ipc.connect(name or NAME, timeout=3.0)
-            resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
-            if "result" in resp: return
+            capabilities = ipc.request(s, token, {"meta": "capabilities"}).get("capabilities", [])
+            if "create_target" in capabilities and "verify_profile" in capabilities:
+                # Re-anchor to the selected profile before the command runs. This
+                # is in-daemon over the existing websocket, so it won't re-prompt
+                ipc.request(s, token, {"meta": "verify_profile"})
+                return
         except Exception: pass
+        finally:
+            if s:
+                s.close()
         restart_daemon(name)
 
     import subprocess, sys
@@ -324,8 +362,31 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             time.sleep(0.2)
         msg = _log_tail(name) or ""
         if local and attempt == 0 and _needs_chrome_remote_debugging_prompt(msg):
-            _open_chrome_inspect()
-            print('browser-harness: at chrome://inspect/#remote-debugging, tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
+            if _permission_blocked(msg):
+                # 403 means endpoint exists but Chrome gating it behind
+                # "Allow remote debugging?" popup
+                # Focus the profile to surface
+                # the dialog and return a blocked state instead of looping setup.
+                _focus_configured_profile()
+                enabled = _configured_profile_remote_debugging_enabled()
+                detail = (
+                    "remote debugging is already enabled"
+                    if enabled is True
+                    else "remote debugging must be enabled for the connection to be rejected this way"
+                )
+                raise RuntimeError(
+                    "permission-blocked: Chrome rejected the CDP websocket with HTTP 403. "
+                    f"The selected profile is focused and {detail}; "
+                    "do not run setup or reload. Retry after the Chrome security dialog is accepted."
+                )
+            if "browser-closed" in msg.lower():
+                # No running Chrome to expose chrome://inspect, so open/focus the
+                # profile to give the user a window to enable debugging in.
+                _focus_configured_profile()
+                print('browser-harness: opened the selected Chrome profile — enable remote debugging at chrome://inspect/#remote-debugging, then retry', file=sys.stderr)
+            else:
+                _open_chrome_inspect()
+                print('browser-harness: at chrome://inspect/#remote-debugging, tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
             restart_daemon(name)
             continue
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
@@ -548,13 +609,14 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
 
 
 def list_local_profiles():
-    """Detected local browser profiles on this machine. Shells out to `profile-use list --json`.
-    Returns [{BrowserName, BrowserPath, ProfileName, ProfilePath, DisplayName}, ...].
-    Requires `profile-use` (see interaction-skills/profile-sync.md for install)."""
-    import json, shutil, subprocess
-    if not shutil.which("profile-use"):
-        raise RuntimeError("profile-use not installed -- curl -fsSL https://browser-use.com/profile.sh | sh")
-    return json.loads(subprocess.check_output(["profile-use", "list", "--json"], text=True))
+    """Detected local Chromium-family profiles on this machine.
+
+    Native Python port of terminal's filesystem detector: reads known browser
+    install/profile roots and Chrome's Local State profile names. Does not
+    require profile-use.
+    """
+    from .browser import list_local_profiles as _list_local_profiles
+    return _list_local_profiles()
 
 
 def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
@@ -738,13 +800,16 @@ def _open_chrome_inspect():
 
 def run_doctor():
     """Read-only diagnostics. Exit 0 iff everything looks healthy."""
-    import platform, shutil, sys
+    import platform, sys
     cur = _version()
     mode = _install_mode()
     chrome = _chrome_running()
     daemon = daemon_alive()
     connections = browser_connections()
-    profile_use = shutil.which("profile-use") is not None
+    try:
+        local_profiles = list_local_profiles()
+    except Exception:
+        local_profiles = []
     api_key = bool(os.environ.get("BROWSER_USE_API_KEY"))
     latest = _latest_release_tag()
     # Only claim an update when we know the installed version — `cur or "(unknown)"`
@@ -783,9 +848,9 @@ def run_doctor():
             print(f"        {conn['name']} — active page: {title} — {url}")
         else:
             print(f"        {conn['name']} — active page: (no real page)")
-    row("profile-use installed", profile_use, "" if profile_use else "optional: curl -fsSL https://browser-use.com/profile.sh | sh")
+    row("local profiles detected", bool(local_profiles), str(len(local_profiles)))
     row("BROWSER_USE_API_KEY set", api_key, "" if api_key else "optional: needed only for cloud browsers / profile sync")
-    # Core health = chrome + daemon. Profile-use/api-key are optional.
+    # Core health = chrome + daemon. Local profiles/api-key are optional.
     return 0 if (chrome and daemon) else 1
 
 
