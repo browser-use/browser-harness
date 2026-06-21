@@ -308,7 +308,11 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    # Target.activateTarget raises and focuses the OS window on macOS, stealing
+    # focus from whatever the user is typing in. Skip it when BH_NO_ACTIVATE=1;
+    # the horse-emoji title still marks which tab the agent controls.
+    if os.environ.get("BH_NO_ACTIVATE") != "1":
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
@@ -318,7 +322,10 @@ def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    params = {"url": "about:blank"}
+    if os.environ.get("BH_NO_ACTIVATE") == "1":
+        params["background"] = True  # Mac-only: open the tab without raising the window.
+    tid = cdp("Target.createTarget", **params)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
