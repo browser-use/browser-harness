@@ -256,7 +256,10 @@ def press_key(key, modifiers=0):
     so listeners checking e.keyCode / e.key all fire."""
     vk, code, text = _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
-    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
+    # Printable characters should be inserted by the `char` event only.
+    # Sending text on both keyDown and char duplicates input.
+    keydown_text = text if len(text) > 1 else ""
+    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": keydown_text} if keydown_text else {}))
     if text and len(text) == 1:
         cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
