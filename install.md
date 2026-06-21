@@ -26,9 +26,23 @@ After the repo is installed, register this repo's `SKILL.md` with the agent you 
 
 - **Codex**: add this file as a global skill at `$CODEX_HOME/skills/browser-harness/SKILL.md` (often `~/.codex/skills/browser-harness/SKILL.md`). A symlink to this repo's `SKILL.md` is fine.
 
-  ```bash
-  mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness" && ln -sf "$PWD/SKILL.md" "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness/SKILL.md"
-  ```
+Some lazy-loading skill systems index only files literally named `SKILL.md` and
+show the agent only each skill's frontmatter until it chooses to load the full
+file. In those systems, the checked-in `agent-workspace/domain-skills/<site>/*.md` files may
+not appear as separate skills. Register the main `SKILL.md` as usual, and make
+the session prompt explicit:
+
+```text
+Read the browser-harness SKILL.md and helpers.py first. Before any site-specific
+browser task, run `rg --files /path/to/browser-harness/agent-workspace/domain-skills` and read
+matching site files instead of inventing the flow from scratch.
+```
+
+Codex command:
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness" && ln -sf "$PWD/SKILL.md" "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness/SKILL.md"
+```
 
 - **Claude Code**: add an import to `~/.claude/CLAUDE.md` that points at this repo's `SKILL.md`, for example `@~/Developer/browser-harness/SKILL.md`.
 
