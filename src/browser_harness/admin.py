@@ -725,10 +725,10 @@ def _chrome_running():
     try:
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, timeout=5)
-            names = ("chrome.exe", "msedge.exe", "helium.exe")
+            names = ("chrome.exe", "msedge.exe", "helium.exe", "brave.exe")
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
+            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium", "Brave Browser", "brave-browser", "brave")
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
