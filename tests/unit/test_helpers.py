@@ -77,6 +77,160 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
+# --- tabs ---
+
+class _FakeTabs:
+    def __init__(self, tabs, current):
+        self.tabs = [dict(t) for t in tabs]
+        self.session_target_id = current
+        self.session_id = f"session-{current}"
+        self.closed = []
+        self.fail_close = False
+        self.next_tab = 1
+
+    def cdp(self, method, session_id=None, **params):
+        if method == "Target.getTargets":
+            return {
+                "targetInfos": [
+                    {"type": "page", **t}
+                    for t in self.tabs
+                ]
+            }
+        if method == "Target.activateTarget":
+            return {}
+        if method == "Target.attachToTarget":
+            target_id = params["targetId"]
+            return {"sessionId": f"session-{target_id}"}
+        if method == "Target.createTarget":
+            target_id = f"new-tab-{self.next_tab}"
+            self.next_tab += 1
+            self.tabs.append({"targetId": target_id, "url": params["url"], "title": ""})
+            return {"targetId": target_id}
+        if method == "Target.closeTarget":
+            if self.fail_close:
+                raise RuntimeError("close failed")
+            target_id = params["targetId"]
+            self.closed.append(target_id)
+            self.tabs = [t for t in self.tabs if t["targetId"] != target_id]
+            return {"success": True}
+        if method == "Runtime.evaluate":
+            expression = params["expression"]
+            if "JSON.stringify" in expression:
+                tab = self._current_tab()
+                value = (
+                    f'{{"url":"{tab["url"]}","title":"{tab["title"]}",'
+                    '"w":800,"h":600,"sx":0,"sy":0,"pw":800,"ph":600}'
+                )
+                return {"result": {"value": value}}
+            if expression == "1+1":
+                return {"result": {"value": 2}}
+            return {"result": {"value": None}}
+        raise AssertionError(f"unexpected CDP method: {method}")
+
+    def send(self, req):
+        meta = req.get("meta")
+        if meta == "current_tab":
+            tab = self._current_tab()
+            return {"targetId": tab["targetId"], "url": tab["url"], "title": tab["title"]}
+        if meta == "set_session":
+            self.session_id = req["session_id"]
+            self.session_target_id = req["target_id"]
+            return {"session_id": self.session_id}
+        if meta == "session":
+            return {"session_id": self.session_id}
+        if meta == "pending_dialog":
+            return {}
+        raise AssertionError(f"unexpected IPC request: {req}")
+
+    def _current_tab(self):
+        for tab in self.tabs:
+            if tab["targetId"] == self.session_target_id:
+                return tab
+        raise RuntimeError(f"not attached to live tab: {self.session_target_id}")
+
+
+def test_close_tab_current_switches_to_surviving_tab():
+    browser = _FakeTabs(
+        [
+            {"targetId": "survivor", "url": "https://survivor.example/", "title": "Survivor"},
+            {"targetId": "current", "url": "https://current.example/", "title": "Current"},
+        ],
+        current="current",
+    )
+
+    with patch("browser_harness.helpers.cdp", side_effect=browser.cdp), \
+         patch("browser_harness.helpers._send", side_effect=browser.send):
+        helpers.close_tab()
+
+        assert helpers.current_tab()["targetId"] == "survivor"
+        assert helpers.js("1+1") == 2
+
+    assert browser.closed == ["current"]
+    assert browser.session_target_id == "survivor"
+    assert browser.session_id == "session-survivor"
+
+
+def test_close_tab_current_opens_blank_when_no_other_real_tab():
+    browser = _FakeTabs(
+        [{"targetId": "current", "url": "https://current.example/", "title": "Current"}],
+        current="current",
+    )
+
+    with patch("browser_harness.helpers.cdp", side_effect=browser.cdp), \
+         patch("browser_harness.helpers._send", side_effect=browser.send):
+        helpers.close_tab()
+
+        assert helpers.current_tab()["targetId"] == "new-tab-1"
+        assert helpers.current_tab()["url"] == "about:blank"
+        assert helpers.page_info()["url"] == "about:blank"
+
+    assert browser.closed == ["current"]
+    assert browser.session_target_id == "new-tab-1"
+    assert browser.session_id == "session-new-tab-1"
+
+
+def test_close_tab_explicit_non_current_leaves_session_unchanged():
+    browser = _FakeTabs(
+        [
+            {"targetId": "current", "url": "https://current.example/", "title": "Current"},
+            {"targetId": "other", "url": "https://other.example/", "title": "Other"},
+        ],
+        current="current",
+    )
+
+    with patch("browser_harness.helpers.cdp", side_effect=browser.cdp), \
+         patch("browser_harness.helpers._send", side_effect=browser.send):
+        helpers.close_tab(target="other")
+
+        assert helpers.current_tab()["targetId"] == "current"
+
+    assert browser.closed == ["other"]
+    assert browser.session_target_id == "current"
+    assert browser.session_id == "session-current"
+
+
+def test_close_tab_current_rolls_back_session_when_close_fails():
+    browser = _FakeTabs(
+        [
+            {"targetId": "survivor", "url": "https://survivor.example/", "title": "Survivor"},
+            {"targetId": "current", "url": "https://current.example/", "title": "Current"},
+        ],
+        current="current",
+    )
+    browser.fail_close = True
+
+    with patch("browser_harness.helpers.cdp", side_effect=browser.cdp), \
+         patch("browser_harness.helpers._send", side_effect=browser.send):
+        with pytest.raises(RuntimeError, match="close failed"):
+            helpers.close_tab()
+
+        assert helpers.current_tab()["targetId"] == "current"
+
+    assert browser.closed == []
+    assert browser.session_target_id == "current"
+    assert browser.session_id == "session-current"
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():

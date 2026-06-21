@@ -326,11 +326,35 @@ def new_tab(url="about:blank"):
 
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
-    Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
+    Accepts a raw targetId string or a dict from list_tabs()/current_tab().
+    Closing the attached tab first switches the harness to another real tab, or
+    a fresh about:blank tab if there is no other real tab."""
     target_id = target.get("targetId") if isinstance(target, dict) else target
     if target_id is None:
-        target_id = current_tab()["targetId"]
-    cdp("Target.closeTarget", targetId=target_id)
+        cur = current_tab()
+        target_id = cur["targetId"]
+    else:
+        try:
+            cur = current_tab()
+        except Exception:
+            cur = None
+    if cur is None:
+        cdp("Target.closeTarget", targetId=target_id)
+        return
+    if target_id != cur["targetId"]:
+        cdp("Target.closeTarget", targetId=target_id)
+        return
+
+    other_tabs = [t for t in list_tabs(include_chrome=False) if t["targetId"] != target_id]
+    if other_tabs:
+        switch_tab(other_tabs[0])
+    else:
+        new_tab()
+    try:
+        cdp("Target.closeTarget", targetId=target_id)
+    except Exception:
+        switch_tab(cur)
+        raise
 
 
 def ensure_real_tab():
