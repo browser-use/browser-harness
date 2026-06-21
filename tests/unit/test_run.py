@@ -1,3 +1,4 @@
+import json
 import sys
 from io import StringIO
 from unittest.mock import patch
@@ -238,3 +239,58 @@ def test_cli_doctor_rejects_unknown_flags():
     assert ei.value.code == 2
     assert "usage" in err.getvalue().lower()
 
+
+def test_profiles_cli_runs_without_daemon():
+    stdout = StringIO()
+
+    with patch.object(sys, "argv", ["browser-harness", "profiles"]), \
+         patch("sys.stdout", stdout), \
+         patch("browser_harness.run.ensure_daemon") as ensure_daemon, \
+         patch("browser_harness.run.browser_profiles", return_value={"profiles": []}) as profiles:
+        run.main()
+
+    ensure_daemon.assert_not_called()
+    profiles.assert_called_once_with(verbose=False)
+    assert json.loads(stdout.getvalue()) == {"profiles": []}
+
+
+def test_profiles_cli_supports_verbose_without_daemon():
+    stdout = StringIO()
+
+    with patch.object(sys, "argv", ["browser-harness", "profiles", "--verbose"]), \
+         patch("sys.stdout", stdout), \
+         patch("browser_harness.run.ensure_daemon") as ensure_daemon, \
+         patch("browser_harness.run.browser_profiles", return_value={"status": "ok"}) as profiles:
+        run.main()
+
+    ensure_daemon.assert_not_called()
+    profiles.assert_called_once_with(verbose=True)
+    assert json.loads(stdout.getvalue()) == {"status": "ok"}
+
+
+def test_use_profile_cli_runs_without_daemon():
+    stdout = StringIO()
+
+    with patch.object(sys, "argv", ["browser-harness", "use-profile", "google-chrome:Default"]), \
+         patch("sys.stdout", stdout), \
+         patch("browser_harness.run.ensure_daemon") as ensure_daemon, \
+         patch("browser_harness.run.browser_use_profile", return_value={"selected": "google-chrome:Default"}) as use_profile:
+        run.main()
+
+    ensure_daemon.assert_not_called()
+    use_profile.assert_called_once_with("google-chrome:Default")
+    assert json.loads(stdout.getvalue()) == {"selected": "google-chrome:Default"}
+
+
+def test_open_profile_cli_runs_without_daemon_and_without_marker():
+    stdout = StringIO()
+
+    with patch.object(sys, "argv", ["browser-harness", "open-profile", "google-chrome:Default"]), \
+         patch("sys.stdout", stdout), \
+         patch("browser_harness.run.ensure_daemon") as ensure_daemon, \
+         patch("browser_harness.run.open_local_profile", return_value={"opened": True}) as open_profile:
+        run.main()
+
+    ensure_daemon.assert_not_called()
+    open_profile.assert_called_once_with("google-chrome:Default", marker=False)
+    assert json.loads(stdout.getvalue()) == {"opened": True}

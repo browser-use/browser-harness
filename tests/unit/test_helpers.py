@@ -165,6 +165,21 @@ def test_fill_input_no_clear_skips_ctrl_a():
     assert "Backspace" not in keys_seen
 
 
+def test_press_key_modified_character_does_not_emit_char_event():
+    key_events = []
+
+    def fake_cdp(method, **kwargs):
+        if method == "Input.dispatchKeyEvent":
+            key_events.append(kwargs)
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.press_key("a", modifiers=4)
+
+    assert [e["type"] for e in key_events] == ["keyDown", "keyUp"]
+    assert not any(e.get("type") == "char" for e in key_events)
+
+
 # --- wait_for_element ---
 
 def test_wait_for_element_returns_true_when_found_immediately():
@@ -217,6 +232,92 @@ def test_wait_for_element_non_visible_uses_simple_check():
         helpers.wait_for_element("#btn", visible=False)
 
     assert any("querySelector" in e and "offsetParent" not in e for e in js_exprs)
+
+
+# --- tabs / profile contexts ---
+
+def test_new_tab_reuses_attached_blank_tab_for_url():
+    with patch("browser_harness.helpers.current_tab", return_value={"targetId": "blank-target", "url": "about:blank"}), \
+         patch("browser_harness.helpers.goto_url") as goto_url, \
+         patch("browser_harness.helpers.cdp") as cdp, \
+         patch("browser_harness.helpers.switch_tab") as switch_tab:
+        result = helpers.new_tab("https://example.test/")
+
+    assert result == "blank-target"
+    goto_url.assert_called_once_with("https://example.test/")
+    cdp.assert_not_called()
+    switch_tab.assert_not_called()
+
+
+def test_list_tabs_filters_to_current_browser_context():
+    def fake_send(req):
+        if req.get("meta") == "current_tab":
+            return {
+                "targetId": "selected-target",
+                "url": "https://selected.example",
+                "title": "Selected",
+                "browserContextId": "ctx-selected",
+            }
+        return {}
+
+    def fake_cdp(method, **kwargs):
+        assert method == "Target.getTargets"
+        return {"targetInfos": [
+            {
+                "targetId": "selected-target",
+                "type": "page",
+                "title": "Selected",
+                "url": "https://selected.example",
+                "browserContextId": "ctx-selected",
+            },
+            {
+                "targetId": "other-target",
+                "type": "page",
+                "title": "Other",
+                "url": "https://other.example",
+                "browserContextId": "ctx-other",
+            },
+        ]}
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        tabs = helpers.list_tabs()
+        all_tabs = helpers.list_tabs(include_other_contexts=True)
+
+    assert [tab["targetId"] for tab in tabs] == ["selected-target"]
+    assert {tab["targetId"] for tab in all_tabs} == {"selected-target", "other-target"}
+
+
+def test_new_tab_preserves_current_browser_context():
+    calls = []
+
+    def fake_send(req):
+        if req.get("meta") == "current_tab":
+            return {
+                "targetId": "current-target",
+                "url": "about:blank",
+                "title": "",
+                "browserContextId": "ctx-selected",
+            }
+        if req.get("meta") == "set_session":
+            return {"session_id": req["session_id"]}
+        return {}
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            return {"targetId": "new-target"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        target_id = helpers.new_tab()
+
+    assert target_id == "new-target"
+    create_call = next(kwargs for method, kwargs in calls if method == "Target.createTarget")
+    assert create_call["browserContextId"] == "ctx-selected"
 
 
 # --- wait_for_network_idle ---

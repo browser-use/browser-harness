@@ -34,35 +34,47 @@ def _check(name):  # path-traversal guard for BU_NAME
     return name
 
 
-def _runtime_stem(name):  # "bu" when BH_RUNTIME_DIR isolates us, else "bu-<NAME>"
+def _runtime_path(runtime_dir=None):
+    p = Path(runtime_dir) if runtime_dir else _RUNTIME
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _tmp_path(tmp_dir=None):
+    p = Path(tmp_dir) if tmp_dir else _TMP
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _runtime_stem(name, runtime_dir=None):  # "bu" when runtime dir isolates us, else "bu-<NAME>"
     _check(name)
-    return "bu" if BH_RUNTIME_DIR else f"bu-{name}"
+    return "bu" if (runtime_dir or BH_RUNTIME_DIR) else f"bu-{name}"
 
 
-def _tmp_stem(name):  # "bu" when BH_TMP_DIR isolates us, else "bu-<NAME>"
+def _tmp_stem(name, tmp_dir=None):  # "bu" when tmp dir isolates us, else "bu-<NAME>"
     _check(name)
-    return "bu" if BH_TMP_DIR else f"bu-{name}"
+    return "bu" if (tmp_dir or BH_TMP_DIR) else f"bu-{name}"
 
 
-def log_path(name):   return _TMP / f"{_tmp_stem(name)}.log"
-def pid_path(name):   return _RUNTIME / f"{_runtime_stem(name)}.pid"
-def port_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.port"  # Windows-only: holds {"port","token"} JSON
-def _sock_path(name): return _RUNTIME / f"{_runtime_stem(name)}.sock"
+def log_path(name, tmp_dir=None):      return _tmp_path(tmp_dir) / f"{_tmp_stem(name, tmp_dir)}.log"
+def pid_path(name, runtime_dir=None):  return _runtime_path(runtime_dir) / f"{_runtime_stem(name, runtime_dir)}.pid"
+def port_path(name, runtime_dir=None): return _runtime_path(runtime_dir) / f"{_runtime_stem(name, runtime_dir)}.port"  # Windows-only
+def _sock_path(name, runtime_dir=None): return _runtime_path(runtime_dir) / f"{_runtime_stem(name, runtime_dir)}.sock"
 
 
-def _read_port_file(name):
+def _read_port_file(name, runtime_dir=None):
     """(port, token) from the Windows port file, or (None, None) on any failure."""
     try:
-        d = json.loads(port_path(name).read_text())
+        d = json.loads(port_path(name, runtime_dir).read_text())
         return int(d["port"]), d["token"]
     except (FileNotFoundError, ValueError, KeyError, TypeError, OSError):
         return None, None
 
 
-def sock_addr(name):  # display-only, used in log lines
-    if not IS_WINDOWS: return str(_sock_path(name))
-    port, _ = _read_port_file(name)
-    return f"127.0.0.1:{port}" if port else f"tcp:{_runtime_stem(name)}"
+def sock_addr(name, runtime_dir=None):  # display-only, used in log lines
+    if not IS_WINDOWS: return str(_sock_path(name, runtime_dir))
+    port, _ = _read_port_file(name, runtime_dir)
+    return f"127.0.0.1:{port}" if port else f"tcp:{_runtime_stem(name, runtime_dir)}"
 
 
 def spawn_kwargs():  # subprocess.Popen flags so the daemon detaches from this terminal
@@ -76,15 +88,15 @@ def spawn_kwargs():  # subprocess.Popen flags so the daemon detaches from this t
     return {"start_new_session": True}
 
 
-def connect(name, timeout=1.0):
+def connect(name, timeout=1.0, runtime_dir=None):
     """Blocking client. Returns (sock, token); token is None on POSIX, hex string on Windows.
     Callers sending JSON requests MUST include the token as req["token"] on Windows."""
     if not IS_WINDOWS:
         # uv-Python on Windows lacks socket.AF_UNIX, so this branch must be gated.
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(timeout); s.connect(str(_sock_path(name))); return s, None
-    port, token = _read_port_file(name)
-    if port is None: raise FileNotFoundError(str(port_path(name)))
+        s.settimeout(timeout); s.connect(str(_sock_path(name, runtime_dir))); return s, None
+    port, token = _read_port_file(name, runtime_dir)
+    if port is None: raise FileNotFoundError(str(port_path(name, runtime_dir)))
     s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
     s.settimeout(timeout); return s, token
 
@@ -102,12 +114,15 @@ def request(c, token, req):
     return json.loads(data or b"{}")
 
 
-def ping(name, timeout=1.0):
+def ping(name, timeout=1.0, runtime_dir=None):
     """True iff a live daemon answers our ping. Defends against stale .port files
     + port reuse: a bare TCP connect can succeed against an unrelated process that
     grabbed the port after our daemon crashed; only our daemon answers {"pong":true}."""
     try:
-        c, token = connect(name, timeout=timeout)
+        if runtime_dir is None:
+            c, token = connect(name, timeout=timeout)
+        else:
+            c, token = connect(name, timeout=timeout, runtime_dir=runtime_dir)
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError):
         return False
     try:
@@ -123,14 +138,17 @@ def ping(name, timeout=1.0):
         except OSError: pass
 
 
-def identify(name, timeout=1.0):
+def identify(name, timeout=1.0, runtime_dir=None):
     """Return the live daemon's PID, or None if unreachable.
 
     Used by restart_daemon() to signal a process whose identity has been
     verified end-to-end (live IPC + self-reported PID), instead of trusting
     a pid file whose number may have been reused by an unrelated process."""
     try:
-        c, token = connect(name, timeout=timeout)
+        if runtime_dir is None:
+            c, token = connect(name, timeout=timeout)
+        else:
+            c, token = connect(name, timeout=timeout, runtime_dir=runtime_dir)
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError):
         return None
     try:
@@ -191,7 +209,7 @@ def expected_token():
     return _server_token
 
 
-def cleanup_endpoint(name):  # best-effort; silent if already gone
-    p = _sock_path(name) if not IS_WINDOWS else port_path(name)
+def cleanup_endpoint(name, runtime_dir=None):  # best-effort; silent if already gone
+    p = _sock_path(name, runtime_dir) if not IS_WINDOWS else port_path(name, runtime_dir)
     try: p.unlink()
     except FileNotFoundError: pass

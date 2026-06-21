@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from browser_harness import daemon
 
 
@@ -274,6 +276,8 @@ def test_current_tab_meta_passes_attached_target_id():
         "targetId": "page-target-abc",
         "url": "https://example.com/",
         "title": "Example Domain",
+        "browserContextId": None,
+        "local_profile_id": None,
     }
     # The targetId must be passed through — that's the whole point of the fix.
     get_info_calls = [(p, s) for (m, p, s) in d.cdp.calls if m == "Target.getTargetInfo"]
@@ -293,3 +297,224 @@ def test_current_tab_meta_returns_not_attached_when_no_target_id():
     assert result == {"error": "not_attached"}
     # No CDP call should have been issued.
     assert d.cdp.calls == []
+
+
+def test_prepare_selected_local_profile_blocks_without_default(monkeypatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setattr(daemon, "REMOTE_ID", None)
+    monkeypatch.setattr(daemon.local_profiles, "get_default_profile_id", lambda: None)
+    monkeypatch.setattr(
+        daemon.local_profiles,
+        "list_local_profiles_payload",
+        lambda: {"status": "ok", "profiles": [{"id": "google-chrome:Default"}]},
+    )
+    d = daemon.Daemon()
+
+    with pytest.raises(RuntimeError, match="needs-profile"):
+        d._prepare_selected_local_profile()
+
+
+def test_prepare_selected_local_profile_blocks_checkbox_off_without_opening_marker(tmp_path, monkeypatch):
+    profile = daemon.local_profiles.LocalBrowserProfile(
+        id="google-chrome:Default",
+        browser_name="Google Chrome",
+        browser_path=tmp_path / "chrome",
+        user_data_dir=tmp_path / "User Data",
+        profile_dir="Default",
+        profile_name="Default",
+        profile_path=tmp_path / "User Data" / "Default",
+        display_name="Google Chrome - Default",
+    )
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setattr(daemon, "REMOTE_ID", None)
+    monkeypatch.setattr(daemon.local_profiles, "get_default_profile_id", lambda: profile.id)
+    monkeypatch.setattr(daemon.local_profiles, "resolve_local_profile", lambda _profile_id: profile)
+    monkeypatch.setattr(daemon.local_profiles, "remote_debugging_user_enabled", lambda _path: False)
+    monkeypatch.setattr(
+        daemon.local_profiles,
+        "open_local_profile",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not open marker")),
+    )
+    d = daemon.Daemon()
+
+    with pytest.raises(RuntimeError, match="cdp-disabled"):
+        d._prepare_selected_local_profile()
+
+
+def test_target_create_is_scoped_to_selected_browser_context():
+    d = _fresh_daemon()
+    d.preferred_browser_context_id = "ctx-selected"
+
+    result = asyncio.run(d.handle({
+        "method": "Target.createTarget",
+        "params": {"url": "about:blank"},
+    }))
+
+    assert result == {"result": {}}
+    assert d.cdp.calls == [
+        ("Target.createTarget", {"url": "about:blank", "browserContextId": "ctx-selected"}, None)
+    ]
+
+
+def test_target_create_rejects_different_browser_context():
+    d = _fresh_daemon()
+    d.preferred_browser_context_id = "ctx-selected"
+
+    result = asyncio.run(d.handle({
+        "method": "Target.createTarget",
+        "params": {"url": "about:blank", "browserContextId": "ctx-other"},
+    }))
+
+    assert result == {"error": "wrong-profile: refusing to create a target in a different Chrome profile context"}
+    assert d.cdp.calls == []
+
+
+def test_set_session_rejects_target_from_different_browser_context():
+    class _TargetsCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"targetId": "target-other", "type": "page", "browserContextId": "ctx-other"},
+                ]}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _TargetsCDP()
+    d.preferred_browser_context_id = "ctx-selected"
+
+    result = asyncio.run(d.handle({
+        "meta": "set_session",
+        "session_id": "session-other",
+        "target_id": "target-other",
+    }))
+
+    assert result == {"error": "wrong-profile: refusing to switch to a target from a different Chrome profile context"}
+    assert d.session is None
+    assert d.target_id is None
+
+
+def test_marker_attach_captures_profile_and_browser_context():
+    class _MarkerCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {
+                        "targetId": "marker-target",
+                        "type": "page",
+                        "url": "https://browser-use.com/browser-use-profile-target/123",
+                        "browserContextId": "ctx-selected",
+                    },
+                    {
+                        "targetId": "duplicate-marker",
+                        "type": "page",
+                        "url": "https://browser-use.com/browser-use-profile-target/123",
+                        "browserContextId": "ctx-selected",
+                    },
+                    {
+                        "targetId": "work-target",
+                        "type": "page",
+                        "url": "https://example.com/",
+                        "browserContextId": "ctx-selected",
+                    },
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": f"session-{params['targetId']}"}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _MarkerCDP()
+    d.preferred_target_marker = "123"
+    d.preferred_profile_id = "google-chrome:Default"
+
+    page = asyncio.run(d.attach_first_page())
+
+    assert page["targetId"] == "work-target"
+    assert d.session == "session-work-target"
+    assert d.target_id == "work-target"
+    assert d.active_local_profile_id == "google-chrome:Default"
+    assert d.preferred_browser_context_id == "ctx-selected"
+    assert ("Target.closeTarget", {"targetId": "marker-target"}, None) in d.cdp.calls
+    assert ("Target.closeTarget", {"targetId": "duplicate-marker"}, None) in d.cdp.calls
+
+
+def test_marker_attach_creates_blank_tab_in_selected_context_when_only_marker_exists():
+    class _MarkerOnlyCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {
+                        "targetId": "marker-target",
+                        "type": "page",
+                        "url": "https://browser-use.com/browser-use-profile-target/123",
+                        "browserContextId": "ctx-selected",
+                    },
+                ]}
+            if method == "Target.createTarget":
+                return {"targetId": "created-target"}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-created"}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _MarkerOnlyCDP()
+    d.preferred_target_marker = "123"
+    d.preferred_profile_id = "google-chrome:Default"
+
+    page = asyncio.run(d.attach_first_page())
+
+    assert page["targetId"] == "created-target"
+    assert d.session == "session-created"
+    assert d.target_id == "created-target"
+    assert d.active_local_profile_id == "google-chrome:Default"
+    assert d.preferred_browser_context_id == "ctx-selected"
+    assert d.owned_target_ids == {"created-target"}
+    assert ("Target.createTarget", {"url": "about:blank", "browserContextId": "ctx-selected"}, None) in d.cdp.calls
+    assert ("Target.closeTarget", {"targetId": "marker-target"}, None) in d.cdp.calls
+
+
+def test_target_create_tracks_owned_target_and_close_owned_targets_closes_it():
+    class _CreateAndCloseCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.createTarget":
+                return {"targetId": "created-by-helper"}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _CreateAndCloseCDP()
+
+    result = asyncio.run(d.handle({
+        "method": "Target.createTarget",
+        "params": {"url": "https://example.com/"},
+    }))
+
+    assert result == {"result": {"targetId": "created-by-helper"}}
+    assert d.owned_target_ids == {"created-by-helper"}
+
+    asyncio.run(d.close_owned_targets())
+
+    assert d.owned_target_ids == set()
+    assert ("Target.closeTarget", {"targetId": "created-by-helper"}, None) in d.cdp.calls
+
+
+def test_reattach_same_target_reports_target_gone_instead_of_switching():
+    class _GoneCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {"targetInfos": []}
+            raise RuntimeError("Session with given id not found")
+
+    d = daemon.Daemon()
+    d.cdp = _GoneCDP()
+    d.session = "session-old"
+    d.target_id = "target-old"
+
+    result = asyncio.run(d.handle({"method": "Runtime.evaluate", "params": {"expression": "1"}}))
+
+    assert result == {"error": "target-gone: Previous browser tab target is gone."}

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEV_ID="$(printf '%s' "$ROOT" | cksum | awk '{print $1}')"
+
+export BH_MANAGER_ROOT="${BH_MANAGER_ROOT:-/tmp/bhm-dev-$DEV_ID}"
+export BH_MANAGER_SOCKET="${BH_MANAGER_SOCKET:-$BH_MANAGER_ROOT/manager.sock}"
+
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  exec "$ROOT/.venv/bin/python" -m browser_harness.run "$@"
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  exec uv --directory "$ROOT" run python -m browser_harness.run "$@"
+fi
+
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m browser_harness.run "$@"

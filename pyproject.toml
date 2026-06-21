@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 browser-harness = "browser_harness.run:main"
+browser-harness-manager = "browser_harness.manager_daemon:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

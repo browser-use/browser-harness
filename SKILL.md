@@ -1,66 +1,104 @@
 ---
 name: browser
-description: Direct browser control via CDP. Use when the user wants to automate, scrape, test, or interact with web pages. Connects to the user's already-running Chrome.
+description: Control a browser with Python helpers. Use for web automation, scraping, testing, or interacting with pages.
 ---
 
 # browser-harness
 
-Direct browser control via CDP. For task-specific edits, use `agent-workspace/agent_helpers.py`. For setup, install, or connection problems, read install.md.
+Managed browsers have short explicit ids. Create or receive an id, then select it inside each script.
 
-Domain skills (community-contributed per-site playbooks under `agent-workspace/domain-skills/`) are off by default. Set `BH_DOMAIN_SKILLS=1` to enable them; see the bottom section.
-
-**If `BH_DOMAIN_SKILLS=1` and the task is site-specific, read every file in the matching `agent-workspace/domain-skills/<site>/` directory before inventing an approach.**
-
-## Usage
+Create and use a private browser:
 
 ```bash
 browser-harness <<'PY'
+b = browser_new("private")
+browser(b["id"])
 new_tab("https://docs.browser-use.com")
 wait_for_load()
+print({"id": b["id"], "page": page_info()})
+PY
+```
+
+Use an existing managed browser:
+
+```bash
+browser-harness <<'PY'
+browser("abc123")
 print(page_info())
 PY
 ```
 
-- Invoke as browser-harness — it's on $PATH. No cd, no uv run.
-- Use the heredoc form for every multi-line command. It prevents shell quote mangling inside Python strings and JavaScript snippets.
-- First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
+`browser(id)` selects a browser for this script only. Do not rely on a current browser across separate shell commands. Sharing an id means sharing that browser's tabs, cookies, downloads, and session state.
 
-## Tool call shape
+Inspect managed browsers:
 
 ```bash
 browser-harness <<'PY'
-# any python. helpers pre-imported. daemon auto-starts.
+print(browser_list())
+print(browser_status("abc123"))
 PY
 ```
 
-run.py calls ensure_daemon() before exec — you never start/stop manually unless you want to.
+`browser_list()` shows known managed browser ids and their owners.
 
-### Remote browsers
+## Choose Browser
 
-Use remote for parallel sub-agents (each gets its own isolated browser via a distinct BU_NAME) or on a headless server. BROWSER_USE_API_KEY must be set. start_remote_daemon, list_cloud_profiles, list_local_profiles, sync_local_profile are pre-imported.
+- User's logged-in local Chrome: use normal helpers. If setup asks for a profile, run `browser_profiles()`, ask the user which `id` to use, then run `browser_use_profile(id)` and retry.
+- Isolated local browser: `browser_new("private")`, then keep the returned `id`.
+- Browser Use cloud browser with live view: `browser_new("cloud")`, then keep the returned `id`.
+- Managed browser page work: call `browser(id)` first in the script.
+- Subagent: if the parent gives an id, start browser scripts with `browser(id)` and do not close it unless asked.
+- Done with a private or cloud browser: `browser_close(id)`.
+- Done with all browsers you created: `browser_close_owned()`.
+
+## Browser Helpers
+
+```python
+browser_status(id)
+browser_profiles()
+browser_use_profile(profile_id)
+browser_new("private")
+browser_new("cloud")
+browser(id)
+browser_list()
+browser_close(id)
+browser_close_owned()
+```
+
+`browser_profiles()` and `browser_use_profile(...)` are local setup calls. They do not start browser work.
+
+Inside one Python script, `browser(id)` attaches the process to that browser so normal page helpers work: `new_tab`, `page_info`, `capture_screenshot`, `click_at_xy`, `type_text`, `js`, and `cdp`.
+
+If `browser_new("cloud")` reports `cloud-auth-required`, run:
 
 ```bash
-browser-harness <<'PY'
-start_remote_daemon("work")                               # default — clean browser, no profile
-# start_remote_daemon("work", profileName="my-work")      # reuse a cloud profile (already logged in)
-# start_remote_daemon("work", profileId="<uuid>")         # same, but by UUID
-# start_remote_daemon("work", proxyCountryCode="de", timeout=120)   # DE proxy, 2-hour timeout
-# start_remote_daemon("work", proxyCountryCode=None)      # disable the Browser Use proxy
-PY
-
-BU_NAME=work browser-harness <<'PY'
-new_tab("https://example.com")
-print(page_info())
-PY
+browser-harness auth login
 ```
 
-start_remote_daemon prints liveUrl and auto-opens it in the local browser (if a GUI is detected) so the user can watch along. Headless servers print only — share the URL with the user. The daemon PATCHes the cloud browser to stop on shutdown, which persists profile state. Running remote daemons bill until timeout.
+If the user directly provides an API key, store it through stdin:
 
-Profiles (cookies-only login state) live in interaction-skills/profile-sync.md — covers list_cloud_profiles(), the chat-driven "which profile?" pattern, and sync_local_profile() for uploading a local Chrome profile.
+```bash
+browser-harness auth login --api-key-stdin
+```
 
-## Interaction skills
+Never put API keys in command-line arguments.
 
-If you start struggling with a specific mechanic while navigating, look in interaction-skills/ for helpers. They cover reusable UI mechanics like dialogs, tabs, dropdowns, iframes, and uploads. The available interaction skills are:
+## Page Workflow
+
+- First navigation is `new_tab(url)`, not `goto_url(url)`.
+- Screenshots are the default way to understand and verify visible state: `capture_screenshot()`.
+- Click visible targets by screenshot coordinates: `click_at_xy(x, y)`.
+- Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
+- After navigation, call `wait_for_load()`.
+- If the current tab is stale or internal, call `ensure_real_tab()`.
+- If a tab/session dies (`target-gone`, `browser session ended`), open a fresh tab; if status is not ready, create a new browser.
+- If redirected to a login wall, stop and ask the user. Do not type credentials from screenshots.
+- For anything helpers do not cover, use raw CDP: `cdp("Domain.method", params)`.
+
+## Interaction Skills
+
+If you get stuck on a browser mechanic, check `interaction-skills/` for focused guidance:
+
 - connection.md
 - cookies.md
 - cross-origin-iframes.md
@@ -79,45 +117,8 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - uploads.md
 - viewport.md
 
-## What actually works
+## Domain Skills
 
-- Screenshots first: use capture_screenshot() to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation.
-- Clicking: capture_screenshot() → read the pixel off the image → click_at_xy(x, y) → capture_screenshot() to verify. Suppress the Playwright-habit reflex of "locate first, then click" — no getBoundingClientRect, no selector hunt. Drop to DOM only when the target has no visible geometry (hidden input, 0×0 node). Hit-testing happens in Chrome's browser process, so clicks go through iframes / shadow DOM / cross-origin without extra work.
-- Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
-- After goto: wait_for_load().
-- Wrong/stale tab: ensure_real_tab(). Use it when the current tab is stale or internal; the daemon also auto-recovers from stale sessions on the next call.
-- Verification: print(page_info()) is the simplest "is this alive?" check, but screenshots are the default way to verify whether a visible action actually worked.
-- DOM reads: use js(...) for inspection and extraction when the screenshot shows that coordinates are the wrong tool.
-- Iframe sites (Azure blades, Salesforce): click_at_xy(x, y) passes through; only drop to iframe DOM work when coordinate clicks are the wrong tool.
-- Auth wall: redirected to login → stop and ask the user. Don't type credentials from screenshots.
-- Raw CDP for anything helpers don't cover: cdp("Domain.method", params).
+Domain skills are off by default. If `BH_DOMAIN_SKILLS=1` and the task is site-specific, read every file in `agent-workspace/domain-skills/<site>/` before inventing an approach.
 
-## Design constraints
-
-- Coordinate clicks default. Input.dispatchMouseEvent goes through iframes/shadow/cross-origin at the compositor level.
-- Connect to the user's running Chrome. Don't launch your own browser.
-- cdp-use is only for CDPClient.send_raw. Prefer raw CDP strings over typed wrappers.
-- run.py stays tiny. No argparse, subcommands, or extra control layer.
-- Core helpers stay short. Put task-specific helper additions in `agent-workspace/agent_helpers.py`; daemon/bootstrap and remote session admin live in the core package.
-- Don't add a manager layer. No retries framework, session manager, daemon supervisor, config system, or logging framework.
-
-## Gotchas (field-tested)
-
-- Omnibox popups are fake page targets. Filter chrome://omnibox-popup... and other internals when you need a real tab.
-- CDP target order != Chrome's visible tab-strip order. Use UI automation when the user means "the first/second tab I can see"; Target.activateTarget only shows a known target.
-- Default daemon sessions can go stale. ensure_real_tab() re-attaches to a real page.
-- Browser Use API is camelCase on the wire. cdpUrl, proxyCountryCode, etc.
-- Remote cdpUrl is HTTPS, not ws. Resolve the websocket URL via /json/version.
-- Stop cloud browsers with PATCH /browsers/{id} + {"action":"stop"}.
-- After every meaningful action, re-screenshot before assuming it worked. Use the image to verify changed state, open menus, navigation, visible errors, and whether the page is in the state you expected.
-- Use screenshots to drive exploration. They are often the fastest way to find the next click target, notice hidden blockers, and decide if a selector is even worth writing.
-- Prefer compositor-level actions over framework hacks. Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.
-- If you need framework-specific DOM tricks, check interaction-skills/ first. That is where dropdown, dialog, iframe, shadow DOM, and form-specific guidance belongs.
-
-## Domain skills (opt-in)
-
-Only applies when `BH_DOMAIN_SKILLS=1`. Otherwise ignore — `agent-workspace/domain-skills/` is dormant and `goto_url` won't surface skill files.
-
-When enabled, search `agent-workspace/domain-skills/<host>/` before inventing an approach. `goto_url` returns up to 10 skill filenames for the navigated host.
-
-If you learn anything non-obvious — a private API, stable selector, framework quirk, URL pattern, hidden wait, or site-specific trap — open a PR to `agent-workspace/domain-skills/<site>/`. Capture the durable shape of the site (the map, not the diary). Don't write pixel coordinates (break on layout), task narration, or secrets — the directory is public.
+When enabled, `goto_url(...)` returns up to 10 matching skill filenames for the current host.

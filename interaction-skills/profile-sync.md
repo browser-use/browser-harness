@@ -1,6 +1,8 @@
 # Profile sync
 
-Make a remote Browser Use browser start already logged in, by uploading cookies from a local Chrome profile.
+Advanced only. Use this when the user explicitly asks to upload local Chrome cookies into Browser Use cloud profiles. For normal cloud browser work, use `browser_new("cloud")`, keep the returned `id`, and call `browser(id)` before page helpers.
+
+This file manages cloud cookie profiles. It does not replace the explicit browser id flow.
 
 ## One-time install
 
@@ -16,8 +18,8 @@ Downloads `profile-use` (macOS / Linux, x64 / arm64). The Python helpers shell o
 list_cloud_profiles()
 # [{id, name, userId, cookieDomains, lastUsedAt}, ...] — every profile under this API key
 
-list_local_profiles()
-# [{BrowserName, ProfileName, DisplayName, ProfilePath, ...}, ...] — detected on this machine
+browser_profiles(verbose=True)
+# {"profiles": [{"id", "profile_name", "display_name", "profile_path", ...}, ...]}
 
 sync_local_profile(profile_name, browser=None,
                    cloud_profile_id=None,      # update an existing cloud profile instead of creating new
@@ -25,11 +27,6 @@ sync_local_profile(profile_name, browser=None,
                    exclude_domains=None)       # drop these domains; applied before include
 # Shells out to `profile-use sync`. Returns the cloud profile UUID
 # (the existing one if cloud_profile_id was passed, else the newly-created one).
-
-start_remote_daemon("work", profileName="my-work")   # name→id resolved client-side
-start_remote_daemon("work", profileId="<uuid>")      # or pass UUID directly
-
-stop_remote_daemon("work")                           # shut the daemon and PATCH the cloud browser to stop — billing ends
 ```
 
 `sync_local_profile` prints `♻️  Using existing cloud profile` when `cloud_profile_id` is accepted, or `📝  Creating remote profile...` → `✓ Profile created: <uuid>` when it creates a new one. Check that line if you want to confirm which path ran.
@@ -46,19 +43,16 @@ for p in list_cloud_profiles():
 → Agent: *"You have these cloud profiles (<N> domains each). Want to reuse one, sync a local profile, or start clean?"*
 
 ```python
-# 2a. Reuse cloud → one call.
-start_remote_daemon("work", profileName="browser-use.com")
-
-# 2b. Sync local first. Show the options:
-for lp in list_local_profiles():
-    print(lp["DisplayName"])
+# 2. Sync local first. Show the options:
+for lp in browser_profiles(verbose=True)["profiles"]:
+    print(lp["id"], lp["display_name"])
 ```
 → Agent: *"Which local profile?"* → user picks → before syncing, inspect domain-level cookie counts with `profile-use inspect --profile <name>` (or `--verbose` for individual cookies) and report the summary; never dump 500 cookies into chat.
 
 ```python
-# 3. Sync + use. Returns the cloud UUID.
+# 3. Sync. Returns the cloud profile UUID.
 uuid = sync_local_profile("browser-use.com")
-start_remote_daemon("work", profileId=uuid)
+print({"cloud_profile_id": uuid})
 
 # 3b. Refresh that same cloud profile later (idempotent — no duplicate profiles).
 sync_local_profile("browser-use.com", cloud_profile_id=uuid)
@@ -73,13 +67,10 @@ sync_local_profile("browser-use.com",
 
 **Cookies only.** No localStorage, no IndexedDB, no extensions. Enough for session-cookie sites (Google, GitHub, Stripe, most SaaS); not for sites that store auth in localStorage.
 
-Cookies mutated during a remote session only persist on a clean `PATCH /browsers/{id} {"action":"stop"}` — the daemon does this on shutdown when `BU_BROWSER_ID` + `BROWSER_USE_API_KEY` are set (default for remote daemons). Sessions that hit the timeout lose in-session state.
-
 ## Cloud profile CRUD
 
 - UI: https://cloud.browser-use.com/settings?tab=profiles
 - API: `GET /profiles`, `GET/PATCH/DELETE /profiles/{id}` (paths are relative to `BU_API = "https://api.browser-use.com/api/v3"` in `admin.py`). Fields: `id`, `name`, `userId`, `lastUsedAt`, `cookieDomains[]`. `list_cloud_profiles()` wraps this.
-- Name → UUID: `profileName=` on `start_remote_daemon` resolves client-side; no API change needed.
 - Need the UUID for an existing profile? `matches = [p["id"] for p in list_cloud_profiles() if p["name"] == "<name>"]` — then verify `len(matches) == 1` before using it. Profile names are not unique; syncs create duplicates unless you pass `cloud_profile_id=`.
 - Lower-level raw calls: `from browser_harness.admin import _browser_use; _browser_use("/profiles/<id>", "DELETE")`. Pass the path *without* the `/api/v3` prefix — it's already on `BU_API`.
 

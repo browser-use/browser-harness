@@ -26,11 +26,37 @@ def test_simple_expression_passes_through():
     assert _evaluated_expression(captured) == "document.title"
 
 
-def test_return_statement_gets_wrapped():
-    fake_cdp, captured = _capture_cdp()
+def _illegal_return_response():
+    return {
+        "result": {
+            "type": "object",
+            "subtype": "error",
+            "description": "SyntaxError: Illegal return statement",
+        },
+        "exceptionDetails": {
+            "text": "Uncaught",
+            "lineNumber": 0,
+            "columnNumber": 13,
+        },
+    }
+
+
+def test_return_statement_retries_wrapped_after_illegal_return():
+    captured = []
+
+    def fake_cdp(method, **kwargs):
+        captured.append((method, kwargs))
+        if kwargs["expression"] == "const x = 1; return x":
+            return _illegal_return_response()
+        return {"result": {"value": 1}}
+
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
-        helpers.js("const x = 1; return x")
-    assert _evaluated_expression(captured) == "(function(){const x = 1; return x})()"
+        assert helpers.js("const x = 1; return x") == 1
+
+    assert [kw["expression"] for m, kw in captured if m == "Runtime.evaluate"] == [
+        "const x = 1; return x",
+        "(function(){const x = 1; return x})()",
+    ]
 
 
 def test_iife_with_internal_return_is_not_double_wrapped():
@@ -112,11 +138,22 @@ def test_return_word_inside_comment_does_not_trigger_wrapping():
 
 
 @pytest.mark.parametrize("expr", ["return\t1", "return\n1"])
-def test_top_level_return_with_whitespace_gets_wrapped(expr):
-    fake_cdp, captured = _capture_cdp()
+def test_top_level_return_with_whitespace_retries_wrapped(expr):
+    captured = []
+
+    def fake_cdp(method, **kwargs):
+        captured.append((method, kwargs))
+        if kwargs["expression"] == expr:
+            return _illegal_return_response()
+        return {"result": {"value": 1}}
+
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
-        helpers.js(expr)
-    assert _evaluated_expression(captured) == f"(function(){{{expr}}})()"
+        assert helpers.js(expr) == 1
+
+    assert [kw["expression"] for m, kw in captured if m == "Runtime.evaluate"] == [
+        expr,
+        f"(function(){{{expr}}})()",
+    ]
 
 
 @pytest.mark.parametrize(
