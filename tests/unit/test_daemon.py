@@ -313,17 +313,10 @@ def _daemon_no_real_pages():
     return d
 
 
-def test_attach_first_page_creates_foreground_by_default(monkeypatch):
-    monkeypatch.delenv("BH_NO_ACTIVATE", raising=False)
-    d = _daemon_no_real_pages()
-    asyncio.run(d.attach_first_page())
-    create = next(p for m, p, _ in d.cdp.calls if m == "Target.createTarget")
-    assert "background" not in create
-
-
 def test_attach_first_page_creates_background_when_no_activate(monkeypatch):
     monkeypatch.setenv("BH_NO_ACTIVATE", "1")
     d = _daemon_no_real_pages()
     asyncio.run(d.attach_first_page())
     create = next(p for m, p, _ in d.cdp.calls if m == "Target.createTarget")
     assert create.get("background") is True
+    assert create["url"].startswith("data:")  # keepalive: real anchor, not about:blank

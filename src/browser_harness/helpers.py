@@ -291,7 +291,12 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
-def switch_tab(target):
+def _no_activate():
+    """True when BH_NO_ACTIVATE=1 — suppress raising the OS window on tab ops."""
+    return os.environ.get("BH_NO_ACTIVATE") == "1"
+
+
+def switch_tab(target, activate=None):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
@@ -303,18 +308,24 @@ def switch_tab(target):
     # affects OS focus (the 🐴 title marker already shows the controlled tab) and
     # stealing focus on every new_tab is disruptive when driving a visible browser.
     # set_session below still routes cdp()/js() to this tab regardless.
-    if os.environ.get("BH_NO_ACTIVATE") != "1":
+    # activate None → follow BH_NO_ACTIVATE; True/False overrides per call so
+    # new_tab(background=...) can suppress the raise without the env flag.
+    do_activate = (not _no_activate()) if activate is None else activate
+    if do_activate:
         cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
     return sid
 
-def new_tab(url="about:blank"):
+def new_tab(url="about:blank", background=None):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
+    # Reuse the current blank tab only without an explicit background override —
+    # an explicit background=… wants a fresh tab with that activation behavior,
+    # which this reuse path (no createTarget/switch_tab) can't honor.
+    if url != "about:blank" and background is None:
         try:
             cur = current_tab()
             cur_url = cur.get("url") or ""
@@ -323,14 +334,16 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    # BH_NO_ACTIVATE=1 → background:true so creating the tab doesn't raise the
-    # OS window. switch_tab's activateTarget gate alone can't stop this:
-    # Target.createTarget foregrounds the window on macOS before switch runs.
+    # background controls whether the new tab raises the OS window: None follows
+    # BH_NO_ACTIVATE, True/False overrides per call. switch_tab's activateTarget
+    # gate alone can't stop the raise — Target.createTarget foregrounds the
+    # window on macOS before switch runs, so gate creation here too.
+    bg = _no_activate() if background is None else background
     params = {"url": "about:blank"}
-    if os.environ.get("BH_NO_ACTIVATE") == "1":
-        params["background"] = True  # Mac-only: open the tab without raising the window.
+    if bg:
+        params["background"] = True  # opens the tab without raising the window (verified macOS)
     tid = cdp("Target.createTarget", **params)["targetId"]
-    switch_tab(tid)
+    switch_tab(tid, activate=not bg)
     if url != "about:blank":
         goto_url(url)
     return tid
