@@ -323,7 +323,13 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    # BH_NO_ACTIVATE=1 → background:true so creating the tab doesn't raise the
+    # OS window. switch_tab's activateTarget gate alone can't stop this:
+    # Target.createTarget foregrounds the window on macOS before switch runs.
+    params = {"url": "about:blank"}
+    if os.environ.get("BH_NO_ACTIVATE") == "1":
+        params["background"] = True  # Mac-only: open the tab without raising the window.
+    tid = cdp("Target.createTarget", **params)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)

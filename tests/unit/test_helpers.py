@@ -350,3 +350,37 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+# --- BH_NO_ACTIVATE: new_tab opens the tab without raising the OS window ---
+
+def _record_tab_cdp(monkeypatch, no_activate):
+    """Patch helpers.cdp + _send, returning the list of (method, kwargs) calls."""
+    calls = []
+    def fake_cdp(method, **kw):
+        calls.append((method, kw))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "sid-1"}
+        if method == "Target.createTarget":
+            return {"targetId": "tid-1"}
+        return {}
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda msg: None)
+    monkeypatch.delenv("BH_NO_ACTIVATE", raising=False)
+    if no_activate:
+        monkeypatch.setenv("BH_NO_ACTIVATE", "1")
+    return calls
+
+
+def test_new_tab_creates_foreground_by_default(monkeypatch):
+    calls = _record_tab_cdp(monkeypatch, no_activate=False)
+    helpers.new_tab()
+    create = next(kw for m, kw in calls if m == "Target.createTarget")
+    assert "background" not in create
+
+
+def test_new_tab_creates_background_when_no_activate(monkeypatch):
+    calls = _record_tab_cdp(monkeypatch, no_activate=True)
+    helpers.new_tab()
+    create = next(kw for m, kw in calls if m == "Target.createTarget")
+    assert create.get("background") is True
