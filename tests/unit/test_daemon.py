@@ -293,3 +293,50 @@ def test_current_tab_meta_returns_not_attached_when_no_target_id():
     assert result == {"error": "not_attached"}
     # No CDP call should have been issued.
     assert d.cdp.calls == []
+
+
+def test_main_registers_sigterm_handler_that_triggers_graceful_stop():
+    """main() must register a SIGTERM handler that sets the stop Event.
+
+    admin.py escalates to os.kill(pid, SIGTERM) when the "shutdown" IPC can't be
+    delivered, and container runtimes send SIGTERM on stop. Without this, the
+    process is terminated before the finally block runs, so stop_remote() never
+    fires and a remote browser leaks. We verify the handler is registered (via
+    the public loop.remove_signal_handler, which returns True iff one was set)
+    and that setting the stop Event lets main() return — without delivering a
+    real signal, which on regression would kill the test runner.
+    """
+    import signal
+    import sys
+
+    if sys.platform == "win32":
+        return  # add_signal_handler and a catchable SIGTERM are POSIX-only
+
+    orig_start, orig_serve = daemon.Daemon.start, daemon.serve
+    captured = {}
+
+    async def fake_start(self):
+        captured["d"] = self  # d.stop already exists from __init__
+
+    async def fake_serve(d):
+        await d.stop.wait()
+
+    daemon.Daemon.start = fake_start
+    daemon.serve = fake_serve
+    try:
+        async def run():
+            loop = asyncio.get_running_loop()
+            task = asyncio.ensure_future(daemon.main())
+            await asyncio.sleep(0.05)  # let main() register the handler and enter serve()
+            try:
+                # public API: True iff main() registered a SIGTERM handler (also removes it)
+                assert loop.remove_signal_handler(signal.SIGTERM) is True
+                captured["d"].stop.set()  # what the SIGTERM handler does
+                await asyncio.wait_for(task, timeout=2)  # main() must return, not hang
+            finally:
+                if not task.done():
+                    task.cancel()
+        asyncio.run(run())
+    finally:
+        daemon.Daemon.start = orig_start
+        daemon.serve = orig_serve
