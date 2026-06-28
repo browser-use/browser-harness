@@ -28,6 +28,18 @@ class _FakeConn:
     def close(self): pass
 
 
+class _RecordingConn:
+    def __init__(self, response=b"{}\n"):
+        self.sent = b""
+        self.response = response
+
+    def sendall(self, data):
+        self.sent += data
+
+    def recv(self, _size):
+        return self.response
+
+
 def _patch_identify_response(monkeypatch, response):
     """Stub connect() and request() so identify() sees `response` as the JSON
     parsed from the daemon's reply, exactly as it would arrive over the wire."""
@@ -39,6 +51,27 @@ def test_identify_returns_pid_for_well_formed_ping_reply(monkeypatch):
     _patch_identify_response(monkeypatch, {"pong": True, "pid": 4242})
 
     assert ipc.identify("default", timeout=0.0) == 4242
+
+
+def test_request_replaces_lone_surrogates_before_json_ipc():
+    conn = _RecordingConn()
+
+    assert ipc.request(conn, None, {"method": "Runtime.evaluate", "params": {"text": "\udc80"}}) == {}
+
+    assert b"\\udc80" not in conn.sent
+    assert b'"text": "?"' in conn.sent
+
+
+def test_json_dumps_replaces_nested_lone_surrogates():
+    payload = {"outer": ["ok", {"bad": "\udc80", "\udc80key": "value"}]}
+
+    assert ipc.json_dumps(payload) == '{"outer": ["ok", {"bad": "?", "?key": "value"}]}'
+
+
+def test_request_replaces_lone_surrogates_in_json_ipc_response():
+    conn = _RecordingConn(b'{"result": "\\udc80"}\n')
+
+    assert ipc.request(conn, None, {"meta": "ping"}) == {"result": "?"}
 
 
 def test_identify_rejects_boolean_pid(monkeypatch):

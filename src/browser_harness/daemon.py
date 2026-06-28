@@ -368,13 +368,14 @@ async def serve(d):
         try:
             line = await reader.readline()
             if not line: return
-            resp = await d.handle(json.loads(line))
-            writer.write((json.dumps(resp, default=str) + "\n").encode())
+            req = ipc.json_loads(line)
+            resp = await d.handle(req)
+            writer.write((ipc.json_dumps(resp, default=str) + "\n").encode())
             await writer.drain()
         except Exception as e:
             log(f"conn: {e}")
             try:
-                writer.write((json.dumps({"error": str(e)}) + "\n").encode())
+                writer.write((ipc.json_dumps({"error": str(e)}) + "\n").encode())
                 await writer.drain()
             except Exception:
                 pass
