@@ -1,6 +1,8 @@
-# devto/publish — publish an article to DEV.to via the markdown editor (battle-tested 2026-06-28)
+# dev-to/publish — publish an article to DEV.to via the markdown editor (battle-tested 2026-06-28)
 
 Driving `dev.to/new` with browser-harness against the user's logged-in Chrome. DEV.to gives an **instant, no-queue, high-DR dofollow backlink** in the article body — ideal for cross-posting an existing technical article. Far simpler than rich editors: it's one markdown textarea with Jekyll front matter.
+
+> Companion skill: `dev-to/scraping.md` (reading dev.to). This file covers writing/publishing.
 
 ## Pre-flight
 - User logged into dev.to in Chrome. `new_tab("https://dev.to/new")` → if the editor (`textarea#article_body_markdown`) is present you're in; if you see a login wall, pause and ask.
@@ -11,21 +13,23 @@ Driving `dev.to/new` with browser-harness against the user's logged-in Chrome. D
 ### 1. Build the content (front matter + markdown body)
 ```
 ---
-title: <Title, plain text>
+title: "<Title — ALWAYS quote it: a colon or # in the title breaks YAML otherwise>"
 published: true            # true = publish now; false = save as draft
-description: <≤ ~150 chars>
+description: "<≤ ~150 chars — quote it too (colons/# are common in descriptions)>"
 tags: programming, ai, webdev, saas    # comma-separated, MAX 4, lowercase, no spaces/hyphens inside a tag
-canonical_url: <optional — set to the original if cross-posting, to avoid duplicate-content>
+canonical_url: "<optional original URL, if cross-posting, to avoid duplicate-content>"
 ---
 
 <markdown body>
 ```
+Quote any user-supplied scalar (title/description/canonical_url). dev.to's front matter is YAML, so an unquoted value containing `:` or a leading `#` will fail the parse or be misread, and the publish silently breaks.
 - **YouTube / Tweet embeds:** liquid tag on its own line — `{% embed https://youtu.be/<id> %}`.
 - Body links are normal markdown `[text](https://...)` and render **dofollow**.
 
 ### 2. Insert it (React-safe native setter — don't type)
 The editor is one big controlled textarea. Set the value via the native setter + fire input/change (typing char-by-char is slow and flaky):
 ```python
+import json
 md = open("/path/post.md").read()
 js("""(function(){
   var t=document.querySelector('textarea#article_body_markdown')||

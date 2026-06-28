@@ -4,7 +4,7 @@ Driving `studio.youtube.com` with browser-harness against the user's logged-in C
 
 ## Pre-flight
 - User must be logged into the target channel in Chrome. Confirm: `page_info()` on `studio.youtube.com` returns `.../channel/<CHANNEL_ID>` and title contains "YouTube Studio".
-- **Check for an existing video first.** The channel dashboard "Latest video performance" card shows the most recent upload — don't create a duplicate. To reuse an existing video's URL instead of uploading: go to `.../videos/upload`, scrape `a[href*="/video/"]` → `/video/(<id>)/` and build `https://youtu.be/<id>`.
+- **Check for an existing video first (match by title, not position).** Go to `.../videos/upload` (the full Content list, not just the dashboard's "Latest video" card — that card only shows the most recent one and will miss older duplicates). Scrape each row's title cell **and** its `a[href*="/video/"]` → `/video/(<id>)/` together, then find the row whose title matches the video you intend to publish; build `https://youtu.be/<id>` from that row's id. Never assume the first/most-recent row is the match — confirm the title, or you'll reuse (or skip over) the wrong video.
 - Have the absolute path to the local `.mp4` ready.
 
 ## The flow
