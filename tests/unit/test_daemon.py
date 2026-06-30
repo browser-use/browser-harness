@@ -21,6 +21,30 @@ def _fresh_daemon():
     return d
 
 
+def test_attach_first_page_reuses_existing_blank_tab_instead_of_creating_another():
+    class _BlankTabCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"targetId": "inspect", "type": "page", "url": "chrome://inspect"},
+                    {"targetId": "blank", "type": "page", "url": "about:blank"},
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-blank"}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _BlankTabCDP()
+
+    attached = asyncio.run(d.attach_first_page())
+
+    assert attached["targetId"] == "blank"
+    assert d.target_id == "blank"
+    assert d.session == "session-blank"
+    assert not any(method == "Target.createTarget" for method, _params, _sid in d.cdp.calls)
+
+
 def test_set_session_enables_all_four_default_domains_on_new_session():
     """Regression: switch_tab() / new_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new
