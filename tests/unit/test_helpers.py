@@ -53,6 +53,92 @@ def test_goto_url_includes_domain_skills_when_enabled(tmp_path, monkeypatch):
     assert result == {"frameId": "f", "domain_skills": ["scraping.md"]}
 
 
+def test_new_tab_reuses_chrome_newtab_without_creating_another_target():
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Page.navigate":
+            return {"frameId": "frame-1"}
+        return {}
+
+    def fake_send(req):
+        if req.get("meta") == "current_tab":
+            return {"targetId": "newtab-target", "url": "chrome://newtab/", "title": "New Tab"}
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", side_effect=fake_send):
+        assert helpers.new_tab("https://example.com") == "newtab-target"
+
+    assert ("Page.navigate", {"url": "https://example.com"}) in calls
+    assert not any(method == "Target.createTarget" for method, _kwargs in calls)
+
+
+def test_new_tab_closes_created_blank_and_restores_previous_when_navigation_fails():
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.getTargetInfo":
+            return {"targetInfo": {"targetId": "previous-target", "url": "https://before.example", "title": "Before"}}
+        if method == "Target.createTarget":
+            return {"targetId": "blank-target"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-{kwargs['targetId']}"}
+        if method == "Page.navigate":
+            raise RuntimeError("navigation failed")
+        return {}
+
+    def fake_send(req):
+        if req.get("meta") == "current_tab":
+            return {"targetId": "previous-target", "url": "https://before.example", "title": "Before"}
+        if req.get("meta") == "set_session":
+            return {"session_id": req["session_id"]}
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", side_effect=fake_send), \
+         pytest.raises(RuntimeError, match="navigation failed"):
+        helpers.new_tab("https://example.com")
+
+    assert ("Target.closeTarget", {"targetId": "blank-target"}) in calls
+    assert ("Target.activateTarget", {"targetId": "previous-target"}) in calls
+
+
+def test_new_tab_recovers_to_fallback_tab_when_previous_is_unavailable():
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            if len([c for c in calls if c[0] == "Target.createTarget"]) == 1:
+                return {"targetId": "failed-target"}
+            return {"targetId": "fallback-target"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-{kwargs['targetId']}"}
+        if method == "Target.getTargets":
+            return {"targetInfos": []}
+        if method == "Page.navigate":
+            raise RuntimeError("navigation failed")
+        return {}
+
+    def fake_send(req):
+        if req.get("meta") == "current_tab":
+            raise RuntimeError("no current tab")
+        if req.get("meta") == "set_session":
+            return {"session_id": req["session_id"]}
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", side_effect=fake_send), \
+         pytest.raises(RuntimeError, match="navigation failed"):
+        helpers.new_tab("https://example.com")
+
+    assert ("Target.closeTarget", {"targetId": "failed-target"}) in calls
+    assert ("Target.activateTarget", {"targetId": "fallback-target"}) in calls
+
+
 def test_page_info_raises_clear_error_on_js_exception():
     def fake_send(req):
         return {}
