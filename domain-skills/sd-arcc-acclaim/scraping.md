@@ -55,6 +55,39 @@ print(page_info())
 **Rate-limit: ≥ 20s + jitter between doc types / pages.** Rapid looping trips Akamai.
 Never run an all-types loop from production — query only the P0 values you need.
 
+### Confirmed headless mechanics (Camoufox, verified 2026-07-01)
+
+A residential-IP **Camoufox** (headless Firefox) session **passed Akamai** here — the
+pages loaded, no "Access Denied". The concrete flow that worked:
+
+1. **Disclaimer gate.** `GET /search/SearchTypeDocType` first serves a **Disclaimer**
+   page (title "San Diego County Public Records") whose form is
+   `POST /search/Disclaimer?st=/search/SearchTypeDocType` with a hidden
+   `disclaimer=true` and a submit button `#btnButton` ("I accept the conditions
+   above."). **Click `#btnButton`** (or POST that form) once — it sets the session
+   cookie, and the real doc-type form then loads for the rest of the session. No
+   `__RequestVerificationToken` anywhere.
+2. **The real form** is an ASP.NET MVC **AsyncForm** (`id="schfrm"`,
+   `Sys.Mvc.AsyncForm`) — submitting does an AJAX POST that replaces the grid region,
+   not a full navigation. Fields: `RecordDateFrom` / `RecordDateTo` (fill `m/d/Y`),
+   and the doc-type is a **Telerik popup picker** (`DocTypesDisplay-input` opens
+   `DocTypesWin` → `DocTypelist` of `DocTypeInfoCheckBox`) that writes the hidden
+   `#DocTypes` field.
+3. **Selecting the doc type headless:** the popup checkbox is not directly
+   `.check()`-able headless (it lives in a deferred Telerik window). What works is
+   setting the hidden field directly, then submitting:
+   ```python
+   page.fill("#RecordDateFrom", "04/02/2026"); page.fill("#RecordDateTo", "07/01/2026")
+   page.evaluate("(v)=>{document.getElementById('DocTypes').value=v;"
+                 "document.getElementById('DocTypesDisplay').value=v;}", "536")  # NOD
+   page.click("#btnSearch")
+   ```
+4. **Results** render asynchronously into `#SearchGridDiv` (grid `#gridMain`). Wait
+   for a `<tr>` to appear in `#SearchGridDiv`, then read `page.content()` and parse.
+   Verified: a 90-day NOD (`DocTypes=536`) window returned 18 real rows (doc numbers
+   like `2026-0090317`, record dates, grantor names). Rows carry **no printed APN**
+   (AB 1785), so key event-only on the public document number.
+
 ## Form fields (the search POST)
 
 | Field | Role |
