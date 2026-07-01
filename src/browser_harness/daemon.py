@@ -201,9 +201,18 @@ class Daemon:
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
             # No real pages - create one instead of attaching to omnibox popup.
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
-            log(f"no real pages found, created about:blank ({tid})")
-            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
+            no_activate = os.environ.get("BH_NO_ACTIVATE") == "1"
+            # BH_NO_ACTIVATE: anchor with a real loaded data: page (not about:blank,
+            # which Chrome treats as internal) so the window keeps a tab that lets a
+            # later new_tab(background) stay backgrounded — no user sentinel needed.
+            # background:true keeps this bootstrap tab from raising the window too.
+            url = "data:text/html,<title>browser-harness</title>" if no_activate else "about:blank"
+            create_params = {"url": url}
+            if no_activate:
+                create_params["background"] = True  # doesn't raise the window (verified macOS)
+            tid = (await self.cdp.send_raw("Target.createTarget", create_params))["targetId"]
+            log(f"no real pages found, created {url[:40]} ({tid})")
+            pages = [{"targetId": tid, "url": url, "type": "page"}]
         self.session = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
         ))["sessionId"]

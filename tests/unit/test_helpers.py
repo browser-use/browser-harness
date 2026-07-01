@@ -350,3 +350,63 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+# --- BH_NO_ACTIVATE: new_tab opens the tab without raising the OS window ---
+
+def _record_tab_cdp(monkeypatch, no_activate):
+    """Patch helpers.cdp + _send, returning the list of (method, kwargs) calls."""
+    calls = []
+    def fake_cdp(method, **kw):
+        calls.append((method, kw))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "sid-1"}
+        if method == "Target.createTarget":
+            return {"targetId": "tid-1"}
+        return {}
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda msg: None)
+    monkeypatch.delenv("BH_NO_ACTIVATE", raising=False)
+    if no_activate:
+        monkeypatch.setenv("BH_NO_ACTIVATE", "1")
+    return calls
+
+
+def test_new_tab_creates_background_when_no_activate(monkeypatch):
+    calls = _record_tab_cdp(monkeypatch, no_activate=True)
+    helpers.new_tab()
+    create = next(kw for m, kw in calls if m == "Target.createTarget")
+    assert create.get("background") is True
+
+
+def test_new_tab_background_param_overrides_env(monkeypatch):
+    # explicit background=True backgrounds even without the env flag
+    calls = _record_tab_cdp(monkeypatch, no_activate=False)
+    helpers.new_tab(background=True)
+    create = next(kw for m, kw in calls if m == "Target.createTarget")
+    assert create.get("background") is True
+
+
+def test_new_tab_background_param_skips_activate(monkeypatch):
+    # regression: backgrounding createTarget isn't enough — new_tab calls
+    # switch_tab, which must also skip Target.activateTarget or the window raises.
+    calls = _record_tab_cdp(monkeypatch, no_activate=False)
+    helpers.new_tab(background=True)
+    assert not any(m == "Target.activateTarget" for m, _ in calls)
+
+
+def test_new_tab_explicit_background_bypasses_blank_reuse(monkeypatch):
+    # with an explicit background override, new_tab must create a fresh tab, not
+    # reuse the current blank one (which skips the activation logic entirely).
+    calls = []
+    def fake_cdp(method, **kw):
+        calls.append((method, kw))
+        if method == "Target.attachToTarget": return {"sessionId": "s"}
+        if method == "Target.createTarget": return {"targetId": "t"}
+        return {}
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda msg: {"targetId": "cur", "url": "about:blank", "title": ""})
+    monkeypatch.setattr(helpers, "goto_url", lambda *a, **k: None)
+    monkeypatch.delenv("BH_NO_ACTIVATE", raising=False)
+    helpers.new_tab("https://example.com", background=True)
+    assert any(m == "Target.createTarget" for m, _ in calls)

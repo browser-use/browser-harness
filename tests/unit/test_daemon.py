@@ -293,3 +293,30 @@ def test_current_tab_meta_returns_not_attached_when_no_target_id():
     assert result == {"error": "not_attached"}
     # No CDP call should have been issued.
     assert d.cdp.calls == []
+
+
+# --- BH_NO_ACTIVATE: bootstrap createTarget backgrounding ---
+
+def _daemon_no_real_pages():
+    """Daemon whose CDP reports zero real pages, so attach_first_page() hits
+    the create-target bootstrap path."""
+    d = daemon.Daemon()
+    class _FakeCDPNoPages:
+        def __init__(self): self.calls = []
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":     return {"targetInfos": []}
+            if method == "Target.createTarget":   return {"targetId": "tid-new"}
+            if method == "Target.attachToTarget": return {"sessionId": "sess-new"}
+            return {}
+    d.cdp = _FakeCDPNoPages()
+    return d
+
+
+def test_attach_first_page_creates_background_when_no_activate(monkeypatch):
+    monkeypatch.setenv("BH_NO_ACTIVATE", "1")
+    d = _daemon_no_real_pages()
+    asyncio.run(d.attach_first_page())
+    create = next(p for m, p, _ in d.cdp.calls if m == "Target.createTarget")
+    assert create.get("background") is True
+    assert create["url"].startswith("data:")  # keepalive: real anchor, not about:blank
