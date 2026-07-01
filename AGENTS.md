@@ -22,3 +22,4 @@ An agent operating the harness only edits inside `agent-workspace/`:
 
 # Contributing
 Consider what is really needed. Prefer the smallest diff that fixes the bug.
+Keep PRs clean enough for CI automation: Renovate owns routine dependency bump PRs, and `dupehound` rejects new duplication in `src/**` and `tests/**`.
