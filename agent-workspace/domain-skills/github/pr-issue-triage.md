@@ -177,7 +177,7 @@ Search for duplicates before starting a PR:
 ```python
 import json, urllib.parse
 
-query = "repo:browser-use/browser-harness github triage in:title,body is:pr is:open"
+query = f"repo:{owner}/{repo} github triage in:title,body is:open"
 url = "https://api.github.com/search/issues?q=" + urllib.parse.quote(query) + "&per_page=10"
 results = json.loads(http_get(url, headers=headers))
 for item in results["items"]:
@@ -237,12 +237,15 @@ only as visual evidence.
 ```python
 def classify_pr(detail, files, checks):
     paths = [f["filename"] for f in files]
-    conclusions = [r.get("conclusion") for r in checks.get("check_runs", [])]
+    runs = checks.get("check_runs", [])
+    completed_runs = [r for r in runs if r.get("status") == "completed"]
     return {
         "small": detail["changed_files"] <= 3 and detail["additions"] + detail["deletions"] <= 300,
-        "docs_or_skill_only": all(p.endswith(".md") or "/domain-skills/" in p for p in paths),
+        "docs_or_skill_only": bool(paths) and all(p.endswith(".md") or "/domain-skills/" in p for p in paths),
         "has_tests_or_docs": any(p.startswith("tests/") or p.endswith(".md") for p in paths),
-        "checks_green": bool(conclusions) and all(c in {"success", "skipped"} for c in conclusions if c),
+        "checks_green": bool(runs) and len(completed_runs) == len(runs) and all(
+            r.get("conclusion") in {"success", "skipped"} for r in completed_runs
+        ),
         "paths": paths,
     }
 ```
