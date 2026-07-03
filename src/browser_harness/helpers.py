@@ -324,6 +324,12 @@ def new_tab(url="about:blank"):
         goto_url(url)
     return tid
 
+def _close_target(target_id):
+    result = cdp("Target.closeTarget", targetId=target_id)
+    if result.get("success") is False:
+        raise RuntimeError(f"failed to close target: {target_id}")
+    return result
+
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
     Accepts a raw targetId string or a dict from list_tabs()/current_tab().
@@ -339,21 +345,27 @@ def close_tab(target=None):
         except Exception:
             cur = None
     if cur is None:
-        cdp("Target.closeTarget", targetId=target_id)
+        _close_target(target_id)
         return
     if target_id != cur["targetId"]:
-        cdp("Target.closeTarget", targetId=target_id)
+        _close_target(target_id)
         return
 
     other_tabs = [t for t in list_tabs(include_chrome=False) if t["targetId"] != target_id]
+    fallback_id = None
     if other_tabs:
         switch_tab(other_tabs[0])
     else:
-        new_tab()
+        fallback_id = new_tab()
     try:
-        cdp("Target.closeTarget", targetId=target_id)
+        _close_target(target_id)
     except Exception:
         switch_tab(cur)
+        if fallback_id is not None:
+            try:
+                _close_target(fallback_id)
+            except Exception:
+                pass
         raise
 
 

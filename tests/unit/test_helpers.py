@@ -86,6 +86,8 @@ class _FakeTabs:
         self.session_id = f"session-{current}"
         self.closed = []
         self.fail_close = False
+        self.fail_close_targets = set()
+        self.false_close_targets = set()
         self.next_tab = 1
 
     def cdp(self, method, session_id=None, **params):
@@ -107,9 +109,11 @@ class _FakeTabs:
             self.tabs.append({"targetId": target_id, "url": params["url"], "title": ""})
             return {"targetId": target_id}
         if method == "Target.closeTarget":
-            if self.fail_close:
-                raise RuntimeError("close failed")
             target_id = params["targetId"]
+            if self.fail_close or target_id in self.fail_close_targets:
+                raise RuntimeError("close failed")
+            if target_id in self.false_close_targets:
+                return {"success": False}
             self.closed.append(target_id)
             self.tabs = [t for t in self.tabs if t["targetId"] != target_id]
             return {"success": True}
@@ -227,6 +231,30 @@ def test_close_tab_current_rolls_back_session_when_close_fails():
         assert helpers.current_tab()["targetId"] == "current"
 
     assert browser.closed == []
+    assert browser.session_target_id == "current"
+    assert browser.session_id == "session-current"
+
+
+@pytest.mark.parametrize("failure_mode", ["raise", "false"])
+def test_close_tab_current_closes_fallback_when_single_tab_close_fails(failure_mode):
+    browser = _FakeTabs(
+        [{"targetId": "current", "url": "https://current.example/", "title": "Current"}],
+        current="current",
+    )
+    if failure_mode == "raise":
+        browser.fail_close_targets.add("current")
+    else:
+        browser.false_close_targets.add("current")
+
+    with patch("browser_harness.helpers.cdp", side_effect=browser.cdp), \
+         patch("browser_harness.helpers._send", side_effect=browser.send):
+        with pytest.raises(RuntimeError):
+            helpers.close_tab()
+
+        assert helpers.current_tab()["targetId"] == "current"
+
+    assert [t["targetId"] for t in browser.tabs] == ["current"]
+    assert browser.closed == ["new-tab-1"]
     assert browser.session_target_id == "current"
     assert browser.session_id == "session-current"
 
