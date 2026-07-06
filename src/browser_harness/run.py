@@ -23,6 +23,7 @@ from .admin import (
     stop_remote_daemon,
     sync_local_profile,
 )
+from . import auth, telemetry
 from .helpers import *
 
 HELP = """Browser Harness
@@ -42,6 +43,12 @@ Commands:
   browser-harness --doctor         diagnose install, daemon, and browser state
   browser-harness doctor           same as --doctor
   browser-harness doctor --fix-snap   print how to fix Snap Chromium blocking CDP (Linux)
+  browser-harness auth login          sign in to Browser Use Cloud for cloud browsers
+  browser-harness auth login --device-code   sign in from SSH/headless environments
+  browser-harness auth status         show Browser Use Cloud auth state
+  browser-harness auth logout         remove stored Browser Use Cloud auth
+  browser-harness skill               print the browser-harness skill text
+  browser-harness telemetry status    show anonymous telemetry opt-out state
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
 """
@@ -74,8 +81,44 @@ def _explicit_cdp_configured():
     return bool(os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS"))
 
 
+def _cloud_auth_configured():
+    try:
+        auth.get_browser_use_api_key()
+        return True
+    except (auth.CloudAuthRequired, auth.AuthError, OSError):
+        return False
+
+
+def _print_skill():
+    from importlib import resources
+    print(resources.files("browser_harness").joinpath("SKILL.md").read_text(), end="")
+
+
+def _telemetry_command(args):
+    if not args:
+        return "script"
+    first = args[0]
+    if first in {"-h", "--help"}:
+        return "help"
+    if first == "--version":
+        return "version"
+    if first in {"--doctor", "doctor"}:
+        return "doctor"
+    if first == "--update":
+        return "update"
+    if first == "--reload":
+        return "reload"
+    if first == "--debug-clicks":
+        return "debug-clicks"
+    if first in {"auth", "skill", "telemetry"}:
+        return first
+    return "usage"
+
+
 def main():
     args = sys.argv[1:]
+    if not (args and args[0] == "telemetry"):
+        telemetry.capture("browser_harness.cli", {"command": _telemetry_command(args)})
     if args and args[0] in {"-h", "--help"}:
         print(HELP)
         return
@@ -92,6 +135,16 @@ def main():
             print("usage: browser-harness doctor [--fix-snap]", file=sys.stderr)
             sys.exit(2)
         sys.exit(run_doctor())
+    if args and args[0] == "auth":
+        sys.exit(auth.run_auth_cli(args[1:]))
+    if args and args[0] == "skill":
+        if len(args) != 1:
+            print("usage: browser-harness skill", file=sys.stderr)
+            sys.exit(2)
+        _print_skill()
+        return
+    if args and args[0] == "telemetry":
+        sys.exit(telemetry.run_telemetry_cli(args[1:]))
     if args and args[0] == "--update":
         yes = any(a in {"-y", "--yes"} for a in args[1:])
         sys.exit(run_update(yes=yes))
@@ -113,15 +166,17 @@ def main():
     # is not enough, since the key is commonly set for unrelated reasons (profile sync,
     # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
     # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
-    if (
-        not daemon_alive()
-        and not _local_chrome_listening()
-        and not _explicit_cdp_configured()
-        and os.environ.get("BROWSER_USE_API_KEY")
-        and os.environ.get("BU_AUTOSPAWN")
-    ):
-        start_remote_daemon(NAME)
-    ensure_daemon()
+    cloud_admin = code.lstrip().startswith(("start_remote_daemon(", "stop_remote_daemon("))
+    if not cloud_admin:
+        if (
+            not daemon_alive()
+            and not _local_chrome_listening()
+            and not _explicit_cdp_configured()
+            and _cloud_auth_configured()
+            and os.environ.get("BU_AUTOSPAWN")
+        ):
+            start_remote_daemon(NAME)
+        ensure_daemon()
     exec(code, globals())
 
 

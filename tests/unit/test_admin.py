@@ -48,6 +48,38 @@ def test_stale_websocket_does_not_open_chrome_inspect():
     assert not admin._needs_chrome_remote_debugging_prompt(msg)
 
 
+def test_chrome_inspect_recently_opened_uses_name_and_cooldown(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin, "REMOTE_DEBUG_OPEN_STATE", tmp_path / "remote-debug-open.json")
+
+    admin._mark_chrome_inspect_opened("default", now=1000)
+
+    assert admin._chrome_inspect_open_recently("default", now=1100, cooldown=300)
+    assert not admin._chrome_inspect_open_recently("other", now=1100, cooldown=300)
+    assert not admin._chrome_inspect_open_recently("default", now=1401, cooldown=300)
+
+
+def test_ensure_daemon_does_not_reopen_chrome_inspect_when_recent(monkeypatch):
+    class FakeProcess:
+        def poll(self):
+            return 1
+
+    opened = []
+    restarted = []
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env=None: True)
+    monkeypatch.setattr(admin, "_log_tail", lambda name=None: "DevToolsActivePort not found")
+    monkeypatch.setattr(admin, "_chrome_inspect_open_recently", lambda name=None: True)
+    monkeypatch.setattr(admin, "_open_chrome_inspect", lambda: opened.append(True))
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarted.append(name))
+    monkeypatch.setattr(admin.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    with pytest.raises(RuntimeError, match="remote-debugging-setup-already-opened"):
+        admin.ensure_daemon(wait=0, name="default")
+
+    assert opened == []
+    assert restarted == ["default"]
+
+
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", None)  # shared-tmpdir mode
@@ -63,6 +95,7 @@ def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatc
 def test_daemon_endpoint_names_with_bh_runtime_dir_returns_local_name_when_sock_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
     monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
     monkeypatch.setattr(admin, "NAME", "session-xyz")
     (tmp_path / "bu.sock").touch()
@@ -73,10 +106,24 @@ def test_daemon_endpoint_names_with_bh_runtime_dir_returns_local_name_when_sock_
 def test_daemon_endpoint_names_with_bh_runtime_dir_returns_empty_when_sock_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
     monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
     monkeypatch.setattr(admin, "NAME", "session-xyz")
 
     assert admin._daemon_endpoint_names() == []
+
+
+def test_daemon_endpoint_names_with_shared_bh_runtime_dir_discovers_named_sockets(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", True)
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    (tmp_path / "bu-default.sock").touch()
+    (tmp_path / "bu-work.sock").touch()
+    (tmp_path / "bu-invalid.name.sock").touch()
+    (tmp_path / "bu.sock").touch()  # stale isolated-runtime endpoint
+
+    assert admin._daemon_endpoint_names() == ["default", "work"]
 
 
 def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
@@ -131,6 +178,47 @@ def test_chrome_running_detects_helium_on_linux(monkeypatch):
     )
 
     assert admin._chrome_running()
+
+
+def test_windows_chromium_binaries_includes_running_process_path(monkeypatch, tmp_path):
+    brave = tmp_path / "brave.exe"
+    brave.write_text("")
+    missing_root = tmp_path / "missing"
+    monkeypatch.setenv("PROGRAMFILES", str(missing_root))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(missing_root))
+    monkeypatch.setenv("LOCALAPPDATA", str(missing_root))
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr(admin, "_windows_running_chromium_binaries", lambda: [str(brave), str(brave)])
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+
+    assert admin._windows_chromium_binaries() == [str(brave)]
+
+
+def test_open_chrome_inspect_on_windows_uses_browser_binary_not_protocol_handler(monkeypatch):
+    calls = []
+    binary = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(admin, "_windows_chromium_binaries", lambda: [binary])
+    monkeypatch.setattr(admin.subprocess, "Popen", lambda args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        "webbrowser.open",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("webbrowser.open must not be used on Windows")),
+    )
+
+    assert admin._open_chrome_inspect()
+    assert calls[0][0] == [binary, admin.CHROME_INSPECT_URL]
+
+
+def test_open_chrome_inspect_on_windows_does_not_fall_back_to_webbrowser(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(admin, "_windows_chromium_binaries", lambda: [])
+    monkeypatch.setattr(
+        "webbrowser.open",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("webbrowser.open must not be used on Windows")),
+    )
+
+    assert not admin._open_chrome_inspect()
 
 
 @pytest.mark.parametrize(
@@ -226,6 +314,24 @@ def test_run_doctor_skips_snap_detect_on_non_linux(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "[snap-detect]" not in out
+
+
+def test_run_doctor_reports_bad_stored_cloud_auth_without_crashing(monkeypatch, capsys):
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_chrome_running", lambda: True)
+    monkeypatch.setattr(admin, "daemon_alive", lambda: True)
+    monkeypatch.setattr(admin, "browser_connections", lambda: [])
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_doctor_probe_chrome_binary_for_snap", lambda: (None, None))
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(admin.auth, "auth_status", lambda: (_ for _ in ()).throw(admin.auth.AuthError("auth file is not valid JSON")))
+
+    assert admin.run_doctor() == 0
+
+    out = capsys.readouterr().out
+    assert "Browser Use cloud auth" in out
+    assert "auth file is not valid JSON" in out
 
 
 def test_run_doctor_fix_snap_prints_steps(capsys):

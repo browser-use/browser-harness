@@ -1,12 +1,26 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "browser-harness"
-version = "0.1.0"
+version = "0.1.4"
 description = "The simplest, thinnest, and most powerful harness to control your real browser with your agent."
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["agent", "automation", "browser", "cdp", "chrome", "scraping"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "cdp-use==1.4.5",
     "fetch-use==0.4.0",
@@ -17,11 +31,19 @@ dependencies = [
 [project.scripts]
 browser-harness = "browser_harness.run:main"
 
+[project.urls]
+Homepage = "https://github.com/browser-use/browser-harness"
+Repository = "https://github.com/browser-use/browser-harness"
+Issues = "https://github.com/browser-use/browser-harness/issues"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+browser_harness = ["SKILL.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

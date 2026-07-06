@@ -5,12 +5,14 @@ from collections import deque
 from pathlib import Path
 
 from . import _ipc as ipc
+from . import auth
+from . import paths
 from cdp_use.client import CDPClient
 
 
 def _load_env():
     repo_root = Path(__file__).resolve().parents[2]
-    workspace = Path(os.environ.get("BH_AGENT_WORKSPACE", repo_root / "agent-workspace")).expanduser()
+    workspace = paths.workspace_dir()
     for p in (repo_root / ".env", workspace / ".env"):
         if not p.exists():
             continue
@@ -66,7 +68,6 @@ PROFILES = [
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
-API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
 def log(msg):
@@ -116,6 +117,8 @@ def get_ws_url():
                 return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
                 last_err = e
+                if e.code == 403:
+                    raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
                 if e.code == 404 and (ws := _ws_from_devtools_active_port(url)):
                     return ws
                 time.sleep(1)
@@ -123,51 +126,55 @@ def get_ws_url():
                 last_err = e
                 time.sleep(1)
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- is the dedicated automation Chrome running?")
-    for base in PROFILES:
-        try:
-            active = (base / "DevToolsActivePort").read_text().splitlines()
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        port = active[0].strip() if active else ""
-        ws_path = active[1].strip() if len(active) > 1 else ""
-        if not port:
-            continue
-        # Resolve the live WS URL via /json/version instead of trusting the path stored
-        # alongside the port in DevToolsActivePort: if Chrome was previously launched
-        # with a different --user-data-dir on the same port, that file is left behind
-        # with a stale browser UUID and the WS upgrade returns 404.
-        deadline = time.time() + 30
-        while time.time() < deadline:
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        for base in PROFILES:
+            try:
+                active = (base / "DevToolsActivePort").read_text().splitlines()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            port = active[0].strip() if active else ""
+            ws_path = active[1].strip() if len(active) > 1 else ""
+            if not port:
+                continue
+            # Resolve the live WS URL via /json/version instead of trusting the path stored
+            # alongside the port in DevToolsActivePort: if Chrome was previously launched
+            # with a different --user-data-dir on the same port, that file is left behind
+            # with a stale browser UUID and the WS upgrade returns 404.
             try:
                 return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
+                if e.code == 403:
+                    raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
                 # Chrome 147+ disables /json/* HTTP discovery on the default user-data-dir;
                 # the ws path Chrome wrote to DevToolsActivePort still works.
                 if e.code == 404 and ws_path:
                     return f"ws://127.0.0.1:{port}{ws_path}"
-                time.sleep(1)
             except (OSError, KeyError, ValueError):
-                time.sleep(1)
-        raise RuntimeError(
-            f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
-        )
+                pass
+        time.sleep(0.2)
     for probe_port in (9222, 9223):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
                 return json.loads(r.read())["webSocketDebuggerUrl"]
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
         except (OSError, KeyError, ValueError):
             continue
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
 def stop_remote():
-    if not REMOTE_ID or not API_KEY: return
+    if not REMOTE_ID:
+        return
     try:
+        key = auth.get_browser_use_api_key()
         req = urllib.request.Request(
             f"{BU_API}/browsers/{REMOTE_ID}",
             data=json.dumps({"action": "stop"}).encode(),
             method="PATCH",
-            headers={"X-Browser-Use-API-Key": API_KEY, "Content-Type": "application/json"},
+            headers={"X-Browser-Use-API-Key": key, "Content-Type": "application/json"},
         )
         urllib.request.urlopen(req, timeout=15).read()
         log(f"stopped remote browser {REMOTE_ID}")
@@ -193,7 +200,7 @@ class Daemon:
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
-            # No real pages — create one instead of attaching to omnibox popup
+            # No real pages - create one instead of attaching to omnibox popup.
             tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
@@ -241,7 +248,7 @@ class Daemon:
                 raise RuntimeError(
                     f"CDP WS handshake failed: {e} -- remote browser WebSocket connection failed. "
                     "This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "
-                    "If you use Browser Use cloud, verify BROWSER_USE_API_KEY and get a fresh URL via start_remote_daemon()."
+                    "If you use Browser Use cloud, verify auth and get a fresh URL via start_remote_daemon()."
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
