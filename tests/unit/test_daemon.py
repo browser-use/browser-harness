@@ -157,6 +157,28 @@ def test_browser_executable_respects_chrome_family_filter(monkeypatch, tmp_path)
     assert daemon._browser_executable() == str(chrome)
 
 
+def test_dedicated_browser_reuse_rejects_wrong_family_endpoint(monkeypatch):
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+    def fake_urlopen(url, timeout=1):
+        if ":9223/" in url:
+            return FakeResponse(b'{"Browser":"Brave/1.0","webSocketDebuggerUrl":"ws://brave"}')
+        if ":9333/" in url:
+            return FakeResponse(b'{"Browser":"Chrome/1.0","webSocketDebuggerUrl":"ws://chrome"}')
+        raise AssertionError(url)
+
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "chrome")
+    monkeypatch.setattr(daemon, "_dedicated_browser_ports", lambda: (9223, 9333))
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    assert daemon._dedicated_browser_ws_url() == "ws://chrome"
+
+
 def test_get_ws_url_allows_default_profile_ws_when_opted_in(monkeypatch, tmp_path):
     profile = tmp_path / "Chrome"
     profile.mkdir()

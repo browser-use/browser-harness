@@ -18,6 +18,7 @@ def normalize_browser_family(raw):
         "brave-browser": "brave",
         "brave browser": "brave",
         "microsoft-edge": "edge",
+        "microsoft-edge-stable": "edge",
         "microsoft edge": "edge",
         "msedge": "edge",
     }
@@ -57,7 +58,7 @@ def browser_family_for_path(path):
     if (
         "microsoft/edge" in normalized
         or "microsoft edge.app" in normalized
-        or name in {"msedge", "msedge.exe", "microsoft-edge"}
+        or name in {"msedge", "msedge.exe", "microsoft-edge", "microsoft-edge-stable"}
     ):
         return "edge"
     if (
@@ -80,6 +81,30 @@ def browser_path_allowed(path, env=None):
     return browser_family_for_path(path) == mode
 
 
+def browser_family_for_product(product):
+    value = str(product or "").strip().lower()
+    if not value:
+        return None
+    if "brave" in value:
+        return "brave"
+    if "edge" in value or "edg/" in value:
+        return "edge"
+    if "chromium" in value:
+        return "chromium"
+    if "chrome" in value:
+        return "chrome"
+    if "helium" in value:
+        return "helium"
+    return None
+
+
+def browser_product_allowed(product, env=None):
+    mode = browser_family_mode(env)
+    if mode == "any":
+        return True
+    return browser_family_for_product(product) == mode
+
+
 def browser_family_filter_active(env=None):
     return browser_family_mode(env) != "any"
 
@@ -97,7 +122,7 @@ def process_names_for_browser_family(system, env=None):
         "chrome": ("Google Chrome", "chrome", "google-chrome", "google-chrome-stable"),
         "chromium": ("chromium", "chromium-browser"),
         "brave": ("Brave Browser", "brave", "brave-browser"),
-        "edge": ("Microsoft Edge", "msedge", "microsoft-edge"),
+        "edge": ("Microsoft Edge", "msedge", "microsoft-edge", "microsoft-edge-stable"),
         "helium": ("helium",),
     }
     table = windows if system == "Windows" else posix

@@ -14,6 +14,7 @@ from .browser_family import (
     browser_family_label,
     browser_family_mode,
     browser_path_allowed,
+    browser_product_allowed,
 )
 from cdp_use.client import CDPClient
 
@@ -196,8 +197,14 @@ def _browser_executable():
     return None
 
 
-def _ws_from_cdp_http_url(cdp_url, timeout=1):
-    return _read_json_url(f"{cdp_url.rstrip('/')}/json/version", timeout=timeout)["webSocketDebuggerUrl"]
+def _ws_from_cdp_http_url(cdp_url, timeout=1, require_browser_family=False):
+    version = _read_json_url(f"{cdp_url.rstrip('/')}/json/version", timeout=timeout)
+    product = version.get("Browser")
+    if require_browser_family and not browser_product_allowed(product):
+        raise RuntimeError(
+            f"CDP endpoint browser family mismatch for BH_BROWSER_FAMILY={browser_family_mode()}: {product}"
+        )
+    return version["webSocketDebuggerUrl"]
 
 
 def _launch_dedicated_browser(port):
@@ -225,7 +232,11 @@ def _dedicated_browser_ws_url():
     for port in _dedicated_browser_ports():
         cdp_url = f"http://127.0.0.1:{port}"
         try:
-            return _ws_from_cdp_http_url(cdp_url, timeout=1)
+            return _ws_from_cdp_http_url(
+                cdp_url,
+                timeout=1,
+                require_browser_family=browser_family_filter_active(),
+            )
         except Exception as e:
             last_err = e
     for port in _dedicated_browser_ports():
@@ -238,7 +249,11 @@ def _dedicated_browser_ws_url():
         deadline = time.time() + 20
         while time.time() < deadline:
             try:
-                return _ws_from_cdp_http_url(cdp_url, timeout=1)
+                return _ws_from_cdp_http_url(
+                    cdp_url,
+                    timeout=1,
+                    require_browser_family=browser_family_filter_active(),
+                )
             except Exception as e:
                 last_err = e
                 time.sleep(0.25)
