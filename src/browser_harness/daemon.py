@@ -4,6 +4,8 @@ from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
 
+import websockets
+
 from . import _ipc as ipc
 from . import auth
 from . import paths
@@ -68,10 +70,174 @@ PROFILES = [
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
+LOCAL_CDP_OPEN_TIMEOUT_SECONDS = 120
+REMOTE_CDP_OPEN_TIMEOUT_SECONDS = 30
+DEDICATED_BROWSER_PORTS = (9223, 9333, 9334)
 
 
 def log(msg):
     open(LOG, "a").write(f"{msg}\n")
+
+
+def _explicit_cdp_endpoint_configured():
+    return bool(os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL"))
+
+
+def _cdp_open_timeout_seconds():
+    raw = os.environ.get("BH_CDP_OPEN_TIMEOUT_SECONDS")
+    default = REMOTE_CDP_OPEN_TIMEOUT_SECONDS if _explicit_cdp_endpoint_configured() else LOCAL_CDP_OPEN_TIMEOUT_SECONDS
+    if not raw:
+        return default
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return default
+
+
+def _local_browser_mode():
+    mode = (os.environ.get("BH_LOCAL_BROWSER_MODE") or "auto").strip().lower()
+    return mode if mode in {"auto", "default", "dedicated"} else "auto"
+
+
+def _use_default_profile_ws_fallback():
+    raw = (os.environ.get("BH_ALLOW_DEFAULT_PROFILE_REMOTE") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"} or _local_browser_mode() == "default"
+
+
+def _read_json_url(url, timeout=1):
+    return json.loads(urllib.request.urlopen(url, timeout=timeout).read())
+
+
+def _dedicated_browser_ports():
+    raw = os.environ.get("BH_DEDICATED_CHROME_PORT")
+    if not raw:
+        return DEDICATED_BROWSER_PORTS
+    try:
+        port = int(raw)
+    except ValueError:
+        return DEDICATED_BROWSER_PORTS
+    return (port, *[p for p in DEDICATED_BROWSER_PORTS if p != port])
+
+
+def _dedicated_user_data_dir():
+    raw = os.environ.get("BH_DEDICATED_CHROME_USER_DATA_DIR")
+    return Path(raw).expanduser().resolve() if raw else paths.config_dir() / "automation-profile"
+
+
+def _browser_executable_candidates():
+    import platform, shutil
+
+    for key in ("BH_CHROME_PATH", "CHROME_PATH"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            yield raw
+    system = platform.system()
+    if system == "Windows":
+        roots = [
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+            os.environ.get("LOCALAPPDATA", ""),
+        ]
+        relative = [
+            ("Google", "Chrome", "Application", "chrome.exe"),
+            ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            ("Microsoft", "Edge", "Application", "msedge.exe"),
+        ]
+        for root in roots:
+            for parts in relative:
+                yield str(Path(root, *parts))
+        for cmd in ("chrome.exe", "chrome", "brave.exe", "brave", "msedge.exe", "msedge"):
+            if found := shutil.which(cmd):
+                yield found
+        return
+    if system == "Darwin":
+        yield "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        yield "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+        yield "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+    for cmd in ("google-chrome-stable", "google-chrome", "chromium-browser", "chromium", "brave-browser", "microsoft-edge"):
+        if found := shutil.which(cmd):
+            yield found
+
+
+def _browser_executable():
+    seen = set()
+    for raw in _browser_executable_candidates():
+        if not raw:
+            continue
+        p = Path(raw).expanduser()
+        key = os.path.normcase(str(p))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            continue
+    return None
+
+
+def _ws_from_cdp_http_url(cdp_url, timeout=1):
+    return _read_json_url(f"{cdp_url.rstrip('/')}/json/version", timeout=timeout)["webSocketDebuggerUrl"]
+
+
+def _launch_dedicated_browser(port):
+    import subprocess
+
+    browser = _browser_executable()
+    if not browser:
+        raise RuntimeError("no Chrome/Chromium executable found for dedicated browser; set BH_CHROME_PATH")
+    profile = _dedicated_user_data_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    args = [
+        browser,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "about:blank",
+    ]
+    log(f"starting dedicated browser on port {port}: {browser}")
+    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs())
+
+
+def _dedicated_browser_ws_url():
+    last_err = None
+    for port in _dedicated_browser_ports():
+        cdp_url = f"http://127.0.0.1:{port}"
+        try:
+            return _ws_from_cdp_http_url(cdp_url, timeout=1)
+        except Exception as e:
+            last_err = e
+    for port in _dedicated_browser_ports():
+        cdp_url = f"http://127.0.0.1:{port}"
+        try:
+            _launch_dedicated_browser(port)
+        except Exception as e:
+            last_err = e
+            continue
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            try:
+                return _ws_from_cdp_http_url(cdp_url, timeout=1)
+            except Exception as e:
+                last_err = e
+                time.sleep(0.25)
+    raise RuntimeError(f"dedicated automation browser did not expose CDP: {last_err}")
+
+
+async def _start_cdp_client(url, open_timeout=None):
+    """Start CDPClient with a longer websocket open timeout for Chrome's Allow popup."""
+    client = CDPClient(url)
+    connect_kwargs = {
+        "max_size": client.max_ws_frame_size,
+        "open_timeout": _cdp_open_timeout_seconds() if open_timeout is None else open_timeout,
+    }
+    if client.additional_headers:
+        connect_kwargs["additional_headers"] = client.additional_headers
+    client.ws = await websockets.connect(client.url, **connect_kwargs)
+    client._message_handler_task = asyncio.create_task(client._handle_messages())
+    return client
 
 
 async def _silent(coro):
@@ -126,6 +292,9 @@ def get_ws_url():
                 last_err = e
                 time.sleep(1)
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- is the dedicated automation Chrome running?")
+    if _local_browser_mode() == "dedicated":
+        log("BH_LOCAL_BROWSER_MODE=dedicated; using dedicated automation browser")
+        return _dedicated_browser_ws_url()
     deadline = time.time() + 30
     while time.time() < deadline:
         for base in PROFILES:
@@ -149,6 +318,9 @@ def get_ws_url():
                 # Chrome 147+ disables /json/* HTTP discovery on the default user-data-dir;
                 # the ws path Chrome wrote to DevToolsActivePort still works.
                 if e.code == 404 and ws_path:
+                    if not _use_default_profile_ws_fallback():
+                        log(f"default profile CDP at 127.0.0.1:{port} requires direct websocket permission; using dedicated automation browser")
+                        return _dedicated_browser_ws_url()
                     return f"ws://127.0.0.1:{port}{ws_path}"
             except (OSError, KeyError, ValueError):
                 pass
@@ -162,6 +334,9 @@ def get_ws_url():
                 raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
         except (OSError, KeyError, ValueError):
             continue
+    if _local_browser_mode() == "auto":
+        log("no reusable local CDP endpoint found; using dedicated automation browser")
+        return _dedicated_browser_ws_url()
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
@@ -239,18 +414,18 @@ class Daemon:
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
-        log(f"connecting to {url}")
-        self.cdp = CDPClient(url)
+        open_timeout = _cdp_open_timeout_seconds()
+        log(f"connecting to {url} (open_timeout={open_timeout:g}s)")
         try:
-            await self.cdp.start()
+            self.cdp = await _start_cdp_client(url, open_timeout=open_timeout)
         except Exception as e:
             if os.environ.get("BU_CDP_WS"):
                 raise RuntimeError(
-                    f"CDP WS handshake failed: {e} -- remote browser WebSocket connection failed. "
+                    f"CDP WS handshake failed after {open_timeout:g}s: {e} -- remote browser WebSocket connection failed. "
                     "This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "
                     "If you use Browser Use cloud, verify auth and get a fresh URL via start_remote_daemon()."
                 )
-            raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
+            raise RuntimeError(f"CDP WS handshake failed after {open_timeout:g}s: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"

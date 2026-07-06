@@ -1,4 +1,5 @@
 import asyncio
+import urllib.error
 
 from browser_harness import daemon
 
@@ -19,6 +20,138 @@ def _fresh_daemon():
     d = daemon.Daemon()
     d.cdp = _FakeCDP()
     return d
+
+
+def test_cdp_open_timeout_defaults_to_long_local_permission_window(monkeypatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.delenv("BH_CDP_OPEN_TIMEOUT_SECONDS", raising=False)
+
+    assert daemon._cdp_open_timeout_seconds() == daemon.LOCAL_CDP_OPEN_TIMEOUT_SECONDS
+
+
+def test_cdp_open_timeout_uses_shorter_default_for_explicit_remote_endpoint(monkeypatch):
+    monkeypatch.setenv("BU_CDP_WS", "ws://example.test/devtools/browser/1")
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.delenv("BH_CDP_OPEN_TIMEOUT_SECONDS", raising=False)
+
+    assert daemon._cdp_open_timeout_seconds() == daemon.REMOTE_CDP_OPEN_TIMEOUT_SECONDS
+
+
+def test_cdp_open_timeout_honors_env_override(monkeypatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setenv("BH_CDP_OPEN_TIMEOUT_SECONDS", "42")
+
+    assert daemon._cdp_open_timeout_seconds() == 42
+
+
+def test_local_browser_mode_defaults_to_auto(monkeypatch):
+    monkeypatch.delenv("BH_LOCAL_BROWSER_MODE", raising=False)
+
+    assert daemon._local_browser_mode() == "auto"
+
+
+def test_local_browser_mode_rejects_unknown_values(monkeypatch):
+    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "surprise")
+
+    assert daemon._local_browser_mode() == "auto"
+
+
+def test_default_profile_ws_fallback_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "auto")
+    monkeypatch.delenv("BH_ALLOW_DEFAULT_PROFILE_REMOTE", raising=False)
+
+    assert not daemon._use_default_profile_ws_fallback()
+
+    monkeypatch.setenv("BH_ALLOW_DEFAULT_PROFILE_REMOTE", "1")
+
+    assert daemon._use_default_profile_ws_fallback()
+
+
+def test_dedicated_browser_ports_prefers_env_override(monkeypatch):
+    monkeypatch.setenv("BH_DEDICATED_CHROME_PORT", "9444")
+
+    assert daemon._dedicated_browser_ports()[0] == 9444
+
+
+def test_get_ws_url_uses_dedicated_browser_when_requested(monkeypatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "dedicated")
+    monkeypatch.setattr(daemon, "_dedicated_browser_ws_url", lambda: "ws://dedicated")
+
+    assert daemon.get_ws_url() == "ws://dedicated"
+
+
+def test_get_ws_url_uses_dedicated_browser_instead_of_default_profile_404(monkeypatch, tmp_path):
+    profile = tmp_path / "Chrome"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text("9222\n/devtools/browser/default-profile\n")
+
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "auto")
+    monkeypatch.delenv("BH_ALLOW_DEFAULT_PROFILE_REMOTE", raising=False)
+    monkeypatch.setattr(daemon, "PROFILES", [profile])
+    monkeypatch.setattr(daemon, "_dedicated_browser_ws_url", lambda: "ws://dedicated")
+
+    def fake_urlopen(url, timeout=1):
+        raise urllib.error.HTTPError(url, 404, "not found", None, None)
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    assert daemon.get_ws_url() == "ws://dedicated"
+
+
+def test_get_ws_url_allows_default_profile_ws_when_opted_in(monkeypatch, tmp_path):
+    profile = tmp_path / "Chrome"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text("9222\n/devtools/browser/default-profile\n")
+
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "default")
+    monkeypatch.setattr(daemon, "PROFILES", [profile])
+
+    def fake_urlopen(url, timeout=1):
+        raise urllib.error.HTTPError(url, 404, "not found", None, None)
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    assert daemon.get_ws_url() == "ws://127.0.0.1:9222/devtools/browser/default-profile"
+
+
+def test_start_cdp_client_passes_open_timeout_to_websocket(monkeypatch):
+    calls = []
+
+    class FakeCDPClient:
+        def __init__(self, url):
+            self.url = url
+            self.max_ws_frame_size = 12345
+            self.additional_headers = None
+            self.ws = None
+            self._message_handler_task = None
+
+        async def _handle_messages(self):
+            return None
+
+    async def fake_connect(url, **kwargs):
+        calls.append((url, kwargs))
+        return "fake-ws"
+
+    monkeypatch.setattr(daemon, "CDPClient", FakeCDPClient)
+    monkeypatch.setattr(daemon.websockets, "connect", fake_connect)
+
+    client = asyncio.run(daemon._start_cdp_client("ws://127.0.0.1:9222/devtools/browser/1", open_timeout=120))
+
+    assert client.ws == "fake-ws"
+    assert calls == [
+        (
+            "ws://127.0.0.1:9222/devtools/browser/1",
+            {"max_size": 12345, "open_timeout": 120},
+        )
+    ]
 
 
 def test_set_session_enables_all_four_default_domains_on_new_session():

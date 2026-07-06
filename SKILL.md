@@ -23,6 +23,9 @@ PY
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
 - First navigation is `new_tab(url)`, not `goto_url(url)`.
 - The normal local flow attaches to the running Chrome/Chromium CDP endpoint. No browser ids or local profile selection.
+- If the default Chrome profile endpoint is blocked by the per-connection remote debugging prompt, the harness auto-starts a dedicated local automation browser instead of looping on permission dialogs.
+- Set `BH_LOCAL_BROWSER_MODE=default` only when you explicitly need the user's default signed-in profile and are prepared for Chrome's permission prompt.
+- Set `BH_LOCAL_BROWSER_MODE=dedicated` to always use the no-prompt local automation browser.
 - On Windows, never open `chrome://...` through the default browser, shell protocol handler, `start`, or `webbrowser.open`; use the real browser executable path or ask the user to navigate manually.
 - If Chrome already has an "Allow remote debugging?" popup or recently-opened inspect tab, do not open another one; wait for the user to click Allow in the existing Chrome window.
 

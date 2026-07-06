@@ -149,22 +149,18 @@ def _needs_chrome_remote_debugging_prompt(msg):
         "devtoolsactiveport not found" in lower
         or "enable chrome://inspect" in lower
         or "not live yet" in lower
-        or (
-            "ws handshake failed" in lower
-            and (
-                "403" in lower
-                or "opening handshake" in lower
-                or "timed out" in lower
-                or "timeout" in lower
-            )
-        )
     )
 
 
 def _needs_chrome_permission_popup(msg):
     """True when Chrome is reachable but waiting on the per-session Allow popup."""
     lower = (msg or "").lower()
-    return "permission-blocked" in lower
+    return (
+        "permission-blocked" in lower
+        or "click allow in chrome" in lower
+        or "opening handshake" in lower
+        or "timed out during opening handshake" in lower
+    )
 
 
 def _remote_debug_open_cooldown_seconds():
@@ -362,7 +358,7 @@ def run_doctor_fix_snap():
     return 0
 
 
-def ensure_daemon(wait=60.0, name=None, env=None):
+def ensure_daemon(wait=180.0, name=None, env=None):
     """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
