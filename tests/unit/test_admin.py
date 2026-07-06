@@ -172,6 +172,7 @@ def test_browser_connections_returns_attached_page(monkeypatch):
 
 
 def test_chrome_running_detects_helium_on_linux(monkeypatch):
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "any")
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr(
         "subprocess.check_output",
@@ -185,6 +186,7 @@ def test_windows_chromium_binaries_includes_running_process_path(monkeypatch, tm
     brave = tmp_path / "brave.exe"
     brave.write_text("")
     missing_root = tmp_path / "missing"
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "any")
     monkeypatch.setenv("PROGRAMFILES", str(missing_root))
     monkeypatch.setenv("PROGRAMFILES(X86)", str(missing_root))
     monkeypatch.setenv("LOCALAPPDATA", str(missing_root))
@@ -194,6 +196,37 @@ def test_windows_chromium_binaries_includes_running_process_path(monkeypatch, tm
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
 
     assert admin._windows_chromium_binaries() == [str(brave)]
+
+
+def test_windows_chromium_binaries_respects_chrome_family(monkeypatch, tmp_path):
+    brave = tmp_path / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe"
+    chrome = tmp_path / "Google" / "Chrome" / "Application" / "chrome.exe"
+    brave.parent.mkdir(parents=True)
+    chrome.parent.mkdir(parents=True)
+    brave.write_text("")
+    chrome.write_text("")
+    missing_root = tmp_path / "missing"
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "chrome")
+    monkeypatch.setenv("PROGRAMFILES", str(missing_root))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(missing_root))
+    monkeypatch.setenv("LOCALAPPDATA", str(missing_root))
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr(admin, "_windows_running_chromium_binaries", lambda: [str(brave), str(chrome)])
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+
+    assert admin._windows_chromium_binaries() == [str(chrome)]
+
+
+def test_chrome_running_ignores_brave_when_chrome_family_required(monkeypatch):
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "chrome")
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "\r\nImage Name\r\nbrave.exe\r\n",
+    )
+
+    assert not admin._chrome_running()
 
 
 def test_open_chrome_inspect_on_windows_uses_browser_binary_not_protocol_handler(monkeypatch):

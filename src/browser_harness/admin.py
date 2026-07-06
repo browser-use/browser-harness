@@ -11,6 +11,12 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .browser_family import (
+    browser_family_label,
+    browser_family_mode,
+    browser_path_allowed,
+    process_names_for_browser_family,
+)
 
 
 def _process_start_time(pid):
@@ -405,9 +411,9 @@ def ensure_daemon(wait=180.0, name=None, env=None):
                 )
             _mark_chrome_inspect_opened(name)
             if _open_chrome_inspect():
-                print('browser-harness: opened chrome://inspect/#remote-debugging in Chromium. Tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
+                print(f'browser-harness: opened chrome://inspect/#remote-debugging in {browser_family_label()}. Tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
             else:
-                print('browser-harness: open chrome://inspect/#remote-debugging manually in Chrome/Edge/Brave. Tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
+                print(f'browser-harness: open chrome://inspect/#remote-debugging manually in {browser_family_label()}. Tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
             restart_daemon(name)
             continue
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
@@ -829,6 +835,8 @@ def _windows_chromium_binaries():
     for p in candidates:
         if not p or not os.path.exists(p):
             continue
+        if not browser_path_allowed(p):
+            continue
         key = os.path.normcase(os.path.abspath(p))
         if key in seen:
             continue
@@ -844,10 +852,9 @@ def _chrome_running():
     try:
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, timeout=5)
-            names = ("chrome.exe", "brave.exe", "msedge.exe", "helium.exe")
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
+        names = process_names_for_browser_family(system)
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
@@ -921,7 +928,7 @@ def run_doctor():
             print(f"Browser: {bname} (snap) — WARNING: Snap confinement prevents CDP binding.")
             print(f"  Fix: Install Chrome natively (see docs/snap-linux-headless.md)")
             print(f"  Docs: {doc_url}")
-    row("chrome running", chrome, "" if chrome else "start chrome/edge")
+    row("chrome running", chrome, "" if chrome else f"start {browser_family_label(browser_family_mode())}")
     row("daemon alive", daemon, "" if daemon else "see install.md")
     row("active browser connections", bool(connections), str(len(connections)))
     for conn in connections:

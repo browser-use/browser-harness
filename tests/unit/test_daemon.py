@@ -16,6 +16,17 @@ class _FakeCDP:
         return {}
 
 
+class _FakeEventRegistry:
+    async def handle_event(self, method, params, session_id=None):
+        return None
+
+
+class _ConnectedCDP(_FakeCDP):
+    def __init__(self):
+        super().__init__()
+        self._event_registry = _FakeEventRegistry()
+
+
 def _fresh_daemon():
     d = daemon.Daemon()
     d.cdp = _FakeCDP()
@@ -58,17 +69,6 @@ def test_local_browser_mode_rejects_unknown_values(monkeypatch):
     assert daemon._local_browser_mode() == "auto"
 
 
-def test_default_profile_ws_fallback_requires_explicit_opt_in(monkeypatch):
-    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "auto")
-    monkeypatch.delenv("BH_ALLOW_DEFAULT_PROFILE_REMOTE", raising=False)
-
-    assert not daemon._use_default_profile_ws_fallback()
-
-    monkeypatch.setenv("BH_ALLOW_DEFAULT_PROFILE_REMOTE", "1")
-
-    assert daemon._use_default_profile_ws_fallback()
-
-
 def test_dedicated_browser_ports_prefers_env_override(monkeypatch):
     monkeypatch.setenv("BH_DEDICATED_CHROME_PORT", "9444")
 
@@ -84,7 +84,7 @@ def test_get_ws_url_uses_dedicated_browser_when_requested(monkeypatch):
     assert daemon.get_ws_url() == "ws://dedicated"
 
 
-def test_get_ws_url_uses_dedicated_browser_instead_of_default_profile_404(monkeypatch, tmp_path):
+def test_get_ws_url_reuses_default_profile_direct_ws_in_auto_mode(monkeypatch, tmp_path):
     profile = tmp_path / "Chrome"
     profile.mkdir()
     (profile / "DevToolsActivePort").write_text("9222\n/devtools/browser/default-profile\n")
@@ -92,16 +92,69 @@ def test_get_ws_url_uses_dedicated_browser_instead_of_default_profile_404(monkey
     monkeypatch.delenv("BU_CDP_WS", raising=False)
     monkeypatch.delenv("BU_CDP_URL", raising=False)
     monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "auto")
-    monkeypatch.delenv("BH_ALLOW_DEFAULT_PROFILE_REMOTE", raising=False)
     monkeypatch.setattr(daemon, "PROFILES", [profile])
-    monkeypatch.setattr(daemon, "_dedicated_browser_ws_url", lambda: "ws://dedicated")
 
     def fake_urlopen(url, timeout=1):
         raise urllib.error.HTTPError(url, 404, "not found", None, None)
 
     monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
 
+    assert daemon.get_ws_url() == "ws://127.0.0.1:9222/devtools/browser/default-profile"
+
+
+def test_get_ws_url_ignores_brave_profile_when_chrome_required(monkeypatch, tmp_path):
+    brave = tmp_path / "BraveSoftware" / "Brave-Browser"
+    brave.mkdir(parents=True)
+    (brave / "DevToolsActivePort").write_text("9222\n/devtools/browser/brave-profile\n")
+    chrome = tmp_path / "Google" / "Chrome"
+    chrome.mkdir(parents=True)
+    (chrome / "DevToolsActivePort").write_text("9333\n/devtools/browser/chrome-profile\n")
+
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "chrome")
+    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "auto")
+    monkeypatch.setattr(daemon, "PROFILES", [brave, chrome])
+
+    def fake_urlopen(url, timeout=1):
+        raise urllib.error.HTTPError(url, 404, "not found", None, None)
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    assert daemon.get_ws_url() == "ws://127.0.0.1:9333/devtools/browser/chrome-profile"
+
+
+def test_get_ws_url_skips_blind_port_probe_when_browser_family_is_restricted(monkeypatch):
+    calls = []
+
+    def fake_urlopen(url, timeout=1):
+        calls.append(url)
+        raise AssertionError("strict browser-family mode must not probe anonymous CDP ports")
+
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "chrome")
+    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "auto")
+    monkeypatch.setattr(daemon, "PROFILES", [])
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(daemon, "_dedicated_browser_ws_url", lambda: "ws://dedicated")
+
     assert daemon.get_ws_url() == "ws://dedicated"
+    assert calls == []
+
+
+def test_browser_executable_respects_chrome_family_filter(monkeypatch, tmp_path):
+    brave = tmp_path / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe"
+    chrome = tmp_path / "Google" / "Chrome" / "Application" / "chrome.exe"
+    brave.parent.mkdir(parents=True)
+    chrome.parent.mkdir(parents=True)
+    brave.write_text("")
+    chrome.write_text("")
+
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "chrome")
+    monkeypatch.setattr(daemon, "_browser_executable_candidates", lambda: [str(brave), str(chrome)])
+
+    assert daemon._browser_executable() == str(chrome)
 
 
 def test_get_ws_url_allows_default_profile_ws_when_opted_in(monkeypatch, tmp_path):
@@ -120,6 +173,48 @@ def test_get_ws_url_allows_default_profile_ws_when_opted_in(monkeypatch, tmp_pat
     monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
 
     assert daemon.get_ws_url() == "ws://127.0.0.1:9222/devtools/browser/default-profile"
+
+
+def test_default_profile_probe_timeout_honors_env_override(monkeypatch):
+    monkeypatch.setenv("BH_DEFAULT_PROFILE_PROBE_TIMEOUT_SECONDS", "7")
+
+    assert daemon._default_profile_probe_timeout_seconds() == 7
+
+
+def test_daemon_start_falls_back_to_dedicated_when_auto_default_profile_is_blocked(monkeypatch):
+    selected = "ws://127.0.0.1:9222/devtools/browser/default-profile"
+    calls = []
+
+    async def fake_start_cdp_client(url, open_timeout=None):
+        calls.append((url, open_timeout))
+        if len(calls) == 1:
+            raise TimeoutError("permission prompt still blocking")
+        return _ConnectedCDP()
+
+    async def fake_attach_first_page(self):
+        self.session = "session-1"
+        self.target_id = "target-1"
+        return {"targetId": "target-1", "url": "about:blank", "type": "page"}
+
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.delenv("BH_CDP_OPEN_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("BH_DEFAULT_PROFILE_PROBE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("BH_LOCAL_BROWSER_MODE", "auto")
+    monkeypatch.setattr(daemon, "select_ws_url", lambda: (selected, "default-profile-direct"))
+    monkeypatch.setattr(daemon, "_dedicated_browser_ws_url", lambda: "ws://dedicated")
+    monkeypatch.setattr(daemon, "_start_cdp_client", fake_start_cdp_client)
+    monkeypatch.setattr(daemon.Daemon, "attach_first_page", fake_attach_first_page)
+
+    d = daemon.Daemon()
+    asyncio.run(d.start())
+
+    assert calls == [
+        (selected, daemon.DEFAULT_PROFILE_PROBE_TIMEOUT_SECONDS),
+        ("ws://dedicated", daemon.LOCAL_CDP_OPEN_TIMEOUT_SECONDS),
+    ]
+    assert d.session == "session-1"
+    assert d.target_id == "target-1"
 
 
 def test_start_cdp_client_passes_open_timeout_to_websocket(monkeypatch):
