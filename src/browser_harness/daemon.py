@@ -258,7 +258,29 @@ class Daemon:
                 )
             except Exception as e:
                 log(f"enable {d} on {session_id}: {e}")
-        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+
+        async def enable_focus_emulation():
+            # Tabs stay in background by design (never activated, so the user's
+            # focus is never stolen). A hidden RenderWidget doesn't process
+            # Input.dispatchMouseEvent — the event never acks and clicks are
+            # dropped. Focus emulation makes the renderer treat the page as
+            # focused/active so compositor-level input works on background tabs.
+            try:
+                await asyncio.wait_for(
+                    self.cdp.send_raw(
+                        "Emulation.setFocusEmulationEnabled",
+                        {"enabled": True},
+                        session_id=session_id,
+                    ),
+                    timeout=4,
+                )
+            except Exception as e:
+                log(f"enable focus emulation on {session_id}: {e}")
+
+        await asyncio.gather(
+            *(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")),
+            enable_focus_emulation(),
+        )
 
     async def start(self):
         self.stop = asyncio.Event()
