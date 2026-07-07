@@ -68,6 +68,11 @@ PY
 
 Normal agent-facing docs should keep using `browser-harness`; the `./browser-harness` launcher is only for local repo testing.
 
+GitHub automation also runs alongside local development:
+
+- Renovate opens monthly dependency update PRs against `main` using `.github/renovate.json5`.
+- `dupehound` runs on PRs and `main` pushes that touch `src/**` or `tests/**`, blocking new duplication and publishing a repo slop score in the workflow summary.
+
 ## Contributing
 
 PRs and improvements welcome. The best way to help: **contribute a new domain skill** under [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for a site or task you use often (LinkedIn outreach, ordering on Amazon, filing expenses, etc.). Each skill teaches the agent the selectors, flows, and edge cases it would otherwise have to rediscover.
