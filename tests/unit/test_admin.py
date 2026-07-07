@@ -138,6 +138,19 @@ def test_browser_connections_returns_attached_page(monkeypatch):
     ]
 
 
+def test_ensure_daemon_closes_probe_socket_when_daemon_is_healthy(monkeypatch):
+    sock = FakeSocket()
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout=3.0: (sock, None))
+    monkeypatch.setattr(admin.ipc, "request", lambda conn, token, req: {"result": {"targetInfos": []}})
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: (_ for _ in ()).throw(AssertionError("unexpected restart")))
+
+    admin.ensure_daemon()
+
+    assert sock.closed
+
+
 def test_chrome_running_detects_helium_on_linux(monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr(
