@@ -19,10 +19,19 @@ print(page_info())
 PY
 ```
 
+- When the task depends on the user's existing Chrome profile, logged-in sessions, existing tabs, extensions, or GitHub PR attachment uploads, use the Codex Chrome Extension route first (`chrome:control-chrome`). It controls the real signed-in Chrome profile without opening Chrome remote-debugging setup pages.
+- Use `browser-harness` raw CDP for local app verification, scraping, screenshots, and deterministic automation that does not require the user's signed-in Chrome profile.
+- Respect `BH_BROWSER_FAMILY` when it is set. In this local setup it is `chrome`: do not attach to Brave or Edge, and do not use a browser tool unless it is controlling Google Chrome.
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
 - First navigation is `new_tab(url)`, not `goto_url(url)`.
-- The normal local flow attaches to the running Chrome/Chromium CDP endpoint. No browser ids or local profile selection.
+- The normal local flow attaches to the running Chrome/Chromium CDP endpoint and reuses the user's signed-in profile when Chrome has already allowed remote debugging.
+- If Chrome's default-profile HTTP discovery is locked down, the harness first probes the direct `DevToolsActivePort` websocket briefly. If that already-approved profile is reachable, use it; if Chrome is still blocked by the permission prompt, the harness auto-starts a dedicated local automation browser instead of looping on permission dialogs.
+- Set `BH_LOCAL_BROWSER_MODE=default` only when you explicitly need the user's default signed-in profile and want the harness to wait for Chrome's permission prompt instead of falling back.
+- Set `BH_LOCAL_BROWSER_MODE=dedicated` to always use the no-prompt local automation browser.
+- Set `BH_BROWSER_FAMILY=chrome` to restrict local discovery, inspect-page opening, and dedicated browser fallback to Google Chrome only.
+- On Windows, never open `chrome://...` through the default browser, shell protocol handler, `start`, or `webbrowser.open`; use the real browser executable path or ask the user to navigate manually.
+- If Chrome already has an "Allow remote debugging?" popup or recently-opened inspect tab, do not open another one; wait for the user to click Allow in the existing Chrome window.
 
 ## Local Chrome
 

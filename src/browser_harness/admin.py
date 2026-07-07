@@ -11,6 +11,12 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .browser_family import (
+    browser_family_label,
+    browser_family_mode,
+    browser_path_allowed,
+    process_names_for_browser_family,
+)
 
 
 def _process_start_time(pid):
@@ -130,6 +136,9 @@ PYPI_JSON = "https://pypi.org/pypi/browser-harness/json"
 VERSION_CACHE = paths.config_dir() / "version-cache.json"
 VERSION_CACHE_TTL = 24 * 3600
 DOCTOR_TEXT_LIMIT = 140
+CHROME_INSPECT_URL = "chrome://inspect/#remote-debugging"
+REMOTE_DEBUG_OPEN_STATE = paths.config_dir() / "remote-debug-open.json"
+REMOTE_DEBUG_OPEN_COOLDOWN_SECONDS = 5 * 60
 
 
 def _log_tail(name):
@@ -146,22 +155,67 @@ def _needs_chrome_remote_debugging_prompt(msg):
         "devtoolsactiveport not found" in lower
         or "enable chrome://inspect" in lower
         or "not live yet" in lower
-        or (
-            "ws handshake failed" in lower
-            and (
-                "403" in lower
-                or "opening handshake" in lower
-                or "timed out" in lower
-                or "timeout" in lower
-            )
-        )
     )
 
 
 def _needs_chrome_permission_popup(msg):
     """True when Chrome is reachable but waiting on the per-session Allow popup."""
     lower = (msg or "").lower()
-    return "permission-blocked" in lower
+    return (
+        "permission-blocked" in lower
+        or "click allow in chrome" in lower
+        or "opening handshake" in lower
+        or "timed out during opening handshake" in lower
+    )
+
+
+def _remote_debug_open_cooldown_seconds():
+    raw = os.environ.get("BH_REMOTE_DEBUG_OPEN_COOLDOWN_SECONDS")
+    if not raw:
+        return REMOTE_DEBUG_OPEN_COOLDOWN_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return REMOTE_DEBUG_OPEN_COOLDOWN_SECONDS
+
+
+def _remote_debug_open_state_read():
+    try:
+        data = json.loads(REMOTE_DEBUG_OPEN_STATE.read_text())
+    except (FileNotFoundError, OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _remote_debug_open_state_write(data):
+    try:
+        REMOTE_DEBUG_OPEN_STATE.parent.mkdir(parents=True, exist_ok=True)
+        REMOTE_DEBUG_OPEN_STATE.write_text(json.dumps(data))
+        try:
+            os.chmod(REMOTE_DEBUG_OPEN_STATE, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def _chrome_inspect_open_recently(name=None, now=None, cooldown=None):
+    """True when this daemon name already opened the inspect page recently."""
+    name = name or NAME
+    now = time.time() if now is None else now
+    cooldown = _remote_debug_open_cooldown_seconds() if cooldown is None else cooldown
+    try:
+        opened_at = float(_remote_debug_open_state_read().get(name, 0))
+    except (TypeError, ValueError):
+        return False
+    return opened_at > 0 and now - opened_at < cooldown
+
+
+def _mark_chrome_inspect_opened(name=None, now=None):
+    name = name or NAME
+    data = _remote_debug_open_state_read()
+    data[name] = time.time() if now is None else now
+    _remote_debug_open_state_write(data)
 
 
 def _is_local_chrome_mode(env=None):
@@ -241,7 +295,8 @@ def _doctor_short_text(value, limit=None):
 
 def _is_snap_browser(path: str) -> bool:
     """True when a Chrome binary path lives under /snap/ (Snap confinement on Linux)."""
-    return bool(path) and "/snap/" in path.lower()
+    normalized = str(path or "").replace("\\", "/").lower()
+    return "/snap/" in normalized
 
 
 def _doctor_snap_probe_path(path: str) -> str:
@@ -309,7 +364,7 @@ def run_doctor_fix_snap():
     return 0
 
 
-def ensure_daemon(wait=60.0, name=None, env=None):
+def ensure_daemon(wait=180.0, name=None, env=None):
     """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
@@ -344,8 +399,21 @@ def ensure_daemon(wait=60.0, name=None, env=None):
                 "permission-blocked: wait for the user to click Allow in the Chrome permission popup before retrying."
             )
         if local and attempt == 0 and _needs_chrome_remote_debugging_prompt(msg):
-            _open_chrome_inspect()
-            print('browser-harness: at chrome://inspect/#remote-debugging, tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
+            if _chrome_inspect_open_recently(name):
+                print(
+                    'browser-harness: Chrome remote debugging setup was already opened recently; not opening another window. '
+                    'Use the existing Chrome tab/popup, click Allow, then retry browser work.',
+                    file=sys.stderr,
+                )
+                restart_daemon(name)
+                raise RuntimeError(
+                    "remote-debugging-setup-already-opened: use the existing Chrome prompt/window, click Allow, then retry."
+                )
+            _mark_chrome_inspect_opened(name)
+            if _open_chrome_inspect():
+                print(f'browser-harness: opened chrome://inspect/#remote-debugging in {browser_family_label()}. Tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
+            else:
+                print(f'browser-harness: open chrome://inspect/#remote-debugging manually in {browser_family_label()}. Tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
             restart_daemon(name)
             continue
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
@@ -718,6 +786,65 @@ def print_update_banner(out=None):
     _cache_write({**cache, "banner_shown_on": today})
 
 
+def _windows_running_chromium_binaries():
+    """Executable paths for currently running Chromium-based browsers on Windows."""
+    command = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.Name -in @('chrome.exe','brave.exe','msedge.exe','helium.exe') } | "
+        "Select-Object -ExpandProperty ExecutablePath"
+    )
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", command],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _windows_chromium_binaries():
+    """Known Chromium browser executable locations on Windows."""
+    import os, shutil
+    candidates = [
+        os.environ.get("BH_CHROME_PATH"),
+        os.environ.get("CHROME_PATH"),
+        *_windows_running_chromium_binaries(),
+        shutil.which("chrome.exe"),
+        shutil.which("chrome"),
+        shutil.which("brave.exe"),
+        shutil.which("brave"),
+        shutil.which("msedge.exe"),
+        shutil.which("msedge"),
+        shutil.which("helium.exe"),
+        shutil.which("helium"),
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+    ]
+    found = []
+    seen = set()
+    for p in candidates:
+        if not p or not os.path.exists(p):
+            continue
+        if not browser_path_allowed(p):
+            continue
+        key = os.path.normcase(os.path.abspath(p))
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(p)
+    return found
+
+
 def _chrome_running():
     """Cross-platform best-effort check for a running Chromium-based browser."""
     import platform, subprocess
@@ -725,10 +852,9 @@ def _chrome_running():
     try:
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, timeout=5)
-            names = ("chrome.exe", "msedge.exe", "helium.exe")
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
+        names = process_names_for_browser_family(system)
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
@@ -736,8 +862,16 @@ def _chrome_running():
 
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
-    import platform, subprocess, webbrowser
-    url = "chrome://inspect/#remote-debugging"
+    import platform
+    url = CHROME_INSPECT_URL
+    if platform.system() == "Windows":
+        for binary in _windows_chromium_binaries():
+            try:
+                subprocess.Popen([binary, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                pass
+        return False
     if platform.system() == "Darwin":
         try:
             subprocess.run([
@@ -745,13 +879,14 @@ def _open_chrome_inspect():
                 "-e", 'tell application "Google Chrome" to activate',
                 "-e", f'tell application "Google Chrome" to open location "{url}"',
             ], timeout=5, check=False)
-            return
+            return True
         except Exception:
             pass
+    import webbrowser
     try:
-        webbrowser.open(url, new=2)
+        return bool(webbrowser.open(url, new=2))
     except Exception:
-        pass
+        return False
 
 
 def run_doctor():
@@ -793,7 +928,7 @@ def run_doctor():
             print(f"Browser: {bname} (snap) — WARNING: Snap confinement prevents CDP binding.")
             print(f"  Fix: Install Chrome natively (see docs/snap-linux-headless.md)")
             print(f"  Docs: {doc_url}")
-    row("chrome running", chrome, "" if chrome else "start chrome/edge")
+    row("chrome running", chrome, "" if chrome else f"start {browser_family_label(browser_family_mode())}")
     row("daemon alive", daemon, "" if daemon else "see install.md")
     row("active browser connections", bool(connections), str(len(connections)))
     for conn in connections:

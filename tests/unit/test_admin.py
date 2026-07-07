@@ -30,22 +30,55 @@ def test_local_chrome_mode_is_false_when_process_env_provides_remote_cdp(monkeyp
     assert not admin._is_local_chrome_mode()
 
 
-def test_handshake_timeout_needs_chrome_remote_debugging_prompt():
+def test_handshake_timeout_needs_chrome_permission_popup_not_inspect_setup():
     msg = "CDP WS handshake failed: timed out during opening handshake"
 
-    assert admin._needs_chrome_remote_debugging_prompt(msg)
+    assert admin._needs_chrome_permission_popup(msg)
+    assert not admin._needs_chrome_remote_debugging_prompt(msg)
 
 
 def test_handshake_403_needs_chrome_remote_debugging_prompt():
     msg = "CDP WS handshake failed: server rejected WebSocket connection: HTTP 403"
 
-    assert admin._needs_chrome_remote_debugging_prompt(msg)
+    assert not admin._needs_chrome_remote_debugging_prompt(msg)
 
 
 def test_stale_websocket_does_not_open_chrome_inspect():
     msg = "no close frame received or sent"
 
     assert not admin._needs_chrome_remote_debugging_prompt(msg)
+
+
+def test_chrome_inspect_recently_opened_uses_name_and_cooldown(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin, "REMOTE_DEBUG_OPEN_STATE", tmp_path / "remote-debug-open.json")
+
+    admin._mark_chrome_inspect_opened("default", now=1000)
+
+    assert admin._chrome_inspect_open_recently("default", now=1100, cooldown=300)
+    assert not admin._chrome_inspect_open_recently("other", now=1100, cooldown=300)
+    assert not admin._chrome_inspect_open_recently("default", now=1401, cooldown=300)
+
+
+def test_ensure_daemon_does_not_reopen_chrome_inspect_when_recent(monkeypatch):
+    class FakeProcess:
+        def poll(self):
+            return 1
+
+    opened = []
+    restarted = []
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env=None: True)
+    monkeypatch.setattr(admin, "_log_tail", lambda name=None: "DevToolsActivePort not found")
+    monkeypatch.setattr(admin, "_chrome_inspect_open_recently", lambda name=None: True)
+    monkeypatch.setattr(admin, "_open_chrome_inspect", lambda: opened.append(True))
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarted.append(name))
+    monkeypatch.setattr(admin.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    with pytest.raises(RuntimeError, match="remote-debugging-setup-already-opened"):
+        admin.ensure_daemon(wait=0, name="default")
+
+    assert opened == []
+    assert restarted == ["default"]
 
 
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):
@@ -139,6 +172,7 @@ def test_browser_connections_returns_attached_page(monkeypatch):
 
 
 def test_chrome_running_detects_helium_on_linux(monkeypatch):
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "any")
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr(
         "subprocess.check_output",
@@ -146,6 +180,79 @@ def test_chrome_running_detects_helium_on_linux(monkeypatch):
     )
 
     assert admin._chrome_running()
+
+
+def test_windows_chromium_binaries_includes_running_process_path(monkeypatch, tmp_path):
+    brave = tmp_path / "brave.exe"
+    brave.write_text("")
+    missing_root = tmp_path / "missing"
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "any")
+    monkeypatch.setenv("PROGRAMFILES", str(missing_root))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(missing_root))
+    monkeypatch.setenv("LOCALAPPDATA", str(missing_root))
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr(admin, "_windows_running_chromium_binaries", lambda: [str(brave), str(brave)])
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+
+    assert admin._windows_chromium_binaries() == [str(brave)]
+
+
+def test_windows_chromium_binaries_respects_chrome_family(monkeypatch, tmp_path):
+    brave = tmp_path / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe"
+    chrome = tmp_path / "Google" / "Chrome" / "Application" / "chrome.exe"
+    brave.parent.mkdir(parents=True)
+    chrome.parent.mkdir(parents=True)
+    brave.write_text("")
+    chrome.write_text("")
+    missing_root = tmp_path / "missing"
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "chrome")
+    monkeypatch.setenv("PROGRAMFILES", str(missing_root))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(missing_root))
+    monkeypatch.setenv("LOCALAPPDATA", str(missing_root))
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr(admin, "_windows_running_chromium_binaries", lambda: [str(brave), str(chrome)])
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+
+    assert admin._windows_chromium_binaries() == [str(chrome)]
+
+
+def test_chrome_running_ignores_brave_when_chrome_family_required(monkeypatch):
+    monkeypatch.setenv("BH_BROWSER_FAMILY", "chrome")
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "\r\nImage Name\r\nbrave.exe\r\n",
+    )
+
+    assert not admin._chrome_running()
+
+
+def test_open_chrome_inspect_on_windows_uses_browser_binary_not_protocol_handler(monkeypatch):
+    calls = []
+    binary = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(admin, "_windows_chromium_binaries", lambda: [binary])
+    monkeypatch.setattr(admin.subprocess, "Popen", lambda args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        "webbrowser.open",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("webbrowser.open must not be used on Windows")),
+    )
+
+    assert admin._open_chrome_inspect()
+    assert calls[0][0] == [binary, admin.CHROME_INSPECT_URL]
+
+
+def test_open_chrome_inspect_on_windows_does_not_fall_back_to_webbrowser(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(admin, "_windows_chromium_binaries", lambda: [])
+    monkeypatch.setattr(
+        "webbrowser.open",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("webbrowser.open must not be used on Windows")),
+    )
+
+    assert not admin._open_chrome_inspect()
 
 
 @pytest.mark.parametrize(
