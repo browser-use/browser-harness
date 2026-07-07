@@ -291,7 +291,7 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
-def switch_tab(target):
+def switch_tab(target, activate=False):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
@@ -299,7 +299,11 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    # activate=True raises the Chrome window to the macOS foreground (steals the
+    # user's focus). Automation never needs it — attach/screenshot/click all work
+    # on background tabs — so only pass it when the user asked to SEE the tab.
+    if activate:
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
@@ -318,7 +322,8 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    # background=True keeps the new tab from raising the Chrome window.
+    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)

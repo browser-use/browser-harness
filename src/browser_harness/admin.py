@@ -759,23 +759,21 @@ def _chrome_running():
 
 
 def _open_chrome_inspect():
-    """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
-    import platform, subprocess, webbrowser
+    """Point the user at chrome://inspect/#remote-debugging without stealing focus.
+
+    Used to `osascript ... activate` Chrome and open the URL itself, but that
+    yanks the user's real Chrome to the foreground on a transient attach
+    failure — exactly the focus-stealing this harness must never do. The
+    dedicated-profile setup (chrome-debug, port 9333) doesn't need the
+    consent checkbox at all, so just print instructions and let the user act."""
+    import sys
     url = "chrome://inspect/#remote-debugging"
-    if platform.system() == "Darwin":
-        try:
-            subprocess.run([
-                "osascript",
-                "-e", 'tell application "Google Chrome" to activate',
-                "-e", f'tell application "Google Chrome" to open location "{url}"',
-            ], timeout=5, check=False)
-            return
-        except Exception:
-            pass
-    try:
-        webbrowser.open(url, new=2)
-    except Exception:
-        pass
+    print(
+        f"browser-harness: open {url} in the target Chrome yourself, "
+        "or (preferred) run `chrome-debug` to use the dedicated automation profile "
+        "that never needs the consent checkbox.",
+        file=sys.stderr,
+    )
 
 
 def run_doctor():
