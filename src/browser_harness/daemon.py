@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
+import asyncio, json, os, signal, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -193,7 +193,7 @@ class Daemon:
         self.target_id = None
         self.events = deque(maxlen=BUF)
         self.dialog = None
-        self.stop = None  # asyncio.Event, set inside start()
+        self.stop = asyncio.Event()  # created here so a SIGTERM during start() is honored
 
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -237,7 +237,6 @@ class Daemon:
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
 
     async def start(self):
-        self.stop = asyncio.Event()
         url = get_ws_url()
         log(f"connecting to {url}")
         self.cdp = CDPClient(url)
@@ -398,6 +397,16 @@ async def serve(d):
 
 async def main():
     d = Daemon()
+    # Register SIGTERM BEFORE start(): get_ws_url()/the CDP handshake can take many seconds,
+    # and a signal during that window must still trigger cleanup (d.stop exists from __init__).
+    # admin.py escalates to os.kill(pid, SIGTERM) when the "shutdown" IPC can't be delivered,
+    # and container runtimes send SIGTERM on stop; without this the finally block's stop_remote()
+    # is skipped and the remote browser leaks. POSIX-only: add_signal_handler raises
+    # NotImplementedError on Windows, where SIGTERM can't be caught anyway.
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, d.stop.set)
+    except (NotImplementedError, AttributeError):
+        pass
     await d.start()
     await serve(d)
 
