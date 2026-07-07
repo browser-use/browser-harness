@@ -37,10 +37,17 @@ BOTH section headers and lessons — the hierarchy is by `parent_id`:
 {"group_id":G,"user_id":U,"parent_id":<parent id>,"root_id":<course id>,
  "unit_type":"module","state":2,"metadata":{"title":"...","resources":"[]"}}
 ```
-- Section under the course: `parent_id = root_id = course id`.
-- Lesson under a section: `parent_id = section id`, `root_id = course id`.
-- **3-level nesting (course → section → lesson) works and renders** as sidebar sections with lessons.
+- Lesson under the course: `parent_id = root_id = course id`. **This is the structure to use.**
 - **Display order = creation order.** There is no order field — create sequentially (await each).
+
+## Structure: use FLAT (course → lessons). 3-level does NOT render.
+
+You *can* POST a "module" whose `parent_id` is another module (course → section → lesson), and the
+API stores it 3 levels deep — but the classroom UI does **not** render it: the section shows as a
+flat row that opens its own (empty) content page, and its child lessons are invisible and unreachable
+to members. Every working Skool classroom course is 2-level. So: create all lessons directly under the
+course root, and encode module grouping in the title with a numeric prefix (`"1.1 …" … "6.5 …"`) plus
+list the module names in the course `desc`. Order the lessons by creating them in curriculum order.
 
 **Set lesson content:** `PUT https://api2.skool.com/courses/<id>` → **204**. Body is a FLAT 4-field
 object — NOT the metadata-wrapped create shape (sending the create shape returns 200 but silently
@@ -54,7 +61,8 @@ no-ops):
 ## Traps (field-tested)
 
 - **Title max = 50 chars.** Titles ≥ 51 fail the create with **HTTP 422** (silent in the UI). Keep
-  sidebar titles ≤ 49; put the full title as an H1 in the body if needed. 50 exactly passed, but stay under.
+  sidebar titles ≤ 49; put the full title as an H1 in the body if needed. 50 exactly passed, but stay
+  under — and remember a `"6.5 "` numeric prefix eats 4 chars, so cap the base title at ~45.
 - **Update needs the flat body.** The create body's `{...,metadata:{desc}}` shape does nothing on PUT.
   Discover/confirm by editing one lesson in the UI and capturing the PUT (see below).
 - **Do NOT navigate the page while a fetch loop is running** — a reload kills the JS context and the
