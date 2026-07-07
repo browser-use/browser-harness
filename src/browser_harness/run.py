@@ -210,7 +210,12 @@ def _traced_steps():
 def _telemetry_browser(task):
     """'cloud' | 'cdp' | 'local', self-reported by the daemon the task ran on.
     None when no browser was involved (non-script commands, daemon never up)."""
-    return daemon_browser_kind() if task else None
+    if not task or not telemetry.is_enabled():
+        return None
+    try:
+        return daemon_browser_kind()
+    except Exception:
+        return None
 
 
 def main():
