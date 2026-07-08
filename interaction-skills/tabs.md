@@ -14,7 +14,7 @@ print(current_tab())
 print(page_info())
 ```
 
-**Focus discipline:** automation never needs `activate=True` — screenshots, clicks, and navigation all work on background tabs. Only pass `activate=True` (or call `Target.activateTarget`) when the user explicitly asked to SEE the tab; on macOS it yanks the Chrome window to the foreground and steals the user's focus.
+**Focus discipline:** automation almost never needs `activate=True` — screenshots, clicks, and navigation all work on background tabs. The one exception is visibility-sensitive pages that pause video/animation when hidden (see SKILL.md). Only pass `activate=True` (or call `Target.activateTarget`) when the user explicitly asked to SEE the tab; on macOS it yanks the Chrome window to the foreground and steals the user's focus.
 
 What CDP is good at:
 - attach to a tab

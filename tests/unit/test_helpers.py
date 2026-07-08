@@ -110,9 +110,38 @@ def test_fill_input_raises_when_element_not_found():
             helpers.fill_input("#missing", "hello")
 
 
-def test_fill_input_clear_first_sends_select_all_then_backspace():
-    import sys
+def test_fill_input_clear_first_selects_via_js_then_backspace():
+    key_events = []
+    js_calls = []
 
+    def fake_cdp(method, **kwargs):
+        if method == "Input.dispatchKeyEvent":
+            key_events.append(kwargs)
+        return {}
+
+    def fake_js(expr, **kwargs):
+        js_calls.append(expr)
+        return True  # element found / field has content
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.js", side_effect=fake_js):
+        helpers.fill_input("#inp", "x", clear_first=True)
+
+    # Clearing selects via element.select() in JS, NOT a Cmd/Ctrl+A key dance:
+    # the key sequence never sent Meta's own keyDown/keyUp, so on
+    # focus-emulated background tabs the modifier stayed latched and every
+    # subsequent char became a Cmd+<char> shortcut.
+    assert any(".select()" in e or "selectAllChildren" in e for e in js_calls), \
+        "clear_first must select the field content via JS"
+    assert not any(e.get("key") == "a" for e in key_events), \
+        "clear_first must not dispatch Cmd/Ctrl+A key events"
+
+    # Backspace still fires to delete the selected content.
+    keys_down = [e.get("key") for e in key_events if e.get("type") in ("keyDown", "rawKeyDown")]
+    assert "Backspace" in keys_down
+
+
+def test_fill_input_clear_first_skips_backspace_on_empty_field():
     key_events = []
 
     def fake_cdp(method, **kwargs):
@@ -121,29 +150,17 @@ def test_fill_input_clear_first_sends_select_all_then_backspace():
         return {}
 
     def fake_js(expr, **kwargs):
-        return True  # element found
+        # focus() lookup finds the element; the select-content check reports
+        # an empty field (select() on an empty field would leave it in a state
+        # where subsequent insertions are dropped).
+        return False if ".select()" in expr or "selectAllChildren" in expr else True
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):
         helpers.fill_input("#inp", "x", clear_first=True)
 
-    # The "a" must be dispatched with the platform-correct modifier (Meta=4 on
-    # macOS, Ctrl=2 elsewhere). Without the modifier, the field would never get
-    # selected — it would just receive a literal "a".
-    expected_mod = 4 if sys.platform == "darwin" else 2
-    a_events = [e for e in key_events if e.get("key") == "a"]
-    assert a_events, "expected an 'a' key event for select-all"
-    assert all(e.get("modifiers") == expected_mod for e in a_events), \
-        f"select-all 'a' must carry modifiers={expected_mod}; got {[e.get('modifiers') for e in a_events]}"
-
-    # Crucial: no `char` event for the "a" — emitting one makes Chrome treat
-    # Cmd/Ctrl+A as a printable letter instead of a shortcut.
-    assert not any(e.get("type") == "char" and e.get("text") == "a" for e in key_events), \
-        "select-all must not emit a 'char' event with text='a' (would cancel the shortcut)"
-
-    # Backspace still fires (via press_key, which uses keyDown).
     keys_down = [e.get("key") for e in key_events if e.get("type") in ("keyDown", "rawKeyDown")]
-    assert "Backspace" in keys_down
+    assert "Backspace" not in keys_down, "empty field must not receive Backspace"
 
 
 def test_fill_input_no_clear_skips_ctrl_a():

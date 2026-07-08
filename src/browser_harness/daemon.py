@@ -265,17 +265,26 @@ class Daemon:
             # Input.dispatchMouseEvent — the event never acks and clicks are
             # dropped. Focus emulation makes the renderer treat the page as
             # focused/active so compositor-level input works on background tabs.
-            try:
-                await asyncio.wait_for(
-                    self.cdp.send_raw(
-                        "Emulation.setFocusEmulationEnabled",
-                        {"enabled": True},
-                        session_id=session_id,
-                    ),
-                    timeout=4,
-                )
-            except Exception as e:
-                log(f"enable focus emulation on {session_id}: {e}")
+            # One retry, then a loud log: without focus emulation, clicks and
+            # typing on this tab's background surface silently do nothing.
+            for attempt in (1, 2):
+                try:
+                    await asyncio.wait_for(
+                        self.cdp.send_raw(
+                            "Emulation.setFocusEmulationEnabled",
+                            {"enabled": True},
+                            session_id=session_id,
+                        ),
+                        timeout=4,
+                    )
+                    return
+                except Exception as e:
+                    log(f"enable focus emulation on {session_id} (attempt {attempt}): {e}")
+            log(
+                f"WARNING: focus emulation NOT active on {session_id} — "
+                "clicks/typing will be dropped while this tab is in background; "
+                "switch_tab(tid, activate=True) is the workaround"
+            )
 
         await asyncio.gather(
             *(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")),
