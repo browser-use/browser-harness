@@ -45,6 +45,7 @@ Produktcodes: Strom `PSE00008` (dynamisch), `PSE00004` (natürlich), `PSE00002` 
 
 ## Traps
 
+- **react-aria-Checkboxen (generell auf react-aria-Seiten): `click_at_xy` togglet sie NICHT.** react-arias `usePress` reagiert nicht auf die von `Input.dispatchMouseEvent` synthetisierten Klicks (auch nicht mit `mouseMoved` davor oder `buttons=1`) — die Events kommen im DOM an (pointerdown/up/click, korrektes Target), aber es feuert kein Toggle/`change`. Native Buttons/Inputs derselben Seite funktionieren normal. Workarounds: `js('el.click()')` togglet zuverlässig; für echte Klick-Verifikation Playwright nutzen. Nicht als App-Bug fehldiagnostizieren — hat hier eine halbe Stunde Fehlersuche gekostet.
 - Beim ersten Laden erscheint ein CleverPush-Push-Dialog und ein Eye-Able-Overlay (rechts) — beide stören Koordinaten-Klicks am Rand kaum, den Push-Dialog ignorieren oder wegklicken.
 - Netzwerk-Mitschnitt: `drain_events()` verpasst schnelle Requests zwischen Aufrufen; zuverlässiger ist `performance.getEntriesByType("resource")` im Seitenkontext.
 - CI-Theme des Widgets (alle `--ks-*` Design-Tokens inkl. SVO-Farben `#008df7/#001e62/#79d97c`): `https://journeyengine.production.wlp.cloud/journeys/svo.css`.
