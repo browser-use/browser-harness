@@ -38,6 +38,11 @@ Click Allow when the per-attach popup appears (Chrome 144+):
 
 See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
 
+For the core self-healing pattern, see
+[docs/self-modifying-harness.md](docs/self-modifying-harness.md). It includes
+four concrete edge cases and a standalone benchmark page for canvas signature,
+file upload, drag-and-drop, and coordinate-click tasks.
+
 ## Free Browser Use Cloud browsers
 
 Stealth, sub-agents, or headless deployment.<br>

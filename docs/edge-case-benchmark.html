@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser Harness Edge-case Benchmark</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7fb;
+      --ink: #171923;
+      --muted: #596171;
+      --line: #cfd6e4;
+      --pass: #087f5b;
+      --card: #ffffff;
+      --accent: #5b46f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+    header {
+      margin-bottom: 24px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 34px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .panel {
+      min-height: 280px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+    }
+    .status {
+      min-height: 28px;
+      margin-top: 12px;
+      font-weight: 700;
+      color: #8a4b00;
+    }
+    .status[data-pass="true"] {
+      color: var(--pass);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 150px;
+      border: 2px dashed #8c97ac;
+      border-radius: 6px;
+      background: #fff;
+      touch-action: none;
+    }
+    .upload-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 116px;
+    }
+    input[type="file"] {
+      max-width: 100%;
+    }
+    .drop-layout {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 18px;
+      align-items: center;
+      min-height: 150px;
+    }
+    #drag-card {
+      width: 150px;
+      height: 96px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #ebe9ff;
+      border: 2px solid var(--accent);
+      color: #2d218f;
+      font-weight: 800;
+      cursor: grab;
+      user-select: none;
+    }
+    #drop-zone {
+      min-height: 132px;
+      display: grid;
+      place-items: center;
+      border: 2px dashed #74809a;
+      border-radius: 8px;
+      background: #fbfcff;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    #drop-zone.hot {
+      border-color: var(--accent);
+      background: #f1efff;
+    }
+    .coordinate-stage {
+      position: relative;
+      height: 168px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background:
+        linear-gradient(90deg, rgb(15 23 42 / 0.06) 1px, transparent 1px),
+        linear-gradient(rgb(15 23 42 / 0.06) 1px, transparent 1px),
+        #ffffff;
+      background-size: 32px 32px;
+    }
+    #coordinate-target {
+      position: absolute;
+      left: 72%;
+      top: 58%;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      border: 0;
+      background: #ff4d6d;
+      box-shadow: 0 0 0 8px rgb(255 77 109 / 0.16);
+      cursor: crosshair;
+    }
+    #coordinate-target span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+    .summary {
+      margin-top: 16px;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #202938;
+      white-space: pre-wrap;
+    }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+      .drop-layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Browser Harness Edge-case Benchmark</h1>
+      <p>Four browser mechanics that usually force an agent to inspect, patch, retry, and verify.</p>
+    </header>
+
+    <section class="grid" aria-label="Benchmark tasks">
+      <article class="panel" data-task="signature">
+        <h2>1. Canvas signature</h2>
+        <canvas id="signature-pad" width="520" height="150" aria-label="Signature pad"></canvas>
+        <div id="signature-status" class="status">Draw a stroke across the signature pad.</div>
+      </article>
+
+      <article class="panel" data-task="upload">
+        <h2>2. File upload</h2>
+        <div class="upload-row">
+          <input id="upload-input" type="file" aria-label="Upload benchmark file">
+        </div>
+        <div id="upload-status" class="status">Upload any local file.</div>
+      </article>
+
+      <article class="panel" data-task="drag">
+        <h2>3. Drag and drop</h2>
+        <div class="drop-layout">
+          <div id="drag-card" draggable="true">DRAG ME</div>
+          <div id="drop-zone">Drop here</div>
+        </div>
+        <div id="drag-status" class="status">Move the card into the drop zone.</div>
+      </article>
+
+      <article class="panel" data-task="coordinate">
+        <h2>4. Coordinate target</h2>
+        <div class="coordinate-stage" id="coordinate-stage">
+          <button id="coordinate-target" type="button"><span>Hit target</span></button>
+        </div>
+        <div id="coordinate-status" class="status">Click the red target by visible coordinates.</div>
+      </article>
+    </section>
+
+    <section class="summary" id="summary" aria-live="polite"></section>
+  </main>
+
+  <script>
+    const results = {
+      signature: false,
+      upload: false,
+      drag: false,
+      coordinate: false,
+    };
+
+    window.edgeBenchmark = {
+      results,
+      passed() {
+        return Object.values(results).filter(Boolean).length;
+      },
+      complete() {
+        return Object.values(results).every(Boolean);
+      },
+    };
+
+    function setPass(task, detail) {
+      results[task] = true;
+      const status = document.getElementById(`${task}-status`);
+      status.dataset.pass = "true";
+      status.textContent = `PASS: ${detail}`;
+      renderSummary();
+    }
+
+    function renderSummary() {
+      document.getElementById("summary").textContent =
+        `passed=${window.edgeBenchmark.passed()}/4\n` +
+        JSON.stringify(results, null, 2);
+    }
+
+    renderSummary();
+
+    const canvas = document.getElementById("signature-pad");
+    const ctx = canvas.getContext("2d");
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#171923";
+    let drawing = false;
+    let last = null;
+    let points = [];
+
+    function canvasPoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) * (canvas.width / rect.width),
+        y: (event.clientY - rect.top) * (canvas.height / rect.height),
+      };
+    }
+
+    canvas.addEventListener("pointerdown", (event) => {
+      drawing = true;
+      points = [canvasPoint(event)];
+      last = points[0];
+      canvas.setPointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener("pointermove", (event) => {
+      if (!drawing) return;
+      const next = canvasPoint(event);
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(next.x, next.y);
+      ctx.stroke();
+      points.push(next);
+      last = next;
+    });
+
+    canvas.addEventListener("pointerup", () => {
+      drawing = false;
+      const distance = points.slice(1).reduce((total, point, index) => {
+        const prev = points[index];
+        return total + Math.hypot(point.x - prev.x, point.y - prev.y);
+      }, 0);
+      if (points.length >= 4 && distance > 80) {
+        setPass("signature", `${points.length} points, ${Math.round(distance)}px stroke`);
+      }
+    });
+
+    document.getElementById("upload-input").addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (file) setPass("upload", file.name);
+    });
+
+    const dragCard = document.getElementById("drag-card");
+    const dropZone = document.getElementById("drop-zone");
+
+    dragCard.addEventListener("dragstart", (event) => {
+      event.dataTransfer.setData("text/plain", "browser-harness-edge-card");
+      event.dataTransfer.effectAllowed = "move";
+    });
+
+    dropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropZone.classList.add("hot");
+    });
+
+    dropZone.addEventListener("dragleave", () => {
+      dropZone.classList.remove("hot");
+    });
+
+    dropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("hot");
+      if (event.dataTransfer.getData("text/plain") === "browser-harness-edge-card") {
+        dropZone.textContent = "Dropped";
+        setPass("drag", "HTML5 DataTransfer accepted");
+      }
+    });
+
+    document.getElementById("coordinate-target").addEventListener("click", () => {
+      setPass("coordinate", "red target clicked");
+    });
+  </script>
+</body>
+</html>
