@@ -146,6 +146,164 @@ def page_info():
     expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
     return json.loads(_runtime_evaluate(expression))
 
+def _preprocess_markdown_content(content, max_newlines=3):
+    import re
+    content = re.sub(r'`\{["\w].*?\}`', "", content, flags=re.DOTALL)
+    content = re.sub(r'\{"\$type":[^}]{100,}\}', "", content)
+    content = re.sub(r'\{"[^"]{5,}":\{[^}]{100,}\}', "", content)
+    content = re.sub(r"\n{4,}", "\n" * max_newlines, content)
+    filtered_lines = []
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            # keep one blank line so markdown paragraphs stay separated
+            if filtered_lines and filtered_lines[-1] != "":
+                filtered_lines.append("")
+            continue
+        if len(stripped) > 100 and stripped[0] in "{[":
+            try:
+                json.loads(stripped)
+                continue
+            except ValueError:
+                pass
+        filtered_lines.append(line)
+    return "\n".join(filtered_lines).strip()
+
+
+def _convert_html_to_markdown(page_html):
+    import re
+    from markdownify import markdownify as md
+    page_html = re.sub(r"<(script|style|noscript)\b.*?</\1>", "", page_html, flags=re.DOTALL | re.IGNORECASE)
+    content = md(
+        page_html,
+        heading_style="ATX",
+        strip=["script", "style"],
+        bullets="-",
+        code_language="",
+        escape_asterisks=False,
+        escape_underscores=False,
+        escape_misc=False,
+        autolinks=False,
+        default_title=False,
+        keep_inline_images_in=[],
+    )
+    return _preprocess_markdown_content(content)
+
+
+def read_page(max_chars=4000):
+    html = js("document.documentElement ? document.documentElement.outerHTML : ''")
+    try:
+        content = _convert_html_to_markdown(html)
+    except ImportError:
+        content = js("document.body ? document.body.innerText : ''") or ""
+        import re
+        content = _preprocess_markdown_content(re.sub(r"\n{4,}", "\n\n\n", content))
+    return content[:int(max_chars)]
+
+
+_INTERACTIVE_AX_ROLES = {
+    "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox",
+    "switch", "slider", "spinbutton", "menuitem", "menuitemcheckbox",
+    "menuitemradio", "tab", "option", "listbox", "textfield", "gridcell",
+    "popupbutton", "togglebutton", "disclosuretriangle",
+}
+
+
+
+def _snapshot_text(node_idx, children, node_name, node_value, strings):
+    """Concatenated descendant text of a DOMSnapshot node (its label)."""
+    parts, budget = [], 0
+    flat = children.get(node_idx, [])[:]
+    while flat and budget < 400:
+        i = flat.pop(0); budget += 1
+        if strings[node_name[i]] == "#text":
+            v = node_value[i]
+            if v >= 0:
+                parts.append(strings[v])
+        flat.extend(children.get(i, []))
+    return " ".join(" ".join(parts).split())[:60]
+
+
+def list_interactive(limit=60, viewport_only=True):
+    """Visible interactive elements with viewport coordinates for click_at_xy.
+
+    Elements with an interactive AX role come first; roleless custom widgets are added
+    only when the snapshot marks them clickable (a real click listener).
+    With viewport_only=False, off-screen entries need scrolling before use."""
+    ax_nodes = cdp("Accessibility.getFullAXTree").get("nodes", [])
+    snap = cdp("DOMSnapshot.captureSnapshot", computedStyles=[])
+    vp = cdp("Page.getLayoutMetrics").get("cssLayoutViewport", {})
+    vw, vh = vp.get("clientWidth", 0), vp.get("clientHeight", 0)
+
+    docs = snap.get("documents") or []
+    if not docs:
+        return []
+    doc = docs[0]
+    strings = snap["strings"]
+    nodes = doc["nodes"]
+    node_name, node_value, parent = nodes["nodeName"], nodes["nodeValue"], nodes["parentIndex"]
+    # main document only — sub-document bounds are in the iframe's own space
+    sx, sy = doc.get("scrollOffsetX", 0), doc.get("scrollOffsetY", 0)
+
+    # backendNodeId -> layout bounds, and node index -> backendNodeId
+    idx_bounds = {}
+    layout = doc["layout"]
+    for i, node_index in enumerate(layout["nodeIndex"]):
+        idx_bounds[node_index] = layout["bounds"][i]
+    backend_ids = nodes["backendNodeId"]
+    id_to_idx = {bid: i for i, bid in enumerate(backend_ids)}
+    clickable = set((nodes.get("isClickable") or {}).get("index") or [])
+    children = {}
+    for i, par in enumerate(parent):
+        if par >= 0:
+            children.setdefault(par, []).append(i)
+
+    def emit(node_idx, role, name):
+        b = idx_bounds.get(node_idx)
+        if not b or b[2] < 4 or b[3] < 4:
+            return None
+        x = b[0] - sx + b[2] / 2
+        y = b[1] - sy + min(b[3] / 2, 40)
+        if viewport_only and not (0 <= x <= vw and 0 <= y <= vh):
+            return None
+        if not name:
+            name = _snapshot_text(node_idx, children, node_name, node_value, strings)
+        return {"x": round(x), "y": round(y), "role": role, "name": name}
+
+    primary, seen = [], set()
+    for n in ax_nodes:
+        if n.get("ignored"):
+            continue
+        role = ((n.get("role") or {}).get("value") or "").lower()
+        if role not in _INTERACTIVE_AX_ROLES:
+            continue
+        ni = id_to_idx.get(n.get("backendDOMNodeId"))
+        if ni is None:
+            continue
+        entry = emit(ni, role, ((n.get("name") or {}).get("value") or "").strip()[:60])
+        if entry:
+            seen.add(ni)
+            primary.append(entry)
+            if len(primary) >= int(limit):
+                return primary
+
+    # roleless custom widgets Chrome flagged clickable (onclick / click listener);
+    # scroll and focus-management wrappers are not flagged, so they never leak
+    fallback = []
+    for ni in clickable:
+        if ni in seen:
+            continue
+        b = idx_bounds.get(ni)
+        # a delegated listener on a big container isn't a click target
+        if b and b[2] * b[3] > 0.4 * vw * vh:
+            continue
+        entry = emit(ni, "clickable", "")
+        if entry:
+            fallback.append(entry)
+
+    return (primary + fallback)[: int(limit)]
+
+
 # --- input ---
 _debug_click_counter = 0
 

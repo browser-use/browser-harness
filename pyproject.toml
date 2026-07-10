@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
     "cdp-use==1.4.5",
     "fetch-use==0.4.0",
+    "markdownify==1.2.2",
     "pillow==12.2.0",
     "websockets==15.0.1",
 ]

@@ -84,8 +84,9 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 
 ## Page Workflow
 
+- `read_page()` (page text as markdown) and `list_interactive()` (visible clickable elements with `x, y` for `click_at_xy`) answer most "what's on this page / what can I click" questions faster than a screenshot; screenshot when layout or imagery matters.
 - Screenshots first: use `capture_screenshot()` to understand visible state.
-- Clicking: screenshot -> read pixel -> `click_at_xy(x, y)` -> screenshot again.
+- Clicking: screenshot -> read pixel -> `click_at_xy(x, y)` -> verify. When a targeted `js(...)` or `page_info()` check can confirm the outcome (cart count, element state, URL), prefer it over another screenshot — it is much faster; screenshot again when you actually need to see the page.
 - After navigation, call `wait_for_load()`.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
