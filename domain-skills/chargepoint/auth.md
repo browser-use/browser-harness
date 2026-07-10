@@ -14,19 +14,24 @@ token from a real browser instead.
 - Name: `coulomb_sess` (~43-char opaque value)
 - Present whenever the user is logged in at https://driver.chargepoint.com
 - Related cookies you'll see alongside it: `auth-session`, `ci_ui_session`,
-  `datadome` — `coulomb_sess` is the one API clients (python-chargepoint,
-  ha-chargepoint) accept as a session token.
+  `datadome` — `coulomb_sess` is what API clients (python-chargepoint,
+  ha-chargepoint) use as the session token. The `auth-session` JWT is also a
+  valid login path: python-chargepoint's `login_with_sso_session(sso_jwt)`
+  exchanges it for a `coulomb_sess` token, useful for SSO accounts when
+  `coulomb_sess` is absent.
 
 Grab it from the user's logged-in browser without navigating anywhere:
 
 ```python
 cookies = cdp("Storage.getCookies")["cookies"]
-tok = next(c["value"] for c in cookies
-           if c["name"] == "coulomb_sess" and "chargepoint" in c["domain"])
+tok = next((c["value"] for c in cookies
+            if c["name"] == "coulomb_sess" and "chargepoint" in c["domain"]),
+           None)
 ```
 
-If no `coulomb_sess` cookie exists, the user isn't logged in — stop and ask
-them to log in at driver.chargepoint.com first (don't type credentials).
+If `tok` is None, the user isn't logged in (though an SSO account may still
+have an `auth-session` cookie to exchange, per above) — stop and ask them to
+log in at driver.chargepoint.com first (don't type credentials).
 
 ## Trap
 
