@@ -79,102 +79,59 @@ def test_launch_tui_uses_fork_binary_and_workspace(tmp_path):
     assert "open example.com" == command[-1]
 
 
-def test_run_task_prints_final_response(tmp_path, capsys):
+def test_run_task_streams_fork_exec_transcript(tmp_path):
     codex_bin = tmp_path / "codex"
     codex_bin.write_text("#!/bin/sh\n")
     codex_bin.chmod(0o755)
     run_root = tmp_path / "run"
+    out_msg = tmp_path / "final.txt"
     args = agent.build_parser().parse_args([
         "reply ready",
         "--codex-bin",
         str(codex_bin),
         "--run-root",
         str(run_root),
-        "--approval-mode",
-        "deny-all",
+        "--output-last-message",
+        str(out_msg),
     ])
 
-    class DummyApprovalMode:
-        auto_review = object()
-        deny_all = object()
-
-    class DummySandbox:
-        workspace_write = object()
-        full_access = object()
-
-    class DummyCodexConfig:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class DummyThread:
-        def run(self, *_args, **_kwargs):
-            return type("Result", (), {"final_response": "ready"})()
-
-    class DummyCodex:
-        def __init__(self, config):
-            self.config = config
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-        def thread_start(self, *_args, **_kwargs):
-            return DummyThread()
-
-    with patch("browser_harness.agent._load_codex_sdk", return_value=(DummyApprovalMode, DummyCodex, DummyCodexConfig, DummySandbox)):
+    with patch("browser_harness.agent.subprocess.run") as run:
+        run.return_value = type("Completed", (), {"returncode": 0})()
         assert agent.run_task(args) == 0
 
-    captured = capsys.readouterr()
-    assert captured.out.strip() == "ready"
-    assert "[browser-harness] run root:" in captured.err
+    command = run.call_args.args[0]
+    # Drives the fork's exec mode with the JSON event stream (evidence transcript).
+    assert command[0] == str(codex_bin)
+    assert command[1] == "exec"
+    assert "--json" in command
+    assert "--output-last-message" in command
+    assert str(out_msg) == command[command.index("--output-last-message") + 1]
+    # Default (non-sandboxed) is always-allow full access.
+    assert "--dangerously-bypass-approvals-and-sandbox" in command
+    assert command[-1] == "-"  # prompt over stdin
+    assert run.call_args.kwargs["input"] == "reply ready"
 
 
-def test_run_task_fails_when_no_final_response(tmp_path, capsys):
+def test_run_task_sandboxed_uses_sandbox_and_approval_flags(tmp_path):
     codex_bin = tmp_path / "codex"
     codex_bin.write_text("#!/bin/sh\n")
     codex_bin.chmod(0o755)
-    run_root = tmp_path / "run"
     args = agent.build_parser().parse_args([
         "reply ready",
         "--codex-bin",
         str(codex_bin),
         "--run-root",
-        str(run_root),
+        str(tmp_path / "run"),
+        "--sandboxed",
+        "--approval-mode",
+        "auto-review",
     ])
 
-    class DummyApprovalMode:
-        auto_review = object()
-        deny_all = object()
+    with patch("browser_harness.agent.subprocess.run") as run:
+        run.return_value = type("Completed", (), {"returncode": 7})()
+        assert agent.run_task(args) == 7  # propagates the fork's exit code
 
-    class DummySandbox:
-        workspace_write = object()
-        full_access = object()
-
-    class DummyCodexConfig:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class DummyThread:
-        def run(self, *_args, **_kwargs):
-            return type("Result", (), {"final_response": ""})()
-
-    class DummyCodex:
-        def __init__(self, config):
-            self.config = config
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-        def thread_start(self, *_args, **_kwargs):
-            return DummyThread()
-
-    with patch("browser_harness.agent._load_codex_sdk", return_value=(DummyApprovalMode, DummyCodex, DummyCodexConfig, DummySandbox)):
-        assert agent.run_task(args) == 1
-
-    captured = capsys.readouterr()
-    assert "finished without a final response" in captured.err
+    command = run.call_args.args[0]
+    assert "-s" in command and "workspace-write" == command[command.index("-s") + 1]
+    assert "-a" in command and "on-request" == command[command.index("-a") + 1]
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command

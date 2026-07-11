@@ -171,38 +171,47 @@ def workspace_env(run_root: Path, paths: CodexPaths) -> dict:
 def run_task(args: argparse.Namespace) -> int:
     paths = resolve_codex_paths(args)
     run_root = prepare_workspace(Path(args.run_root).expanduser() if args.run_root else default_run_root())
-    ApprovalMode, Codex, CodexConfig, Sandbox = _load_codex_sdk(paths)
     task = resolved_task(args)
 
     env = workspace_env(run_root, paths)
 
-    approval_mode = ApprovalMode.auto_review if args.approval_mode == "auto-review" else ApprovalMode.deny_all
-    sandbox = Sandbox.workspace_write if args.sandboxed else Sandbox.full_access
-    config = CodexConfig(
-        codex_bin=str(paths.bin),
-        cwd=str(run_root),
-        env=env,
-        client_name="browser_harness",
-        client_title="Browser Harness",
+    # Drive the fork's `exec` mode directly rather than the SDK's collect-only
+    # run(): this streams the full turn-by-turn transcript (tool calls, command
+    # output, agent messages) to stdout, exactly like `codex exec`. Downstream
+    # tooling — including the agent benchmark's step/evidence extractor — relies
+    # on that transcript; the SDK's final-response-only path starves it.
+    approval = "never" if args.approval_mode == "never" else (
+        "on-request" if args.approval_mode == "auto-review" else "on-failure"
     )
-
-    with Codex(config=config) as codex:
-        thread = codex.thread_start(
-            approval_mode=approval_mode,
-            cwd=str(run_root),
-            developer_instructions=build_instructions(run_root),
-            model=args.model,
-            sandbox=sandbox,
-        )
-        result = thread.run(task, approval_mode=approval_mode, cwd=str(run_root), sandbox=sandbox)
-
-    if result.final_response:
-        print(result.final_response)
+    sandbox = "workspace-write" if args.sandboxed else "danger-full-access"
+    last_message = (
+        Path(args.output_last_message).expanduser()
+        if getattr(args, "output_last_message", None)
+        else run_root / "final_message.txt"
+    )
+    command = [
+        str(paths.bin),
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "-C",
+        str(run_root),
+        "--add-dir",
+        str(package_root()),
+        "-m",
+        args.model,
+        "--output-last-message",
+        str(last_message),
+    ]
+    if args.sandboxed:
+        command.extend(["-s", sandbox, "-a", approval])
     else:
-        print("[browser-harness] Codex finished without a final response", file=sys.stderr)
-        return 1
+        command.append("--dangerously-bypass-approvals-and-sandbox")
+    command.append("-")  # read the prompt from stdin
+
+    completed = subprocess.run(command, input=task, text=True, cwd=run_root, env=env)
     print(f"\n[browser-harness] run root: {run_root}", file=sys.stderr)
-    return 0
+    return completed.returncode
 
 
 def launch_tui(args: argparse.Namespace) -> int:
@@ -249,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--approval-mode", choices=("never", "auto-review", "deny-all"), default="never")
     parser.add_argument("--sandboxed", action="store_true", help="Constrain to the workspace-write sandbox (default: full access, never ask).")
     parser.add_argument("--full-access", action="store_true", help=argparse.SUPPRESS)  # legacy no-op; full access is the default
+    parser.add_argument("--output-last-message", help="Write the agent's final message to this file (default: <run-root>/final_message.txt).")
     return parser
 
 
