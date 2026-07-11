@@ -38,6 +38,29 @@ Click Allow when the per-attach popup appears (Chrome 144+):
 
 See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
 
+## Built-in Codex agent
+
+This worktree also exposes a self-contained Codex-backed runner:
+
+```bash
+browser-harness agent "open example.com and tell me the page title" \
+  --codex-repo ../Codex-browser-harness-embed
+```
+
+For an interactive standalone UI, launch the forked Codex TUI in a prepared
+browser-harness workspace:
+
+```bash
+browser-harness tui "open example.com and tell me the page title" \
+  --codex-repo ../Codex-browser-harness-embed
+```
+
+It launches the forked Codex app-server from that repo, creates an isolated
+browser-harness run workspace, injects the browser-harness instructions, and
+makes `./bin/browser-harness` available to the agent inside that workspace. It
+does not silently fall back to a system `codex` binary; build the fork first with
+`cd ../Codex-browser-harness-embed/codex-rs && cargo build -p codex-cli`.
+
 ## Free Browser Use Cloud browsers
 
 Stealth, sub-agents, or headless deployment.<br>

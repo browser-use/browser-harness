@@ -48,6 +48,21 @@ def test_stale_websocket_does_not_open_chrome_inspect():
     assert not admin._needs_chrome_remote_debugging_prompt(msg)
 
 
+def test_show_live_url_respects_no_open_env(monkeypatch, capsys):
+    opened = []
+    monkeypatch.setenv("BH_NO_OPEN_LIVE_URL", "1")
+    monkeypatch.setattr(admin, "_has_local_gui", lambda: True)
+    monkeypatch.setattr("webbrowser.open", lambda url, new=0: opened.append((url, new)))
+
+    admin._show_live_url("https://live.example")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "https://live.example" in captured.err
+    assert "auto-open disabled" in captured.err
+    assert opened == []
+
+
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", None)  # shared-tmpdir mode

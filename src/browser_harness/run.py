@@ -28,6 +28,8 @@ from .admin import (
     sync_local_profile,
 )
 from . import auth, telemetry
+from . import _ipc as ipc
+from . import agent as codex_agent
 from .helpers import *
 
 HELP = """Browser Harness
@@ -55,6 +57,8 @@ Commands:
   browser-harness telemetry status    show anonymous telemetry opt-out state
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
+  browser-harness agent "TASK"     run TASK with the built-in Codex-backed agent
+  browser-harness tui ["TASK"]     open the forked Codex TUI in a browser-harness workspace
 """
 
 USAGE = """Usage:
@@ -83,6 +87,25 @@ def _local_chrome_listening():
 # *and* billing them for a cloud browser they never asked for.
 def _explicit_cdp_configured():
     return bool(os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS"))
+
+
+def _cloud_only():
+    return os.environ.get("BH_CLOUD_ONLY") not in (None, "", "0", "false", "False")
+
+
+def _daemon_is_cloud(name=None):
+    try:
+        c, token = ipc.connect(name or NAME, timeout=1.0)
+    except Exception:
+        return False
+    try:
+        resp = ipc.request(c, token, {"meta": "ping"})
+        return isinstance(resp, dict) and bool(resp.get("remote_id") and resp.get("cdp_ws"))
+    except Exception:
+        return False
+    finally:
+        try: c.close()
+        except OSError: pass
 
 
 def _cloud_auth_configured():
@@ -317,6 +340,10 @@ def _run(args):
         restart_daemon()
         print("daemon stopped — will restart fresh on next call")
         return
+    if args and args[0] == "agent":
+        sys.exit(codex_agent.main(args[1:]))
+    if args and args[0] == "tui":
+        sys.exit(codex_agent.main_tui(args[1:]))
     if args and args[0] == "--debug-clicks":
         os.environ["BH_DEBUG_CLICKS"] = "1"
         args = args[1:]
@@ -333,7 +360,16 @@ def _run(args):
     # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
     cloud_admin = code.lstrip().startswith(("start_remote_daemon(", "stop_remote_daemon("))
     if not cloud_admin:
-        if (
+        # In benchmark cloud-only mode (BH_CLOUD_ONLY), local Chrome must never
+        # suppress cloud provisioning.
+        if _cloud_only():
+            if not os.environ.get("BROWSER_USE_API_KEY"):
+                raise RuntimeError("BH_CLOUD_ONLY requires BROWSER_USE_API_KEY")
+            if daemon_alive() and not _daemon_is_cloud():
+                restart_daemon()
+            if not daemon_alive() and os.environ.get("BU_AUTOSPAWN"):
+                start_remote_daemon(NAME)
+        elif (
             not daemon_alive()
             and not _local_chrome_listening()
             and not _explicit_cdp_configured()

@@ -94,6 +94,15 @@ def log(msg):
     open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
 
 
+def _cloud_only():
+    return os.environ.get("BH_CLOUD_ONLY") not in (None, "", "0", "false", "False")
+
+
+def _is_loopback_url(url):
+    host = (urlparse(url).hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"} or host.startswith("127.")
+
+
 async def _silent(coro):
     try:
         await coro
@@ -124,8 +133,12 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
 
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
+        if _cloud_only() and _is_loopback_url(url):
+            raise RuntimeError(f"BH_CLOUD_ONLY refuses local BU_CDP_WS={url}")
         return url
     if url := os.environ.get("BU_CDP_URL"):
+        if _cloud_only() and _is_loopback_url(url):
+            raise RuntimeError(f"BH_CLOUD_ONLY refuses local BU_CDP_URL={url}")
         # HTTP DevTools endpoint (e.g. http://127.0.0.1:9333) — resolve to ws via /json/version.
         # Use this for a dedicated automation Chrome on a non-default profile, which avoids the
         # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
@@ -149,6 +162,8 @@ def get_ws_url():
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
+    if _cloud_only():
+        raise RuntimeError("BH_CLOUD_ONLY requires Browser Use Cloud via BU_CDP_WS; refusing local Chrome discovery")
     deadline = time.time() + 30
     while time.time() < deadline:
         for base in PROFILES:
@@ -300,7 +315,15 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
+        if meta == "ping":
+            return {
+                "pong": True,
+                "pid": os.getpid(),
+                "browser_kind": BROWSER_KIND,
+                "remote_id": REMOTE_ID or "",
+                "cdp_ws": os.environ.get("BU_CDP_WS", ""),
+                "cloud_only": _cloud_only(),
+            }
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}

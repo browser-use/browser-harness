@@ -72,6 +72,41 @@ def test_cloud_bootstrap_on_headless_server(monkeypatch):
     mock_start.assert_called_once()
 
 
+def test_cloud_only_bootstrap_ignores_local_chrome(monkeypatch):
+    """Benchmark cloud-only mode must provision Browser Use Cloud even if the
+    user's local Chrome is listening on a DevTools port."""
+    monkeypatch.setenv("BH_CLOUD_ONLY", "1")
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
+    monkeypatch.setenv("BU_AUTOSPAWN", "1")
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.daemon_alive", return_value=False), \
+         patch("browser_harness.run._local_chrome_listening", return_value=True), \
+         patch("browser_harness.run.start_remote_daemon") as mock_start, \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+    mock_start.assert_called_once()
+
+
+def test_cloud_only_restarts_non_cloud_daemon_before_bootstrap(monkeypatch):
+    monkeypatch.setenv("BH_CLOUD_ONLY", "1")
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
+    monkeypatch.setenv("BU_AUTOSPAWN", "1")
+    alive_values = iter([True, False])
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.daemon_alive", side_effect=lambda: next(alive_values)), \
+         patch("browser_harness.run._daemon_is_cloud", return_value=False), \
+         patch("browser_harness.run.restart_daemon") as mock_restart, \
+         patch("browser_harness.run.start_remote_daemon") as mock_start, \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+    mock_restart.assert_called_once()
+    mock_start.assert_called_once()
+
+
 def test_explicit_bu_cdp_url_blocks_cloud_bootstrap(monkeypatch):
     """BU_CDP_URL is documented to override local Chrome discovery (install.md:58-59),
     so it must also block cloud auto-bootstrap. Otherwise start_remote_daemon would
@@ -252,3 +287,23 @@ def test_cli_doctor_rejects_unknown_flags():
             run.main()
     assert ei.value.code == 2
     assert "usage" in err.getvalue().lower()
+
+
+def test_agent_subcommand_delegates_to_codex_agent():
+    with patch.object(sys, "argv", ["browser-harness", "agent", "find the title"]), \
+         patch("browser_harness.run.codex_agent.main", return_value=0) as agent_main:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+
+    assert ei.value.code == 0
+    agent_main.assert_called_once_with(["find the title"])
+
+
+def test_tui_subcommand_delegates_to_codex_tui():
+    with patch.object(sys, "argv", ["browser-harness", "tui", "find the title"]), \
+         patch("browser_harness.run.codex_agent.main_tui", return_value=0) as tui_main:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+
+    assert ei.value.code == 0
+    tui_main.assert_called_once_with(["find the title"])
