@@ -89,6 +89,7 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
+- Driving a *visible* browser the user is watching? Set `BH_NO_ACTIVATE=1` so `new_tab()`/`switch_tab()` don't raise the window and steal OS focus. Per call: `new_tab(url, background=True|False)` or `switch_tab(target, activate=True|False)`. The daemon auto-anchors a tab, so no manual sentinel needed.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
 - Raw CDP is available with `cdp("Domain.method", ...)`.

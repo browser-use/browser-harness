@@ -83,4 +83,6 @@ browser-harness --update -y
 browser-harness telemetry disable
 ```
 
+`BH_NO_ACTIVATE=1` stops `new_tab()` / `switch_tab()` from raising the browser window to the OS foreground — useful when driving a visible browser you're watching. Default off. The daemon auto-anchors a real tab so no manual sentinel is needed; per call, override with `new_tab(url, background=True|False)` or `switch_tab(target, activate=True|False)`.
+
 State lives under `${XDG_CONFIG_HOME:-~/.config}/browser-harness` by default: auth, telemetry id, agent workspace, runtime sockets, logs, screenshots, and temp files. Override with `BH_HOME` or `BROWSER_HARNESS_HOME`.
