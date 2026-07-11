@@ -321,7 +321,7 @@ def _run(args):
         os.environ["BH_DEBUG_CLICKS"] = "1"
         args = args[1:]
     if not args and not sys.stdin.isatty():
-        code = sys.stdin.read()
+        code = sys.stdin.buffer.read().decode('utf-8-sig')  # utf-8-sig strips BOM if present (PowerShell 5.1 compat)
         if not code.strip():
             sys.exit(USAGE)
     else:
