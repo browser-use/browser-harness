@@ -6,6 +6,24 @@ When Chrome opens fresh, the only CDP `type: "page"` targets are `chrome://inspe
 
 The daemon's `attach_first_page()` handles this by creating an `about:blank` tab when no real pages exist. If you still end up on an invisible tab, use `switch_tab()` which calls `Target.activateTarget` to bring the tab to front.
 
+## Auto-reconnect
+
+If the CDP websocket drops mid-session (Chrome closed/restarted, a remote
+endpoint hiccup), the daemon rebuilds the connection and retries the failing
+call once — for a local Chrome it re-resolves the live websocket via
+`get_ws_url()`, so it also recovers from a Chrome restart on the same port. The
+call the caller made succeeds transparently; a follow-up call re-attaches any
+tab-specific session. Only if the rebuild itself fails (e.g. a remote
+`BU_CDP_WS` whose endpoint is gone) do you get an error back. No manual
+`--reload` needed for a plain drop.
+
+## Command timeout
+
+Every helper→daemon CDP call has a read budget (default 30s, screenshots 60s),
+tunable via `BH_CMD_TIMEOUT` or per-call `cdp(..., _timeout=N)` /
+`js(..., timeout=N)`. This is separate from the short socket-connect budget, so
+a slow-but-valid navigation or awaited promise no longer fails at connect time.
+
 ## Startup sequence
 
 1. Check if a daemon is already running with `daemon_alive()`

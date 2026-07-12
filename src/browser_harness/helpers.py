@@ -38,10 +38,36 @@ NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
+# Establishing the AF_UNIX/loopback socket to the (local) daemon should be
+# instant, so the connect budget stays short. The command budget is the time we
+# allow the daemon to round-trip a CDP call to Chrome and answer — screenshots,
+# heavy DOM reads, and awaited promises routinely need more than a couple of
+# seconds. These were previously fused into a single 5s value (connect() sets
+# both the connect AND read timeout), which hard-capped every operation at 5s
+# and turned any slow-but-valid call into a failure.
+_CONNECT_TIMEOUT = 5.0
+_DEFAULT_CMD_TIMEOUT = 30.0
+_SCREENSHOT_CMD_TIMEOUT = 60.0
 
-def _send(req):
-    c, token = ipc.connect(NAME, timeout=5.0)
+
+def _cmd_timeout(default=_DEFAULT_CMD_TIMEOUT):
+    """Per-call read budget in seconds. BH_CMD_TIMEOUT overrides the default."""
+    v = os.environ.get("BH_CMD_TIMEOUT")
+    if v:
+        try:
+            return float(v)
+        except ValueError:
+            pass
+    return default
+
+
+def _send(req, timeout=None):
+    # Connect on the short budget, then raise the socket's read timeout to the
+    # command budget before waiting on the daemon's reply. Without the second
+    # settimeout, the reply had to arrive within _CONNECT_TIMEOUT.
+    c, token = ipc.connect(NAME, timeout=_CONNECT_TIMEOUT)
     try:
+        c.settimeout(_cmd_timeout() if timeout is None else timeout)
         r = ipc.request(c, token, req)
     finally:
         c.close()
@@ -49,9 +75,12 @@ def _send(req):
     return r
 
 
-def cdp(method, session_id=None, **params):
-    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
-    return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
+def cdp(method, session_id=None, _timeout=None, **params):
+    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1).
+
+    _timeout overrides the per-call read budget in seconds (env BH_CMD_TIMEOUT
+    sets the default). Underscored so it can't collide with a CDP param name."""
+    return _send({"method": method, "params": params, "session_id": session_id}, timeout=_timeout).get("result", {})
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
@@ -109,9 +138,9 @@ def _runtime_value(response, expression):
     return None
 
 
-def _runtime_evaluate(expression, session_id=None, await_promise=False):
+def _runtime_evaluate(expression, session_id=None, await_promise=False, timeout=None):
     try:
-        r = cdp("Runtime.evaluate", session_id=session_id, expression=expression, returnByValue=True, awaitPromise=await_promise)
+        r = cdp("Runtime.evaluate", session_id=session_id, expression=expression, returnByValue=True, awaitPromise=await_promise, _timeout=timeout)
     except TimeoutError as e:
         raise RuntimeError(f"Runtime.evaluate timed out; expression: {_js_snippet(expression)}") from e
     return _runtime_value(r, expression)
@@ -270,7 +299,10 @@ def capture_screenshot(path=None, full=False, max_dim=None):
     """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
     keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
     path = path or str(ipc._TMP / "shot.png")
-    r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
+    # Screenshots serialize a base64 PNG back over the socket — on a large or
+    # retina page that can take longer than the default command budget, so give
+    # it a wider one (still overridable via BH_CMD_TIMEOUT).
+    r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full, _timeout=_cmd_timeout(_SCREENSHOT_CMD_TIMEOUT))
     open(path, "wb").write(base64.b64decode(r["data"]))
     if max_dim:
         from PIL import Image
@@ -432,16 +464,19 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
         time.sleep(0.1)
     return False
 
-def js(expression, target_id=None):
+def js(expression, target_id=None, timeout=None):
     """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
 
     Expressions with top-level `return` are automatically wrapped in an IIFE, so both
     `document.title` and `const x = 1; return x` are valid inputs.
+
+    Pass timeout (seconds) to widen the read budget for a deliberately slow awaited
+    promise; env BH_CMD_TIMEOUT sets the default for all calls.
     """
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
     if _has_return_statement(expression) and not expression.strip().startswith("("):
         expression = f"(function(){{{expression}}})()"
-    return _runtime_evaluate(expression, session_id=sid, await_promise=True)
+    return _runtime_evaluate(expression, session_id=sid, await_promise=True, timeout=timeout)
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
