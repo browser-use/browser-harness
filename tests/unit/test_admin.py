@@ -547,6 +547,7 @@ def test_restart_daemon_skips_sigterm_if_pid_was_reused_during_wait(monkeypatch,
     # process. The function must NOT escalate to SIGTERM in that state.
     identify_responses = iter([live_pid, None])
     monkeypatch.setattr(admin.os, "kill", fake_kill)
+    monkeypatch.setattr(admin, "_process_start_time", lambda _pid: None)
     monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: next(identify_responses))
     monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: True)
     monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: ("conn", "tok"))
