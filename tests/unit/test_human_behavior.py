@@ -6,17 +6,19 @@ captured in-memory. Pure-math functions are tested statistically; the dispatch
 functions are tested for the structural/integer/ordering invariants that the
 behavioral model depends on.
 
-Run:  python3 tests/unit/test_human_behavior.py
-  or: pytest tests/unit/test_human_behavior.py
+Run: pytest tests/unit/test_human_behavior.py
 """
 
 import importlib.util
 import math
 import os
+import random
 import statistics
 import sys
 import tempfile
 import types
+
+import pytest
 
 # --- inject a fake browser_harness.helpers BEFORE loading the module ----------
 
@@ -66,22 +68,56 @@ def _install_fake_helpers():
 
 
 def _load_module():
+    had_pkg = "browser_harness" in sys.modules
+    previous_pkg = sys.modules.get("browser_harness")
+    had_helpers = "browser_harness.helpers" in sys.modules
+    previous_helpers = sys.modules.get("browser_harness.helpers")
     _install_fake_helpers()
     path = os.path.join(os.path.dirname(__file__), "..", "..", "agent-workspace", "agent_helpers.py")
     spec = importlib.util.spec_from_file_location("ah_under_test", os.path.abspath(path))
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    try:
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        if had_pkg:
+            sys.modules["browser_harness"] = previous_pkg
+        else:
+            sys.modules.pop("browser_harness", None)
+        if had_helpers:
+            sys.modules["browser_harness.helpers"] = previous_helpers
+        else:
+            sys.modules.pop("browser_harness.helpers", None)
 
 
 os.environ["BH_TMP_DIR"] = tempfile.mkdtemp(prefix="bh_human_test_")
 os.environ["BU_NAME"] = "unittest"
 ah = _load_module()
 
-# make sleeps instant but observable
 import time as _time
 _REAL_SLEEP = _time.sleep
-_time.sleep = lambda d=0: SLEEPS.append(d)
+
+
+@pytest.fixture(autouse=True)
+def isolate_runtime():
+    had_pkg = "browser_harness" in sys.modules
+    previous_pkg = sys.modules.get("browser_harness")
+    had_helpers = "browser_harness.helpers" in sys.modules
+    previous_helpers = sys.modules.get("browser_harness.helpers")
+    _install_fake_helpers()
+    _time.sleep = lambda d=0: SLEEPS.append(d)
+    try:
+        yield
+    finally:
+        _time.sleep = _REAL_SLEEP
+        if had_pkg:
+            sys.modules["browser_harness"] = previous_pkg
+        else:
+            sys.modules.pop("browser_harness", None)
+        if had_helpers:
+            sys.modules["browser_harness.helpers"] = previous_helpers
+        else:
+            sys.modules.pop("browser_harness.helpers", None)
 
 
 def _reset():
@@ -113,6 +149,7 @@ def test_vk_for_char_letters_digits_specials():
 
 
 def test_lognormal_recovers_mean_std():
+    random.seed(20260605)
     for mean, std in [(120, 34), (85, 24), (1.0, 0.3), (50, 80)]:  # incl std>mean
         xs = [ah._lognormal(mean, std, max_sigma=12) for _ in range(60000)]
         m = statistics.mean(xs)
@@ -655,16 +692,3 @@ def test_viewport_uses_css_pixels_on_retina():
     w, h = ah._viewport(ah._s())
     assert (w, h) == (1200, 800), (w, h)  # CSS px, NOT the device-px 2400x1600
 
-
-def _run_all():
-    fns = [g for n, g in sorted(globals().items()) if n.startswith("test_") and callable(g)]
-    passed = 0
-    for fn in fns:
-        fn()
-        print("PASS %s" % fn.__name__)
-        passed += 1
-    print("\n%d/%d tests passed" % (passed, len(fns)))
-
-
-if __name__ == "__main__":
-    _run_all()
