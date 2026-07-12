@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_MODEL = "gpt-5.4"
+# None → let the forked Codex pick its own recommended default model (the
+# strongest current model), exactly like real Codex + the browser-harness skill.
+DEFAULT_MODEL = None
 
 
 @dataclass(frozen=True)
@@ -112,28 +114,19 @@ def prepare_workspace(run_root: Path) -> Path:
 def build_instructions(run_root: Path) -> str:
     skill_path = package_root() / "SKILL.md"
     skill = skill_path.read_text(errors="replace") if skill_path.exists() else ""
-    return f"""You are Browser Harness Agent, a browser automation agent built on the Browser Harness runtime.
+    # Present the skill exactly as real Codex + the browser-harness skill would,
+    # with only the workspace-specific notes prepended. No opinionated workflow
+    # guidance here — the skill below is the single source of truth for how to
+    # drive the browser, so the fork behaves like Codex-with-the-skill.
+    return f"""The browser-harness skill is active. Follow it exactly.
 
-Use the bundled browser-harness command from this workspace:
-
-    ./bin/browser-harness <<'PY'
-    ensure_real_tab()
-    print(page_info())
-    PY
-
-For browser tasks, use screenshots first, coordinate clicks by default, and
-verify every meaningful browser action with another screenshot or page-info read.
-Put durable task deliverables in:
-
-    {run_root / "agent_outputs"}
-
-Do not assume a task succeeded from a command exit alone; inspect browser state or
-saved artifacts. Stored credentials and 2FA codes are available inside PY scripts
-via available_secrets(), secret(name), and totp(name) — use them when one matches
-the page's domain, and never print the values. If a site requires credentials that
-are not stored, stop and explain what is needed.
-
-Browser-harness reference instructions:
+Workspace notes for this run:
+- Invoke the harness as `./bin/browser-harness` (the wrapped binary in this
+  workspace), not the bare `browser-harness` name.
+- Save durable deliverables under `{run_root / "agent_outputs"}`.
+- Stored website credentials and 2FA codes are available inside PY scripts via
+  `available_secrets()`, `secret(name)`, and `totp(name)`; use one when it
+  matches the current page's domain, and never print the values.
 
 {skill}
 """
@@ -198,11 +191,14 @@ def run_task(args: argparse.Namespace) -> int:
         str(run_root),
         "--add-dir",
         str(package_root()),
-        "-m",
-        args.model,
         "--output-last-message",
         str(last_message),
     ]
+    # Only pin a model when the caller explicitly asked; otherwise use Codex's
+    # own recommended default (the strongest current model), matching how real
+    # Codex + the browser-harness skill runs.
+    if args.model:
+        command.extend(["-m", args.model])
     if args.sandboxed:
         command.extend(["-s", sandbox, "-a", approval])
     else:
@@ -231,13 +227,13 @@ def launch_tui(args: argparse.Namespace) -> int:
         str(run_root),
         "--add-dir",
         str(package_root()),
-        "-m",
-        args.model,
         "-s",
         sandbox,
         "-a",
         approval,
     ]
+    if args.model:
+        command.extend(["-m", args.model])
     if args.no_alt_screen:
         command.append("--no-alt-screen")
     if args.task:
