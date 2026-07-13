@@ -40,34 +40,36 @@ See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example
 
 ## Built-in agent (Browser Harness TUI)
 
-Browser Harness ships its own agent: a fork of OpenAI Codex, embedded as the
-[`codex-agent`](codex-agent) git submodule
-([browser-use/browser-harness-tui](https://github.com/browser-use/browser-harness-tui)),
-with a Terminal-style TUI and native browser-harness tool integration.
+Browser Harness ships its own agent: a fork of OpenAI Codex with a Terminal-style
+TUI and native browser-harness tool integration, published at
+[browser-use/browser-harness-tui](https://github.com/browser-use/browser-harness-tui).
 
-Fetch and build it once:
+Open the interactive TUI or dispatch a task headlessly:
+
+```bash
+browser-harness tui
+browser-harness agent "open example.com and tell me the page title"
+```
+
+The first run **downloads a prebuilt agent binary** for your platform (a one-time
+~86 MB download, cached under `~/.browser-harness/agent-bin/`) — no toolchain, no
+long build. Both commands create an isolated browser-harness run workspace,
+present the browser-harness skill, and make `./bin/browser-harness` available to
+the agent inside that workspace.
+
+### Building from source (optional)
+
+The agent is vendored as the [`codex-agent`](codex-agent) git submodule. A
+locally-built binary takes precedence over the download, so contributors can:
 
 ```bash
 git submodule update --init
 cd codex-agent/codex-rs && cargo build --release -p codex-cli && cd ../..
 ```
 
-Dispatch a task headlessly:
-
-```bash
-browser-harness agent "open example.com and tell me the page title"
-```
-
-Or open the interactive TUI:
-
-```bash
-browser-harness tui
-```
-
-Both resolve the agent from the `codex-agent` submodule — no environment
-variables, no sibling-directory guessing. They create an isolated
-browser-harness run workspace, present the browser-harness skill, and make
-`./bin/browser-harness` available to the agent inside that workspace.
+Resolution order for the agent binary: explicit `--codex-bin` → a locally-built
+submodule binary → the cached/downloaded prebuilt release. No environment
+variables, no sibling-directory guessing.
 
 ## Free Browser Use Cloud browsers
 

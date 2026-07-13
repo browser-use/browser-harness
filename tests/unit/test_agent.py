@@ -27,12 +27,30 @@ def test_resolve_codex_paths_prefers_explicit_binary(tmp_path):
     assert paths.bin == codex_bin
 
 
-def test_resolve_codex_paths_errors_when_submodule_missing(tmp_path):
+def test_resolve_codex_paths_downloads_prebuilt_when_no_local_build(tmp_path):
+    # No submodule and no explicit binary: fall back to the prebuilt download.
+    prebuilt = tmp_path / "codex"
+    prebuilt.write_text("#!/bin/sh\n")
+    prebuilt.chmod(0o755)
     args = agent.build_parser().parse_args(["task"])
 
     with patch("browser_harness.agent.default_codex_repo", return_value=None), \
-         pytest.raises(FileNotFoundError, match="submodule"):
-        agent.resolve_codex_paths(args)
+         patch("browser_harness.agent.download_prebuilt_agent", return_value=prebuilt) as dl:
+        paths = agent.resolve_codex_paths(args)
+
+    dl.assert_called_once()
+    assert paths.bin == prebuilt
+
+
+def test_target_triple_maps_platforms(monkeypatch):
+    monkeypatch.setattr(agent.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(agent.platform, "machine", lambda: "arm64")
+    assert agent._target_triple() == "aarch64-apple-darwin"
+    monkeypatch.setattr(agent.platform, "machine", lambda: "x86_64")
+    assert agent._target_triple() == "x86_64-apple-darwin"
+    monkeypatch.setattr(agent.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(agent.platform, "machine", lambda: "x86_64")
+    assert agent._target_triple() == "x86_64-unknown-linux-musl"
 
 
 def test_build_instructions_points_to_agent_outputs(tmp_path):

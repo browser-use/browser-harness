@@ -1,9 +1,12 @@
 import argparse
+import gzip
 import os
+import platform
 import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +14,11 @@ from pathlib import Path
 # None → let the forked Codex pick its own recommended default model (the
 # strongest current model), exactly like real Codex + the browser-harness skill.
 DEFAULT_MODEL = None
+
+# Prebuilt agent binaries are published as GitHub releases on the fork so users
+# can run the TUI/agent immediately without a ~12-minute cargo build.
+CODEX_AGENT_REPO = "browser-use/browser-harness-tui"
+CODEX_AGENT_RELEASE = "agent-v0.1.0"
 
 
 @dataclass(frozen=True)
@@ -35,28 +43,79 @@ def default_codex_repo() -> Path | None:
     return candidate if candidate.exists() else None
 
 
+def _target_triple() -> str:
+    system = platform.system()
+    machine = platform.machine().lower()
+    arm = machine in ("arm64", "aarch64")
+    if system == "Darwin":
+        return "aarch64-apple-darwin" if arm else "x86_64-apple-darwin"
+    if system == "Linux":
+        return "aarch64-unknown-linux-musl" if arm else "x86_64-unknown-linux-musl"
+    raise RuntimeError(
+        f"No prebuilt Browser Harness agent for {system}/{machine}. "
+        f"Build from source: cd {CODEX_SUBMODULE_DIR}/codex-rs && cargo build --release -p codex-cli."
+    )
+
+
+def prebuilt_bin_path() -> Path:
+    return Path.home() / ".browser-harness" / "agent-bin" / CODEX_AGENT_RELEASE / "codex"
+
+
+def download_prebuilt_agent() -> Path:
+    """Download and cache the prebuilt agent binary for this platform. Returns
+    the cached path; a subsequent call is a no-op once cached."""
+    dst = prebuilt_bin_path()
+    if dst.exists() and os.access(dst, os.X_OK):
+        return dst
+    asset = f"codex-{_target_triple()}.gz"
+    url = f"https://github.com/{CODEX_AGENT_REPO}/releases/download/{CODEX_AGENT_RELEASE}/{asset}"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_gz = dst.with_suffix(".gz.part")
+    print(
+        f"[browser-harness] downloading agent {CODEX_AGENT_RELEASE} ({asset})…",
+        file=sys.stderr,
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp, open(tmp_gz, "wb") as out:
+            shutil.copyfileobj(resp, out)
+    except Exception as exc:
+        tmp_gz.unlink(missing_ok=True)
+        raise FileNotFoundError(
+            f"Could not download the prebuilt agent from {url}: {exc}. "
+            f"Build from source instead: cd {CODEX_SUBMODULE_DIR}/codex-rs && "
+            "cargo build --release -p codex-cli."
+        ) from exc
+    tmp_bin = dst.with_suffix(".part")
+    with gzip.open(tmp_gz, "rb") as gz, open(tmp_bin, "wb") as out:
+        shutil.copyfileobj(gz, out)
+    tmp_gz.unlink(missing_ok=True)
+    tmp_bin.chmod(0o755)
+    tmp_bin.replace(dst)  # atomic
+    return dst
+
+
 def resolve_codex_paths(args: argparse.Namespace) -> CodexPaths:
     # The `--codex-*` flags are explicit developer overrides (used by the
     # benchmark harness); the default is always the bundled submodule.
     repo = Path(args.codex_repo).expanduser() if args.codex_repo else default_codex_repo()
 
-    if args.codex_bin:
-        codex_bin = Path(args.codex_bin).expanduser()
-    elif repo is not None:
-        # Prefer a release build, fall back to debug.
+    # Resolution order:
+    #   1. explicit --codex-bin (developer/benchmark override)
+    #   2. a locally-built binary in the submodule (developers who built it)
+    #   3. the prebuilt release binary, downloaded and cached (everyone else) —
+    #      no cargo build, no long wait.
+    local_build = None
+    if repo is not None:
         release = repo / "codex-rs" / "target" / "release" / "codex"
         debug = repo / "codex-rs" / "target" / "debug" / "codex"
-        codex_bin = release if release.exists() else debug
-        if not codex_bin.exists():
-            raise FileNotFoundError(
-                f"Codex agent binary not built. Run "
-                f"`cd {repo / 'codex-rs'} && cargo build --release -p codex-cli`."
-            )
+        local_build = release if release.exists() else (debug if debug.exists() else None)
+
+    if args.codex_bin:
+        codex_bin = Path(args.codex_bin).expanduser()
+    elif local_build is not None:
+        codex_bin = local_build
     else:
-        raise FileNotFoundError(
-            f"Codex agent submodule not found at {package_root() / CODEX_SUBMODULE_DIR}. "
-            "Run `git submodule update --init` in the browser-harness checkout."
-        )
+        codex_bin = download_prebuilt_agent()
 
     sdk_src = Path(args.codex_sdk).expanduser() if args.codex_sdk else None
     if sdk_src is None and repo is not None:
