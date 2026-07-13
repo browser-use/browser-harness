@@ -224,7 +224,10 @@ class Daemon:
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
             # No real pages - create one instead of attaching to omnibox popup.
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            params = {"url": "about:blank"}
+            if os.environ.get("BU_PRESERVE_OS_FOCUS", "").strip().lower() in {"1", "true", "yes", "on"}:
+                params["background"] = True
+            tid = (await self.cdp.send_raw("Target.createTarget", params))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
         self.session = (await self.cdp.send_raw(

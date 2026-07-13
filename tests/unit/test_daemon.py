@@ -293,3 +293,28 @@ def test_current_tab_meta_returns_not_attached_when_no_target_id():
     assert result == {"error": "not_attached"}
     # No CDP call should have been issued.
     assert d.cdp.calls == []
+
+
+def test_attach_first_page_creates_background_target_when_preserving_focus(monkeypatch):
+    class _AttachCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargets":
+                return {"targetInfos": []}
+            if method == "Target.createTarget":
+                return {"targetId": "target-1"}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-1"}
+            return {}
+
+    monkeypatch.setenv("BU_PRESERVE_OS_FOCUS", "1")
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP()
+
+    asyncio.run(d.attach_first_page())
+
+    assert (
+        "Target.createTarget",
+        {"url": "about:blank", "background": True},
+        None,
+    ) in d.cdp.calls
