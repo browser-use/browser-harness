@@ -25,10 +25,10 @@ Do not open `chrome://inspect` through the Windows protocol handler and do not r
 
 All routes take a URL-encoded `siteUrl` query parameter. Preserve the property's exact scheme and trailing slash.
 
-- SEO reports: `https://www.bing.com/webmasters/reports/seo?siteUrl=<encoded-property>`
+- Recommendations: `https://www.bing.com/webmasters/seoreports?siteUrl=<encoded-property>`
 - Site Scan: `https://www.bing.com/webmasters/sitescan?siteUrl=<encoded-property>`
 - Sitemaps: `https://www.bing.com/webmasters/sitemaps?siteUrl=<encoded-property>`
-- URL submission: `https://www.bing.com/webmasters/submiturls?siteUrl=<encoded-property>`
+- URL submission: `https://www.bing.com/webmasters/submiturl?siteUrl=<encoded-property>`
 
 Open a new tab for the first navigation so the user's active tab is not clobbered.
 
@@ -44,6 +44,10 @@ Verified endpoints (July 2026):
 - `/webmasters/api/sitescan/remainingquota?siteurl=<encoded-property>` — remaining Site Scan quota.
 - `/webmasters/api/sitescan/ignoreurlparams?siteurl=<encoded-property>` — configured URL parameter exclusions.
 - `/webmasters/api/submiturls/listcount` — URL submission quota/count metadata loaded by the SPA.
+- `/webmasters/api/sitemaps/overview?siteurl=<encoded-property>` — sitemap totals.
+- `/webmasters/api/sitemaps/list?siteurl=<encoded-property>&pageSize=25&sortBy=UrlCount&sortingOrder=Desc&pageNum=1` — known sitemaps and current crawl status.
+- `/webmasters/api/globalelements/settings` — account-level communication preferences.
+- `/webmasters/api/globalelements/messages` — notification-center messages and their site association.
 
 Example read:
 
@@ -92,6 +96,7 @@ The public IndexNow aggregator may temporarily return `403 SiteVerificationNotCo
 - BWT SEO warnings can lag the live page. Re-fetch affected URLs and compare title, H1, canonical, description, indexability, and static body before changing code.
 - The Chinese text length can be adequate even when BWT applies a Latin-character description heuristic. Do not pad every description mechanically.
 - A noindex page can still appear in an old H1 warning. Verify the current `X-Robots-Tag` or robots meta and sitemap membership first.
+- Discovered sitemap aliases can remain listed after the live aliases become 301 redirects. Count unique URLs from the canonical live sitemap, not the sum of BWT's historical rows.
 - Backlink warnings are off-page signals; do not fabricate links or mark them fixed by code.
 - Separate `generated`, `verified`, `deployed`, and `submitted`. A queued Site Scan or accepted code commit is not evidence of live deployment.
 - Keep account email, cookies, request headers, and property verification tokens out of logs and domain skills.
