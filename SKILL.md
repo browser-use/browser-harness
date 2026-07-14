@@ -126,6 +126,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - `chrome://inspect/#remote-debugging` must be enabled for local Chrome control.
 - Chrome may show an "Allow remote debugging?" popup; wait for the user to click Allow.
 - Omnibox popups are not real work tabs.
+- `Target.activateTarget` steals OS focus on macOS: it raises the browser window, which activates the app. `switch_tab()` therefore does not activate by default, and `new_tab()` creates targets with `background=True` (a foreground `createTarget` also activates the browser when it has zero windows and has to open one). Screenshots, clicks and key input all work on a non-selected tab. Pass `switch_tab(tid, activate=True)` only when a human has to look at the tab (e.g. login).
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
