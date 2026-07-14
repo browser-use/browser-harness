@@ -98,6 +98,7 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 If you get stuck on a browser mechanic, check https://github.com/browser-use/browser-harness/tree/main/interaction-skills.
 
 - connection.md
+- clipboard.md
 - cookies.md
 - cross-origin-iframes.md
 - dialogs.md
