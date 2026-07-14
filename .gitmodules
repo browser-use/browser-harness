@@ -1,0 +1,3 @@
+[submodule "codex-agent"]
+	path = codex-agent
+	url = https://github.com/browser-use/browser-harness-tui.git

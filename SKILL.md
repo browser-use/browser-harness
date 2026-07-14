@@ -90,8 +90,29 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - After navigation, call `wait_for_load()`.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
-- Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
+- Login walls: check `available_secrets()` first; if nothing matches, stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
 - Raw CDP is available with `cdp("Domain.method", ...)`.
+
+## Secrets & 2FA
+
+Stored credentials are domain-scoped: `secret()`/`totp()` only return a value while the current page's host matches the stored domain (subdomains included, e.g. `accounts.github.com` matches a secret stored for `github.com`). Never print or log the returned values — use them directly as helper arguments.
+
+```bash
+browser-harness <<'PY'
+print(available_secrets())  # [{"domain": "github.com", "name": "login-password", "kind": "password"}, ...] — names only, never values
+fill_input("#password", secret("login-password"))
+fill_input("#otp", totp("github-2fa"))  # live 6-digit code generated from the stored seed
+PY
+```
+
+Users store credentials with (value entered via hidden prompt, or piped with `--stdin`):
+
+```bash
+browser-harness secrets set --domain github.com --name login-password
+browser-harness secrets set --domain github.com --name github-2fa --totp   # value is the base32 TOTP seed
+browser-harness secrets list
+browser-harness secrets remove --domain github.com --name github-2fa
+```
 
 ## Interaction Skills
 

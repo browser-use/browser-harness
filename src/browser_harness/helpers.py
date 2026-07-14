@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from . import _ipc as ipc
 from . import paths
+from . import secrets as _secrets
 
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -488,6 +489,69 @@ def http_get(url, headers=None, timeout=20.0):
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
         return data.decode()
+
+
+# --- secrets ---
+def _current_secret_domain():
+    try:
+        url = page_info().get("url", "") or ""
+    except Exception:
+        return ""
+    return (urlparse(url).hostname or "").lower().rstrip(".")
+
+
+def available_secrets():
+    """Stored credential placeholders usable on the current page: [{domain, name, kind}].
+
+    Names and kinds only — values are never listed (fetch them with secret()/totp()).
+    Domain-scoped: only entries whose stored domain matches the current page host
+    (subdomains included). With no page open, lists every domain's metadata."""
+    host = _current_secret_domain()
+    out = []
+    for domain, entries in _secrets.list_secrets().items():
+        if host and not _secrets.domain_matches(host, domain):
+            continue
+        out += [{"domain": domain, **e} for e in entries]
+    return out
+
+
+def _secret_lookup(name):
+    host = _current_secret_domain()
+    matches = [
+        (domain, e)
+        for domain, entries in _secrets.list_secrets().items()
+        if _secrets.domain_matches(host, domain)
+        for e in entries
+        if e["name"] == name
+    ]
+    if not matches:
+        where = f"the current domain ({host})" if host else "any domain (no page is open)"
+        raise RuntimeError(
+            f"no secret named {name!r} is usable on {where}. Check available_secrets(); "
+            "the user can add one with `browser-harness secrets set --domain D --name N`."
+        )
+    # Most specific stored domain wins (accounts.github.com over github.com).
+    return max(matches, key=lambda m: len(m[0]))
+
+
+def secret(name):
+    """Value of a stored credential, gated on the current page's domain (subdomain
+    suffix match: accounts.github.com matches a secret stored for github.com).
+    Never print or log the returned value.
+    Example: fill_input("#password", secret("login-password"))."""
+    domain, entry = _secret_lookup(name)
+    value = _secrets.get_secret_value(domain, name)
+    # A TOTP entry never exposes its seed — hand back a live code instead.
+    return _secrets.totp_now(value) if entry["kind"] == "totp" else value
+
+
+def totp(name):
+    """Live 6-digit 2FA code from a stored TOTP seed, domain-gated like secret().
+    Example: fill_input("#otp", totp("github-2fa"))."""
+    domain, entry = _secret_lookup(name)
+    if entry["kind"] != "totp":
+        raise RuntimeError(f"secret {name!r} is kind {entry['kind']!r}, not a TOTP seed; use secret({name!r})")
+    return _secrets.totp_now(_secrets.get_secret_value(domain, name))
 
 
 def _load_agent_helpers():

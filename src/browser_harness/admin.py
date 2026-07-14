@@ -506,6 +506,9 @@ def _show_live_url(url):
     """Print liveUrl and auto-open it locally if there's a GUI."""
     import sys, webbrowser
     if not url: return
+    if os.environ.get("BH_NO_OPEN_LIVE_URL"):
+        print(f"{url}\n(liveUrl auto-open disabled by BH_NO_OPEN_LIVE_URL)", file=sys.stderr)
+        return
     print(url)
     if not _has_local_gui():
         print("(no local GUI — share the liveUrl with the user)", file=sys.stderr)
