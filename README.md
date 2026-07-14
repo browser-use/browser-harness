@@ -44,18 +44,58 @@ Browser Harness ships its own agent: a fork of OpenAI Codex with a Terminal-styl
 TUI and native browser-harness tool integration, published at
 [browser-use/browser-harness-tui](https://github.com/browser-use/browser-harness-tui).
 
-Open the interactive TUI or dispatch a task headlessly:
+### Run it now (from this branch)
+
+This agent lives on the `codex-embed-browser-harness` branch (not yet on PyPI), so
+run it straight from a checkout. Prereqs: **Python ≥ 3.11**, [`uv`](https://docs.astral.sh/uv/),
+and a Chrome to drive (local, or a Browser Use Cloud browser).
 
 ```bash
-browser-harness tui
-browser-harness agent "open example.com and tell me the page title"
+# 1. Get this branch
+git clone -b codex-embed-browser-harness https://github.com/browser-use/browser-harness
+cd browser-harness
+
+# 2. Install the package into a venv
+uv sync            # (or: python3.11 -m venv .venv && .venv/bin/pip install -e .)
+
+# 3. Launch the TUI — the first run auto-downloads the prebuilt agent binary
+#    for your platform (~86 MB, cached under ~/.browser-harness/agent-bin/).
+#    From a checkout, ./browser-harness runs the working tree directly:
+./browser-harness tui
+#    or dispatch a task headlessly:
+./browser-harness agent "open example.com and tell me the page title"
 ```
 
-The first run **downloads a prebuilt agent binary** for your platform (a one-time
-~86 MB download, cached under `~/.browser-harness/agent-bin/`) — no toolchain, no
-long build. Both commands create an isolated browser-harness run workspace,
-present the browser-harness skill, and make `./bin/browser-harness` available to
-the agent inside that workspace.
+Prebuilt binaries are published for **macOS (Apple Silicon & Intel)** and **Linux
+(x86_64 & arm64)** — the download is auto-selected for your platform, so there's no
+toolchain and no long build.
+
+**Authenticate the agent (one-time).** The agent is a Codex fork, so it signs in
+exactly like Codex — either a ChatGPT login or an API key. After the first run has
+downloaded the binary:
+
+```bash
+# ChatGPT sign-in (opens a browser):
+~/.browser-harness/agent-bin/agent-v0.1.0/codex login
+# …or use an API key instead:
+export OPENAI_API_KEY=sk-...
+```
+
+If you already use OpenAI Codex on this machine, its `~/.codex` login is reused —
+no separate sign-in needed.
+
+**Connect a browser.** Local Chrome must expose CDP: open
+`chrome://inspect/#remote-debugging`, tick *Allow remote debugging for this browser
+instance* (and click Allow on the Chrome 144+ popup), then rerun the command. Run
+`browser-harness --doctor` to diagnose connection issues. For headless servers or
+parallel runs, use a Browser Use Cloud browser instead (see below).
+
+Both commands create an isolated browser-harness run workspace, present the
+browser-harness skill, and make `./bin/browser-harness` available to the agent
+inside that workspace.
+
+Once this branch is released to PyPI, the same commands work as `browser-harness
+tui` / `browser-harness agent "…"` from any install.
 
 ### Building from source (optional)
 
