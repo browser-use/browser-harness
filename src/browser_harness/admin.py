@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import _ipc as ipc
@@ -327,7 +328,26 @@ def run_doctor_fix_snap():
     return 0
 
 
+@contextmanager
+def _daemon_startup_lock(name):
+    if ipc.IS_WINDOWS:
+        yield
+        return
+    import fcntl
+    with open(ipc.pid_path(name).with_suffix(".lock"), "a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def ensure_daemon(wait=60.0, name=None, env=None):
+    with _daemon_startup_lock(name or NAME):
+        return _ensure_daemon_unlocked(wait, name, env)
+
+
+def _ensure_daemon_unlocked(wait=60.0, name=None, env=None):
     """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the

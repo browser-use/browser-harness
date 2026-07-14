@@ -1,3 +1,6 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from browser_harness import admin
@@ -18,6 +21,35 @@ class FakeSocket:
 
     def close(self):
         self.closed = True
+
+
+def test_concurrent_ensure_daemon_spawns_once(tmp_path, monkeypatch):
+    live = False
+    spawn_count = 0
+
+    def daemon_alive(_name=None):
+        if not live:
+            time.sleep(0.05)
+        return live
+
+    class FakeProcess:
+        def __init__(self, *_args, **_kwargs):
+            nonlocal live, spawn_count
+            spawn_count += 1
+            live = True
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(admin, "daemon_alive", daemon_alive)
+    monkeypatch.setattr(admin.ipc, "connect", lambda *_args, **_kwargs: (FakeSocket(b'{"result":{}}\n'), None))
+    monkeypatch.setattr(admin.ipc, "log_path", lambda _name: tmp_path / "daemon.log")
+    monkeypatch.setattr("subprocess.Popen", FakeProcess)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: admin.ensure_daemon(wait=1), range(8)))
+
+    assert spawn_count == 1
 
 
 def test_local_chrome_mode_is_false_when_env_provides_remote_cdp():
