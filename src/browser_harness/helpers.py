@@ -255,6 +255,11 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 
 
 # --- tabs ---
+_OPENED_TABS = set()
+_REUSED_BLANK_TABS = {}
+_KEEP_OPENED_TABS = False
+
+
 def _is_agent_startup_placeholder(title, url):
     url = str(url or "")
     return str(title or "").startswith("Starting agent ") and (
@@ -314,15 +319,137 @@ def new_tab(url="about:blank"):
             cur = current_tab()
             cur_url = cur.get("url") or ""
             if cur_url in ("", "about:blank") or cur_url.startswith("about:blank#"):
+                target_id = cur.get("targetId") or cur.get("target_id")
+                _REUSED_BLANK_TABS.setdefault(target_id, cur_url or "about:blank")
                 goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
+                return target_id
         except Exception:
             pass
     tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    _OPENED_TABS.add(tid)
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
     return tid
+
+
+def opened_tabs():
+    """Return target IDs created by new_tab() in this CLI process."""
+    return list(_OPENED_TABS)
+
+
+def keep_opened_tabs(keep=True):
+    """Opt out of automatic cleanup for tabs owned by this CLI process."""
+    global _KEEP_OPENED_TABS
+    _KEEP_OPENED_TABS = keep
+
+
+def _restore_reused_blank_tabs():
+    restored = []
+    failures = []
+    for target_id, original_url in list(_REUSED_BLANK_TABS.items()):
+        try:
+            switch_tab(target_id)
+            goto_url(original_url or "about:blank")
+            restored.append(target_id)
+            _REUSED_BLANK_TABS.pop(target_id, None)
+        except Exception as exc:
+            failures.append((target_id, exc))
+    return restored, failures
+
+
+def _move_to_keeper(target_ids):
+    """Move off an owned target before it closes; return protected IDs and failures."""
+    try:
+        current_id = current_tab()["targetId"]
+    except Exception as exc:
+        # Without the active target ID, any owned target could be the daemon's
+        # current session. Fail closed instead of risking a stale attachment.
+        return set(target_ids), [("current target", exc)]
+    if current_id not in target_ids:
+        return set(), []
+
+    keeper_id = None
+    try:
+        keeper_id = cdp("Target.createTarget", url="about:blank")["targetId"]
+        switch_tab(keeper_id)
+        # The keeper becomes the daemon's neutral anchor. It is intentionally
+        # not owned by this invocation and can be reused by the next new_tab().
+    except Exception as exc:
+        failures = [("keeper handoff", exc)]
+        if keeper_id:
+            try:
+                result = cdp("Target.closeTarget", targetId=keeper_id)
+                if not result.get("success", True):
+                    raise RuntimeError("Target.closeTarget returned false")
+            except Exception as close_exc:
+                # Retain ownership so a later invocation can retry cleanup.
+                _OPENED_TABS.add(keeper_id)
+                failures.append((keeper_id, close_exc))
+        # Keeping one page is better than leaving the daemon attached to a dead
+        # target. Other owned tabs can still be cleaned up safely.
+        return {current_id}, failures
+    return set(), []
+
+
+def _cleanup_error_message(failures):
+    details = ", ".join(f"{target}: {error}" for target, error in failures)
+    return f"tab cleanup incomplete ({details})"
+
+
+def close_opened_tabs(force=False):
+    """Close created tabs and restore blank tabs reused by this CLI process."""
+    _, failures = _restore_reused_blank_tabs()
+
+    if _KEEP_OPENED_TABS and not force:
+        # Keeping a tab releases it from this invocation's ownership. Otherwise
+        # an embedder calling main() again would close it on the next run.
+        _OPENED_TABS.clear()
+        if failures:
+            raise RuntimeError(_cleanup_error_message(failures))
+        return []
+
+    target_ids = set(_OPENED_TABS)
+    if not target_ids:
+        if failures:
+            raise RuntimeError(_cleanup_error_message(failures))
+        return []
+
+    protected_ids, handoff_failures = _move_to_keeper(target_ids)
+    failures.extend(handoff_failures)
+    target_ids.difference_update(protected_ids)
+
+    closed = []
+    for target_id in list(target_ids):
+        last_error = None
+        for _ in range(2):
+            try:
+                result = cdp("Target.closeTarget", targetId=target_id)
+                if result.get("success", True):
+                    closed.append(target_id)
+                    last_error = None
+                    break
+                last_error = RuntimeError("Target.closeTarget returned false")
+            except Exception as exc:
+                last_error = exc
+        if last_error is None:
+            _OPENED_TABS.discard(target_id)
+        else:
+            failures.append((target_id, last_error))
+
+    if closed:
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            try:
+                remaining = {tab["targetId"] for tab in list_tabs(include_chrome=True)}
+            except Exception:
+                break
+            if not remaining.intersection(closed):
+                break
+            time.sleep(0.05)
+    if failures:
+        raise RuntimeError(_cleanup_error_message(failures))
+    return closed
 
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.

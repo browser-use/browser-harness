@@ -28,6 +28,7 @@ from .admin import (
     sync_local_profile,
 )
 from . import auth, telemetry
+from . import helpers as helper_module
 from .helpers import *
 
 HELP = """Browser Harness
@@ -343,7 +344,21 @@ def _run(args):
             start_remote_daemon(NAME)
         ensure_daemon()
     _install_helper_trace()
-    exec(code, globals())
+    try:
+        exec(code, globals())
+    finally:
+        keep_tabs = os.environ.get("BH_KEEP_TABS", "").lower()
+        try:
+            if keep_tabs in {"1", "true", "yes"}:
+                helper_module.keep_opened_tabs()
+            helper_module.close_opened_tabs()
+        except Exception as exc:
+            # Cleanup must never replace the browser task's result or exception.
+            print(f"Warning: automatic tab cleanup failed: {exc}", file=sys.stderr)
+        finally:
+            # main() can be exercised repeatedly in one Python process by tests
+            # and embedders, so keep the opt-out scoped to one invocation.
+            helper_module.keep_opened_tabs(False)
 
 
 if __name__ == "__main__":

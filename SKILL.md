@@ -93,6 +93,15 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
 - Raw CDP is available with `cdp("Domain.method", ...)`.
 
+## Tab Lifecycle
+
+- Tabs created by `new_tab()` are closed automatically when the CLI invocation ends, including after an error.
+- If `new_tab()` reuses an existing blank page, that page is restored to `about:blank` instead of being closed.
+- To keep new tabs for a later invocation, call `keep_opened_tabs()` or set `BH_KEEP_TABS=1`. The later workflow is responsible for closing them explicitly.
+- Preservation applies to tabs created by the invocation. A pre-existing blank tab borrowed by `new_tab()` is still restored to `about:blank`.
+- Existing tabs and tabs opened by another process are never automatically closed.
+- Popups and pages opened indirectly with `window.open()` or `target=_blank` are not process-owned and are left open.
+
 ## Interaction Skills
 
 If you get stuck on a browser mechanic, check https://github.com/browser-use/browser-harness/tree/main/interaction-skills.
