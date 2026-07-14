@@ -401,6 +401,28 @@ def test_start_remote_daemon_does_not_stop_created_browser_on_success(monkeypatc
     ]
 
 
+def test_start_remote_daemon_forwards_remote_cdp_env_to_daemon(monkeypatch):
+    ensure_calls = []
+    browser = {"id": "browser-123", "cdpUrl": "https://cdp.example", "liveUrl": "https://live.example"}
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin, "_browser_use", lambda path, method, body=None: browser)
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda url: "ws://example.test/devtools/browser/1")
+    monkeypatch.setattr(admin, "ensure_daemon", lambda **kwargs: ensure_calls.append(kwargs))
+    monkeypatch.setattr(admin, "_show_live_url", lambda url: None)
+
+    assert admin.start_remote_daemon("work", proxyCountryCode="us") == browser
+    assert ensure_calls == [
+        {
+            "name": "work",
+            "env": {
+                "BU_CDP_WS": "ws://example.test/devtools/browser/1",
+                "BU_BROWSER_ID": "browser-123",
+            },
+        }
+    ]
+
+
 # --- restart_daemon: PID-reuse safety ---
 
 def test_restart_daemon_does_not_signal_when_daemon_unreachable(monkeypatch, tmp_path):
