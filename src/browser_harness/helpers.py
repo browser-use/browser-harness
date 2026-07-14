@@ -91,6 +91,10 @@ def _decode_unserializable_js_value(value):
     return value
 
 
+class _IllegalTopLevelReturn(RuntimeError):
+    pass
+
+
 def _runtime_value(response, expression):
     result = response.get("result", {})
     details = response.get("exceptionDetails")
@@ -102,7 +106,8 @@ def _runtime_value(response, expression):
             loc = f" at line {line}, column {col}" if line is not None and col is not None else ""
         else:
             loc = ""
-        raise RuntimeError(f"JavaScript evaluation failed{loc}: {desc}; expression: {_js_snippet(expression)}")
+        error_type = _IllegalTopLevelReturn if _is_illegal_top_level_return(result) else RuntimeError
+        raise error_type(f"JavaScript evaluation failed{loc}: {desc}; expression: {_js_snippet(expression)}")
     if "value" in result:
         return result["value"]
     if "unserializableValue" in result:
@@ -122,8 +127,13 @@ def _wrap_js_function(expression):
     return f"(function(){{{expression}}})()"
 
 
-def _is_illegal_return_error(exc):
-    return "Illegal return statement" in str(exc)
+def _is_illegal_top_level_return(result):
+    return (
+        result.get("type") == "object"
+        and result.get("subtype") == "error"
+        and result.get("className") == "SyntaxError"
+        and result.get("description") == "SyntaxError: Illegal return statement"
+    )
 
 
 # --- navigation / page ---
@@ -443,10 +453,8 @@ def js(expression, target_id=None):
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
     try:
         return _runtime_evaluate(expression, session_id=sid, await_promise=True)
-    except RuntimeError as e:
-        if _is_illegal_return_error(e):
-            return _runtime_evaluate(_wrap_js_function(expression), session_id=sid, await_promise=True)
-        raise
+    except _IllegalTopLevelReturn:
+        return _runtime_evaluate(_wrap_js_function(expression), session_id=sid, await_promise=True)
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
