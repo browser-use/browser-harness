@@ -28,6 +28,12 @@ Paste into Claude Code or Codex:
 Install or upgrade browser-harness to the latest stable version with uv using Python 3.12, register the skill from `browser-harness skill`, and connect it to my browser. Follow https://github.com/browser-use/browser-harness/blob/main/install.md if setup or connection fails.
 ```
 
+Manual first run: `browser-harness` needs a connected browser before commands can run.
+Use one of the browser connection paths from [`install.md`](install.md):
+
+- Normal Chrome profile: open `chrome://inspect/#remote-debugging` and allow remote debugging.
+- Isolated automation profile: launch Chrome with `--remote-debugging-port=9222 --user-data-dir=<non-default path>`, then set `BU_CDP_URL=http://127.0.0.1:9222`.
+
 The agent will open `chrome://inspect/#remote-debugging`. Tick the checkbox so the agent can connect to your browser:
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
