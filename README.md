@@ -38,6 +38,22 @@ Click Allow when the per-attach popup appears (Chrome 144+):
 
 See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
 
+## Choosing a model
+
+Browser-harness does not keep a definitive supported-model list yet. The harness is changing quickly, and real performance depends more on the agent's behavior than the provider name.
+
+A good browser-harness model should be able to:
+
+- read and follow a repo-local skill file before acting
+- write small Python helpers in `agent-workspace/agent_helpers.py`
+- inspect errors and retry with a narrower browser action
+- use screenshots and page state instead of guessing selectors
+- keep enough context to remember the current tab, goal, and recent failures
+
+For self-hosted or smaller models, start with simple observe-and-click tasks before relying on long multi-step workflows. If a model cannot reliably edit helper code, recover from CDP errors, or explain why a click failed, it is not yet a good fit for autonomous browser-harness use.
+
+Benchmarks and a more concrete model guide are being tracked in [#235](https://github.com/browser-use/browser-harness/issues/235).
+
 ## Free Browser Use Cloud browsers
 
 Stealth, sub-agents, or headless deployment.<br>
