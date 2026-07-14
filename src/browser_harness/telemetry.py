@@ -18,7 +18,6 @@ from . import paths
 POSTHOG_KEY = "phc_rCPCLPtaXB3EuBdiH7JLKtU2Wj5iPnuwdsbw58CnjYXc"
 POSTHOG_HOST = "https://eu.i.posthog.com"
 DISABLE_ENVS = ("BH_TELEMETRY", "BROWSER_HARNESS_TELEMETRY", "ANONYMIZED_TELEMETRY")
-MAX_TASK_LENGTH = 20_000
 FORBIDDEN_KEYS = (
     "api_key",
     "content",
@@ -238,15 +237,12 @@ def capture_cli_event(
     *,
     action: str,
     command: str,
-    task: str | None = None,
     browser: str | None = None,
-    output: str | None = None,
+    task_length: int | None = None,
     output_length: int | None = None,
-    steps: list | None = None,
     step_count: int | None = None,
     duration_seconds: float | None = None,
     exit_code: int | None = None,
-    error_message: str | None = None,
 ) -> None:
     if not is_enabled():
         return
@@ -262,20 +258,12 @@ def capture_cli_event(
                 "command": command,
                 # 'cloud' | 'cdp' | 'local'
                 "browser": browser,
-                "client": os.environ.get("BH_CLIENT") or None,
-                "client_version": os.environ.get("BH_CLIENT_VERSION") or None,
                 "agent_client": _detect_agent_client(),
-                "model": os.environ.get("BROWSER_USE_AGENT_MODEL") or None,
-                "model_provider": os.environ.get("BROWSER_USE_MODEL_PROVIDER") or None,
-                "task": task[:MAX_TASK_LENGTH] if task is not None else None,
-                "task_length": len(task) if task is not None else None,
-                "output": output,
+                "task_length": task_length,
                 "output_length": output_length,
-                "steps": steps,
                 "step_count": step_count,
                 "duration_seconds": duration_seconds,
                 "exit_code": exit_code,
-                "error_message": error_message,
             },
         }
         _send_detached(payload)
