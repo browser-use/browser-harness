@@ -122,6 +122,20 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     return None
 
 
+def http_endpoint_from_ws(ws_url):
+    """The HTTP DevTools base (scheme://host:port) for the ws URL the daemon connected to,
+    so callers can hit /json/* on the *actual* browser instead of guessing a port. Returns
+    None for cloud/remote browsers, which have no local DevTools HTTP endpoint to reap against."""
+    if REMOTE_ID or not ws_url:
+        return None
+    p = urlparse(ws_url)
+    if not p.hostname:
+        return None
+    scheme = "https" if p.scheme == "wss" else "http"
+    host = f"[{p.hostname}]" if ":" in p.hostname else p.hostname
+    return f"{scheme}://{host}{f':{p.port}' if p.port else ''}"
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -212,6 +226,7 @@ def is_real_page(t):
 class Daemon:
     def __init__(self):
         self.cdp = None
+        self.ws_url = None
         self.session = None
         self.target_id = None
         self.events = deque(maxlen=BUF)
@@ -262,6 +277,7 @@ class Daemon:
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
+        self.ws_url = url
         log(f"connecting to {url}")
         self.cdp = CDPClient(url)
         try:
@@ -367,6 +383,7 @@ class Daemon:
                 timeout=2,
             )))
             return {"session_id": self.session}
+        if meta == "http_endpoint": return {"endpoint": http_endpoint_from_ws(self.ws_url)}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
 

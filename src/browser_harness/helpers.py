@@ -255,6 +255,42 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 
 
 # --- tabs ---
+MAX_TABS = int(os.environ.get("BH_MAX_TABS", "10"))  # 0 disables reaping
+# Reapable = every page except the browser's own UI. about: is in INTERNAL, but an
+# about:blank tab is a throwaway harness tab, so it has to stay reapable or blank
+# tabs pile up forever.
+_REAP_SKIP = tuple(p for p in INTERNAL if p != "about:")
+
+
+def _reap_tabs(keep_id):
+    """Close the oldest tabs beyond MAX_TABS.
+
+    Nothing else ever closes a tab the agent opened, so a long session leaves dozens
+    of them behind and the browser slows to a crawl. Ordering comes from the DevTools
+    /json/list endpoint (newest first) — Target.getTargets order is not creation order.
+
+    The endpoint is whatever DevTools HTTP base the daemon actually connected to (not a
+    guessed port), so this works for a browser discovered on any port. It is None for
+    cloud/remote browsers, where reaping is skipped.
+    """
+    if MAX_TABS <= 0:
+        return
+    try:
+        base = _send({"meta": "http_endpoint"}).get("endpoint")
+        if not base:
+            return
+        with urllib.request.urlopen(f"{base.rstrip('/')}/json/list", timeout=2) as r:
+            pages = [t for t in json.loads(r.read())
+                     if t.get("type") == "page" and not t.get("url", "").startswith(_REAP_SKIP)]
+    except Exception:
+        return  # can't establish an order -> don't guess which tab to kill
+    for t in pages[MAX_TABS:]:
+        if t["id"] == keep_id:
+            continue
+        try: cdp("Target.closeTarget", targetId=t["id"])
+        except Exception: pass
+
+
 def _is_agent_startup_placeholder(title, url):
     url = str(url or "")
     return str(title or "").startswith("Starting agent ") and (
@@ -320,6 +356,7 @@ def new_tab(url="about:blank"):
             pass
     tid = cdp("Target.createTarget", url="about:blank")["targetId"]
     switch_tab(tid)
+    _reap_tabs(tid)
     if url != "about:blank":
         goto_url(url)
     return tid

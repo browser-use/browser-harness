@@ -126,6 +126,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - `chrome://inspect/#remote-debugging` must be enabled for local Chrome control.
 - Chrome may show an "Allow remote debugging?" popup; wait for the user to click Allow.
 - Omnibox popups are not real work tabs.
+- Tabs are capped: `new_tab()` closes the oldest tabs beyond `BH_MAX_TABS` (default 10, 0 disables). Nothing else ever closes them, so a long session otherwise leaves dozens behind. Call `close_tab()` when you are done with a tab.
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
