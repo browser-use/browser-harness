@@ -64,12 +64,13 @@ const VW = () => C.viewport?.w || 1392, VH = () => C.viewport?.h || 1170;
 
 // ------------------------------ tuning ------------------------------
 const W = 1920, H = 1080;
-const PAD = 64;
+const PAD = 108;                   // generous breathing room around the window
 const TABSTRIP = 36, TOOLBAR = 44, CHROME = TABSTRIP + TOOLBAR;
-const PUNCH_S = 0.5;               // wide -> zoom punch duration
-const DRIFT_MAX = 0.75;            // zoom -> zoom drift duration cap
+const PUNCH_S = 0.65;              // wide -> zoom punch duration (gentle, not jumpy)
+const DRIFT_MAX = 0.9;             // zoom -> zoom drift duration cap
 const CUR_S = 0.42;
 const RADIUS = 12;
+const RAIL = H - 64;               // shared centerline: caption + chips sit on one rail
 const ACCENT = "#6ee7ff";
 const MONO = "ui-monospace, 'SF Mono', Menlo, monospace";
 const SANS = "ui-sans-serif, system-ui, -apple-system";
@@ -135,7 +136,7 @@ function frameRect() {
   const availW = W - PAD * 2, availH = H - PAD * 2;
   const s = Math.min(availW / VW(), (availH - CHROME) / VH());
   const w = VW() * s, h = VH() * s + CHROME;
-  return { x: (W - w) / 2, y: (H - h) / 2, w, h, s };
+  return { x: (W - w) / 2, y: (H - h) / 2 - 14, w, h, s };  // lifted: bottom rail breathes
 }
 const FR = frameRect();
 const pageX = x => FR.x + x * FR.s;
@@ -466,19 +467,33 @@ function drawCursor(t, i, lt) {
 // --- telemetry (screen space) ---
 function chip(x, y, parts, align = "left", error = false) {
   // parts: [[text, color], ...] rendered in one pill
-  ctx.font = `500 15px ${MONO}`;
+  // One palette: ink on paper (light bg) / paper on ink (dark bg). `parts`
+  // entries are [text, muted?] — no accent colors.
+  ctx.font = `500 17px ${MONO}`;
   const texts = parts.map(p => p[0]);
-  const w = texts.reduce((a, s) => a + ctx.measureText(s).width, 0) + 24 + (parts.length - 1) * 11;
+  const logoPad = parts.logo ? 30 : 0;
+  const w = texts.reduce((a, s) => a + ctx.measureText(s).width, 0) + 30 + (parts.length - 1) * 12 + logoPad;
   const bx = align === "right" ? x - w : x;
-  roundRect(bx, y, w, 30, 8);
-  ctx.fillStyle = error ? "rgba(46,10,14,0.85)" : "rgba(9,12,20,0.72)"; ctx.fill();
-  ctx.strokeStyle = error ? "rgba(255,90,90,0.5)" : "rgba(255,255,255,0.13)"; ctx.lineWidth = 1; ctx.stroke();
+  roundRect(bx, y, w, 36, 18);
+  if (error) {
+    ctx.fillStyle = "rgba(160,40,40,0.95)"; ctx.fill();
+  } else if (LIGHT_BG) {
+    ctx.fillStyle = "rgba(255,253,247,0.9)"; ctx.fill();
+    ctx.strokeStyle = "rgba(31,30,27,0.22)"; ctx.lineWidth = 1; ctx.stroke();
+  } else {
+    ctx.fillStyle = "rgba(9,12,20,0.72)"; ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.13)"; ctx.lineWidth = 1; ctx.stroke();
+  }
+  const ink = error ? "#fff" : (LIGHT_BG ? "#1f1e1b" : "#f4f2ec");
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  let cx = bx + 12;
-  for (const [text, color] of parts) {
-    ctx.fillStyle = color;
-    ctx.fillText(text, cx, y + 16);
-    cx += ctx.measureText(text).width + 11;
+  let cx = bx + 15;
+  if (parts.logo) { drawLogo(cx - 2, y + 8, 20, ink, 0.9); cx += logoPad; }
+  for (const [text, muted] of parts) {
+    ctx.globalAlpha = muted ? 0.52 : 1;
+    ctx.fillStyle = ink;
+    ctx.fillText(text, cx, y + 19);
+    ctx.globalAlpha = 1;
+    cx += ctx.measureText(text).width + 12;
   }
 }
 function drawTelemetry(t, i, lt) {
@@ -486,14 +501,14 @@ function drawTelemetry(t, i, lt) {
   if (b.card) return;
   // Chips live in the bottom corners, clear of the window chrome at any zoom;
   // the caption owns the bottom center.
-  const cy = H - 52;
+  const cy = RAIL - 18;
   if (b.label || b.error) {
     const parts = [];
     if (b.label) {
-      parts.push([`STEP ${String(stepOf[i]).padStart(2, "0")}/${String(stepCount).padStart(2, "0")}`, "#8fa3b8"]);
-      parts.push([b.label, b.error ? "#ff6b6b" : ACCENT]);
+      parts.push([`${String(stepOf[i]).padStart(2, "0")}/${String(stepCount).padStart(2, "0")}`, true]);
+      parts.push([b.label, false]);
     }
-    if (b.error) parts.push(["⚠ ERROR", "#ff6b6b"]);
+    if (b.error) parts.push(["⚠ ERROR", false]);
     chip(28, cy, parts, "left", b.error);
   }
   const bt = sticky(i, "t");
@@ -503,16 +518,17 @@ function drawTelemetry(t, i, lt) {
     const cur = beats[i].t != null ? beats[i].t : bt;
     const shown = next != null ? lerp(cur, next, clamp(lt / b.dur, 0, 1)) : cur;
     const m = Math.floor(shown / 60), s = Math.floor(shown % 60);
-    chip(W - 76, cy, [[`session ${m}:${String(s).padStart(2, "0")}`, "#d6e4ef"]], "right");
+    const parts = [[`${m}:${String(s).padStart(2, "0")}`, false]];
+    parts.logo = true;
+    chip(W - 28, cy, parts, "right");
   }
   ctx.save();
   const px0 = 28, pw = W - 56, py = H - 12;
-  ctx.fillStyle = LIGHT_BG ? "rgba(60,35,15,0.18)" : "rgba(255,255,255,0.1)";
+  ctx.fillStyle = LIGHT_BG ? "rgba(31,30,27,0.12)" : "rgba(255,255,255,0.1)";
   ctx.fillRect(px0, py, pw, 2);
-  ctx.fillStyle = LIGHT_BG ? "rgba(60,35,15,0.6)" : "rgba(110,231,255,0.75)";
+  ctx.fillStyle = LIGHT_BG ? "rgba(31,30,27,0.5)" : "rgba(255,255,255,0.55)";
   ctx.fillRect(px0, py, pw * (t / DURATION), 2);
   ctx.restore();
-  drawLogo(W - 60, H - 54, 30, INK, 0.5);
 }
 
 function drawCaption(t, i, lt) {
@@ -522,14 +538,14 @@ function drawCaption(t, i, lt) {
   if (k <= 0) return;
   ctx.save();
   ctx.globalAlpha = k;
-  let fs = 34;
+  let fs = 44;
   ctx.font = `600 ${fs}px ${SANS}`;
-  while (ctx.measureText(b.caption).width > W * 0.6 && fs > 24) {
+  while (ctx.measureText(b.caption).width > W * 0.68 && fs > 28) {
     fs -= 2; ctx.font = `600 ${fs}px ${SANS}`;
   }
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   const ph = fs * 1.9;
-  const y = H - 34 - ph / 2 + (1 - k) * 14;
+  const y = RAIL + (1 - k) * 14;
   const w = ctx.measureText(b.caption).width;
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,0.4)"; ctx.shadowBlur = 24; ctx.shadowOffsetY = 6;
