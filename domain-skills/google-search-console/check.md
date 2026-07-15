@@ -7,7 +7,7 @@ Everything is scoped by `resource_id`. For a **domain property** it's `sc-domain
 - Overview: `…/search-console?resource_id=sc-domain:<domain>`
 - Sitemaps: `…/search-console/sitemaps?resource_id=sc-domain:<domain>`
 - Pages (indexing): `…/search-console/index?resource_id=sc-domain:<domain>`
-- Performance: `…/search-console/performance/search_analytics?resource_id=sc-domain:<domain>`
+- Performance: `…/search-console/performance/search-analytics?resource_id=sc-domain:<domain>` (**hyphen**, not `search_analytics` — the underscore form 404s)
 
 Confirm login + property by reading the top-left property name and the left nav (Overview / Performance / URL inspection / Pages / Sitemaps…). If it redirects to a Google login, pause and ask the user.
 
@@ -30,6 +30,15 @@ Confirm login + property by reading the top-left property name and the left nav 
 
 ### 4. Performance
 - Impressions / clicks / avg position / top queries. Early-stage sites show little — that's expected.
+- **Read the tables via DOM, not screenshots.** The report tables ARE in the DOM (unlike most GSC reports) and extract cleanly — far cheaper than paging through screenshots:
+  ```python
+  js("""(() => [...document.querySelectorAll('table tr')]
+        .map(tr => [...tr.querySelectorAll('td,th')].map(td => td.innerText.trim()).join(' | '))
+        .filter(Boolean).slice(0, 40).join('\\n'))()""")
+  ```
+  Gives `query | clicks | impressions | CTR | position` rows. The first ~6 rows are Core Web Vitals / HTTPS / Breadcrumbs cards — skip them.
+- **GOTCHA — `window.scrollTo()` does nothing.** The report scrolls an inner container, so the queries table never comes into view that way; use the DOM extraction above instead.
+- **GOTCHA — the QUERIES/PAGES/COUNTRIES/DEVICES tabs ignore coordinate clicks** (at least at 1080p). If you need the PAGES breakdown, add a filter or use EXPORT rather than burning turns on the tab strip.
 
 ## Interpreting "not indexed" reasons
 - **"Discovered – currently not indexed"** → Google found the URL (via sitemap/links) but deprioritized crawling it. This is a **domain-authority / crawl-budget** signal, NOT a technical error. Fix: earn backlinks, strengthen internal linking (hub→spoke), Request-Indexing the key pages, and wait. If most pages sit here, **do not mass-generate more pages** — they'll pile up unindexed; raise authority first.
