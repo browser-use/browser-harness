@@ -334,11 +334,16 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         # Must go through ipc.connect so this works on Windows (TCP loopback) too;
         # raw AF_UNIX here would fail on every warm call and churn the daemon.
+        s = None
         try:
             s, token = ipc.connect(name or NAME, timeout=3.0)
             resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
             if "result" in resp: return
         except Exception: pass
+        finally:
+            if s:
+                try: s.close()
+                except OSError: pass
         restart_daemon(name)
 
     import subprocess, sys
