@@ -309,19 +309,39 @@ def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
+    try:
+        previous = current_tab()
+    except Exception:
+        previous = None
     if url != "about:blank":
         try:
-            cur = current_tab()
+            cur = previous or current_tab()
             cur_url = cur.get("url") or ""
-            if cur_url in ("", "about:blank") or cur_url.startswith("about:blank#"):
+            if cur_url in ("", "about:blank", "about:newtab", "chrome://newtab/") or cur_url.startswith("about:blank#"):
                 goto_url(url)
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
     tid = cdp("Target.createTarget", url="about:blank")["targetId"]
-    switch_tab(tid)
-    if url != "about:blank":
-        goto_url(url)
+    try:
+        switch_tab(tid)
+        if url != "about:blank":
+            goto_url(url)
+    except Exception:
+        try: cdp("Target.closeTarget", targetId=tid)
+        except Exception: pass
+        if previous and previous.get("targetId") and previous.get("targetId") != tid:
+            try: switch_tab(previous)
+            except Exception: pass
+        else:
+            try:
+                tabs = list_tabs(include_chrome=False)
+                if tabs:
+                    switch_tab(tabs[0])
+                else:
+                    switch_tab(cdp("Target.createTarget", url="about:blank")["targetId"])
+            except Exception: pass
+        raise
     return tid
 
 def close_tab(target=None):

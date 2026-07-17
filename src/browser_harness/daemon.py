@@ -209,6 +209,11 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+def is_reusable_empty_page(t):
+    """True for visible empty tabs we can attach to instead of creating another one."""
+    return t["type"] == "page" and t.get("url", "") in {"about:blank", "about:newtab", "chrome://newtab/"}
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -223,9 +228,11 @@ class Daemon:
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
-            # No real pages - create one instead of attaching to omnibox popup.
+            pages = [t for t in targets if is_reusable_empty_page(t)]
+        if not pages:
+            # No attachable pages - create one instead of attaching to omnibox popup.
             tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
-            log(f"no real pages found, created about:blank ({tid})")
+            log(f"no attachable pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
         self.session = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
