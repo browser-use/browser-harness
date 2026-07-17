@@ -76,6 +76,32 @@ no-ops):
 - **URL scheme:** course landing `/<group>/classroom/<course 8-char name slug>`; a specific lesson is
   `?md=<lesson FULL id>` (the full 32-char id, NOT the short name). Wrong md → 404/Oops page.
 
+## Course-root update, reorder, and covers (field-tested 2026-07-16)
+
+**Update a course root** (rename, desc, cover): `PUT /courses/<id>` with a FLAT body — a different
+flat shape than the lesson PUT:
+```json
+{"title":"...","desc":"plain text","cover_image":"https://assets.skool.com/f/<group>/<hash>",
+ "privacy":0,"is_afl_comp_eligible":false,"min_tier":0}
+```
+- **TRAP: `GET /courses/<id>?group_id=G` does NOT return `coverImage` in metadata.** If you
+  read-modify-write from that GET and echo an empty `cover_image`, you silently WIPE the cover on
+  every course you touch. Get cover URLs from the classroom page SSR (`pageProps.allCourses[..]
+  .course.metadata.coverImage`) or a prior backup, and always echo them into the PUT.
+- Cover spec is **1460 × 752 px** (shown in the Edit course dialog). Assets survive metadata loss —
+  a wiped cover can be re-attached by URL without re-uploading.
+- Course title limit 50 chars applies to PUT too. Body `desc` here is plain text (course
+  description), NOT `[v2]` TipTap.
+
+**Reorder courses in the classroom grid:** `POST /courses/<id>/move2?dst=<index>` → 200, no body.
+`dst` is the absolute target index (0-based) in display order, not just adjacent-swap — one call can
+jump a course anywhere. Display order otherwise = creation order. The UI equivalent is the tile
+"⋯ → Move ←/→" menu.
+
+**`pageProps.allCourses` reflects live display order but caps at 30 entries** — courses beyond 30
+are silently absent (fetch them by id directly). `metadata.numModules` on a course root can drift
+(counts historical creates, not current children); count `children` from the GET tree instead.
+
 ## Reference: capture any create/update call
 
 Enable `Network`, do the action once in the UI, drain events, filter `api2.skool.com` requests for
