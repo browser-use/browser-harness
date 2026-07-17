@@ -178,7 +178,7 @@ def test_set_session_runs_disable_and_enables_in_parallel():
         # in-flight. Cap iterations to avoid hanging if parallelization breaks.
         for _ in range(50):
             await asyncio.sleep(0)
-            # 5 = Network.disable on OLD + 4 enables on NEW.
+            # 6 = Network.disable on OLD + 4 enables + focus emulation on NEW.
             if d.cdp.in_flight >= 5:
                 break
         peak = d.cdp.max_concurrent
@@ -187,10 +187,10 @@ def test_set_session_runs_disable_and_enables_in_parallel():
         return peak, d.cdp.calls
 
     peak, calls = asyncio.run(run())
-    assert peak == 5, (
-        f"set_session must run disable + 4 enables concurrently via gather "
-        f"(observed peak in-flight = {peak}; expected 5 = 1 disable on OLD + "
-        f"4 enables on NEW). Sequential await would peak at 1."
+    assert peak == 6, (
+        f"set_session must run disable + 4 enables + focus emulation "
+        f"concurrently via gather (observed peak in-flight = {peak}; expected "
+        f"6 = 1 disable on OLD + 5 on NEW). Sequential await would peak at 1."
     )
     # Sanity: the right calls were made.
     methods = sorted({m for (m, _p, _s) in calls})
@@ -239,8 +239,8 @@ def test_set_session_first_attach_runs_four_enables_in_parallel():
         return peak
 
     peak = asyncio.run(run())
-    assert peak == 4, (
-        f"first set_session must run 4 enables concurrently "
+    assert peak == 5, (
+        f"first set_session must run 4 enables + focus emulation concurrently "
         f"(observed peak = {peak}). No Network.disable should fire."
     )
 

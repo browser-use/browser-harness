@@ -168,8 +168,25 @@ def click_at_xy(x, y, button="left", clicks=1):
         except Exception as e:
             print(f"[debug_click] overlay failed: {e}")
         _debug_click_counter += 1
+    # mouseMoved primes the pointer position; on background tabs (never
+    # activated, focus-emulated by the daemon) press/release without a prior
+    # move is processed but the click doesn't fire.
+    cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
+    if button == "left" and clicks == 1:
+        # On background tabs the compositor click runs handlers/navigation but
+        # does NOT move DOM focus (activeElement stays BODY), so click-then-
+        # type_text breaks. Mirror what a real click does: focus the focusable
+        # element under the point. No-op on active tabs (already focused).
+        try:
+            js(
+                f"(()=>{{const e=document.elementFromPoint({x},{y});"
+                f"if(!e)return;const t=e.closest('input,textarea,select,button,[contenteditable],[tabindex]');"
+                f"if(t&&document.activeElement!==t)t.focus();}})()"
+            )
+        except Exception:
+            pass
 
 def type_text(text):
     cdp("Input.insertText", text=text)
@@ -194,16 +211,30 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
     if not focused:
         raise RuntimeError(f"fill_input: element not found: {selector!r}")
     if clear_first:
-        # Dispatch select-all directly — NOT via press_key, which always emits a
-        # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
-        # makes Chrome treat the input as a printable "a" instead of firing the
-        # select-all shortcut, leaving the field uncleared.
-        mods = 4 if sys.platform == "darwin" else 2  # Cmd on macOS, Ctrl elsewhere
-        select_all = {"key": "a", "code": "KeyA", "modifiers": mods,
-                      "windowsVirtualKeyCode": 65, "nativeVirtualKeyCode": 65}
-        cdp("Input.dispatchKeyEvent", type="rawKeyDown", **select_all)
-        cdp("Input.dispatchKeyEvent", type="keyUp", **select_all)
-        press_key("Backspace")
+        # Select-all via element.select(), not a Cmd/Ctrl+A key dance: the key
+        # sequence never sent Meta's own keyDown/keyUp, so on focus-emulated
+        # background tabs the modifier stayed latched and every subsequent
+        # char became a Cmd+<char> shortcut (field silently stayed empty).
+        # Only select when there IS content: select() on an empty field leaves
+        # it in a state where subsequent char events don't insert at all.
+        had_content = js(
+            f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+            f"if(!e)return false;"
+            f"const v=('value'in e)?e.value:e.textContent;"
+            f"if(!v)return false;"
+            f"if(e.select)e.select();else document.getSelection().selectAllChildren(e);"
+            f"return true;}})()"
+        )
+        if had_content:
+            press_key("Backspace")
+    else:
+        # Append semantics: JS focus() parks the caret at position 0, so typed
+        # text would land BEFORE the existing value. Move the caret to the end.
+        js(
+            f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+            f"if(e&&e.setSelectionRange&&'value'in e)"
+            f"try{{e.setSelectionRange(e.value.length,e.value.length)}}catch(_){{}}}})()"
+        )
     for ch in text:
         press_key(ch)
     js(
@@ -229,9 +260,14 @@ def press_key(key, modifiers=0):
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
     shortcut_modifiers = modifiers & (1 | 2 | 4)  # Alt/Ctrl/Meta turn single keys into shortcuts.
     printable_char = len(key) == 1 and bool(text) and not shortcut_modifiers
+    # keyDown/keyUp feed key listeners and editing actions (Backspace, Enter,
+    # arrows); the printable character itself is delivered via Input.insertText.
+    # On focus-emulated background tabs, text carried on keyDown or char events
+    # inserts unreliably (empty fields drop it, and keyDown+text plus a char
+    # event double-inserts) - insertText is deterministic.
     cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({} if printable_char or not text else {"text": text}))
     if printable_char:
-        cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
+        cdp("Input.insertText", text=text)
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
 def scroll(x, y, dy=-300, dx=0):
@@ -291,7 +327,7 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
-def switch_tab(target):
+def switch_tab(target, activate=False):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
@@ -299,7 +335,11 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    # activate=True raises the Chrome window to the macOS foreground (steals the
+    # user's focus). Automation never needs it — attach/screenshot/click all work
+    # on background tabs — so only pass it when the user asked to SEE the tab.
+    if activate:
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
@@ -318,7 +358,8 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    # background=True keeps the new tab from raising the Chrome window.
+    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)

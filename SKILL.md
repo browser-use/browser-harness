@@ -155,6 +155,8 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 
 - `chrome://inspect/#remote-debugging` must be enabled for local Chrome control.
 - Chrome may show an "Allow remote debugging?" popup; wait for the user to click Allow.
+- Tabs open in BACKGROUND by design. `new_tab`/`switch_tab` never raise the Chrome window; screenshot, click, and navigation all work on background tabs. Only `switch_tab(tid, activate=True)` brings a tab to the foreground - use it exclusively when the user asked to SEE the tab; it steals their OS focus.
+- Rare visibility-sensitive page (pauses video/animation when hidden): escalate with `switch_tab(tid, activate=True)` for that step only.
 - Omnibox popups are not real work tabs.
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.

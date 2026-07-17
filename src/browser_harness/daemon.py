@@ -224,7 +224,8 @@ class Daemon:
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
             # No real pages - create one instead of attaching to omnibox popup.
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            # background=True keeps it from raising the Chrome window.
+            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
         self.session = (await self.cdp.send_raw(
@@ -257,7 +258,51 @@ class Daemon:
                 )
             except Exception as e:
                 log(f"enable {d} on {session_id}: {e}")
-        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+
+        async def set_focus_emulation():
+            await asyncio.wait_for(
+                self.cdp.send_raw(
+                    "Emulation.setFocusEmulationEnabled",
+                    {"enabled": True},
+                    session_id=session_id,
+                ),
+                timeout=4,
+            )
+
+        async def enable_focus_emulation():
+            # Tabs stay in background by design (never activated, so the user's
+            # focus is never stolen). A hidden RenderWidget doesn't process
+            # Input.dispatchMouseEvent — the event never acks and clicks are
+            # dropped. Focus emulation makes the renderer treat the page as
+            # focused/active so compositor-level input works on background tabs.
+            try:
+                await set_focus_emulation()
+                return
+            except Exception as e:
+                log(f"enable focus emulation on {session_id} (attempt 1): {e}")
+
+            # Retry OFF the synchronous set_session path: the helper's IPC
+            # socket read times out at 5s, so this gather must stay bounded by
+            # one 4s round trip. A second failure gets a loud log — without
+            # focus emulation, clicks/typing on this tab silently do nothing.
+            async def retry_in_background():
+                try:
+                    await set_focus_emulation()
+                    log(f"focus emulation enabled on {session_id} (background retry)")
+                except Exception as e:
+                    log(
+                        f"WARNING: focus emulation NOT active on {session_id} "
+                        f"({e}) — clicks/typing will be dropped while this tab "
+                        "is in background; switch_tab(tid, activate=True) is "
+                        "the workaround"
+                    )
+
+            asyncio.create_task(retry_in_background())
+
+        await asyncio.gather(
+            *(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")),
+            enable_focus_emulation(),
+        )
 
     async def start(self):
         self.stop = asyncio.Event()

@@ -7,12 +7,14 @@ Use **CDP for control**, **UI automation for user-visible order**.
 ```python
 tabs = list_tabs()                    # includes chrome:// pages too
 real_tabs = list_tabs(include_chrome=False)
-tid = new_tab("https://example.com")  # create + attach
-switch_tab(tid)                       # attach harness to tab
-cdp("Target.activateTarget", targetId=tid)  # show it in Chrome
+tid = new_tab("https://example.com")  # create + attach (in background — never raises the window)
+switch_tab(tid)                       # attach harness to tab (background by default)
+switch_tab(tid, activate=True)        # attach AND visibly show it in Chrome (steals OS focus!)
 print(current_tab())
 print(page_info())
 ```
+
+**Focus discipline:** automation almost never needs `activate=True` — screenshots, clicks, and navigation all work on background tabs. The one exception is visibility-sensitive pages that pause video/animation when hidden (see SKILL.md). Only pass `activate=True` (or call `Target.activateTarget`) when the user explicitly asked to SEE the tab; on macOS it yanks the Chrome window to the foreground and steals the user's focus.
 
 What CDP is good at:
 - attach to a tab
@@ -61,8 +63,8 @@ Typical tools:
 
 ## Rules that held up in practice
 
-- `switch_tab()` is **not enough** if the user expects Chrome to visibly change.
-- `Target.activateTarget` is the CDP-side "show this tab".
+- `switch_tab()` is **not enough** if the user expects Chrome to visibly change — use `switch_tab(tid, activate=True)` for that, and only then.
+- `Target.activateTarget` is the CDP-side "show this tab". It steals OS focus on macOS; opt-in only.
 - `list_tabs()` includes `chrome://newtab/` by default; ask for `include_chrome=False` when you want only real pages.
 - `chrome://omnibox-popup.top-chrome/` can appear as a fake page target; ignore it for user-facing tab lists.
 - If a page has `w=0 h=0`, you may be attached to the wrong target or a non-window surface.
