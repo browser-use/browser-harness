@@ -134,6 +134,39 @@ def test_new_tab_is_created_in_background_when_preserving_focus(monkeypatch):
     assert not any(method == "Target.activateTarget" for method, _ in calls)
 
 
+def test_click_at_xy_restores_operator_focus_after_input(monkeypatch):
+    monkeypatch.setenv("BU_PRESERVE_OS_FOCUS", "1")
+    order = []
+
+    def fake_cdp(method, **kwargs):
+        order.append((method, kwargs.get("type")))
+        return {}
+
+    with patch("browser_harness.helpers._capture_os_focus", side_effect=lambda: order.append(("capture", None)) or "window-7"), \
+         patch("browser_harness.helpers._restore_os_focus", side_effect=lambda token: order.append(("restore", token))), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.click_at_xy(10, 20)
+
+    assert order == [
+        ("capture", None),
+        ("Input.dispatchMouseEvent", "mousePressed"),
+        ("Input.dispatchMouseEvent", "mouseReleased"),
+        ("restore", "window-7"),
+    ]
+
+
+def test_input_helpers_do_not_probe_os_focus_by_default(monkeypatch):
+    monkeypatch.delenv("BU_PRESERVE_OS_FOCUS", raising=False)
+
+    with patch("browser_harness.helpers._capture_os_focus") as capture, \
+         patch("browser_harness.helpers._restore_os_focus") as restore, \
+         patch("browser_harness.helpers.cdp", return_value={}):
+        helpers.click_at_xy(10, 20)
+
+    capture.assert_not_called()
+    restore.assert_not_called()
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():
