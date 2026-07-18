@@ -399,15 +399,19 @@ def _cleanup_error_message(failures):
 
 def close_opened_tabs(force=False):
     """Close created tabs and restore blank tabs reused by this CLI process."""
-    _, failures = _restore_reused_blank_tabs()
-
     if _KEEP_OPENED_TABS and not force:
-        # Keeping a tab releases it from this invocation's ownership. Otherwise
-        # an embedder calling main() again would close it on the next run.
+        # Keeping means hands off every tab this invocation touched, not just
+        # ones it created via Target.createTarget. new_tab() usually reuses
+        # the current blank tab instead of creating a new one (the daemon is
+        # commonly parked on a blank keeper between invocations), so most
+        # "kept" tabs in practice are reused-blank ones. Restoring them to
+        # blank here would silently defeat keep_opened_tabs() for exactly the
+        # common case a caller relies on it for.
         _OPENED_TABS.clear()
-        if failures:
-            raise RuntimeError(_cleanup_error_message(failures))
+        _REUSED_BLANK_TABS.clear()
         return []
+
+    _, failures = _restore_reused_blank_tabs()
 
     target_ids = set(_OPENED_TABS)
     if not target_ids:

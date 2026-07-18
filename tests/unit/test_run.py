@@ -133,7 +133,10 @@ def test_cloud_admin_code_still_runs_tab_finalizer():
     cleanup.assert_called_once_with()
 
 
-def test_bh_keep_tabs_releases_owned_tabs_and_restores_borrowed_blank(monkeypatch):
+def test_bh_keep_tabs_releases_owned_and_borrowed_blank_tabs_untouched(monkeypatch):
+    # Regression: BH_KEEP_TABS must protect reused-blank tabs too, since
+    # new_tab() usually reuses the current blank tab instead of creating a
+    # new one, so most "kept" tabs in practice go through that path.
     monkeypatch.setenv("BH_KEEP_TABS", "1")
     run.helper_module._OPENED_TABS.add("created")
     run.helper_module._REUSED_BLANK_TABS["blank"] = "about:blank"
@@ -146,8 +149,8 @@ def test_bh_keep_tabs_releases_owned_tabs_and_restores_borrowed_blank(monkeypatc
          patch("sys.stdin", StringIO("x = 1")):
         run.main()
 
-    switch.assert_called_once_with("blank")
-    restore.assert_called_once_with("about:blank")
+    switch.assert_not_called()
+    restore.assert_not_called()
     assert run.helper_module.opened_tabs() == []
     assert run.helper_module._REUSED_BLANK_TABS == {}
 

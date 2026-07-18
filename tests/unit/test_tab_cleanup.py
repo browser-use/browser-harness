@@ -142,7 +142,11 @@ def test_keep_opened_tabs_requires_force_to_clean_up():
         assert helpers.close_opened_tabs(force=True) == ["owned"]
 
 
-def test_keep_opened_tabs_still_restores_reused_blank():
+def test_keep_opened_tabs_does_not_restore_reused_blank():
+    # Regression: new_tab() usually reuses the current blank tab instead of
+    # creating a new one, so most "kept" tabs in practice are reused-blank
+    # ones. keep_opened_tabs() must protect those too, or it silently fails
+    # for the common single-tab case a caller relies on it for.
     helpers._OPENED_TABS.add("created")
     helpers._REUSED_BLANK_TABS["blank"] = "about:blank"
     helpers.keep_opened_tabs()
@@ -151,9 +155,25 @@ def test_keep_opened_tabs_still_restores_reused_blank():
          patch("browser_harness.helpers.goto_url") as restore:
         assert helpers.close_opened_tabs() == []
 
+    switch.assert_not_called()
+    restore.assert_not_called()
+    assert helpers.opened_tabs() == []
+    assert helpers._REUSED_BLANK_TABS == {}
+
+
+def test_keep_opened_tabs_force_still_restores_reused_blank():
+    helpers._REUSED_BLANK_TABS["blank"] = "about:blank"
+    helpers.keep_opened_tabs()
+
+    with patch("browser_harness.helpers.switch_tab") as switch, \
+         patch("browser_harness.helpers.goto_url") as restore, \
+         patch("browser_harness.helpers.current_tab", return_value={"targetId": "survivor"}), \
+         patch("browser_harness.helpers.cdp", return_value={"success": True}), \
+         patch("browser_harness.helpers.list_tabs", return_value=[]):
+        assert helpers.close_opened_tabs(force=True) == []
+
     switch.assert_called_once_with("blank")
     restore.assert_called_once_with("about:blank")
-    assert helpers.opened_tabs() == []
     assert helpers._REUSED_BLANK_TABS == {}
 
 
