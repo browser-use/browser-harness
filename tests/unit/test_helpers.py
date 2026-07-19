@@ -1,6 +1,8 @@
+import base64
 import os
 import tempfile
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -75,6 +77,129 @@ def test_page_info_raises_clear_error_on_js_exception():
          patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         with pytest.raises(RuntimeError, match="ReferenceError"):
             helpers.page_info()
+
+
+def test_page_state_returns_bounded_interactive_projection_and_raw_artifact(tmp_path, monkeypatch):
+    monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
+    nodes = [
+        {
+            "role": {"value": "button"},
+            "name": {"value": "Buy"},
+            "backendDOMNodeId": 7,
+            "properties": [{"name": "disabled", "value": {"value": False}}],
+        },
+        {"role": {"value": "StaticText"}, "name": {"value": "Description"}},
+        {"role": {"value": "link"}, "name": {"value": "Details"}, "backendDOMNodeId": 8},
+    ]
+
+    with patch("browser_harness.helpers.page_info", return_value={"url": "https://example.com"}), \
+         patch("browser_harness.helpers.cdp", return_value={"nodes": nodes}), \
+         patch("browser_harness.helpers.js", return_value="A long page description"):
+        state = helpers.page_state(limit=1, text_chars=6)
+
+    assert state["interactive"] == [
+        {"backend_id": 7, "role": "button", "name": "Buy", "disabled": False}
+    ]
+    assert state["interactive_total"] == 2
+    assert state["interactive_truncated"] == 1
+    assert state["text"] == "A long"
+    assert state["text_truncated"] is True
+    artifact = Path(state["artifact"])
+    assert artifact.is_file()
+    assert '"backendDOMNodeId": 8' in artifact.read_text()
+
+
+def test_click_backend_node_scrolls_and_clicks_box_center():
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "DOM.getBoxModel":
+            return {"model": {"content": [10, 20, 30, 20, 30, 40, 10, 40]}}
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.click_at_xy") as click:
+        result = helpers.click_backend_node(42)
+
+    assert calls[0] == ("DOM.scrollIntoViewIfNeeded", {"backendNodeId": 42})
+    click.assert_called_once_with(20.0, 30.0, button="left", clicks=1)
+    assert result == {"backend_id": 42, "x": 20.0, "y": 30.0}
+
+
+def test_browser_fetch_to_file_polls_and_transfers_bounded_chunks(tmp_path):
+    payload = b"authenticated response"
+    encoded = base64.b64encode(payload).decode()
+    calls = []
+
+    def fake_js(expression, **kwargs):
+        calls.append(expression)
+        if "globalThis[key]={done:false" in expression:
+            return "key"
+        if "chars:s.data?.length" in expression:
+            return {
+                "done": True,
+                "error": None,
+                "status": 200,
+                "ok": True,
+                "content_type": "text/plain",
+                "bytes": len(payload),
+                "chars": len(encoded),
+            }
+        if ".data.slice(" in expression:
+            bounds = expression.split(".data.slice(", 1)[1].split(")", 1)[0]
+            start, end = map(int, bounds.split(","))
+            return encoded[start:end]
+        return True
+
+    destination = tmp_path / "nested" / "result.txt"
+    with patch("browser_harness.helpers.js", side_effect=fake_js):
+        result = helpers.browser_fetch_to_file(
+            "https://example.com/private",
+            destination,
+            headers={"X-Test": "yes"},
+            chunk_chars=8,
+        )
+
+    assert destination.read_bytes() == payload
+    assert result["path"] == str(destination)
+    assert result["status"] == 200
+    assert sum(".data.slice(" in call for call in calls) > 1
+    assert any("credentials" in call and "include" in call for call in calls)
+    assert calls[-1].startswith("delete globalThis")
+
+
+def test_browser_fetch_to_file_json_encodes_mapping_body(tmp_path):
+    calls = []
+    encoded = base64.b64encode(b"ok").decode()
+
+    def fake_js(expression, **kwargs):
+        calls.append(expression)
+        if "globalThis[key]={done:false" in expression:
+            return "key"
+        if "chars:s.data?.length" in expression:
+            return {
+                "done": True,
+                "error": None,
+                "status": 201,
+                "ok": True,
+                "content_type": "text/plain",
+                "bytes": 2,
+                "chars": len(encoded),
+            }
+        if ".data.slice(" in expression:
+            return encoded
+        return True
+
+    with patch("browser_harness.helpers.js", side_effect=fake_js):
+        helpers.browser_fetch_to_file(
+            "https://example.com/api", tmp_path / "result", method="POST", body={"a": 1}
+        )
+
+    setup = calls[0]
+    assert "Content-Type" in setup
+    assert "application/json" in setup
+    assert '\\\"a\\\": 1' in setup
 
 
 # --- fill_input ---
@@ -311,29 +436,16 @@ def test_wait_for_network_idle_filters_events_to_active_session():
     filter by session_id of the currently-attached tab — otherwise it would
     see the background tab's traffic and either fail to return idle or wait
     on the wrong tab's requests."""
-    active = "session-ACTIVE"
-    background = "session-BACKGROUND"
-
-    # First /drain_events/ payload: rWS + lF on the BACKGROUND session that we
-    # must ignore, plus zero events on the active session. With filtering, the
-    # active session sees no traffic and the idle window can elapse.
-    events_seq = [
-        [
-            {"session_id": background, "method": "Network.requestWillBeSent", "params": {"requestId": "bg1"}},
-            {"session_id": background, "method": "Network.loadingFinished",   "params": {"requestId": "bg1"}},
-        ],
-        [],  # second drain — quiet on both sessions; idle window should fire here
-    ]
+    # The daemon-side network_events query filters the background session, so
+    # the helper receives no active-tab traffic and the idle window can elapse.
     drain_idx = 0
 
     def fake_send(req):
         nonlocal drain_idx
-        if req.get("meta") == "session":
-            return {"session_id": active}
-        if req.get("meta") == "drain_events":
-            evs = events_seq[min(drain_idx, len(events_seq) - 1)]
+        if req.get("meta") == "network_events":
+            assert req.get("active_only") is True
             drain_idx += 1
-            return {"events": evs}
+            return {"events": [], "next_seq": drain_idx * 2}
         return {}
 
     with patch("browser_harness.helpers._send", side_effect=fake_send), \
@@ -350,3 +462,20 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+def test_wait_for_network_idle_never_drains_general_events():
+    requests = []
+
+    def fake_send(req):
+        requests.append(req)
+        return {"events": [], "next_seq": 0}
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.time") as mock_time:
+        mock_time.time.side_effect = [1000.0, 1000.0, 1000.0, 1000.6, 1000.6]
+        mock_time.sleep = lambda _: None
+        assert helpers.wait_for_network_idle(timeout=5.0, idle_ms=500) is True
+
+    assert requests
+    assert {request["meta"] for request in requests} == {"network_events"}

@@ -20,9 +20,42 @@ PY
 ```
 
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
+- If the caller provides an exact executable path or command, use it verbatim instead of locating another installation.
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
 - First navigation is `new_tab(url)`, not `goto_url(url)`.
 - The normal local flow attaches to the running Chrome/Chromium CDP endpoint. No browser ids or local profile selection.
+- If invocation and connection were already verified, do not read README/install docs or inspect `globals()` to rediscover the API.
+
+## Core API
+
+These helpers are pre-imported and form the normal browser-control surface:
+
+```python
+new_tab(url='about:blank')
+page_info()
+page_state(limit=80, text_chars=3000)
+wait_for_load(timeout=15.0)
+wait(seconds=1.0)
+ensure_real_tab()
+js(expression, target_id=None)
+cdp(method, session_id=None, **params)
+click_at_xy(x, y, button='left', clicks=1)
+click_backend_node(backend_id, button='left', clicks=1)
+type_text(text)
+press_key(key, modifiers=0)
+capture_screenshot(path=None, full=False, max_dim=None)
+http_get(url, headers=None, timeout=20.0)
+network_events(since=0, limit=200)
+browser_fetch_to_file(url, path, method='GET', headers=None, body=None, timeout=60.0, chunk_chars=262144)
+```
+
+- Use `capture_screenshot(...)`, never an invented `screenshot(...)` helper.
+- Start with `page_state()`. It returns compact page metadata, text, and interactive AX nodes while saving the complete raw AX tree to the returned artifact path.
+- Prefer `click_backend_node(item['backend_id'])` for an element returned by `page_state()`; it scrolls the node into view and clicks its center.
+- Put deterministic sequences such as navigate, wait, and extract in one heredoc. Print only compact, decision-relevant results.
+- Split before uncertain or irreversible interactions, then verify the resulting page state.
+- Run Browser Harness commands in the foreground. Do not use `&`, `nohup`, or repeated polling of a background shell session. Give the initial shell call a sufficiently long yield or timeout instead.
+- Use `browser_fetch_to_file(...)` for authenticated or anti-bot-sensitive downloads. It reuses page cookies and transfers large responses in bounded chunks without agent-driven polling.
 
 ## Local Chrome
 
@@ -84,6 +117,7 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 
 ## Page Workflow
 
+- For the first observation after navigation, call `page_state()` instead of separately requesting page metadata, the complete AX tree, body text, and a screenshot.
 - Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree")["nodes"]` has every element's role, name, and `backendDOMNodeId` — filter in Python before printing (it is thousands of nodes). Coordinates: `q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
