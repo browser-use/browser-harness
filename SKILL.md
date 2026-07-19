@@ -55,6 +55,7 @@ browser_fetch_to_file(url, path, method='GET', headers=None, body=None, timeout=
 - Split before uncertain or irreversible interactions, then verify the resulting page state.
 - Run Browser Harness commands in the foreground. Do not use `&`, `nohup`, or repeated polling of a background shell session. Give the initial shell call a sufficiently long yield or timeout instead.
 - Prefer a native fetch, URL reader, or web-search tool for public stateless retrieval when the runtime provides one. Browser Harness is an interactive browser, not the default HTTP client.
+- The task's requested source and workflow always win over that routing default. Never substitute native search for an explicitly required site, page sequence, or interaction, and never present fallback evidence as if it came from the requested source.
 - Use `browser_fetch_to_file(...)` only when the resource requires the current page's cookies, origin, or anti-bot state. State that reason before using it.
 
 ## Local Chrome
@@ -117,10 +118,13 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 
 ## Page Workflow
 
+- Before collecting, turn the task into acceptance checks: required sources, exact counts, required fields, uniqueness, exact-match constraints, and output files. Make those checks executable in task-local code when possible.
 - Read `interaction-skills/observations.md` before multi-step browsing or extraction. Decide what facts would make the next action obvious, then query only those facts.
 - Use Browser Use's semantic-tree ingredients as a starting recipe, not a fixed schema: page identity, meaningful text, hierarchy, interactive nodes, backend IDs, values, states, viewport, and optionally a screenshot.
 - Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree")["nodes"]` has every element's role, name, and `backendDOMNodeId`. Filter it in task-local Python before printing; never print the full tree.
 - Save large raw observations under `$BH_AGENT_WORKSPACE/observations/`, then locally project them into whatever compact format the current subgoal needs. Always expose counts, truncation, missing records, and errors.
+- Once the page structure is understood, batch repeated navigation and extraction in one foreground Browser Harness program. Do not alternate one page or record with one model turn when a deterministic collector can do the loop.
+- Validate saved artifacts locally against the acceptance checks before finishing. Repair failed checks from the saved raw evidence or browser; never hide missing records, duplicate matches, malformed fields, or unsupported substitutions behind a summary.
 - Change the observer when the page type or subgoal changes. Do not keep expanding one generic dump.
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.

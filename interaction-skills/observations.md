@@ -4,6 +4,13 @@ There is no canonical page state. Before repeated interaction or extraction,
 decide what facts would make the next action obvious and write the smallest
 observer that returns those facts.
 
+Start from the task's contract, not the page. List the required source or
+workflow, expected cardinality, required fields, uniqueness rules, exact-match
+rules, and deliverables. The observer and collector should make each of those
+conditions measurable. A native search or alternate source is not a valid
+substitute when the task explicitly requires evidence from a particular site
+or interaction sequence.
+
 Use any browser evidence that fits the current subgoal:
 
 - `page_info()` for identity, viewport, and scroll position
@@ -32,3 +39,14 @@ missing or malformed records, and browser or extraction errors.
 Do not repeatedly pay to recapture stable data. Query saved artifacts locally
 with Python, `jq`, `rg`, or SQLite. Recapture after navigation or meaningful DOM
 changes because backend node IDs can become stale.
+
+Use a compile-and-check loop for repeated work:
+
+1. Probe only enough of each page type to understand its structure.
+2. Write a deterministic collector that performs the repeated browser loop in
+   one foreground Browser Harness invocation and checkpoints raw results.
+3. Run a local validator over the saved artifacts. It should report exact
+   counts, missing fields, duplicates, malformed records, extraction errors,
+   and source mismatches.
+4. Revisit only the failed invariants. Do not spend a model turn on every page
+   or claim completion while a required invariant is false.
