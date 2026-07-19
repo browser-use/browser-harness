@@ -28,6 +28,37 @@ for t in tabs:
 tab = ensure_real_tab()
 ```
 
+## Hung attached session (every helper call blocks forever)
+
+If `page_info()` / `js()` hang with no error while the daemon log looks healthy ("attached ... listening on ..."), the attached tab's renderer is not answering `Runtime.evaluate` (long-idle SPA tabs, e.g. Mighty Networks feeds, can get into this state). Browser-level CDP still works — the hang is session-scoped, and `restart_daemon()` won't fix it because the daemon re-attaches to the same first page target.
+
+Diagnose and recover by talking to the daemon socket directly with a timeout — helper calls would just block:
+
+```python
+import socket, json
+
+def send(req, timeout=15):
+    s = socket.socket(socket.AF_UNIX); s.settimeout(timeout)
+    s.connect("/tmp/bu-default.sock")
+    s.sendall((json.dumps(req) + "\n").encode())
+    buf = b""
+    while not buf.endswith(b"\n"):
+        chunk = s.recv(65536)
+        if not chunk: break
+        buf += chunk
+    return json.loads(buf)
+
+# browser-level call works -> daemon + Chrome fine, attached session is hung
+send({"method": "Target.getTargets", "params": {}, "session_id": None})
+
+# re-point the daemon's default session at a fresh tab (never evaluates on the hung one)
+tid = send({"method": "Target.createTarget", "params": {"url": "about:blank"}, "session_id": None})["result"]["targetId"]
+sid = send({"method": "Target.attachToTarget", "params": {"targetId": tid, "flatten": True}, "session_id": None})["result"]["sessionId"]
+send({"meta": "set_session", "session_id": sid})
+```
+
+Don't use `switch_tab()` for this — its unmark step runs `Runtime.evaluate` on the hung session first and blocks. Trap within the trap: `restart_daemon()` only STOPS the daemon (cleanup is deliberate; `run.py`'s `ensure_daemon()` restarts it on the next harness call) — if you're working over the raw socket, call `ensure_daemon()` yourself or the socket is just gone.
+
 ## Bringing Chrome to front
 
 If Chrome is behind other windows or on another desktop:
