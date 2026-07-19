@@ -33,7 +33,7 @@ These helpers are pre-imported and form the normal browser-control surface:
 ```python
 new_tab(url='about:blank')
 page_info()
-page_state(limit=80, text_chars=3000)
+page_state(limit=200)
 wait_for_load(timeout=15.0)
 wait(seconds=1.0)
 ensure_real_tab()
@@ -45,17 +45,15 @@ type_text(text)
 press_key(key, modifiers=0)
 capture_screenshot(path=None, full=False, max_dim=None)
 http_get(url, headers=None, timeout=20.0)
-network_events(since=0, limit=200)
-browser_fetch_to_file(url, path, method='GET', headers=None, body=None, timeout=60.0, chunk_chars=262144)
 ```
 
 - Use `capture_screenshot(...)`, never an invented `screenshot(...)` helper.
-- Start with `page_state()`. It returns compact page metadata, text, and interactive AX nodes while saving the complete raw AX tree to the returned artifact path.
+- Start with `page_state()`. It returns `page`, `nodes`, `nodes_total`, and `nodes_truncated`; each node is a compact, JavaScript-free CDP accessibility projection, and interactive nodes include a `backend_id`.
 - Prefer `click_backend_node(item['backend_id'])` for an element returned by `page_state()`; it scrolls the node into view and clicks its center.
-- Put deterministic sequences such as navigate, wait, and extract in one heredoc. Print only compact, decision-relevant results.
+- Keep each invocation small and inspectable. Only combine operations when a failure cannot obscure which operation failed.
 - Split before uncertain or irreversible interactions, then verify the resulting page state.
 - Run Browser Harness commands in the foreground. Do not use `&`, `nohup`, or repeated polling of a background shell session. Give the initial shell call a sufficiently long yield or timeout instead.
-- Use `browser_fetch_to_file(...)` for authenticated or anti-bot-sensitive downloads. It reuses page cookies and transfers large responses in bounded chunks without agent-driven polling.
+- Print only compact, decision-relevant results. Never print a complete raw AX tree or minified page source.
 
 ## Local Chrome
 
@@ -117,13 +115,14 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 
 ## Page Workflow
 
-- For the first observation after navigation, call `page_state()` instead of separately requesting page metadata, the complete AX tree, body text, and a screenshot.
-- Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree")["nodes"]` has every element's role, name, and `backendDOMNodeId` — filter in Python before printing (it is thousands of nodes). Coordinates: `q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
-- Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
-- Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
+- For the first observation after navigation, call `page_state()`. It is the normal decision state: page identity plus compact AX roles, names, values, state, and backend IDs.
+- Treat a page-state result as disposable. Navigation and DOM updates can invalidate backend IDs, so observe again after the page changes.
+- `page_state()` is bounded navigation state, not an exhaustive extraction API. For tasks requiring every row or item, query and filter `cdp("Accessibility.getFullAXTree")` directly and verify coverage before answering.
+- Prefer `click_backend_node(...)` for interactive AX nodes. It uses only `DOM.scrollIntoViewIfNeeded`, `DOM.getBoxModel`, and mouse input.
+- Fall back to `js(...)` only when the AX tree cannot expose the required state. Use a screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
-- Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
+- Use `js(...)` for targeted DOM inspection or extraction only when CDP accessibility state is insufficient.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
 - Raw CDP is available with `cdp("Domain.method", ...)`.
 

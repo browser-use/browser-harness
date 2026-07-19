@@ -35,7 +35,6 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
-NETWORK_BUF = 5000
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -216,8 +215,6 @@ class Daemon:
         self.session = None
         self.target_id = None
         self.events = deque(maxlen=BUF)
-        self.network_events = deque(maxlen=NETWORK_BUF)
-        self.network_seq = 0
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
@@ -281,11 +278,7 @@ class Daemon:
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
         async def tap(method, params, session_id=None):
-            event = {"method": method, "params": params, "session_id": session_id}
-            self.events.append(event)
-            if method.startswith("Network."):
-                self.network_seq += 1
-                self.network_events.append({**event, "seq": self.network_seq})
+            self.events.append({"method": method, "params": params, "session_id": session_id})
             if method == "Page.javascriptDialogOpening":
                 self.dialog = params
             elif method == "Page.javascriptDialogClosed":
@@ -311,24 +304,6 @@ class Daemon:
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
-        if meta == "network_events":
-            since = max(0, int(req.get("since") or 0))
-            session_id = self.session if req.get("active_only", True) else req.get("session_id")
-            events = [
-                event for event in self.network_events
-                if event["seq"] > since and (session_id is None or event.get("session_id") == session_id)
-            ]
-            limit = max(0, int(req.get("limit") or 0))
-            total = len(events)
-            if limit:
-                events = events[-limit:]
-            oldest = self.network_events[0]["seq"] if self.network_events else self.network_seq + 1
-            return {
-                "events": events,
-                "next_seq": self.network_seq,
-                "dropped": bool(since and oldest > since + 1),
-                "truncated": total - len(events),
-            }
         if meta == "session":     return {"session_id": self.session}
         if meta == "current_tab":
             # Resolve the attached page's target info server-side. Helpers can't

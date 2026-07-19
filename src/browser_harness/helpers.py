@@ -58,16 +58,6 @@ def cdp(method, session_id=None, **params):
 def drain_events():  return _send({"meta": "drain_events"})["events"]
 
 
-def network_events(since=0, limit=200):
-    """Read active-tab Network.* events without consuming them.
-
-    Pass the returned next_seq back as since to read only newer events. The
-    daemon retains a dedicated network ring, so wait_for_network_idle() and
-    later inspection do not destroy one another's evidence.
-    """
-    return _send({"meta": "network_events", "since": since, "limit": limit, "active_only": True})
-
-
 def _js_snippet(expression, limit=160):
     snippet = expression.strip().replace("\n", "\\n")
     return snippet[:limit - 3] + "..." if len(snippet) > limit else snippet
@@ -157,60 +147,53 @@ def page_info():
     return json.loads(_runtime_evaluate(expression))
 
 
-_INTERACTIVE_ROLES = {
+_INTERACTIVE_AX_ROLES = {
     "button", "checkbox", "combobox", "link", "listbox", "menuitem",
     "option", "radio", "searchbox", "slider", "spinbutton", "switch",
     "tab", "textbox", "treeitem",
 }
 _AX_PROPERTIES = {"checked", "disabled", "expanded", "invalid", "level", "selected", "url"}
+_AX_ROLES_TO_SKIP = {"InlineTextBox", "none"}
 
 
 def _ax_value(value):
     return value.get("value") if isinstance(value, dict) else value
 
 
-def page_state(limit=80, text_chars=3000):
-    """Return bounded decision state and save the complete AX tree as an artifact."""
-    page = page_info()
+def page_state(limit=200):
+    """Return a bounded, CDP-only projection of the accessibility tree."""
+    page = current_tab()
     nodes = cdp("Accessibility.getFullAXTree").get("nodes", [])
-    artifact_dir = AGENT_WORKSPACE / "observations"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    artifact = artifact_dir / f"page_state_{time.time_ns()}.json"
-    artifact.write_text(json.dumps({"page": page, "nodes": nodes}, ensure_ascii=False, default=str))
-
-    interactive = []
+    projected = []
     for node in nodes:
         if node.get("ignored"):
             continue
         role = _ax_value(node.get("role"))
-        if role not in _INTERACTIVE_ROLES:
+        if role in _AX_ROLES_TO_SKIP:
             continue
-        item = {
-            "backend_id": node.get("backendDOMNodeId"),
-            "role": role,
-            "name": _ax_value(node.get("name")) or "",
-        }
+        name = _ax_value(node.get("name")) or ""
         value = _ax_value(node.get("value"))
+        if role in {"generic", "group"} and not name and value in (None, ""):
+            continue
+        item = {"role": role or "unknown"}
+        if name:
+            item["name"] = name
         if value not in (None, ""):
             item["value"] = value
+        backend_id = node.get("backendDOMNodeId")
+        if backend_id is not None and role in _INTERACTIVE_AX_ROLES:
+            item["backend_id"] = backend_id
         for prop in node.get("properties", []):
-            name = prop.get("name")
-            if name in _AX_PROPERTIES:
-                item[name] = _ax_value(prop.get("value"))
-        interactive.append(item)
+            property_name = prop.get("name")
+            if property_name in _AX_PROPERTIES:
+                item[property_name] = _ax_value(prop.get("value"))
+        projected.append(item)
 
-    text = js(
-        "(()=>{const t=(document.body?.innerText||'').replace(/\\s+/g,' ').trim();"
-        f"return t.slice(0,{int(text_chars) + 1})}})()"
-    ) or ""
     return {
-        "page": page,
-        "interactive": interactive[:limit],
-        "interactive_total": len(interactive),
-        "interactive_truncated": max(0, len(interactive) - limit),
-        "text": text[:text_chars],
-        "text_truncated": len(text) > text_chars,
-        "artifact": str(artifact),
+        "page": {"url": page["url"], "title": page["title"]},
+        "nodes": projected[:limit],
+        "nodes_total": len(projected),
+        "nodes_truncated": max(0, len(projected) - limit),
     }
 
 # --- input ---
@@ -481,8 +464,7 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
     """Wait until all in-flight requests finish and no Network.* events arrive for idle_ms ms.
 
     Useful after form submits, SPA route transitions, and any action that triggers
-    XHR/fetch without a visible DOM change. Reads the daemon's dedicated,
-    non-destructive network buffer, so later network inspection keeps the evidence.
+    XHR/fetch without a visible DOM change. Builds on drain_events() — no daemon changes.
     Returns True if idle window reached, False on timeout.
 
     Events are filtered to the active session — a previously-attached background
@@ -493,11 +475,11 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
     deadline = time.time() + timeout
     last_activity = time.time()
     inflight = set()
-    cursor = 0
+    active_session = _send({"meta": "session"}).get("session_id")
     while time.time() < deadline:
-        batch = network_events(since=cursor, limit=0)
-        cursor = batch.get("next_seq", cursor)
-        for e in batch.get("events", []):
+        for e in drain_events():
+            if e.get("session_id") != active_session:
+                continue
             method = e.get("method", "")
             params = e.get("params", {})
             if method == "Network.requestWillBeSent":
@@ -528,87 +510,6 @@ def js(expression, target_id=None):
         if _is_illegal_return_error(e):
             return _runtime_evaluate(_wrap_js_function(expression), session_id=sid, await_promise=True)
         raise
-
-
-def browser_fetch_to_file(url, path, method="GET", headers=None, body=None,
-                          timeout=60.0, chunk_chars=262144):
-    """Fetch with the page's cookies/origin state and save the response to disk.
-
-    The browser performs the authenticated fetch. Python polls the in-page state
-    and transfers bounded base64 chunks, so a large body is never returned by one
-    Runtime.evaluate call and the agent does not need to poll a shell session.
-    """
-    chunk_chars = int(chunk_chars)
-    if chunk_chars < 4:
-        raise ValueError("chunk_chars must be at least 4")
-    chunk_chars -= chunk_chars % 4
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
-
-    request_headers = dict(headers or {})
-    request_body = body
-    if isinstance(body, (dict, list)):
-        request_body = json.dumps(body)
-        if not any(key.lower() == "content-type" for key in request_headers):
-            request_headers["Content-Type"] = "application/json"
-    options = {"method": method, "headers": request_headers, "credentials": "include"}
-    if request_body is not None:
-        options["body"] = request_body
-
-    key = f"__browser_harness_fetch_{time.time_ns()}"
-    js(
-        "(()=>{"
-        f"const key={json.dumps(key)};"
-        "globalThis[key]={done:false,error:null,data:null};"
-        f"const url={json.dumps(url)},options={json.dumps(options)};"
-        "(async()=>{const s=globalThis[key];try{"
-        "const r=await fetch(url,options);const b=await r.blob();"
-        "const data=await new Promise((resolve,reject)=>{const reader=new FileReader();"
-        "reader.onload=()=>resolve(String(reader.result).split(',',2)[1]||'');"
-        "reader.onerror=()=>reject(reader.error);reader.readAsDataURL(b)});"
-        "Object.assign(s,{done:true,status:r.status,ok:r.ok,content_type:b.type,bytes:b.size,data})"
-        "}catch(e){Object.assign(s,{done:true,error:String(e?.stack||e)})}})();"
-        "return key})()"
-    )
-
-    state = None
-    destination = Path(path).expanduser()
-    try:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            state = js(
-                "(()=>{"
-                f"const s=globalThis[{json.dumps(key)}];"
-                "return s?{done:s.done,error:s.error,status:s.status,ok:s.ok,"
-                "content_type:s.content_type,bytes:s.bytes,chars:s.data?.length||0}:null"
-                "})()"
-            )
-            if state and state.get("done"):
-                break
-            time.sleep(0.1)
-        else:
-            raise TimeoutError(f"browser fetch timed out after {timeout}s: {url}")
-        if state.get("error"):
-            raise RuntimeError(f"browser fetch failed: {state['error']}")
-
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("wb") as output:
-            for start in range(0, state["chars"], chunk_chars):
-                encoded = js(
-                    f"globalThis[{json.dumps(key)}].data.slice({start},{start + chunk_chars})"
-                )
-                output.write(base64.b64decode(encoded, validate=True))
-        if destination.stat().st_size != state["bytes"]:
-            raise RuntimeError(
-                f"browser fetch size mismatch: expected {state['bytes']}, "
-                f"wrote {destination.stat().st_size}"
-            )
-        return {**state, "path": str(destination), "url": url}
-    finally:
-        try:
-            js(f"delete globalThis[{json.dumps(key)}]")
-        except Exception:
-            pass
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}

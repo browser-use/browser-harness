@@ -21,47 +21,6 @@ def _fresh_daemon():
     return d
 
 
-def test_network_events_are_non_destructive_and_active_session_scoped():
-    d = _fresh_daemon()
-    d.session = "active"
-    d.network_seq = 3
-    d.network_events.extend([
-        {"seq": 1, "session_id": "active", "method": "Network.requestWillBeSent", "params": {}},
-        {"seq": 2, "session_id": "background", "method": "Network.dataReceived", "params": {}},
-        {"seq": 3, "session_id": "active", "method": "Network.loadingFinished", "params": {}},
-    ])
-
-    request = {"meta": "network_events", "since": 0, "active_only": True}
-    first = asyncio.run(d.handle(request))
-    second = asyncio.run(d.handle(request))
-
-    assert [event["seq"] for event in first["events"]] == [1, 3]
-    assert second == first
-    assert first["next_seq"] == 3
-    assert list(d.network_events)
-
-
-def test_network_events_support_cursor_and_bounded_projection():
-    d = _fresh_daemon()
-    d.session = "active"
-    d.network_seq = 4
-    d.network_events.extend([
-        {"seq": seq, "session_id": "active", "method": "Network.dataReceived", "params": {}}
-        for seq in range(1, 5)
-    ])
-
-    result = asyncio.run(d.handle({
-        "meta": "network_events",
-        "since": 1,
-        "limit": 2,
-        "active_only": True,
-    }))
-
-    assert [event["seq"] for event in result["events"]] == [3, 4]
-    assert result["truncated"] == 1
-    assert result["next_seq"] == 4
-
-
 def test_set_session_enables_all_four_default_domains_on_new_session():
     """Regression: switch_tab() / new_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new

@@ -19,8 +19,6 @@ CORE_HELPERS = (
     "press_key",
     "capture_screenshot",
     "http_get",
-    "network_events",
-    "browser_fetch_to_file",
 )
 
 
