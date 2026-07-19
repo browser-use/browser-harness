@@ -79,36 +79,6 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
-def test_page_state_returns_bounded_interactive_projection_and_raw_artifact(tmp_path, monkeypatch):
-    monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
-    nodes = [
-        {
-            "role": {"value": "button"},
-            "name": {"value": "Buy"},
-            "backendDOMNodeId": 7,
-            "properties": [{"name": "disabled", "value": {"value": False}}],
-        },
-        {"role": {"value": "StaticText"}, "name": {"value": "Description"}},
-        {"role": {"value": "link"}, "name": {"value": "Details"}, "backendDOMNodeId": 8},
-    ]
-
-    with patch("browser_harness.helpers.page_info", return_value={"url": "https://example.com"}), \
-         patch("browser_harness.helpers.cdp", return_value={"nodes": nodes}), \
-         patch("browser_harness.helpers.js", return_value="A long page description"):
-        state = helpers.page_state(limit=1, text_chars=6)
-
-    assert state["interactive"] == [
-        {"backend_id": 7, "role": "button", "name": "Buy", "disabled": False}
-    ]
-    assert state["interactive_total"] == 2
-    assert state["interactive_truncated"] == 1
-    assert state["text"] == "A long"
-    assert state["text_truncated"] is True
-    artifact = Path(state["artifact"])
-    assert artifact.is_file()
-    assert '"backendDOMNodeId": 8' in artifact.read_text()
-
-
 def test_click_backend_node_scrolls_and_clicks_box_center():
     calls = []
 

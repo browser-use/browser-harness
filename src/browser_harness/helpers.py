@@ -157,62 +157,6 @@ def page_info():
     return json.loads(_runtime_evaluate(expression))
 
 
-_INTERACTIVE_ROLES = {
-    "button", "checkbox", "combobox", "link", "listbox", "menuitem",
-    "option", "radio", "searchbox", "slider", "spinbutton", "switch",
-    "tab", "textbox", "treeitem",
-}
-_AX_PROPERTIES = {"checked", "disabled", "expanded", "invalid", "level", "selected", "url"}
-
-
-def _ax_value(value):
-    return value.get("value") if isinstance(value, dict) else value
-
-
-def page_state(limit=80, text_chars=3000):
-    """Return bounded decision state and save the complete AX tree as an artifact."""
-    page = page_info()
-    nodes = cdp("Accessibility.getFullAXTree").get("nodes", [])
-    artifact_dir = AGENT_WORKSPACE / "observations"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    artifact = artifact_dir / f"page_state_{time.time_ns()}.json"
-    artifact.write_text(json.dumps({"page": page, "nodes": nodes}, ensure_ascii=False, default=str))
-
-    interactive = []
-    for node in nodes:
-        if node.get("ignored"):
-            continue
-        role = _ax_value(node.get("role"))
-        if role not in _INTERACTIVE_ROLES:
-            continue
-        item = {
-            "backend_id": node.get("backendDOMNodeId"),
-            "role": role,
-            "name": _ax_value(node.get("name")) or "",
-        }
-        value = _ax_value(node.get("value"))
-        if value not in (None, ""):
-            item["value"] = value
-        for prop in node.get("properties", []):
-            name = prop.get("name")
-            if name in _AX_PROPERTIES:
-                item[name] = _ax_value(prop.get("value"))
-        interactive.append(item)
-
-    text = js(
-        "(()=>{const t=(document.body?.innerText||'').replace(/\\s+/g,' ').trim();"
-        f"return t.slice(0,{int(text_chars) + 1})}})()"
-    ) or ""
-    return {
-        "page": page,
-        "interactive": interactive[:limit],
-        "interactive_total": len(interactive),
-        "interactive_truncated": max(0, len(interactive) - limit),
-        "text": text[:text_chars],
-        "text_truncated": len(text) > text_chars,
-        "artifact": str(artifact),
-    }
-
 # --- input ---
 _debug_click_counter = 0
 

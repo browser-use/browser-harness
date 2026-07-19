@@ -7,7 +7,6 @@ from browser_harness import helpers
 CORE_HELPERS = (
     "new_tab",
     "page_info",
-    "page_state",
     "wait_for_load",
     "wait",
     "ensure_real_tab",
@@ -54,7 +53,7 @@ def test_packaged_skill_frontmatter_is_valid_simple_yaml():
 
     assert metadata == {
         "name": "browser-harness",
-        "description": "Always use browser-harness for any web interaction: automation, scraping, testing, or site/app work.",
+        "description": "Use browser-harness for stateful or interactive browser work; prefer native retrieval tools for public stateless content.",
     }
 
 
@@ -66,3 +65,13 @@ def test_packaged_skill_documents_exact_core_helper_signatures():
         assert f"{name}{inspect.signature(helper)}" in text
 
     assert "`screenshot(...)`" in text
+
+
+def test_skill_makes_perception_agent_owned_and_routes_public_fetches():
+    text = resources.files("browser_harness").joinpath("SKILL.md").read_text()
+
+    assert not hasattr(helpers, "page_state")
+    assert "There is no canonical page state" in text
+    assert "$BH_AGENT_WORKSPACE/agent_helpers.py" in text
+    assert "prefer a native fetch" in text.lower()
+    assert "requires the current page's cookies" in text

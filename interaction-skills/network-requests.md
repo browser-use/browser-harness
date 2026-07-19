@@ -20,9 +20,9 @@ The result includes `next_seq`, `dropped`, and `truncated`. Increase `limit` for
 targeted debugging; keep printed output bounded. Raw CDP remains available for
 request bodies and response bodies.
 
-For authenticated data available to the page, prefer an in-renderer fetch. It
-inherits the real origin, TLS behavior, and cookies that direct HTTP clients may
-not have:
+For public stateless data, prefer the runtime's native retrieval tool. Use an
+in-renderer fetch only for data that requires the current browser origin,
+cookies, or authenticated session:
 
 ```python
 result = js("""
