@@ -36,6 +36,14 @@ Homepage = "https://github.com/browser-use/browser-harness"
 Repository = "https://github.com/browser-use/browser-harness"
 Issues = "https://github.com/browser-use/browser-harness/issues"
 
+# Dev tooling lives in the default `dev` group so `uv run pytest` resolves it
+# from the persistent project env. Running `uv run --with pytest pytest` instead
+# builds a fresh ephemeral overlay venv on every cold cache (~2.8s vs ~0.5s).
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
