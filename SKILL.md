@@ -84,6 +84,9 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 
 ## Page Workflow
 
+- Before repeated browsing or extraction, turn the task into explicit checks for required sources, counts, fields, uniqueness, and output format.
+- When repeated inspection is expensive, use the existing `cdp(...)` and `js(...)` primitives to write the smallest task-specific observer or collector in `$BH_AGENT_WORKSPACE/agent_helpers.py`. Print bounded results while making truncation, missing records, and errors explicit.
+- Validate saved artifacts against the task checks before finishing, then revisit only the checks that failed.
 - Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree")["nodes"]` has every element's role, name, and `backendDOMNodeId` — filter in Python before printing (it is thousands of nodes). Coordinates: `q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
