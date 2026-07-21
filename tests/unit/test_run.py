@@ -1,6 +1,6 @@
 import sys
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -228,12 +228,23 @@ def test_explicit_cdp_configured_helper_falsy(monkeypatch):
 
 def test_local_chrome_listening_rejects_non_chrome():
     """A bare TCP listener on 9222/9223 must not fool the probe — only a real
-    /json/version response counts as Chrome."""
+    /json/version response with a DevTools WebSocket counts as Chrome."""
     with patch("browser_harness.run.urllib.request.urlopen", side_effect=OSError):
         assert run._local_chrome_listening() is False
-    with patch("browser_harness.run.urllib.request.urlopen") as mock_open:
+    for payload in (b"not JSON", b"{}", b"[]", b'{"webSocketDebuggerUrl": ""}', b'{"webSocketDebuggerUrl": 1}'):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = payload
+        with patch("browser_harness.run.urllib.request.urlopen", return_value=response) as mock_open:
+            assert run._local_chrome_listening() is False
+        assert mock_open.call_count == 2
+
+
+def test_local_chrome_listening_accepts_devtools_response():
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/x"}'
+    with patch("browser_harness.run.urllib.request.urlopen", return_value=response) as mock_open:
         assert run._local_chrome_listening() is True
-        mock_open.assert_called_once()
+    mock_open.assert_called_once()
 
 
 def test_cli_doctor_fix_snap_invokes_guide():
