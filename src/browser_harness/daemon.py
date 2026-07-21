@@ -92,10 +92,27 @@ BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") 
 LOCAL_HANDSHAKE_TIMEOUT = 45
 
 
+def _devtools_port_live(base):
+    """True when something is listening on the profile's DevToolsActivePort port.
+
+    A stale file left behind by a closed browser must not count as a running
+    instance — it would route recovery to "click Allow" on a popup that can't
+    exist."""
+    try:
+        port = int((base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()[0].strip())
+    except (OSError, ValueError, IndexError):
+        return False
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+        return True
+    except OSError:
+        return False
+
+
 def remote_debugging_user_enabled():
     """chrome://inspect's "Allow remote debugging" toggle
 
-    True only when a toggle-on profile also exposes a DevToolsActivePort.
+    True only when a toggle-on profile also has a live DevTools port.
     False if a profile records it off, None when no profile records it."""
     seen = None
     for base in PROFILES:
@@ -104,7 +121,7 @@ def remote_debugging_user_enabled():
             enabled = ((state.get("devtools") or {}).get("remote_debugging") or {}).get("user-enabled")
         except (OSError, ValueError, AttributeError):
             continue
-        if enabled is True and (base / "DevToolsActivePort").exists():
+        if enabled is True and _devtools_port_live(base):
             return True
         if enabled is False:
             seen = False
