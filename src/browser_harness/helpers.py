@@ -300,16 +300,23 @@ def switch_tab(target):
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
     cdp("Target.activateTarget", targetId=target_id)
+    return attach_tab(target_id)
+
+def attach_tab(target):
+    """Attach to a tab WITHOUT activating it (no focus steal). switch_tab = activate + attach."""
+    target_id = target.get("targetId") if isinstance(target, dict) else target
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
     return sid
 
-def new_tab(url="about:blank"):
+def new_tab(url="about:blank", background=False):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
+    # Reuse a current blank tab — but never when background=True: the current
+    # tab may be the user's visible one, and background asks us not to touch it.
+    if url != "about:blank" and not background:
         try:
             cur = current_tab()
             cur_url = cur.get("url") or ""
@@ -318,8 +325,13 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
-    switch_tab(tid)
+    # background=True opens the tab without activating it, so automation against
+    # a user's live browser doesn't yank them out of their active tab.
+    tid = cdp("Target.createTarget", url="about:blank", background=background)["targetId"]
+    if background:
+        attach_tab(tid)
+    else:
+        switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
     return tid
