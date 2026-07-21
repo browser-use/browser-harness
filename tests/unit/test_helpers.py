@@ -77,6 +77,96 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
+# --- tab focus behavior ---
+
+def test_switch_tab_activates_target_by_default(monkeypatch):
+    monkeypatch.delenv("BU_PRESERVE_OS_FOCUS", raising=False)
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-1"}
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", return_value={}):
+        helpers.switch_tab("target-1")
+
+    assert ("Target.activateTarget", {"targetId": "target-1"}) in calls
+
+
+def test_switch_tab_preserves_os_focus_when_requested(monkeypatch):
+    monkeypatch.setenv("BU_PRESERVE_OS_FOCUS", "1")
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-1"}
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", return_value={}):
+        helpers.switch_tab("target-1")
+
+    assert not any(method == "Target.activateTarget" for method, _ in calls)
+    assert ("Target.attachToTarget", {"targetId": "target-1", "flatten": True}) in calls
+
+
+def test_new_tab_is_created_in_background_when_preserving_focus(monkeypatch):
+    monkeypatch.setenv("BU_PRESERVE_OS_FOCUS", "true")
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            return {"targetId": "target-1"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-1"}
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", return_value={}):
+        helpers.new_tab()
+
+    assert ("Target.createTarget", {"url": "about:blank", "background": True}) in calls
+    assert not any(method == "Target.activateTarget" for method, _ in calls)
+
+
+def test_click_at_xy_restores_operator_focus_after_input(monkeypatch):
+    monkeypatch.setenv("BU_PRESERVE_OS_FOCUS", "1")
+    order = []
+
+    def fake_cdp(method, **kwargs):
+        order.append((method, kwargs.get("type")))
+        return {}
+
+    with patch("browser_harness.helpers._capture_os_focus", side_effect=lambda: order.append(("capture", None)) or "window-7"), \
+         patch("browser_harness.helpers._restore_os_focus", side_effect=lambda token: order.append(("restore", token))), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.click_at_xy(10, 20)
+
+    assert order == [
+        ("capture", None),
+        ("Input.dispatchMouseEvent", "mousePressed"),
+        ("Input.dispatchMouseEvent", "mouseReleased"),
+        ("restore", "window-7"),
+    ]
+
+
+def test_input_helpers_do_not_probe_os_focus_by_default(monkeypatch):
+    monkeypatch.delenv("BU_PRESERVE_OS_FOCUS", raising=False)
+
+    with patch("browser_harness.helpers._capture_os_focus") as capture, \
+         patch("browser_harness.helpers._restore_os_focus") as restore, \
+         patch("browser_harness.helpers.cdp", return_value={}):
+        helpers.click_at_xy(10, 20)
+
+    capture.assert_not_called()
+    restore.assert_not_called()
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():

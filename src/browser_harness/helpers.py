@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, sys, time, urllib.request
+import base64, functools, importlib.util, json, math, os, shutil, subprocess, sys, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -149,6 +149,73 @@ def page_info():
 # --- input ---
 _debug_click_counter = 0
 
+
+def _preserve_os_focus():
+    return os.environ.get("BU_PRESERVE_OS_FOCUS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _capture_os_focus():
+    """Return the active X11 window id, or None when focus cannot be preserved."""
+    if not _preserve_os_focus() or not sys.platform.startswith("linux") or not os.environ.get("DISPLAY"):
+        return None
+    xdotool = shutil.which("xdotool")
+    if not xdotool:
+        return None
+    try:
+        result = subprocess.run(
+            [xdotool, "getactivewindow"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    window_id = result.stdout.strip()
+    return window_id if result.returncode == 0 and window_id.isdigit() else None
+
+
+def _restore_os_focus(window_id):
+    """Restore a captured X11 window when a CDP input event raised Chrome."""
+    if not window_id or not sys.platform.startswith("linux") or not os.environ.get("DISPLAY"):
+        return
+    xdotool = shutil.which("xdotool")
+    if not xdotool:
+        return
+    try:
+        current = subprocess.run(
+            [xdotool, "getactivewindow"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        if current.returncode == 0 and current.stdout.strip() == str(window_id):
+            return
+        subprocess.run(
+            [xdotool, "windowactivate", str(window_id)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _restore_focus_after_input(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        window_id = _capture_os_focus() if _preserve_os_focus() else None
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if window_id:
+                _restore_os_focus(window_id)
+    return wrapper
+
+
+@_restore_focus_after_input
 def click_at_xy(x, y, button="left", clicks=1):
     if os.environ.get("BH_DEBUG_CLICKS"):
         global _debug_click_counter
@@ -171,6 +238,7 @@ def click_at_xy(x, y, button="left", clicks=1):
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
 
+@_restore_focus_after_input
 def type_text(text):
     cdp("Input.insertText", text=text)
 
@@ -234,6 +302,7 @@ def press_key(key, modifiers=0):
         cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
+@_restore_focus_after_input
 def scroll(x, y, dy=-300, dx=0):
     cdp("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=dx, deltaY=dy)
 
@@ -299,7 +368,8 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    if not _preserve_os_focus():
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
@@ -318,7 +388,10 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    params = {"url": "about:blank"}
+    if _preserve_os_focus():
+        params["background"] = True
+    tid = cdp("Target.createTarget", **params)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
