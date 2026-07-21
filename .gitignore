@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 *.log
+.venv/
+venv/
+.pytest_cache/
 .env
 uv.lock
 *.egg-info/
