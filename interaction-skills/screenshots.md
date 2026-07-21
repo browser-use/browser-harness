@@ -15,3 +15,12 @@ capture_screenshot("/tmp/shot.png", max_dim=1800)
 The downscale only happens when the image actually exceeds `max_dim`, so it's safe to leave on for every shot.
 
 Use full-page screenshots (`full=True`) only when you need to see content below the fold — they are much larger and slower than viewport-only.
+
+## Backgrounded tabs freeze animations
+
+Chrome pauses `requestAnimationFrame` in backgrounded or occluded tabs, so count-ups, reveals, and JS-driven animations render blank or stale in screenshots even though the page is "loaded". Before trusting a screenshot of anything animated:
+
+- Probe `js("document.visibilityState")` — anything but `"visible"` means the screenshot may lie.
+- Foreground the tab (`Target.activateTarget` via `cdp(...)`) and nudge it (scroll 1px or dispatch a mousemove) to restart rAF, then re-screenshot.
+- For numbers and layout, prefer DOM reads (`js(...)` with `getBoundingClientRect` / `scrollHeight`) over pixels — they are immune to the pause.
+- Animated values need two samples a few seconds apart that match before you read them as final.
