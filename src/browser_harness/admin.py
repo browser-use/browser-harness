@@ -782,6 +782,25 @@ def _chrome_running():
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
+    if platform.system() == "Windows":
+        for process_name, scheme in (("msedge", "edge"), ("chrome", "chrome")):
+            try:
+                executable = subprocess.check_output(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-Command",
+                        f"(Get-Process {process_name} -ErrorAction SilentlyContinue | Select-Object -First 1).Path",
+                    ],
+                    text=True,
+                    timeout=5,
+                ).strip()
+                if executable:
+                    subprocess.Popen([executable, f"{scheme}://inspect/#remote-debugging"])
+                    return
+            except Exception:
+                continue
+        return
     url = "chrome://inspect/#remote-debugging"
     if platform.system() == "Darwin":
         try:
