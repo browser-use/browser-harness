@@ -131,6 +131,7 @@ recording path while the main agent returns the task result.
 If you get stuck on a browser mechanic, check https://github.com/browser-use/browser-harness/tree/main/interaction-skills.
 
 - connection.md
+- clipboard.md
 - cookies.md
 - cross-origin-iframes.md
 - dialogs.md
