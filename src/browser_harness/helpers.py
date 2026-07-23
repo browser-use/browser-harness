@@ -50,9 +50,10 @@ def _send(req):
     return r
 
 
-def cdp(method, session_id=None, **params):
-    """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
-    return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
+def cdp(method, params=None, *, session_id=None, **kwargs):
+    """Raw CDP. Kwargs and a params dict both work:
+    cdp('Page.navigate', url='...'), cdp('Target.closeTarget', {'targetId': tid})."""
+    return _send({"method": method, "params": {**(params or {}), **kwargs}, "session_id": session_id}).get("result", {})
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
@@ -319,9 +320,15 @@ def new_tab(url="about:blank"):
         except Exception:
             pass
     tid = cdp("Target.createTarget", url="about:blank")["targetId"]
-    switch_tab(tid)
-    if url != "about:blank":
-        goto_url(url)
+    try:
+        switch_tab(tid)
+        if url != "about:blank":
+            goto_url(url)
+    except Exception:
+        # a failed attach/navigation must not leak the blank tab
+        try: cdp("Target.closeTarget", targetId=tid)
+        except Exception: pass
+        raise
     return tid
 
 def close_tab(target=None):
