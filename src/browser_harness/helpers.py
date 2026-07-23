@@ -146,6 +146,28 @@ def page_info():
     expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
     return json.loads(_runtime_evaluate(expression))
 
+def assert_page_domain(expected_domain, allow_subdomains=True):
+    """Fail fast unless the attached tab is on the expected domain.
+
+    Use this immediately after selecting a browser/profile and before clicks or
+    form fills. It catches the common mistake where browser-harness attached to
+    David's current tab or an old agent tab instead of the intended page.
+    """
+    info = page_info()
+    if info.get("dialog"):
+        raise RuntimeError(f"assert_page_domain: page has pending dialog: {info['dialog']}")
+    host = (urlparse(info.get("url") or "").hostname or "").lower()
+    expected = (expected_domain or "").removeprefix("*.").removeprefix(".").lower()
+    ok = host == expected or (allow_subdomains and host.endswith(f".{expected}"))
+    if not ok:
+        raise RuntimeError(
+            f"assert_page_domain: expected {expected!r}"
+            f"{' or subdomain' if allow_subdomains else ''}, got {host!r} ({info.get('url')})"
+        )
+    return {"ok": True, "expected_domain": expected, "host": host, "url": info.get("url"), "title": info.get("title")}
+
+expect_page_domain = assert_page_domain
+
 # --- input ---
 _debug_click_counter = 0
 
