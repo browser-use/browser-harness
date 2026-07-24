@@ -779,16 +779,62 @@ def _chrome_running():
         return False
 
 
+# Chromium-based browsers that honor the remote-debugging checkbox, in
+# preference order: a user whose daily browser is Dia/Arc/Edge/Brave should be
+# pointed at THAT browser, not Google Chrome. Each entry is
+# (macOS application name, inspect-URL scheme) — Edge serves the inspector under
+# ``edge://`` while the rest use ``chrome://``.
+_CHROMIUM_MAC_APPS = (
+    ("Dia", "chrome"),
+    ("Arc", "chrome"),
+    ("Microsoft Edge", "edge"),
+    ("Brave Browser", "chrome"),
+    ("Chromium", "chrome"),
+    ("Helium", "chrome"),
+    ("Google Chrome", "chrome"),
+)
+
+
+def _running_chromium_app():
+    """(macOS) Best-effort: the running Chromium browser to drive for the
+    remote-debugging prompt, as ``(app_name, inspect_scheme)``.
+
+    Prefers a non-Chrome browser the user actually has open so we don't
+    force-open Google Chrome for Dia/Arc/Edge/Brave users (issue #425). Falls
+    back to Google Chrome when nothing matches. Returns ``None`` off macOS, where
+    callers use the generic ``webbrowser`` path instead.
+    """
+    import platform, subprocess
+    if platform.system() != "Darwin":
+        return None
+    try:
+        out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5).lower()
+    except Exception:
+        out = ""
+    for name, scheme in _CHROMIUM_MAC_APPS:
+        if name.lower() in out:
+            return name, scheme
+    return "Google Chrome", "chrome"
+
+
 def _open_chrome_inspect():
-    """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
+    """Open ``<scheme>://inspect/#remote-debugging`` in the user's running
+    Chromium browser so they can tick the remote-debugging checkbox.
+
+    Previously hardcoded Google Chrome, which force-opened Chrome for users whose
+    daily browser is Dia/Arc/Edge/Brave (issue #425).
+    """
     import platform, subprocess, webbrowser
     url = "chrome://inspect/#remote-debugging"
-    if platform.system() == "Darwin":
+    app = _running_chromium_app()
+    if app is not None:
+        name, scheme = app
+        url = f"{scheme}://inspect/#remote-debugging"
         try:
             subprocess.run([
                 "osascript",
-                "-e", 'tell application "Google Chrome" to activate',
-                "-e", f'tell application "Google Chrome" to open location "{url}"',
+                "-e", f'tell application "{name}" to activate',
+                "-e", f'tell application "{name}" to open location "{url}"',
             ], timeout=5, check=False)
             return
         except Exception:
