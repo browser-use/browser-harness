@@ -484,6 +484,7 @@ class Daemon:
         self.attachment_transition = False
         self.pending_session_handoff = None
         self.prepared_auto_session = None
+        self.superseded_health_sessions = set()
         self.background_tasks = set()
         self.subscriptions = {}
         self.health_events = _HealthEventRing(
@@ -550,6 +551,11 @@ class Daemon:
 
     def _record_health_event(self, method, params, _transport_session_id):
         if not method.startswith("BrowserHarness.") and method not in _HEALTH_CDP_METHODS:
+            return None
+        if (
+            not method.startswith("BrowserHarness.")
+            and _transport_session_id in self.superseded_health_sessions
+        ):
             return None
         projected = (
             params
@@ -638,6 +644,7 @@ class Daemon:
         if target_id != self.target_id:
             self.pending_session_handoff = None
             self.prepared_auto_session = None
+            self.superseded_health_sessions.clear()
         if target_id != self.target_id:
             self.target_epoch += 1
         if session_id != self.session:
@@ -663,6 +670,13 @@ class Daemon:
             and previous["session_id"]
         ):
             return self._adopt_prepared_overlap(prepared, previous)
+        previous_session_id = previous["session_id"]
+        if self.pending_session_handoff:
+            previous_session_id = self.pending_session_handoff[
+                "previous_session_id"
+            ]
+        if previous_session_id and previous_session_id != session_id:
+            self.superseded_health_sessions.add(previous_session_id)
         self.pending_session_handoff = None
         self._record_health_event(
             "BrowserHarness.attachmentChanged",
@@ -679,6 +693,8 @@ class Daemon:
         self.attachment_generation += 1
         self.pending_session_handoff = None
         self.prepared_auto_session = None
+        if clear_target:
+            self.superseded_health_sessions.clear()
         previous = self._observation()
         if self.session is not None:
             self.session_epoch += 1
@@ -717,6 +733,9 @@ class Daemon:
         pending = self.pending_session_handoff
         if not pending or prepared["target_id"] != pending["target_id"]:
             return False
+        previous_session_id = pending["previous_session_id"]
+        if previous_session_id and previous_session_id != prepared["session_id"]:
+            self.superseded_health_sessions.add(previous_session_id)
         self.attachment_generation += 1
         self.target_id = pending["target_id"]
         self.target_epoch = pending["target_epoch"]
@@ -845,6 +864,8 @@ class Daemon:
                 else detached_target == self.target_id
             ):
                 self._begin_session_handoff()
+            if detached_session:
+                self.superseded_health_sessions.discard(detached_session)
         elif method in ("Target.targetDestroyed", "Target.targetCrashed"):
             if params.get("targetId") == self.target_id:
                 self._invalidate_attachment(

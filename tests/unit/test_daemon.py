@@ -987,3 +987,49 @@ def test_stale_command_adopts_prepared_overlap_without_manual_reattach():
     assert events_since(daemon, 0)["events"][-1]["method"] == (
         "BrowserHarness.sameTargetSessionHandoff"
     )
+
+
+def test_superseded_page_session_cannot_duplicate_active_session_health_event():
+    daemon = ready_daemon()
+    daemon.cdp = HandoffCDP()
+    begin(daemon)
+    attached = auto_attached()
+    daemon._record_cdp_event("Target.attachedToTarget", attached, None)
+    run(daemon._prepare_auto_attached_session(attached))
+    cursor = daemon.health_events.sequence
+    duplicate = {
+        "type": "error",
+        "args": [{"type": "string", "value": "one browser event"}],
+    }
+
+    daemon._record_cdp_event(
+        "Runtime.consoleAPICalled",
+        duplicate,
+        "session-current",
+    )
+    daemon._record_cdp_event(
+        "Runtime.consoleAPICalled",
+        duplicate,
+        "session-new",
+    )
+
+    events = events_since(daemon, cursor)["events"]
+    assert len(events) == 1
+    assert events[0]["method"] == "Runtime.consoleAPICalled"
+    assert events[0]["session_id"] == "session-new"
+
+
+def test_identical_events_from_active_session_remain_distinct():
+    daemon = ready_daemon()
+    begin(daemon)
+    event = {
+        "type": "error",
+        "args": [{"type": "string", "value": "legitimate repeated error"}],
+    }
+
+    daemon._record_cdp_event("Runtime.consoleAPICalled", event, "session-current")
+    daemon._record_cdp_event("Runtime.consoleAPICalled", event, "session-current")
+
+    events = events_since(daemon, 0)["events"]
+    assert [entry["sequence"] for entry in events] == [1, 2]
+    assert events[0]["params"] == events[1]["params"]
