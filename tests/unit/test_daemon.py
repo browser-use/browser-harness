@@ -653,7 +653,7 @@ def test_same_target_paused_auto_attach_proves_gap_free_session_handoff():
     }
 
 
-def test_prepared_auto_attached_session_can_bridge_later_logical_detach():
+def test_prepared_auto_attached_session_is_adopted_immediately_with_overlap_proof():
     daemon = ready_daemon()
     daemon.cdp = HandoffCDP()
     begin(daemon)
@@ -661,7 +661,13 @@ def test_prepared_auto_attached_session_can_bridge_later_logical_detach():
     daemon._record_cdp_event("Target.attachedToTarget", attached, None)
     run(daemon._prepare_auto_attached_session(attached))
 
-    assert daemon.session == "session-current"
+    assert daemon.session == "session-new"
+    assert daemon.session_epoch == 2
+    assert daemon._observation()["ready"] is True
+    assert events_since(daemon, 0)["events"][-1]["method"] == (
+        "BrowserHarness.sameTargetSessionHandoff"
+    )
+
     daemon._record_cdp_event(
         "Target.detachedFromTarget",
         {"sessionId": "session-current", "targetId": "target-current"},
@@ -670,9 +676,38 @@ def test_prepared_auto_attached_session_can_bridge_later_logical_detach():
 
     assert daemon.session == "session-new"
     assert daemon._observation()["ready"] is True
-    assert events_since(daemon, 0)["events"][-1]["method"] == (
-        "BrowserHarness.sameTargetSessionHandoff"
+    assert "BrowserHarness.attachmentChanged" not in [
+        event["method"] for event in events_since(daemon, 0)["events"]
+    ]
+
+
+def test_manual_reattach_uses_prepared_overlap_proof_instead_of_attachment_changed():
+    daemon = ready_daemon()
+    daemon.cdp = HandoffCDP()
+    begin(daemon)
+    attached = auto_attached()
+    daemon._record_cdp_event("Target.attachedToTarget", attached, None)
+    daemon.attachment_transition = True
+    run(daemon._prepare_auto_attached_session(attached))
+    assert daemon.prepared_auto_session["session_id"] == "session-new"
+
+    established = run(
+        daemon._set_attachment(
+            "target-current",
+            "unproven-manual-session",
+            "stale_session_reattach",
+        )
     )
+
+    assert established is True
+    assert daemon.session == "session-new"
+    assert daemon.session_epoch == 2
+    assert daemon._observation()["ready"] is True
+    methods = [event["method"] for event in events_since(daemon, 0)["events"]]
+    assert methods == [
+        "Target.attachedToTarget",
+        "BrowserHarness.sameTargetSessionHandoff",
+    ]
 
 
 def test_detach_without_paused_auto_attach_remains_not_ready_and_unproven():
@@ -773,3 +808,60 @@ def test_command_retries_on_new_ready_session_when_handoff_wins_the_race():
         ("Runtime.evaluate", "session-current"),
         ("Runtime.evaluate", "session-new"),
     ]
+
+
+class StaleCommandWithPreparedSessionCDP:
+    def __init__(self):
+        self.calls = []
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.calls.append((method, session_id))
+        if session_id == "session-current":
+            raise RuntimeError("Session with given id not found")
+        return {"value": "retried-without-manual-reattach"}
+
+
+def test_stale_command_adopts_prepared_overlap_without_manual_reattach():
+    daemon = ready_daemon()
+    daemon.cdp = StaleCommandWithPreparedSessionCDP()
+    daemon.prepared_auto_session = {
+        "target_id": "target-current",
+        "session_id": "session-new",
+        "subscriptions": {
+            "Target": {
+                "enabled": True,
+                "scope": "browser",
+                "session_id": None,
+                "auto_attach": "related",
+                "wait_for_debugger_on_start": True,
+            },
+            **{
+                domain: {
+                    "enabled": True,
+                    "scope": "session",
+                    "session_id": "session-new",
+                }
+                for domain in ("Page", "Runtime", "Log", "Network")
+            },
+        },
+    }
+    begin(daemon)
+
+    result = run(
+        daemon.handle(
+            {
+                "method": "Runtime.evaluate",
+                "params": {"expression": "1"},
+            }
+        )
+    )
+
+    assert result == {"result": {"value": "retried-without-manual-reattach"}}
+    assert daemon.session == "session-new"
+    assert daemon.cdp.calls == [
+        ("Runtime.evaluate", "session-current"),
+        ("Runtime.evaluate", "session-new"),
+    ]
+    assert events_since(daemon, 0)["events"][-1]["method"] == (
+        "BrowserHarness.sameTargetSessionHandoff"
+    )

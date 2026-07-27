@@ -411,14 +411,15 @@ class Daemon:
     async def _set_attachment(self, target_id, session_id, reason):
         self.attachment_generation += 1
         generation = self.attachment_generation
-        self.pending_session_handoff = None
-        self.prepared_auto_session = None
         previous = {
             "target_id": self.target_id,
             "session_id": self.session,
             "target_epoch": self.target_epoch,
             "session_epoch": self.session_epoch,
         }
+        if target_id != self.target_id:
+            self.pending_session_handoff = None
+            self.prepared_auto_session = None
         if target_id != self.target_id:
             self.target_epoch += 1
         if session_id != self.session:
@@ -436,6 +437,15 @@ class Daemon:
             return False
         self.subscriptions = proof
         self.attachment_transition = False
+        prepared = self.prepared_auto_session
+        if (
+            prepared
+            and prepared["target_id"] == target_id
+            and previous["target_id"] == target_id
+            and previous["session_id"]
+        ):
+            return self._adopt_prepared_overlap(prepared, previous)
+        self.pending_session_handoff = None
         self._record_health_event(
             "BrowserHarness.attachmentChanged",
             {
@@ -516,6 +526,20 @@ class Daemon:
         )
         return True
 
+    def _adopt_prepared_overlap(self, prepared, previous):
+        if (
+            prepared["target_id"] != previous["target_id"]
+            or not previous["session_id"]
+        ):
+            return False
+        self.pending_session_handoff = {
+            "target_id": previous["target_id"],
+            "target_epoch": previous["target_epoch"],
+            "previous_session_id": previous["session_id"],
+            "previous_session_epoch": previous["session_epoch"],
+        }
+        return self._adopt_prepared_auto_session(prepared)
+
     async def _resume_auto_attached_session(self, session_id):
         try:
             await asyncio.wait_for(
@@ -569,6 +593,17 @@ class Daemon:
         self.prepared_auto_session = prepared
         if self.pending_session_handoff:
             return self._adopt_prepared_auto_session(prepared)
+        observation = self._observation()
+        if observation["ready"]:
+            return self._adopt_prepared_overlap(
+                prepared,
+                {
+                    "target_id": observation["target_id"],
+                    "session_id": observation["session_id"],
+                    "target_epoch": observation["target_epoch"],
+                    "session_epoch": observation["session_epoch"],
+                },
+            )
         return True
 
     def _record_cdp_event(self, method, params, session_id):
@@ -788,6 +823,30 @@ class Daemon:
                         )
                     }
                 if sid == self.session:
+                    prepared = self.prepared_auto_session
+                    observation = self._observation()
+                    if (
+                        prepared
+                        and prepared["target_id"] == observation["target_id"]
+                        and observation["ready"]
+                        and self._adopt_prepared_overlap(
+                            prepared,
+                            {
+                                "target_id": observation["target_id"],
+                                "session_id": observation["session_id"],
+                                "target_epoch": observation["target_epoch"],
+                                "session_epoch": observation["session_epoch"],
+                            },
+                        )
+                    ):
+                        log(f"prepared overlap replaced stale session {sid} with {self.session}")
+                        return {
+                            "result": await self.cdp.send_raw(
+                                method,
+                                params,
+                                session_id=self.session,
+                            )
+                        }
                     log(f"stale session {sid}, re-attaching")
                     if await self.attach_first_page():
                         return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
