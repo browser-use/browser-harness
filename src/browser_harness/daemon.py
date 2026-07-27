@@ -48,6 +48,21 @@ _NETWORK_DATA_PAYLOAD_METHODS = frozenset((
     "Network.directUDPSocketChunkReceived",
     "Network.directUDPSocketChunkSent",
 ))
+_HEALTH_CDP_METHODS = frozenset((
+    "Runtime.exceptionThrown",
+    "Runtime.consoleAPICalled",
+    "Console.messageAdded",
+    "Log.entryAdded",
+    "Inspector.targetCrashed",
+    "Target.targetCrashed",
+    "Security.certificateError",
+    "Network.requestWillBeSent",
+    "Network.responseReceived",
+    "Network.loadingFailed",
+    "Target.attachedToTarget",
+    "Target.detachedFromTarget",
+    "Target.targetDestroyed",
+))
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
     Path.home() / "Library/Application Support/Comet",
@@ -176,6 +191,199 @@ def _without_bodies(value, strip_root_data=False):
     return value
 
 
+def _bounded_text(value, limit=4096):
+    return str(value)[:limit]
+
+
+def _project_call_frames(stack_trace):
+    if not isinstance(stack_trace, dict):
+        return None
+    frames = []
+    for frame in stack_trace.get("callFrames", [])[:16]:
+        if not isinstance(frame, dict):
+            continue
+        frames.append({
+            "functionName": _bounded_text(frame.get("functionName", ""), 256),
+            "url": _bounded_text(frame.get("url", ""), 2048),
+            "lineNumber": frame.get("lineNumber"),
+            "columnNumber": frame.get("columnNumber"),
+        })
+    return {"callFrames": frames}
+
+
+def _project_remote_object(value):
+    if not isinstance(value, dict):
+        return {}
+    projected = {
+        key: value[key]
+        for key in ("type", "subtype")
+        if key in value
+    }
+    primitive = value.get("value")
+    if isinstance(primitive, (str, int, float, bool)) or primitive is None:
+        if "value" in value:
+            projected["value"] = (
+                _bounded_text(primitive)
+                if isinstance(primitive, str)
+                else primitive
+            )
+    for key in ("description", "unserializableValue"):
+        if key in value:
+            projected[key] = _bounded_text(value[key])
+    return projected
+
+
+def _project_health_params(method, params):
+    if method == "Runtime.exceptionThrown":
+        details = params.get("exceptionDetails") or {}
+        exception = details.get("exception") or {}
+        projected_details = {
+            key: details[key]
+            for key in ("lineNumber", "columnNumber")
+            if key in details
+        }
+        for key in ("text", "url"):
+            if key in details:
+                projected_details[key] = _bounded_text(details[key])
+        if exception.get("description") is not None:
+            projected_details["exception"] = {
+                "description": _bounded_text(exception["description"]),
+            }
+        stack = _project_call_frames(details.get("stackTrace"))
+        if stack is not None:
+            projected_details["stackTrace"] = stack
+        return {"exceptionDetails": projected_details}
+    if method == "Runtime.consoleAPICalled":
+        projected = {
+            "type": params.get("type"),
+            "args": [
+                _project_remote_object(argument)
+                for argument in params.get("args", [])[:32]
+            ],
+        }
+        stack = _project_call_frames(params.get("stackTrace"))
+        if stack is not None:
+            projected["stackTrace"] = stack
+        return projected
+    if method == "Console.messageAdded":
+        message = params.get("message") or {}
+        projected_message = {
+            key: message[key]
+            for key in ("level", "line", "column")
+            if key in message
+        }
+        for key in ("source", "text", "url"):
+            if key in message:
+                projected_message[key] = _bounded_text(message[key])
+        stack = _project_call_frames(message.get("stack") or message.get("stackTrace"))
+        if stack is not None:
+            projected_message["stack"] = stack
+        return {"message": projected_message}
+    if method == "Log.entryAdded":
+        entry = params.get("entry") or {}
+        projected_entry = {
+            key: entry[key]
+            for key in ("level", "lineNumber")
+            if key in entry
+        }
+        for key in ("source", "text", "url"):
+            if key in entry:
+                projected_entry[key] = _bounded_text(entry[key])
+        stack = _project_call_frames(entry.get("stackTrace"))
+        if stack is not None:
+            projected_entry["stackTrace"] = stack
+        return {"entry": projected_entry}
+    if method in ("Inspector.targetCrashed",):
+        return {}
+    if method == "Target.targetCrashed":
+        return {
+            key: params[key]
+            for key in ("targetId", "status", "errorCode")
+            if key in params
+        }
+    if method == "Security.certificateError":
+        return {
+            key: _bounded_text(params[key])
+            for key in ("eventId", "errorType", "requestURL")
+            if key in params
+        }
+    if method == "Network.requestWillBeSent":
+        request = params.get("request") or {}
+        return {
+            **{
+                key: params[key]
+                for key in ("requestId", "type")
+                if key in params
+            },
+            "request": {
+                key: _bounded_text(request[key])
+                for key in ("method", "url")
+                if key in request
+            },
+        }
+    if method == "Network.responseReceived":
+        response = params.get("response") or {}
+        projected_response = {
+            key: response[key]
+            for key in ("status",)
+            if key in response
+        }
+        for key in ("url", "statusText"):
+            if key in response:
+                projected_response[key] = _bounded_text(response[key])
+        return {
+            **{
+                key: params[key]
+                for key in ("requestId", "type")
+                if key in params
+            },
+            "response": projected_response,
+        }
+    if method == "Network.loadingFailed":
+        projected = {
+            key: params[key]
+            for key in ("requestId", "type", "canceled", "blockedReason")
+            if key in params
+        }
+        if "errorText" in params:
+            projected["errorText"] = _bounded_text(params["errorText"])
+        cors = params.get("corsErrorStatus")
+        if isinstance(cors, dict):
+            projected["corsErrorStatus"] = {
+                key: _bounded_text(cors[key])
+                for key in ("corsError", "failedParameter")
+                if key in cors
+            }
+        return projected
+    if method == "Target.attachedToTarget":
+        target = params.get("targetInfo") or {}
+        return {
+            **{
+                key: params[key]
+                for key in ("sessionId", "waitingForDebugger")
+                if key in params
+            },
+            "targetInfo": {
+                key: _bounded_text(target[key])
+                for key in ("targetId", "type", "url", "parentId")
+                if key in target
+            },
+        }
+    if method == "Target.detachedFromTarget":
+        return {
+            key: _bounded_text(params[key])
+            for key in ("sessionId", "targetId")
+            if key in params
+        }
+    if method == "Target.targetDestroyed":
+        return (
+            {"targetId": _bounded_text(params["targetId"])}
+            if "targetId" in params
+            else {}
+        )
+    return {}
+
+
 class _HealthEventRing:
     def __init__(self, max_count, max_bytes, max_item_bytes):
         if min(max_count, max_bytes, max_item_bytes) <= 0:
@@ -283,6 +491,11 @@ class Daemon:
             event_max_bytes,
             event_max_item_bytes,
         )
+        self.compatibility_events = _HealthEventRing(
+            event_max_count,
+            event_max_bytes,
+            event_max_item_bytes,
+        )
         self.compatibility_cursor = 0
         self.health_attempts = {}
         self.dialog = None
@@ -324,21 +537,26 @@ class Daemon:
             "observation": self._observation(),
         }
 
+    def _event_record(self, method, params):
+        return {
+            "method": method,
+            "params": params,
+            "session_id": self.session,
+            "daemon_fingerprint": self.daemon_fingerprint,
+            "target_id": self.target_id,
+            "target_epoch": self.target_epoch,
+            "session_epoch": self.session_epoch,
+        }
+
     def _record_health_event(self, method, params, _transport_session_id):
-        return self.health_events.append(
-            {
-                "method": method,
-                "params": _without_bodies(
-                    params,
-                    strip_root_data=method in _NETWORK_DATA_PAYLOAD_METHODS,
-                ),
-                "session_id": self.session,
-                "daemon_fingerprint": self.daemon_fingerprint,
-                "target_id": self.target_id,
-                "target_epoch": self.target_epoch,
-                "session_epoch": self.session_epoch,
-            }
+        if not method.startswith("BrowserHarness.") and method not in _HEALTH_CDP_METHODS:
+            return None
+        projected = (
+            params
+            if method.startswith("BrowserHarness.")
+            else _project_health_params(method, params)
         )
+        return self.health_events.append(self._event_record(method, projected))
 
     async def _enable_target_observation(self, target_id):
         enabled = True
@@ -607,6 +825,13 @@ class Daemon:
         return True
 
     def _record_cdp_event(self, method, params, session_id):
+        compatibility_params = _without_bodies(
+            params,
+            strip_root_data=method in _NETWORK_DATA_PAYLOAD_METHODS,
+        )
+        self.compatibility_events.append(
+            self._event_record(method, compatibility_params)
+        )
         sequence = self._record_health_event(method, params, session_id)
         if method == "Target.detachedFromTarget":
             detached_session = params.get("sessionId")
@@ -697,8 +922,8 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         if meta == "ping":        return {"pong": True}
         if meta == "drain_events":
-            result = self.health_events.read_after(self.compatibility_cursor)
-            self.compatibility_cursor = self.health_events.sequence
+            result = self.compatibility_events.read_after(self.compatibility_cursor)
+            self.compatibility_cursor = self.compatibility_events.sequence
             return {"events": result["events"], "overflow": result["overflow"]}
         if meta == "health_capabilities":
             return self._capabilities()

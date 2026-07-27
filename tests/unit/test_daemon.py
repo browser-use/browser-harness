@@ -151,7 +151,10 @@ def test_total_byte_eviction_is_independent_of_count_limit():
     for index in range(4):
         daemon._record_health_event(
             "Runtime.consoleAPICalled",
-            {"index": index, "message": "x" * 260},
+            {
+                "type": "error",
+                "args": [{"type": "string", "value": f"{index}-" + "x" * 260}],
+            },
             None,
         )
 
@@ -159,7 +162,121 @@ def test_total_byte_eviction_is_independent_of_count_limit():
 
     assert result["overflow"] is not None
     assert result["overflow"]["lost_through_sequence"] >= 1
-    assert result["events"][-1]["params"]["index"] == 3
+    assert result["events"][-1]["params"]["args"][0]["value"].startswith("3-")
+
+
+def test_irrelevant_cdp_event_flood_does_not_advance_or_overflow_health_ring():
+    daemon = Daemon(event_max_count=3, event_max_bytes=2048)
+    started = begin(daemon)
+    irrelevant = (
+        "Network.dataReceived",
+        "Network.webSocketFrameReceived",
+        "Page.lifecycleEvent",
+        "Runtime.executionContextCreated",
+    )
+
+    for index in range(100):
+        daemon._record_cdp_event(
+            irrelevant[index % len(irrelevant)],
+            {"requestId": str(index), "data": "x" * 500},
+            "transport-session",
+        )
+
+    result = events_since(daemon, started["start_sequence"])
+    assert result["events"] == []
+    assert result["range"]["current_sequence"] == 0
+    assert result["range"]["complete"] is True
+    assert result["overflow"] is None
+
+
+def test_relevant_request_response_and_error_remain_complete_across_noise():
+    daemon = Daemon(event_max_count=4, event_max_bytes=4096)
+    started = begin(daemon)
+    daemon._record_cdp_event(
+        "Network.requestWillBeSent",
+        {
+            "requestId": "request-1",
+            "type": "Fetch",
+            "request": {
+                "method": "POST",
+                "url": "https://example.test/api/items?token=secret",
+                "headers": {
+                    "Authorization": "Bearer secret",
+                    "Cookie": "session=secret",
+                },
+                "postData": "password=secret",
+                "postDataEntries": [{"bytes": "secret"}],
+                "hasPostData": True,
+            },
+            "associatedCookies": [{"cookie": {"name": "session", "value": "secret"}}],
+        },
+        "transport-session",
+    )
+    for index in range(100):
+        daemon._record_cdp_event(
+            "Network.dataReceived",
+            {"requestId": "request-1", "dataLength": index, "data": "x" * 500},
+            "transport-session",
+        )
+    daemon._record_cdp_event(
+        "Network.responseReceived",
+        {
+            "requestId": "request-1",
+            "type": "Fetch",
+            "response": {
+                "url": "https://example.test/api/items?token=secret",
+                "status": 500,
+                "statusText": "Internal Server Error",
+                "headers": {
+                    "Set-Cookie": "session=secret",
+                    "X-Secret": "secret",
+                },
+                "requestHeaders": {"Authorization": "Bearer secret"},
+                "securityDetails": {"issuer": "private"},
+            },
+        },
+        "transport-session",
+    )
+    daemon._record_cdp_event(
+        "Runtime.consoleAPICalled",
+        {
+            "type": "error",
+            "args": [{"type": "string", "value": "request failed"}],
+            "executionContextId": 99,
+        },
+        "transport-session",
+    )
+
+    result = events_since(daemon, started["start_sequence"])
+    assert [event["sequence"] for event in result["events"]] == [1, 2, 3]
+    assert [event["method"] for event in result["events"]] == [
+        "Network.requestWillBeSent",
+        "Network.responseReceived",
+        "Runtime.consoleAPICalled",
+    ]
+    assert result["range"]["complete"] is True
+    assert result["overflow"] is None
+    assert result["events"][0]["params"] == {
+        "requestId": "request-1",
+        "type": "Fetch",
+        "request": {
+            "method": "POST",
+            "url": "https://example.test/api/items?token=secret",
+        },
+    }
+    assert result["events"][1]["params"] == {
+        "requestId": "request-1",
+        "type": "Fetch",
+        "response": {
+            "url": "https://example.test/api/items?token=secret",
+            "status": 500,
+            "statusText": "Internal Server Error",
+        },
+    }
+    assert result["events"][2]["params"] == {
+        "type": "error",
+        "args": [{"type": "string", "value": "request failed"}],
+    }
 
 
 def test_out_of_order_losses_keep_a_monotonic_union_when_gap_storage_is_one():
@@ -218,13 +335,10 @@ def test_response_and_request_bodies_are_removed_before_retention():
 
     event = events_since(daemon, 0)["events"][0]
 
-    assert event["params"] == {
-        "request": {"url": "https://example.test/"},
-        "response": {"status": 500},
-    }
+    assert event["params"] == {"request": {"url": "https://example.test/"}}
 
 
-def test_network_payload_variants_are_removed_without_deleting_ordinary_data():
+def test_non_health_network_payload_variants_are_not_retained():
     daemon = Daemon()
     begin(daemon)
     daemon._record_health_event(
@@ -255,30 +369,36 @@ def test_network_payload_variants_are_removed_without_deleting_ordinary_data():
     )
     daemon._record_health_event(
         "Runtime.consoleAPICalled",
-        {"data": "ordinary-runtime-metadata"},
+        {
+            "type": "log",
+            "args": [{"type": "string", "value": "ordinary runtime metadata"}],
+        },
         None,
     )
 
-    params = [event["params"] for event in events_since(daemon, 0)["events"]]
+    result = events_since(daemon, 0)
 
-    assert params == [
+    assert [event["method"] for event in result["events"]] == [
+        "Network.requestWillBeSent",
+        "Runtime.consoleAPICalled",
+    ]
+    assert [event["params"] for event in result["events"]] == [
         {
             "request": {
                 "url": "https://example.test/",
-                "metadata": {"data": "keep-metadata"},
             }
         },
-        {"eventName": "message", "eventId": "1"},
-        {"requestId": "1", "dataLength": 12},
-        {"identifier": "socket-1"},
-        {"data": "ordinary-runtime-metadata"},
+        {
+            "type": "log",
+            "args": [{"type": "string", "value": "ordinary runtime metadata"}],
+        },
     ]
 
 
 def test_compatibility_drain_advances_its_cursor_without_deleting_evidence():
     daemon = Daemon()
     begin(daemon)
-    daemon._record_health_event("Network.requestWillBeSent", {"requestId": "1"}, None)
+    daemon._record_cdp_event("Network.requestWillBeSent", {"requestId": "1"}, None)
 
     first_drain = run(daemon.handle({"meta": "drain_events"}))
     second_drain = run(daemon.handle({"meta": "drain_events"}))
@@ -494,13 +614,15 @@ def ready_daemon():
     return daemon
 
 
-def test_browser_level_target_event_uses_logical_observed_page_session_identity():
+def test_browser_level_target_attachment_uses_logical_observed_page_session_identity():
     daemon = ready_daemon()
     begin(daemon)
 
     daemon._record_cdp_event(
-        "Target.targetInfoChanged",
+        "Target.attachedToTarget",
         {
+            "sessionId": "transient-session",
+            "waitingForDebugger": False,
             "targetInfo": {
                 "targetId": "target-current",
                 "type": "page",
