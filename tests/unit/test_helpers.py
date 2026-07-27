@@ -77,6 +77,39 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
+def test_health_helpers_send_the_versioned_protocol_operations():
+    responses = [
+        {"capabilities": {"health_events_v1": {"schema_version": 1}}},
+        {"attempt_id": "attempt-1", "start_sequence": 4},
+        {"attempt_id": "attempt-1", "events": [], "range": {"complete": True}},
+        {"attempt_id": "attempt-1", "sealed_through_sequence": 9},
+    ]
+    requests = []
+
+    def fake_send(request):
+        requests.append(request)
+        return responses.pop(0)
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send):
+        assert helpers.health_capabilities()["capabilities"]["health_events_v1"][
+            "schema_version"
+        ] == 1
+        assert helpers.health_begin("attempt-1")["start_sequence"] == 4
+        assert helpers.health_events_since("attempt-1", 4)["events"] == []
+        assert helpers.health_seal("attempt-1")["sealed_through_sequence"] == 9
+
+    assert requests == [
+        {"meta": "health_capabilities"},
+        {"meta": "health_begin", "attempt_id": "attempt-1"},
+        {
+            "meta": "health_events_since",
+            "attempt_id": "attempt-1",
+            "after_sequence": 4,
+        },
+        {"meta": "health_seal", "attempt_id": "attempt-1"},
+    ]
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():
@@ -302,4 +335,3 @@ def test_wait_for_network_idle_returns_false_on_timeout():
         result = helpers.wait_for_network_idle(timeout=10.0, idle_ms=500)
 
     assert result is False
-

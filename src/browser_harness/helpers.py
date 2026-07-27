@@ -57,6 +57,29 @@ def cdp(method, session_id=None, **params):
 def drain_events():  return _send({"meta": "drain_events"})["events"]
 
 
+def health_capabilities():
+    return _send({"meta": "health_capabilities"})
+
+
+def health_begin(attempt_id):
+    return _send({"meta": "health_begin", "attempt_id": attempt_id})
+
+
+def health_events_since(attempt_id, after_sequence, through_sequence=None):
+    request = {
+        "meta": "health_events_since",
+        "attempt_id": attempt_id,
+        "after_sequence": after_sequence,
+    }
+    if through_sequence is not None:
+        request["through_sequence"] = through_sequence
+    return _send(request)
+
+
+def health_seal(attempt_id):
+    return _send({"meta": "health_seal", "attempt_id": attempt_id})
+
+
 def _js_snippet(expression, limit=160):
     snippet = expression.strip().replace("\n", "\\n")
     return snippet[:limit - 3] + "..." if len(snippet) > limit else snippet

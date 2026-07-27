@@ -1,4 +1,4 @@
-import os, sys, urllib.request
+import json, os, sys, urllib.request
 
 # Windows default stdout encoding is cp1252, which can't encode the 🟢 marker
 # helpers prepend to tab titles (or anything else outside Latin-1). Force UTF-8
@@ -38,6 +38,7 @@ Helpers are pre-imported. The daemon auto-starts and connects to the running bro
 
 Commands:
   browser-harness --version        print the installed version
+  browser-harness --capabilities   print live daemon capabilities as JSON
   browser-harness --doctor         diagnose install, daemon, and browser state
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
@@ -63,6 +64,10 @@ def main():
         return
     if args and args[0] == "--version":
         print(_version() or "unknown")
+        return
+    if args and args[0] == "--capabilities":
+        ensure_daemon()
+        print(json.dumps(health_capabilities(), separators=(",", ":"), sort_keys=True))
         return
     if args and args[0] == "--doctor":
         sys.exit(run_doctor())

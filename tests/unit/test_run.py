@@ -1,4 +1,5 @@
 import sys
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -13,6 +14,22 @@ def test_c_flag_executes_code():
          patch("sys.stdout", stdout):
         run.main()
     assert stdout.getvalue().strip() == "hello from -c"
+
+
+def test_capabilities_prints_live_daemon_attestation_as_json():
+    stdout = StringIO()
+    capability = {
+        "daemon_fingerprint": "daemon-1",
+        "capabilities": {"health_events_v1": {"schema_version": 1}},
+    }
+
+    with patch.object(sys, "argv", ["browser-harness", "--capabilities"]), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.health_capabilities", return_value=capability), \
+         patch("sys.stdout", stdout):
+        run.main()
+
+    assert json.loads(stdout.getvalue()) == capability
 
 
 def test_cloud_bootstrap_on_headless_server(monkeypatch):

@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
+import asyncio, copy, json, os, socket, sys, time, urllib.error, urllib.request, uuid
 from collections import deque
 from pathlib import Path
 
@@ -32,6 +32,14 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
+HEALTH_CAPABILITY = "health_events_v1"
+HEALTH_SCHEMA_VERSION = 1
+HEALTH_EVENT_SCHEMA_VERSION = 1
+HEALTH_SESSION_DOMAINS = ("Page", "Runtime", "Log", "Network")
+HEALTH_EVENT_MAX_COUNT = int(os.environ.get("BH_HEALTH_EVENT_MAX_COUNT", BUF))
+HEALTH_EVENT_MAX_BYTES = int(os.environ.get("BH_HEALTH_EVENT_MAX_BYTES", 8 * 1024 * 1024))
+HEALTH_EVENT_MAX_ITEM_BYTES = int(os.environ.get("BH_HEALTH_EVENT_MAX_ITEM_BYTES", 256 * 1024))
+_BODY_KEYS = frozenset(("body", "postData", "payloadData"))
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
     Path.home() / "Library/Application Support/Comet",
@@ -148,16 +156,228 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+def _without_bodies(value):
+    if isinstance(value, dict):
+        return {
+            key: _without_bodies(child)
+            for key, child in value.items()
+            if key not in _BODY_KEYS
+        }
+    if isinstance(value, list):
+        return [_without_bodies(child) for child in value]
+    return value
+
+
+class _HealthEventRing:
+    def __init__(self, max_count, max_bytes, max_item_bytes):
+        if min(max_count, max_bytes, max_item_bytes) <= 0:
+            raise ValueError("health event retention limits must be positive")
+        self.max_count = max_count
+        self.max_bytes = max_bytes
+        self.max_item_bytes = max_item_bytes
+        self.sequence = 0
+        self.total_bytes = 0
+        self.events = deque()
+        self.lost_ranges = deque()
+
+    def _record_loss(self, sequence):
+        if self.lost_ranges and self.lost_ranges[-1][1] + 1 >= sequence:
+            start, _ = self.lost_ranges[-1]
+            self.lost_ranges[-1] = (start, sequence)
+        else:
+            self.lost_ranges.append((sequence, sequence))
+        if len(self.lost_ranges) > self.max_count:
+            first_start, _ = self.lost_ranges.popleft()
+            _, second_end = self.lost_ranges.popleft()
+            self.lost_ranges.appendleft((first_start, second_end))
+
+    def append(self, event):
+        self.sequence += 1
+        retained = {"sequence": self.sequence, **event}
+        encoded_size = len(
+            json.dumps(retained, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        )
+        if encoded_size > self.max_item_bytes or encoded_size > self.max_bytes:
+            self._record_loss(self.sequence)
+            return self.sequence
+        while self.events and (
+            len(self.events) >= self.max_count
+            or self.total_bytes + encoded_size > self.max_bytes
+        ):
+            evicted, size = self.events.popleft()
+            self.total_bytes -= size
+            self._record_loss(evicted["sequence"])
+        self.events.append((retained, encoded_size))
+        self.total_bytes += encoded_size
+        return self.sequence
+
+    def read_after(self, after_sequence, through_sequence=None):
+        upper = self.sequence
+        if through_sequence is not None:
+            upper = min(upper, through_sequence)
+        events = [
+            copy.deepcopy(event)
+            for event, _ in self.events
+            if after_sequence < event["sequence"] <= upper
+        ]
+        intersecting_losses = [
+            (start, end)
+            for start, end in self.lost_ranges
+            if end > after_sequence and start <= upper
+        ]
+        available_from = self.events[0][0]["sequence"] if self.events else self.sequence + 1
+        overflow = None
+        if intersecting_losses:
+            overflow = {
+                "kind": "retention_or_truncation",
+                "requested_after_sequence": after_sequence,
+                "lost_through_sequence": max(end for _, end in intersecting_losses),
+                "available_from_sequence": available_from,
+            }
+        returned_through = events[-1]["sequence"] if events else min(after_sequence, upper)
+        return {
+            "events": events,
+            "range": {
+                "requested_after_sequence": after_sequence,
+                "available_from_sequence": available_from,
+                "current_sequence": self.sequence,
+                "returned_through_sequence": returned_through,
+                "complete": overflow is None,
+            },
+            "overflow": overflow,
+        }
+
+
 class Daemon:
-    def __init__(self):
+    def __init__(
+        self,
+        event_max_count=HEALTH_EVENT_MAX_COUNT,
+        event_max_bytes=HEALTH_EVENT_MAX_BYTES,
+        event_max_item_bytes=HEALTH_EVENT_MAX_ITEM_BYTES,
+    ):
         self.cdp = None
         self.session = None
         self.target_id = None
-        self.events = deque(maxlen=BUF)
+        self.daemon_fingerprint = uuid.uuid4().hex
+        self.target_epoch = 0
+        self.session_epoch = 0
+        self.subscriptions = {}
+        self.health_events = _HealthEventRing(
+            event_max_count,
+            event_max_bytes,
+            event_max_item_bytes,
+        )
+        self.compatibility_cursor = 0
+        self.health_attempts = {}
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
-    async def attach_first_page(self):
+    def _observation(self):
+        subscriptions = copy.deepcopy(self.subscriptions)
+        required = ("Target", *HEALTH_SESSION_DOMAINS)
+        ready = bool(self.target_id and self.session) and all(
+            subscriptions.get(domain, {}).get("enabled") for domain in required
+        )
+        return {
+            "ready": ready,
+            "target_id": self.target_id,
+            "session_id": self.session,
+            "target_epoch": self.target_epoch,
+            "session_epoch": self.session_epoch,
+            "subscriptions": subscriptions,
+        }
+
+    def _capabilities(self):
+        ring = self.health_events
+        return {
+            "daemon_fingerprint": self.daemon_fingerprint,
+            "capabilities": {
+                HEALTH_CAPABILITY: {
+                    "schema_version": HEALTH_SCHEMA_VERSION,
+                    "event_schema_version": HEALTH_EVENT_SCHEMA_VERSION,
+                    "operations": ["begin", "events_since", "seal"],
+                    "sequence_origin": 1,
+                    "retention": {
+                        "max_events": ring.max_count,
+                        "max_total_bytes": ring.max_bytes,
+                        "max_event_bytes": ring.max_item_bytes,
+                    },
+                }
+            },
+            "observation": self._observation(),
+        }
+
+    def _record_health_event(self, method, params, session_id):
+        return self.health_events.append(
+            {
+                "method": method,
+                "params": _without_bodies(params),
+                "session_id": session_id,
+                "daemon_fingerprint": self.daemon_fingerprint,
+                "target_id": self.target_id,
+                "target_epoch": self.target_epoch,
+                "session_epoch": self.session_epoch,
+            }
+        )
+
+    async def _enable_observation(self):
+        proof = {}
+        operations = [("Target", "Target.setDiscoverTargets", {"discover": True}, None)]
+        operations.extend(
+            (domain, f"{domain}.enable", None, self.session)
+            for domain in HEALTH_SESSION_DOMAINS
+        )
+        for domain, method, params, session_id in operations:
+            try:
+                await asyncio.wait_for(
+                    self.cdp.send_raw(method, params, session_id=session_id),
+                    timeout=5,
+                )
+                enabled = True
+            except Exception as exc:
+                enabled = False
+                log(f"enable {domain}: {exc}")
+            proof[domain] = {
+                "enabled": enabled,
+                "scope": "browser" if session_id is None else "session",
+                "session_id": session_id,
+            }
+        # DOM is required for existing harness primitives, but is not part of
+        # the health observation contract.
+        try:
+            await asyncio.wait_for(
+                self.cdp.send_raw("DOM.enable", session_id=self.session),
+                timeout=5,
+            )
+        except Exception as exc:
+            log(f"enable DOM: {exc}")
+        self.subscriptions = proof
+
+    async def _set_attachment(self, target_id, session_id, reason):
+        previous = {
+            "target_id": self.target_id,
+            "session_id": self.session,
+            "target_epoch": self.target_epoch,
+            "session_epoch": self.session_epoch,
+        }
+        if target_id != self.target_id:
+            self.target_epoch += 1
+        if session_id != self.session:
+            self.session_epoch += 1
+        self.target_id = target_id
+        self.session = session_id
+        await self._enable_observation()
+        self._record_health_event(
+            "BrowserHarness.attachmentChanged",
+            {
+                "reason": reason,
+                "previous": previous,
+                "current": self._observation(),
+            },
+            session_id,
+        )
+
+    async def attach_first_page(self, reason="attach_first_page"):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
@@ -166,19 +386,11 @@ class Daemon:
             tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
-        self.session = (await self.cdp.send_raw(
+        session_id = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
         ))["sessionId"]
-        self.target_id = pages[0]["targetId"]
+        await self._set_attachment(pages[0]["targetId"], session_id, reason)
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
-        for d in ("Page", "DOM", "Runtime", "Network"):
-            try:
-                await asyncio.wait_for(
-                    self.cdp.send_raw(f"{d}.enable", session_id=self.session),
-                    timeout=5
-                )
-            except Exception as e:
-                log(f"enable {d}: {e}")
         return pages[0]
 
     async def start(self):
@@ -196,11 +408,11 @@ class Daemon:
                     "If you use Browser Use cloud, verify BROWSER_USE_API_KEY and get a fresh URL via start_remote_daemon()."
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
-        await self.attach_first_page()
+        await self.attach_first_page(reason="initial_attach")
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
         async def tap(method, params, session_id=None):
-            self.events.append({"method": method, "params": params, "session_id": session_id})
+            self._record_health_event(method, params, session_id)
             if method == "Page.javascriptDialogOpening":
                 self.dialog = params
             elif method == "Page.javascriptDialogClosed":
@@ -222,8 +434,85 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         if meta == "ping":        return {"pong": True}
         if meta == "drain_events":
-            out = list(self.events); self.events.clear()
-            return {"events": out}
+            result = self.health_events.read_after(self.compatibility_cursor)
+            self.compatibility_cursor = self.health_events.sequence
+            return {"events": result["events"], "overflow": result["overflow"]}
+        if meta == "health_capabilities":
+            return self._capabilities()
+        if meta == "health_begin":
+            attempt_id = req.get("attempt_id")
+            if not isinstance(attempt_id, str) or not attempt_id or len(attempt_id) > 256:
+                return {"error": "invalid_health_attempt_id"}
+            existing = self.health_attempts.get(attempt_id)
+            if existing:
+                return copy.deepcopy(existing["begin"])
+            begin = {
+                "capability": HEALTH_CAPABILITY,
+                "schema_version": HEALTH_SCHEMA_VERSION,
+                "attempt_id": attempt_id,
+                "daemon_fingerprint": self.daemon_fingerprint,
+                "start_sequence": self.health_events.sequence,
+                "sealed_through_sequence": None,
+                "observation": self._observation(),
+            }
+            self.health_attempts[attempt_id] = {"begin": begin, "seal": None}
+            return copy.deepcopy(begin)
+        if meta == "health_events_since":
+            attempt_id = req.get("attempt_id")
+            attempt = self.health_attempts.get(attempt_id)
+            if not attempt:
+                return {"error": "unknown_health_attempt"}
+            after_sequence = req.get("after_sequence")
+            if (
+                not isinstance(after_sequence, int)
+                or isinstance(after_sequence, bool)
+                or after_sequence < attempt["begin"]["start_sequence"]
+            ):
+                return {"error": "invalid_health_sequence"}
+            seal = attempt["seal"]
+            through_sequence = (
+                seal["sealed_through_sequence"]
+                if seal
+                else req.get("through_sequence")
+            )
+            if (
+                through_sequence is not None
+                and (
+                    not isinstance(through_sequence, int)
+                    or isinstance(through_sequence, bool)
+                    or through_sequence < after_sequence
+                )
+            ):
+                return {"error": "invalid_health_sequence"}
+            result = self.health_events.read_after(after_sequence, through_sequence)
+            result["range"]["sealed_through_sequence"] = (
+                seal["sealed_through_sequence"] if seal else None
+            )
+            return {
+                "capability": HEALTH_CAPABILITY,
+                "schema_version": HEALTH_SCHEMA_VERSION,
+                "attempt_id": attempt_id,
+                "daemon_fingerprint": self.daemon_fingerprint,
+                **result,
+            }
+        if meta == "health_seal":
+            attempt_id = req.get("attempt_id")
+            attempt = self.health_attempts.get(attempt_id)
+            if not attempt:
+                return {"error": "unknown_health_attempt"}
+            if attempt["seal"]:
+                return copy.deepcopy(attempt["seal"])
+            seal = {
+                "capability": HEALTH_CAPABILITY,
+                "schema_version": HEALTH_SCHEMA_VERSION,
+                "attempt_id": attempt_id,
+                "daemon_fingerprint": self.daemon_fingerprint,
+                "start_sequence": attempt["begin"]["start_sequence"],
+                "sealed_through_sequence": self.health_events.sequence,
+                "observation": self._observation(),
+            }
+            attempt["seal"] = seal
+            return copy.deepcopy(seal)
         if meta == "session":     return {"session_id": self.session}
         if meta == "connection_status":
             if not self.target_id:
@@ -241,10 +530,10 @@ class Daemon:
                 }
             return {"target_id": self.target_id, "session_id": self.session, "page": page}
         if meta == "set_session":
-            self.session = req.get("session_id")
-            self.target_id = req.get("target_id") or self.target_id
+            session_id = req.get("session_id")
+            target_id = req.get("target_id") or self.target_id
             try:
-                await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=self.session), timeout=3)
+                await self._set_attachment(target_id, session_id, "set_session")
                 await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=self.session), timeout=2)
             except Exception: pass
             return {"session_id": self.session}
