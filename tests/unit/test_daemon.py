@@ -511,13 +511,14 @@ def test_reattachment_restores_all_health_subscriptions_and_emits_continuity():
     auto_attach_calls = [
         (params, session_id)
         for method, params, session_id in daemon.cdp.calls
-        if method == "Target.autoAttachRelated"
+        if method == "Target.setAutoAttach"
     ]
     assert auto_attach_calls == [
         (
             {
-                "targetId": "target-1",
+                "autoAttach": True,
                 "waitForDebuggerOnStart": True,
+                "flatten": True,
                 "filter": [
                     {"type": "page", "exclude": False},
                     {"exclude": True},
@@ -527,8 +528,9 @@ def test_reattachment_restores_all_health_subscriptions_and_emits_continuity():
         ),
         (
             {
-                "targetId": "target-2",
+                "autoAttach": True,
                 "waitForDebuggerOnStart": True,
+                "flatten": True,
                 "filter": [
                     {"type": "page", "exclude": False},
                     {"exclude": True},
@@ -954,7 +956,7 @@ class SessionChangedDuringCommandCDP:
                     "enabled": True,
                     "scope": "browser",
                     "session_id": None,
-                    "auto_attach": "related",
+                    "auto_attach": "browser_pages",
                     "wait_for_debugger_on_start": True,
                 },
                 **{
@@ -1012,7 +1014,7 @@ def test_stale_command_adopts_prepared_overlap_without_manual_reattach():
                 "enabled": True,
                 "scope": "browser",
                 "session_id": None,
-                "auto_attach": "related",
+                "auto_attach": "browser_pages",
                 "wait_for_debugger_on_start": True,
             },
             **{

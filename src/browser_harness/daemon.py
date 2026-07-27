@@ -583,10 +583,11 @@ class Daemon:
         operations = (
             ("Target.setDiscoverTargets", {"discover": True}),
             (
-                "Target.autoAttachRelated",
+                "Target.setAutoAttach",
                 {
-                    "targetId": target_id,
+                    "autoAttach": True,
                     "waitForDebuggerOnStart": True,
+                    "flatten": True,
                     "filter": [
                         {"type": "page", "exclude": False},
                         {"exclude": True},
@@ -607,7 +608,7 @@ class Daemon:
             "enabled": enabled,
             "scope": "browser",
             "session_id": None,
-            "auto_attach": "related",
+            "auto_attach": "browser_pages",
             "wait_for_debugger_on_start": True,
         }
 
@@ -835,7 +836,7 @@ class Daemon:
                     "enabled": True,
                     "scope": "browser",
                     "session_id": None,
-                    "auto_attach": "related",
+                    "auto_attach": "browser_pages",
                     "wait_for_debugger_on_start": True,
                 },
                 **session_proof,
