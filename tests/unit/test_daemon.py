@@ -464,6 +464,42 @@ def ready_daemon():
     return daemon
 
 
+def test_browser_level_target_event_uses_logical_observed_page_session_identity():
+    daemon = ready_daemon()
+    begin(daemon)
+
+    daemon._record_cdp_event(
+        "Target.targetInfoChanged",
+        {
+            "targetInfo": {
+                "targetId": "target-current",
+                "type": "page",
+                "url": "https://example.test/next",
+            }
+        },
+        None,
+    )
+
+    event = events_since(daemon, 0)["events"][0]
+    assert event["session_id"] == "session-current"
+    assert event["session_epoch"] == 1
+
+
+def test_transient_child_transport_event_uses_logical_observed_page_session_identity():
+    daemon = ready_daemon()
+    begin(daemon)
+
+    daemon._record_cdp_event(
+        "Runtime.consoleAPICalled",
+        {"type": "error"},
+        "transient-child-session",
+    )
+
+    event = events_since(daemon, 0)["events"][0]
+    assert event["session_id"] == "session-current"
+    assert event["session_epoch"] == 1
+
+
 def test_current_session_detach_invalidates_observation_but_unrelated_detach_does_not():
     daemon = ready_daemon()
     started = begin(daemon)

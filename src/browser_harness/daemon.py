@@ -320,7 +320,7 @@ class Daemon:
             "observation": self._observation(),
         }
 
-    def _record_health_event(self, method, params, session_id):
+    def _record_health_event(self, method, params, _transport_session_id):
         return self.health_events.append(
             {
                 "method": method,
@@ -328,7 +328,7 @@ class Daemon:
                     params,
                     strip_root_data=method in _NETWORK_DATA_PAYLOAD_METHODS,
                 ),
-                "session_id": session_id,
+                "session_id": self.session,
                 "daemon_fingerprint": self.daemon_fingerprint,
                 "target_id": self.target_id,
                 "target_epoch": self.target_epoch,
