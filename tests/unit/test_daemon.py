@@ -53,6 +53,45 @@ def test_health_capabilities_advertise_exact_schema_and_daemon_identity():
     }
 
 
+def test_connection_status_resolves_the_exact_attached_target_from_inventory():
+    class TargetInventoryCDP:
+        async def send_raw(self, method, params=None, session_id=None):
+            assert method == "Target.getTargets"
+            assert params is None
+            assert session_id is None
+            return {
+                "targetInfos": [
+                    {
+                        "targetId": "target-other",
+                        "type": "page",
+                        "url": "https://example.test/other",
+                        "title": "Other",
+                    },
+                    {
+                        "targetId": "target-current",
+                        "type": "page",
+                        "url": "https://example.test/current",
+                        "title": "Current",
+                    },
+                ]
+            }
+
+    daemon = ready_daemon()
+    daemon.cdp = TargetInventoryCDP()
+
+    result = run(daemon.handle({"meta": "connection_status"}))
+
+    assert result == {
+        "target_id": "target-current",
+        "session_id": "session-current",
+        "page": {
+            "targetId": "target-current",
+            "title": "Current",
+            "url": "https://example.test/current",
+        },
+    }
+
+
 def test_daemon_fingerprint_changes_when_daemon_is_replaced():
     first = Daemon()
     replacement = Daemon()

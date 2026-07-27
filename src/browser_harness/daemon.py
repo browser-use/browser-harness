@@ -1049,7 +1049,12 @@ class Daemon:
             if not self.target_id:
                 return {"error": "not_attached"}
             try:
-                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
+                targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+                info = next(
+                    target
+                    for target in targets
+                    if target.get("targetId") == self.target_id
+                )
             except Exception:
                 return {"error": "cdp_disconnected"}
             page = None
