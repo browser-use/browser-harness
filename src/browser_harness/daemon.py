@@ -34,6 +34,20 @@ PID = str(ipc.pid_path(NAME))
 BUF = 500
 HEALTH_CAPABILITY = "health_events_v1"
 HEALTH_SCHEMA_VERSION = 1
+HEALTH_OBSERVATION_CONTROL_METHODS = {
+    "Page.enable",
+    "Page.disable",
+    "Runtime.enable",
+    "Runtime.disable",
+    "Log.enable",
+    "Log.disable",
+    "Network.enable",
+    "Network.disable",
+    "Console.enable",
+    "Console.disable",
+    "Target.setAutoAttach",
+    "Target.autoAttachRelated",
+}
 HEALTH_EVENT_SCHEMA_VERSION = 1
 HEALTH_SESSION_DOMAINS = ("Page", "Runtime", "Log", "Network")
 HEALTH_EVENT_MAX_COUNT = int(os.environ.get("BH_HEALTH_EVENT_MAX_COUNT", BUF))
@@ -1051,6 +1065,11 @@ class Daemon:
 
         method = req["method"]
         params = req.get("params") or {}
+        if (
+            method in HEALTH_OBSERVATION_CONTROL_METHODS
+            and any(attempt["seal"] is None for attempt in self.health_attempts.values())
+        ):
+            return {"error": "health_observation_control_is_guarded"}
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)

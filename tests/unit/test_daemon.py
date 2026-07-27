@@ -83,6 +83,27 @@ def test_begin_and_seal_are_idempotent_and_fix_the_terminal_sequence():
     assert result["range"]["sealed_through_sequence"] == 1
 
 
+def test_active_health_attempt_guards_observation_control_at_daemon_boundary():
+    daemon = ready_daemon()
+    daemon.cdp = FakeCDP()
+    begin(daemon)
+
+    for method in (
+        "Runtime.enable",
+        "Runtime.disable",
+        "Network.disable",
+        "Target.setAutoAttach",
+    ):
+        result = run(daemon.handle({"method": method, "params": {}}))
+        assert result == {"error": "health_observation_control_is_guarded"}
+
+    run(daemon.handle({"meta": "health_seal", "attempt_id": "attempt-1"}))
+    assert run(daemon.handle({
+        "method": "Runtime.enable",
+        "params": {},
+    })) == {"result": {}}
+
+
 def test_events_since_is_non_destructive_and_returns_sequenced_identity():
     daemon = Daemon()
     daemon.target_id = "target-1"
