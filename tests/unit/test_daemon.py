@@ -1010,6 +1010,66 @@ def test_stale_command_adopts_prepared_overlap_without_manual_reattach():
     )
 
 
+class StaleCommandWhileAutoAttachPreparesCDP:
+    def __init__(self):
+        self.calls = []
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.calls.append((method, session_id))
+        if method == "Runtime.evaluate" and session_id == "session-current":
+            raise RuntimeError("Session with given id not found")
+        if method == "Runtime.evaluate":
+            return {"value": "retried-after-paused-handoff"}
+        return {}
+
+
+def test_stale_command_awaits_inflight_auto_attach_before_manual_fallback():
+    async def scenario():
+        daemon = ready_daemon()
+        daemon.cdp = StaleCommandWhileAutoAttachPreparesCDP()
+        begin_result = await daemon.handle(
+            {"meta": "health_begin", "attempt_id": "attempt-1"}
+        )
+        attached = auto_attached()
+        daemon._record_cdp_event("Target.attachedToTarget", attached, None)
+
+        async def prepare_after_command_failure():
+            await asyncio.sleep(0)
+            return await daemon._prepare_auto_attached_session(attached)
+
+        task = asyncio.create_task(prepare_after_command_failure())
+        daemon.background_tasks.add(task)
+        task.add_done_callback(daemon.background_tasks.discard)
+
+        async def unexpected_manual_attach(*_args, **_kwargs):
+            raise AssertionError("manual reattach raced the paused auto-attach proof")
+
+        daemon.attach_first_page = unexpected_manual_attach
+        result = await daemon.handle(
+            {
+                "method": "Runtime.evaluate",
+                "params": {"expression": "1"},
+            }
+        )
+        events = await daemon.handle(
+            {
+                "meta": "health_events_since",
+                "attempt_id": "attempt-1",
+                "after_sequence": begin_result["start_sequence"],
+            }
+        )
+        return daemon, result, events
+
+    daemon, result, events = run(scenario())
+
+    assert result == {"result": {"value": "retried-after-paused-handoff"}}
+    assert daemon.session == "session-new"
+    assert daemon.cdp.calls[-1] == ("Runtime.evaluate", "session-new")
+    assert [event["method"] for event in events["events"]][-1] == (
+        "BrowserHarness.sameTargetSessionHandoff"
+    )
+
+
 def test_superseded_page_session_cannot_duplicate_active_session_health_event():
     daemon = ready_daemon()
     daemon.cdp = HandoffCDP()

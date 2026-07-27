@@ -1088,6 +1088,24 @@ class Daemon:
                         )
                     }
                 if sid == self.session:
+                    pending_auto_attach = tuple(self.background_tasks)
+                    if pending_auto_attach:
+                        await asyncio.gather(
+                            *pending_auto_attach,
+                            return_exceptions=True,
+                        )
+                    if self.session != sid and self._observation()["ready"]:
+                        log(
+                            f"paused auto-attach replaced stale session {sid} "
+                            f"with {self.session}"
+                        )
+                        return {
+                            "result": await self.cdp.send_raw(
+                                method,
+                                params,
+                                session_id=self.session,
+                            )
+                        }
                     prepared = self.prepared_auto_session
                     observation = self._observation()
                     if (
