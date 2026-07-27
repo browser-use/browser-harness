@@ -315,8 +315,13 @@ def list_tabs(include_chrome=True):
     return out
 
 def current_tab():
-    t = cdp("Target.getTargetInfo").get("targetInfo", {})
-    return {"targetId": t.get("targetId"), "url": t.get("url", ""), "title": t.get("title", "")}
+    status = _send({"meta": "connection_status"})
+    page = status.get("page") or {}
+    return {
+        "targetId": page.get("targetId") or status.get("target_id"),
+        "url": page.get("url", ""),
+        "title": page.get("title", ""),
+    }
 
 def _mark_tab():
     """Prepend 🟢 to tab title so the user can see which tab the agent controls."""

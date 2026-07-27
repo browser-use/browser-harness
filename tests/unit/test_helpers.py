@@ -110,6 +110,31 @@ def test_health_helpers_send_the_versioned_protocol_operations():
     ]
 
 
+def test_current_tab_uses_daemon_attachment_without_creating_a_manual_session():
+    with patch(
+        "browser_harness.helpers._send",
+        return_value={
+            "target_id": "target-current",
+            "session_id": "session-current",
+            "page": {
+                "targetId": "target-current",
+                "url": "https://example.test/current",
+                "title": "Current",
+            },
+        },
+    ) as send, patch(
+        "browser_harness.helpers.cdp",
+        side_effect=AssertionError("current_tab must not manually query or attach"),
+    ):
+        assert helpers.current_tab() == {
+            "targetId": "target-current",
+            "url": "https://example.test/current",
+            "title": "Current",
+        }
+
+    send.assert_called_once_with({"meta": "connection_status"})
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():
