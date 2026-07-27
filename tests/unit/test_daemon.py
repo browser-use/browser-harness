@@ -161,6 +161,24 @@ def test_total_byte_eviction_is_independent_of_count_limit():
     assert result["events"][-1]["params"]["index"] == 3
 
 
+def test_out_of_order_losses_keep_a_monotonic_union_when_gap_storage_is_one():
+    daemon = Daemon(event_max_count=1, event_max_item_bytes=300)
+    started = begin(daemon)
+    daemon._record_health_event("Log.entryAdded", {"text": "retained-1"}, None)
+    daemon._record_health_event(
+        "Runtime.consoleAPICalled",
+        {"args": [{"value": "x" * 600}]},
+        None,
+    )
+    daemon._record_health_event("Log.entryAdded", {"text": "retained-3"}, None)
+
+    result = events_since(daemon, 1)
+
+    assert [event["sequence"] for event in result["events"]] == [3]
+    assert result["range"]["complete"] is False
+    assert result["overflow"]["lost_through_sequence"] == 2
+
+
 def test_oversized_event_is_not_retained_and_makes_the_range_incomplete():
     daemon = Daemon(event_max_item_bytes=300)
     started = begin(daemon)
@@ -203,6 +221,57 @@ def test_response_and_request_bodies_are_removed_before_retention():
         "request": {"url": "https://example.test/"},
         "response": {"status": 500},
     }
+
+
+def test_network_payload_variants_are_removed_without_deleting_ordinary_data():
+    daemon = Daemon()
+    begin(daemon)
+    daemon._record_health_event(
+        "Network.requestWillBeSent",
+        {
+            "request": {
+                "url": "https://example.test/",
+                "postDataEntries": [{"bytes": "encoded-request-body"}],
+                "metadata": {"data": "keep-metadata"},
+            }
+        },
+        None,
+    )
+    daemon._record_health_event(
+        "Network.eventSourceMessageReceived",
+        {"eventName": "message", "eventId": "1", "data": "event-stream-body"},
+        None,
+    )
+    daemon._record_health_event(
+        "Network.dataReceived",
+        {"requestId": "1", "dataLength": 12, "data": "response-body"},
+        None,
+    )
+    daemon._record_health_event(
+        "Network.directTCPSocketChunkReceived",
+        {"identifier": "socket-1", "data": "socket-body"},
+        None,
+    )
+    daemon._record_health_event(
+        "Runtime.consoleAPICalled",
+        {"data": "ordinary-runtime-metadata"},
+        None,
+    )
+
+    params = [event["params"] for event in events_since(daemon, 0)["events"]]
+
+    assert params == [
+        {
+            "request": {
+                "url": "https://example.test/",
+                "metadata": {"data": "keep-metadata"},
+            }
+        },
+        {"eventName": "message", "eventId": "1"},
+        {"requestId": "1", "dataLength": 12},
+        {"identifier": "socket-1"},
+        {"data": "ordinary-runtime-metadata"},
+    ]
 
 
 def test_compatibility_drain_advances_its_cursor_without_deleting_evidence():
@@ -281,3 +350,167 @@ def test_reattachment_restores_all_health_subscriptions_and_emits_continuity():
         "BrowserHarness.attachmentChanged",
     ]
     assert continuity[-1]["params"]["reason"] == "reattach"
+
+
+class BlockingSubscriptionCDP:
+    def __init__(self):
+        self.subscription_started = asyncio.Event()
+        self.allow_subscription = asyncio.Event()
+
+    async def send_raw(self, method, params=None, session_id=None):
+        if method == "Target.setDiscoverTargets":
+            self.subscription_started.set()
+            await self.allow_subscription.wait()
+        return {}
+
+
+def test_attachment_transition_never_attests_new_identity_with_old_ready_proof():
+    async def scenario():
+        daemon = Daemon()
+        daemon.cdp = BlockingSubscriptionCDP()
+        daemon.target_id = "target-old"
+        daemon.session = "session-old"
+        daemon.target_epoch = 1
+        daemon.session_epoch = 1
+        daemon.subscriptions = {
+            "Target": {"enabled": True, "scope": "browser", "session_id": None},
+            **{
+                domain: {
+                    "enabled": True,
+                    "scope": "session",
+                    "session_id": "session-old",
+                }
+                for domain in ("Page", "Runtime", "Log", "Network")
+            },
+        }
+
+        transition = asyncio.create_task(
+            daemon._set_attachment("target-new", "session-new", "switch")
+        )
+        await daemon.cdp.subscription_started.wait()
+
+        during = await daemon.handle(
+            {"meta": "health_begin", "attempt_id": "during-transition"}
+        )
+        assert during["observation"]["target_id"] == "target-new"
+        assert during["observation"]["session_id"] == "session-new"
+        assert during["observation"]["ready"] is False
+        assert during["observation"]["subscriptions"] == {}
+        assert daemon.health_events.sequence == 0
+
+        daemon.cdp.allow_subscription.set()
+        await transition
+        after = await daemon.handle({"meta": "health_capabilities"})
+        assert after["observation"]["ready"] is True
+        assert all(
+            proof["session_id"] == "session-new"
+            for domain, proof in after["observation"]["subscriptions"].items()
+            if domain != "Target"
+        )
+        assert daemon.health_events.sequence == 1
+
+    run(scenario())
+
+
+def test_invalidation_during_subscription_discards_stale_attachment_proof():
+    async def scenario():
+        daemon = Daemon()
+        daemon.cdp = BlockingSubscriptionCDP()
+
+        transition = asyncio.create_task(
+            daemon._set_attachment("target-new", "session-new", "switch")
+        )
+        await daemon.cdp.subscription_started.wait()
+        daemon._record_cdp_event(
+            "Target.targetDestroyed",
+            {"targetId": "target-new"},
+            None,
+        )
+        daemon.cdp.allow_subscription.set()
+        established = await transition
+
+        assert established is False
+        assert daemon.target_id is None
+        assert daemon.session is None
+        assert daemon.subscriptions == {}
+        assert [
+            event["method"]
+            for event in daemon.health_events.read_after(0)["events"]
+        ] == [
+            "Target.targetDestroyed",
+            "BrowserHarness.attachmentInvalidated",
+        ]
+
+    run(scenario())
+
+
+def ready_daemon():
+    daemon = Daemon()
+    daemon.target_id = "target-current"
+    daemon.session = "session-current"
+    daemon.target_epoch = 1
+    daemon.session_epoch = 1
+    daemon.subscriptions = {
+        "Target": {"enabled": True, "scope": "browser", "session_id": None},
+        **{
+            domain: {
+                "enabled": True,
+                "scope": "session",
+                "session_id": "session-current",
+            }
+            for domain in ("Page", "Runtime", "Log", "Network")
+        },
+    }
+    return daemon
+
+
+def test_current_session_detach_invalidates_observation_but_unrelated_detach_does_not():
+    daemon = ready_daemon()
+    started = begin(daemon)
+
+    daemon._record_cdp_event(
+        "Target.detachedFromTarget",
+        {"sessionId": "session-other", "targetId": "target-other"},
+        None,
+    )
+    assert daemon._observation()["ready"] is True
+
+    daemon._record_cdp_event(
+        "Target.detachedFromTarget",
+        {"sessionId": "session-current", "targetId": "target-current"},
+        None,
+    )
+    sealed = run(daemon.handle({"meta": "health_seal", "attempt_id": "attempt-1"}))
+
+    assert daemon.target_id == "target-current"
+    assert daemon.session is None
+    assert daemon.session_epoch == 2
+    assert sealed["observation"]["ready"] is False
+    assert sealed["observation"]["subscriptions"] == {}
+    methods = [
+        event["method"]
+        for event in events_since(daemon, started["start_sequence"])["events"]
+    ]
+    assert methods == [
+        "Target.detachedFromTarget",
+        "Target.detachedFromTarget",
+        "BrowserHarness.attachmentInvalidated",
+    ]
+
+
+def test_current_target_destroy_invalidates_target_session_and_proof():
+    daemon = ready_daemon()
+    begin(daemon)
+
+    daemon._record_cdp_event(
+        "Target.targetDestroyed",
+        {"targetId": "target-current"},
+        None,
+    )
+
+    assert daemon.target_id is None
+    assert daemon.session is None
+    assert daemon.target_epoch == 2
+    assert daemon.session_epoch == 2
+    assert daemon._observation()["ready"] is False
+    assert daemon._observation()["subscriptions"] == {}

@@ -39,7 +39,15 @@ HEALTH_SESSION_DOMAINS = ("Page", "Runtime", "Log", "Network")
 HEALTH_EVENT_MAX_COUNT = int(os.environ.get("BH_HEALTH_EVENT_MAX_COUNT", BUF))
 HEALTH_EVENT_MAX_BYTES = int(os.environ.get("BH_HEALTH_EVENT_MAX_BYTES", 8 * 1024 * 1024))
 HEALTH_EVENT_MAX_ITEM_BYTES = int(os.environ.get("BH_HEALTH_EVENT_MAX_ITEM_BYTES", 256 * 1024))
-_BODY_KEYS = frozenset(("body", "postData", "payloadData"))
+_BODY_KEYS = frozenset(("body", "postData", "postDataEntries", "payloadData"))
+_NETWORK_DATA_PAYLOAD_METHODS = frozenset((
+    "Network.dataReceived",
+    "Network.eventSourceMessageReceived",
+    "Network.directTCPSocketChunkReceived",
+    "Network.directTCPSocketChunkSent",
+    "Network.directUDPSocketChunkReceived",
+    "Network.directUDPSocketChunkSent",
+))
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
     Path.home() / "Library/Application Support/Comet",
@@ -156,12 +164,12 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
-def _without_bodies(value):
+def _without_bodies(value, strip_root_data=False):
     if isinstance(value, dict):
         return {
             key: _without_bodies(child)
             for key, child in value.items()
-            if key not in _BODY_KEYS
+            if key not in _BODY_KEYS and not (strip_root_data and key == "data")
         }
     if isinstance(value, list):
         return [_without_bodies(child) for child in value]
@@ -181,15 +189,18 @@ class _HealthEventRing:
         self.lost_ranges = deque()
 
     def _record_loss(self, sequence):
-        if self.lost_ranges and self.lost_ranges[-1][1] + 1 >= sequence:
-            start, _ = self.lost_ranges[-1]
-            self.lost_ranges[-1] = (start, sequence)
-        else:
-            self.lost_ranges.append((sequence, sequence))
-        if len(self.lost_ranges) > self.max_count:
-            first_start, _ = self.lost_ranges.popleft()
-            _, second_end = self.lost_ranges.popleft()
-            self.lost_ranges.appendleft((first_start, second_end))
+        ordered = sorted((*self.lost_ranges, (sequence, sequence)))
+        merged = []
+        for start, end in ordered:
+            if merged and start <= merged[-1][1] + 1:
+                previous_start, previous_end = merged[-1]
+                merged[-1] = (previous_start, max(previous_end, end))
+            else:
+                merged.append((start, end))
+        while len(merged) > self.max_count:
+            first, second = merged[:2]
+            merged[:2] = [(first[0], second[1])]
+        self.lost_ranges = deque(merged)
 
     def append(self, event):
         self.sequence += 1
@@ -261,6 +272,8 @@ class Daemon:
         self.daemon_fingerprint = uuid.uuid4().hex
         self.target_epoch = 0
         self.session_epoch = 0
+        self.attachment_generation = 0
+        self.attachment_transition = False
         self.subscriptions = {}
         self.health_events = _HealthEventRing(
             event_max_count,
@@ -275,7 +288,7 @@ class Daemon:
     def _observation(self):
         subscriptions = copy.deepcopy(self.subscriptions)
         required = ("Target", *HEALTH_SESSION_DOMAINS)
-        ready = bool(self.target_id and self.session) and all(
+        ready = not self.attachment_transition and bool(self.target_id and self.session) and all(
             subscriptions.get(domain, {}).get("enabled") for domain in required
         )
         return {
@@ -311,7 +324,10 @@ class Daemon:
         return self.health_events.append(
             {
                 "method": method,
-                "params": _without_bodies(params),
+                "params": _without_bodies(
+                    params,
+                    strip_root_data=method in _NETWORK_DATA_PAYLOAD_METHODS,
+                ),
                 "session_id": session_id,
                 "daemon_fingerprint": self.daemon_fingerprint,
                 "target_id": self.target_id,
@@ -351,9 +367,11 @@ class Daemon:
             )
         except Exception as exc:
             log(f"enable DOM: {exc}")
-        self.subscriptions = proof
+        return proof
 
     async def _set_attachment(self, target_id, session_id, reason):
+        self.attachment_generation += 1
+        generation = self.attachment_generation
         previous = {
             "target_id": self.target_id,
             "session_id": self.session,
@@ -366,7 +384,17 @@ class Daemon:
             self.session_epoch += 1
         self.target_id = target_id
         self.session = session_id
-        await self._enable_observation()
+        self.attachment_transition = True
+        self.subscriptions = {}
+        proof = await self._enable_observation()
+        if (
+            generation != self.attachment_generation
+            or target_id != self.target_id
+            or session_id != self.session
+        ):
+            return False
+        self.subscriptions = proof
+        self.attachment_transition = False
         self._record_health_event(
             "BrowserHarness.attachmentChanged",
             {
@@ -376,6 +404,48 @@ class Daemon:
             },
             session_id,
         )
+        return True
+
+    def _invalidate_attachment(self, reason, clear_target):
+        self.attachment_generation += 1
+        previous = self._observation()
+        if self.session is not None:
+            self.session_epoch += 1
+        self.session = None
+        if clear_target and self.target_id is not None:
+            self.target_epoch += 1
+            self.target_id = None
+        self.attachment_transition = False
+        self.subscriptions = {}
+        self._record_health_event(
+            "BrowserHarness.attachmentInvalidated",
+            {
+                "reason": reason,
+                "previous": previous,
+                "current": self._observation(),
+            },
+            None,
+        )
+
+    def _record_cdp_event(self, method, params, session_id):
+        sequence = self._record_health_event(method, params, session_id)
+        if method == "Target.detachedFromTarget":
+            detached_session = params.get("sessionId")
+            detached_target = params.get("targetId")
+            current = (
+                detached_session == self.session
+                if detached_session is not None
+                else detached_target == self.target_id
+            )
+            if current:
+                self._invalidate_attachment("target_detached", clear_target=False)
+        elif method in ("Target.targetDestroyed", "Target.targetCrashed"):
+            if params.get("targetId") == self.target_id:
+                self._invalidate_attachment(
+                    "target_destroyed" if method == "Target.targetDestroyed" else "target_crashed",
+                    clear_target=True,
+                )
+        return sequence
 
     async def attach_first_page(self, reason="attach_first_page"):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -389,7 +459,9 @@ class Daemon:
         session_id = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
         ))["sessionId"]
-        await self._set_attachment(pages[0]["targetId"], session_id, reason)
+        established = await self._set_attachment(pages[0]["targetId"], session_id, reason)
+        if not established:
+            return None
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         return pages[0]
 
@@ -412,7 +484,7 @@ class Daemon:
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
         async def tap(method, params, session_id=None):
-            self._record_health_event(method, params, session_id)
+            self._record_cdp_event(method, params, session_id)
             if method == "Page.javascriptDialogOpening":
                 self.dialog = params
             elif method == "Page.javascriptDialogClosed":
