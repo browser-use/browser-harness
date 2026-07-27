@@ -274,6 +274,9 @@ class Daemon:
         self.session_epoch = 0
         self.attachment_generation = 0
         self.attachment_transition = False
+        self.pending_session_handoff = None
+        self.prepared_auto_session = None
+        self.background_tasks = set()
         self.subscriptions = {}
         self.health_events = _HealthEventRing(
             event_max_count,
@@ -310,6 +313,7 @@ class Daemon:
                     "event_schema_version": HEALTH_EVENT_SCHEMA_VERSION,
                     "operations": ["begin", "events_since", "seal"],
                     "sequence_origin": 1,
+                    "continuity_proofs": ["same_target_paused_session_handoff_v1"],
                     "retention": {
                         "max_events": ring.max_count,
                         "max_total_bytes": ring.max_bytes,
@@ -336,17 +340,48 @@ class Daemon:
             }
         )
 
-    async def _enable_observation(self):
-        proof = {}
-        operations = [("Target", "Target.setDiscoverTargets", {"discover": True}, None)]
-        operations.extend(
-            (domain, f"{domain}.enable", None, self.session)
-            for domain in HEALTH_SESSION_DOMAINS
+    async def _enable_target_observation(self, target_id):
+        enabled = True
+        operations = (
+            ("Target.setDiscoverTargets", {"discover": True}),
+            (
+                "Target.autoAttachRelated",
+                {
+                    "targetId": target_id,
+                    "waitForDebuggerOnStart": True,
+                    "filter": [
+                        {"type": "page", "exclude": False},
+                        {"exclude": True},
+                    ],
+                },
+            ),
         )
-        for domain, method, params, session_id in operations:
+        for method, params in operations:
             try:
                 await asyncio.wait_for(
-                    self.cdp.send_raw(method, params, session_id=session_id),
+                    self.cdp.send_raw(method, params, session_id=None),
+                    timeout=5,
+                )
+            except Exception as exc:
+                enabled = False
+                log(f"enable Target observation ({method}): {exc}")
+        return {
+            "enabled": enabled,
+            "scope": "browser",
+            "session_id": None,
+            "auto_attach": "related",
+            "wait_for_debugger_on_start": True,
+        }
+
+    async def _enable_session_observation(self, session_id):
+        proof = {}
+        for domain in HEALTH_SESSION_DOMAINS:
+            try:
+                await asyncio.wait_for(
+                    self.cdp.send_raw(
+                        f"{domain}.enable",
+                        session_id=session_id,
+                    ),
                     timeout=5,
                 )
                 enabled = True
@@ -355,23 +390,29 @@ class Daemon:
                 log(f"enable {domain}: {exc}")
             proof[domain] = {
                 "enabled": enabled,
-                "scope": "browser" if session_id is None else "session",
+                "scope": "session",
                 "session_id": session_id,
             }
-        # DOM is required for existing harness primitives, but is not part of
-        # the health observation contract.
         try:
             await asyncio.wait_for(
-                self.cdp.send_raw("DOM.enable", session_id=self.session),
+                self.cdp.send_raw("DOM.enable", session_id=session_id),
                 timeout=5,
             )
         except Exception as exc:
             log(f"enable DOM: {exc}")
         return proof
 
+    async def _enable_observation(self):
+        return {
+            "Target": await self._enable_target_observation(self.target_id),
+            **await self._enable_session_observation(self.session),
+        }
+
     async def _set_attachment(self, target_id, session_id, reason):
         self.attachment_generation += 1
         generation = self.attachment_generation
+        self.pending_session_handoff = None
+        self.prepared_auto_session = None
         previous = {
             "target_id": self.target_id,
             "session_id": self.session,
@@ -408,6 +449,8 @@ class Daemon:
 
     def _invalidate_attachment(self, reason, clear_target):
         self.attachment_generation += 1
+        self.pending_session_handoff = None
+        self.prepared_auto_session = None
         previous = self._observation()
         if self.session is not None:
             self.session_epoch += 1
@@ -427,18 +470,121 @@ class Daemon:
             None,
         )
 
+    def _begin_session_handoff(self):
+        self.attachment_generation += 1
+        self.pending_session_handoff = {
+            "target_id": self.target_id,
+            "target_epoch": self.target_epoch,
+            "previous_session_id": self.session,
+            "previous_session_epoch": self.session_epoch,
+        }
+        self.session = None
+        self.attachment_transition = True
+        self.subscriptions = {}
+        prepared = self.prepared_auto_session
+        if prepared and prepared["target_id"] == self.target_id:
+            self._adopt_prepared_auto_session(prepared)
+
+    def _adopt_prepared_auto_session(self, prepared):
+        pending = self.pending_session_handoff
+        if not pending or prepared["target_id"] != pending["target_id"]:
+            return False
+        self.attachment_generation += 1
+        self.target_id = pending["target_id"]
+        self.target_epoch = pending["target_epoch"]
+        self.session_epoch = pending["previous_session_epoch"] + 1
+        self.session = prepared["session_id"]
+        self.subscriptions = copy.deepcopy(prepared["subscriptions"])
+        self.attachment_transition = False
+        self.pending_session_handoff = None
+        self.prepared_auto_session = None
+        self._record_health_event(
+            "BrowserHarness.sameTargetSessionHandoff",
+            {
+                "proof": "same_target_paused_session_handoff_v1",
+                "target_id": self.target_id,
+                "previous_session_id": pending["previous_session_id"],
+                "previous_session_epoch": pending["previous_session_epoch"],
+                "session_id": self.session,
+                "session_epoch": self.session_epoch,
+                "waiting_for_debugger_on_start": True,
+                "required_domains": ["Target", *HEALTH_SESSION_DOMAINS],
+                "subscriptions_before_resume": True,
+                "resume_acknowledged": True,
+            },
+            self.session,
+        )
+        return True
+
+    async def _resume_auto_attached_session(self, session_id):
+        try:
+            await asyncio.wait_for(
+                self.cdp.send_raw(
+                    "Runtime.runIfWaitingForDebugger",
+                    session_id=session_id,
+                ),
+                timeout=5,
+            )
+            return True
+        except Exception as exc:
+            log(f"resume auto-attached session {session_id}: {exc}")
+            return False
+
+    async def _prepare_auto_attached_session(self, params):
+        session_id = params.get("sessionId")
+        target_info = params.get("targetInfo") or {}
+        target_id = target_info.get("targetId")
+        waiting = params.get("waitingForDebugger") is True
+        if not session_id or not waiting:
+            return False
+        if target_id != self.target_id or target_info.get("type") != "page":
+            await self._resume_auto_attached_session(session_id)
+            return False
+        session_proof = await self._enable_session_observation(session_id)
+        subscriptions_ready = all(
+            session_proof.get(domain, {}).get("enabled")
+            for domain in HEALTH_SESSION_DOMAINS
+        )
+        resumed = await self._resume_auto_attached_session(session_id)
+        if (
+            not subscriptions_ready
+            or not resumed
+            or target_id != self.target_id
+        ):
+            return False
+        prepared = {
+            "target_id": target_id,
+            "session_id": session_id,
+            "subscriptions": {
+                "Target": {
+                    "enabled": True,
+                    "scope": "browser",
+                    "session_id": None,
+                    "auto_attach": "related",
+                    "wait_for_debugger_on_start": True,
+                },
+                **session_proof,
+            },
+        }
+        self.prepared_auto_session = prepared
+        if self.pending_session_handoff:
+            return self._adopt_prepared_auto_session(prepared)
+        return True
+
     def _record_cdp_event(self, method, params, session_id):
         sequence = self._record_health_event(method, params, session_id)
         if method == "Target.detachedFromTarget":
             detached_session = params.get("sessionId")
             detached_target = params.get("targetId")
-            current = (
+            prepared = self.prepared_auto_session
+            if prepared and detached_session == prepared["session_id"]:
+                self.prepared_auto_session = None
+            elif (
                 detached_session == self.session
                 if detached_session is not None
                 else detached_target == self.target_id
-            )
-            if current:
-                self._invalidate_attachment("target_detached", clear_target=False)
+            ):
+                self._begin_session_handoff()
         elif method in ("Target.targetDestroyed", "Target.targetCrashed"):
             if params.get("targetId") == self.target_id:
                 self._invalidate_attachment(
@@ -446,6 +592,12 @@ class Daemon:
                     clear_target=True,
                 )
         return sequence
+
+    def _spawn_background(self, coroutine):
+        task = asyncio.create_task(_silent(coroutine))
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
+        return task
 
     async def attach_first_page(self, reason="attach_first_page"):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -480,11 +632,12 @@ class Daemon:
                     "If you use Browser Use cloud, verify BROWSER_USE_API_KEY and get a fresh URL via start_remote_daemon()."
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
-        await self.attach_first_page(reason="initial_attach")
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
         async def tap(method, params, session_id=None):
             self._record_cdp_event(method, params, session_id)
+            if method == "Target.attachedToTarget":
+                self._spawn_background(self._prepare_auto_attached_session(params))
             if method == "Page.javascriptDialogOpening":
                 self.dialog = params
             elif method == "Page.javascriptDialogClosed":
@@ -493,6 +646,9 @@ class Daemon:
                 asyncio.create_task(_silent(asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)))
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+        await self.attach_first_page(reason="initial_attach")
+        if self.background_tasks:
+            await asyncio.gather(*tuple(self.background_tasks))
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -621,10 +777,20 @@ class Daemon:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
-            if "Session with given id not found" in msg and sid == self.session and sid:
-                log(f"stale session {sid}, re-attaching")
-                if await self.attach_first_page():
-                    return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
+            if "Session with given id not found" in msg and sid:
+                if self.session != sid and self._observation()["ready"]:
+                    log(f"session handoff replaced stale session {sid} with {self.session}")
+                    return {
+                        "result": await self.cdp.send_raw(
+                            method,
+                            params,
+                            session_id=self.session,
+                        )
+                    }
+                if sid == self.session:
+                    log(f"stale session {sid}, re-attaching")
+                    if await self.attach_first_page():
+                        return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
             return {"error": msg}
 
 

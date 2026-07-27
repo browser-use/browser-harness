@@ -34,6 +34,7 @@ def test_health_capabilities_advertise_exact_schema_and_daemon_identity():
             "event_schema_version": 1,
             "operations": ["begin", "events_since", "seal"],
             "sequence_origin": 1,
+            "continuity_proofs": ["same_target_paused_session_handoff_v1"],
             "retention": {
                 "max_events": 7,
                 "max_total_bytes": 4096,
@@ -329,6 +330,35 @@ def test_reattachment_restores_all_health_subscriptions_and_emits_continuity():
         if method.endswith(".enable") or method == "Target.setDiscoverTargets"
     ]
     assert ("Target.setDiscoverTargets", None) in enabled
+    auto_attach_calls = [
+        (params, session_id)
+        for method, params, session_id in daemon.cdp.calls
+        if method == "Target.autoAttachRelated"
+    ]
+    assert auto_attach_calls == [
+        (
+            {
+                "targetId": "target-1",
+                "waitForDebuggerOnStart": True,
+                "filter": [
+                    {"type": "page", "exclude": False},
+                    {"exclude": True},
+                ],
+            },
+            None,
+        ),
+        (
+            {
+                "targetId": "target-2",
+                "waitForDebuggerOnStart": True,
+                "filter": [
+                    {"type": "page", "exclude": False},
+                    {"exclude": True},
+                ],
+            },
+            None,
+        ),
+    ]
     for session_id in ("session-1", "session-2"):
         for domain in ("Page", "Runtime", "Log", "Network"):
             assert (f"{domain}.enable", session_id) in enabled
@@ -500,7 +530,7 @@ def test_transient_child_transport_event_uses_logical_observed_page_session_iden
     assert event["session_epoch"] == 1
 
 
-def test_current_session_detach_invalidates_observation_but_unrelated_detach_does_not():
+def test_current_session_detach_begins_unproven_handoff_but_unrelated_detach_does_not():
     daemon = ready_daemon()
     started = begin(daemon)
 
@@ -520,7 +550,7 @@ def test_current_session_detach_invalidates_observation_but_unrelated_detach_doe
 
     assert daemon.target_id == "target-current"
     assert daemon.session is None
-    assert daemon.session_epoch == 2
+    assert daemon.session_epoch == 1
     assert sealed["observation"]["ready"] is False
     assert sealed["observation"]["subscriptions"] == {}
     methods = [
@@ -530,7 +560,6 @@ def test_current_session_detach_invalidates_observation_but_unrelated_detach_doe
     assert methods == [
         "Target.detachedFromTarget",
         "Target.detachedFromTarget",
-        "BrowserHarness.attachmentInvalidated",
     ]
 
 
@@ -550,3 +579,197 @@ def test_current_target_destroy_invalidates_target_session_and_proof():
     assert daemon.session_epoch == 2
     assert daemon._observation()["ready"] is False
     assert daemon._observation()["subscriptions"] == {}
+
+
+class HandoffCDP:
+    def __init__(self):
+        self.calls = []
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.calls.append((method, params, session_id))
+        return {}
+
+
+def auto_attached(session_id="session-new", target_id="target-current"):
+    return {
+        "sessionId": session_id,
+        "targetInfo": {
+            "targetId": target_id,
+            "type": "page",
+            "url": "https://example.test/next",
+        },
+        "waitingForDebugger": True,
+    }
+
+
+def test_same_target_paused_auto_attach_proves_gap_free_session_handoff():
+    daemon = ready_daemon()
+    daemon.cdp = HandoffCDP()
+    begin(daemon)
+    daemon._record_cdp_event(
+        "Target.detachedFromTarget",
+        {"sessionId": "session-current", "targetId": "target-current"},
+        None,
+    )
+    assert daemon._observation()["ready"] is False
+    assert daemon.session is None
+
+    attached = auto_attached()
+    daemon._record_cdp_event("Target.attachedToTarget", attached, None)
+    run(daemon._prepare_auto_attached_session(attached))
+
+    assert daemon.target_id == "target-current"
+    assert daemon.session == "session-new"
+    assert daemon.session_epoch == 2
+    assert daemon._observation()["ready"] is True
+    assert daemon.cdp.calls[-1] == (
+        "Runtime.runIfWaitingForDebugger",
+        None,
+        "session-new",
+    )
+    for domain in ("Page", "Runtime", "Log", "Network"):
+        assert (f"{domain}.enable", None, "session-new") in daemon.cdp.calls[:-1]
+
+    result = events_since(daemon, 0)
+    assert [event["method"] for event in result["events"]] == [
+        "Target.detachedFromTarget",
+        "Target.attachedToTarget",
+        "BrowserHarness.sameTargetSessionHandoff",
+    ]
+    proof = result["events"][-1]
+    assert proof["session_id"] == "session-new"
+    assert proof["session_epoch"] == 2
+    assert proof["params"] == {
+        "proof": "same_target_paused_session_handoff_v1",
+        "target_id": "target-current",
+        "previous_session_id": "session-current",
+        "previous_session_epoch": 1,
+        "session_id": "session-new",
+        "session_epoch": 2,
+        "waiting_for_debugger_on_start": True,
+        "required_domains": ["Target", "Page", "Runtime", "Log", "Network"],
+        "subscriptions_before_resume": True,
+        "resume_acknowledged": True,
+    }
+
+
+def test_prepared_auto_attached_session_can_bridge_later_logical_detach():
+    daemon = ready_daemon()
+    daemon.cdp = HandoffCDP()
+    begin(daemon)
+    attached = auto_attached()
+    daemon._record_cdp_event("Target.attachedToTarget", attached, None)
+    run(daemon._prepare_auto_attached_session(attached))
+
+    assert daemon.session == "session-current"
+    daemon._record_cdp_event(
+        "Target.detachedFromTarget",
+        {"sessionId": "session-current", "targetId": "target-current"},
+        None,
+    )
+
+    assert daemon.session == "session-new"
+    assert daemon._observation()["ready"] is True
+    assert events_since(daemon, 0)["events"][-1]["method"] == (
+        "BrowserHarness.sameTargetSessionHandoff"
+    )
+
+
+def test_detach_without_paused_auto_attach_remains_not_ready_and_unproven():
+    daemon = ready_daemon()
+    begin(daemon)
+
+    daemon._record_cdp_event(
+        "Target.detachedFromTarget",
+        {"sessionId": "session-current", "targetId": "target-current"},
+        None,
+    )
+    sealed = run(daemon.handle({"meta": "health_seal", "attempt_id": "attempt-1"}))
+
+    assert sealed["observation"]["ready"] is False
+    assert daemon.session is None
+    assert "BrowserHarness.sameTargetSessionHandoff" not in [
+        event["method"] for event in events_since(daemon, 0)["events"]
+    ]
+
+
+def test_auto_attach_for_replacement_target_cannot_prove_session_continuity():
+    daemon = ready_daemon()
+    daemon.cdp = HandoffCDP()
+    begin(daemon)
+    daemon._record_cdp_event(
+        "Target.detachedFromTarget",
+        {"sessionId": "session-current", "targetId": "target-current"},
+        None,
+    )
+    replacement = auto_attached(
+        session_id="session-replacement",
+        target_id="target-replacement",
+    )
+    daemon._record_cdp_event("Target.attachedToTarget", replacement, None)
+    run(daemon._prepare_auto_attached_session(replacement))
+
+    assert daemon.target_id == "target-current"
+    assert daemon.session is None
+    assert daemon._observation()["ready"] is False
+    assert daemon.cdp.calls == [
+        (
+            "Runtime.runIfWaitingForDebugger",
+            None,
+            "session-replacement",
+        )
+    ]
+    assert "BrowserHarness.sameTargetSessionHandoff" not in [
+        event["method"] for event in events_since(daemon, 0)["events"]
+    ]
+
+
+class SessionChangedDuringCommandCDP:
+    def __init__(self, daemon):
+        self.daemon = daemon
+        self.calls = []
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.calls.append((method, session_id))
+        if session_id == "session-current":
+            self.daemon.session = "session-new"
+            self.daemon.session_epoch = 2
+            self.daemon.subscriptions = {
+                "Target": {
+                    "enabled": True,
+                    "scope": "browser",
+                    "session_id": None,
+                    "auto_attach": "related",
+                    "wait_for_debugger_on_start": True,
+                },
+                **{
+                    domain: {
+                        "enabled": True,
+                        "scope": "session",
+                        "session_id": "session-new",
+                    }
+                    for domain in ("Page", "Runtime", "Log", "Network")
+                },
+            }
+            raise RuntimeError("Session with given id not found")
+        return {"value": "retried-on-proven-session"}
+
+
+def test_command_retries_on_new_ready_session_when_handoff_wins_the_race():
+    daemon = ready_daemon()
+    daemon.cdp = SessionChangedDuringCommandCDP(daemon)
+
+    result = run(
+        daemon.handle(
+            {
+                "method": "Runtime.evaluate",
+                "params": {"expression": "1"},
+            }
+        )
+    )
+
+    assert result == {"result": {"value": "retried-on-proven-session"}}
+    assert daemon.cdp.calls == [
+        ("Runtime.evaluate", "session-current"),
+        ("Runtime.evaluate", "session-new"),
+    ]
