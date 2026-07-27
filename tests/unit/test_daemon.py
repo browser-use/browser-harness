@@ -83,6 +83,43 @@ def test_begin_and_seal_are_idempotent_and_fix_the_terminal_sequence():
     assert result["range"]["sealed_through_sequence"] == 1
 
 
+def test_begin_waits_for_inflight_attachment_work_before_fencing_identity():
+    async def scenario():
+        daemon = ready_daemon()
+
+        async def finish_handoff():
+            await asyncio.sleep(0)
+            daemon.session = "session-next"
+            daemon.session_epoch = 2
+            daemon._record_health_event(
+                "BrowserHarness.sameTargetSessionHandoff",
+                {
+                    "proof": "same_target_paused_session_handoff_v1",
+                    "target_id": "target-current",
+                    "previous_session_id": "session-current",
+                    "previous_session_epoch": 1,
+                    "session_id": "session-next",
+                    "session_epoch": 2,
+                },
+                "session-next",
+            )
+
+        task = asyncio.create_task(finish_handoff())
+        daemon.background_tasks.add(task)
+        task.add_done_callback(daemon.background_tasks.discard)
+        begun = await daemon.handle(
+            {"meta": "health_begin", "attempt_id": "attempt-stable"}
+        )
+        return daemon, begun
+
+    daemon, begun = run(scenario())
+
+    assert begun["start_sequence"] == 1
+    assert begun["observation"]["session_id"] == "session-next"
+    assert begun["observation"]["session_epoch"] == 2
+    assert daemon.background_tasks == set()
+
+
 def test_active_health_attempt_guards_observation_control_at_daemon_boundary():
     daemon = ready_daemon()
     daemon.cdp = FakeCDP()

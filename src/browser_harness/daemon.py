@@ -894,6 +894,13 @@ class Daemon:
         task.add_done_callback(self.background_tasks.discard)
         return task
 
+    async def _settle_background_tasks(self):
+        while self.background_tasks:
+            pending = tuple(self.background_tasks)
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in pending:
+                self.background_tasks.discard(task)
+
     async def attach_first_page(self, reason="attach_first_page"):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
@@ -942,8 +949,7 @@ class Daemon:
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
         await self.attach_first_page(reason="initial_attach")
-        if self.background_tasks:
-            await asyncio.gather(*tuple(self.background_tasks))
+        await self._settle_background_tasks()
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -969,6 +975,7 @@ class Daemon:
             existing = self.health_attempts.get(attempt_id)
             if existing:
                 return copy.deepcopy(existing["begin"])
+            await self._settle_background_tasks()
             begin = {
                 "capability": HEALTH_CAPABILITY,
                 "schema_version": HEALTH_SCHEMA_VERSION,
@@ -1088,12 +1095,7 @@ class Daemon:
                         )
                     }
                 if sid == self.session:
-                    pending_auto_attach = tuple(self.background_tasks)
-                    if pending_auto_attach:
-                        await asyncio.gather(
-                            *pending_auto_attach,
-                            return_exceptions=True,
-                        )
+                    await self._settle_background_tasks()
                     if self.session != sid and self._observation()["ready"]:
                         log(
                             f"paused auto-attach replaced stale session {sid} "
