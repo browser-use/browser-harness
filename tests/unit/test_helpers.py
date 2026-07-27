@@ -350,3 +350,42 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+# --- js() IIFE wrapping: only a snippet's OWN top-level return should trigger it ---
+
+@pytest.mark.parametrize("snippet", [
+    "[1,2,3].map(function(x){return x*2})",
+    "[1,2,3].map(x=>{return x*2})",
+    "Array.from(document.querySelectorAll('a')).map(a=>{const h=a.href; return h})",
+    "(()=>{const x=1; return x})()",
+    "(function(){return 1})()",
+    "function f(){ return 1 }; f()",
+    "class C { m(){ return 1 } }",
+    "const o = { run(){ return 1 } }",
+    "myreturn + returnValue",
+    "'return 1'",
+    "// return 1",
+    "/* return 1 */ 42",
+    "`return ${x}`",
+])
+def test_nested_return_is_not_a_top_level_return(snippet):
+    assert helpers._has_return_statement(snippet) is False, (
+        "A `return` inside a nested function/arrow body belongs to that callback. "
+        "Wrapping the snippet in an IIFE would make it evaluate to undefined, which "
+        "surfaces to the caller as a silent None."
+    )
+
+
+@pytest.mark.parametrize("snippet", [
+    "const x = 1; return x",
+    "if (a) { return 1 } return 2",
+    "for (const a of b) { return a }",
+    "while (x) { return 1 }",
+    "switch(x){case 1: return 2}",
+    "try { foo() } catch (e) { return e }",
+    "const o = {a:1}; return o",
+    "els.forEach(e=>{ if(e){ return } }); return 5",
+])
+def test_top_level_return_still_wraps(snippet):
+    assert helpers._has_return_statement(snippet) is True

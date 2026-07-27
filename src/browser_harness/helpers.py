@@ -146,11 +146,43 @@ def _runtime_evaluate(expression, session_id=None, await_promise=False, timeout=
     return _runtime_value(r, expression)
 
 
+_CONTROL_KEYWORDS = frozenset(("if", "for", "while", "switch", "catch", "with"))
+
+
+def _word_before(expression, i):
+    """The identifier immediately preceding index i, skipping whitespace."""
+    j = i - 1
+    while j >= 0 and expression[j].isspace():
+        j -= 1
+    end = j + 1
+    while j >= 0 and (expression[j] == "_" or expression[j] == "$" or expression[j].isalnum()):
+        j -= 1
+    return expression[j + 1:end]
+
+
+def _opens_function_body(sig, sig_ctl):
+    """Whether the `{` about to be consumed opens a function/arrow body rather than a block."""
+    if len(sig) >= 2 and sig[-1] == ">" and sig[-2] == "=":
+        return True                      # `=> {`
+    if sig and sig[-1] == ")":
+        return not sig_ctl[-1]           # `) {` is a function body unless it closed `if(...)` etc
+    return False                         # object literal, bare block, `else {`, `try {`, `do {`
+
+
 def _has_return_statement(expression):
+    """True only when `expression` has a `return` at the snippet's own top level.
+
+    A `return` inside a nested function or arrow body belongs to that callback, so
+    wrapping the snippet in an IIFE would discard the value the caller wanted.
+    """
     i = 0
     n = len(expression)
     state = "code"
     quote = ""
+    sig = []        # significant (non-whitespace) code characters, in order
+    sig_ctl = []    # parallel to sig: True when a ')' closed a control-statement paren
+    paren_ctl = []  # stack: was each open '(' introduced by a control keyword
+    brace_fn = []   # stack: does each open '{' delimit a function body
     while i < n:
         ch = expression[i]
         nxt = expression[i + 1] if i + 1 < n else ""
@@ -165,7 +197,20 @@ def _has_return_statement(expression):
                 before = expression[i - 1] if i > 0 else ""
                 after = expression[i + 6] if i + 6 < n else ""
                 if not (before == "_" or before.isalnum()) and not (after == "_" or after.isalnum()):
-                    return True
+                    if not any(brace_fn):
+                        return True
+                    i += 6; continue
+            if ch == "(":
+                paren_ctl.append(_word_before(expression, i) in _CONTROL_KEYWORDS)
+            elif ch == ")":
+                ctl = paren_ctl.pop() if paren_ctl else False
+                sig.append(ch); sig_ctl.append(ctl); i += 1; continue
+            elif ch == "{":
+                brace_fn.append(_opens_function_body(sig, sig_ctl))
+            elif ch == "}":
+                if brace_fn: brace_fn.pop()
+            if not ch.isspace():
+                sig.append(ch); sig_ctl.append(False)
             i += 1; continue
         if state == "line_comment":
             if ch == "\n":
@@ -474,7 +519,7 @@ def js(expression, target_id=None, timeout=None):
     promise; env BH_CMD_TIMEOUT sets the default for all calls.
     """
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
-    if _has_return_statement(expression) and not expression.strip().startswith("("):
+    if _has_return_statement(expression):
         expression = f"(function(){{{expression}}})()"
     return _runtime_evaluate(expression, session_id=sid, await_promise=True, timeout=timeout)
 
