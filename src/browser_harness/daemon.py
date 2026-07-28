@@ -32,8 +32,8 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
-HEALTH_CAPABILITY = "health_events_v1"
-HEALTH_SCHEMA_VERSION = 1
+HEALTH_CAPABILITY = "health_events_v2"
+HEALTH_SCHEMA_VERSION = 2
 HEALTH_OBSERVATION_CONTROL_METHODS = {
     "Page.enable",
     "Page.disable",
@@ -536,7 +536,7 @@ class Daemon:
         capabilities = {
             HEALTH_CAPABILITY: {
                 "schema_version": HEALTH_SCHEMA_VERSION,
-                "event_schema_version": HEALTH_EVENT_SCHEMA_VERSION,
+                "event_schema_version": 2,
                 "operations": ["begin", "events_since", "seal"],
                 "sequence_origin": 1,
                 "continuity_proofs": ["same_target_paused_session_handoff_v1"],
@@ -545,6 +545,7 @@ class Daemon:
                     "max_total_bytes": ring.max_bytes,
                     "max_event_bytes": ring.max_item_bytes,
                 },
+                "identity": ["engine", "protocol", "browser_session"],
             }
         }
         if self.cdp is not None and callable(getattr(self.cdp, "capabilities", None)):
@@ -559,9 +560,26 @@ class Daemon:
         }
 
     def _event_record(self, method, params):
+        kind = {
+            "Runtime.exceptionThrown": "script-exception",
+            "Runtime.consoleAPICalled": "console",
+            "Console.messageAdded": "console",
+            "Log.entryAdded": "console",
+            "Inspector.targetCrashed": "context-crash",
+            "Target.targetCrashed": "context-crash",
+            "Security.certificateError": "certificate-error",
+            "Network.requestWillBeSent": "network-request",
+            "Network.responseReceived": "network-response",
+            "Network.loadingFailed": "network-failure",
+            "Target.targetDestroyed": "context-destroyed",
+        }.get(method, "lifecycle" if method.startswith("BrowserHarness.") else "protocol-event")
         return {
             "method": method,
             "params": params,
+            "kind": kind,
+            "engine": getattr(self.cdp, "engine", None),
+            "source_protocol": getattr(self.cdp, "protocol", None),
+            "browser_session_id": getattr(self.cdp, "session_id", None) or self.session,
             "session_id": self.session,
             "daemon_fingerprint": self.daemon_fingerprint,
             "target_id": self.target_id,
@@ -987,6 +1005,10 @@ class Daemon:
         if meta == "health_capabilities":
             return self._capabilities()
         if meta == "health_begin":
+            requested_capability = req.get("capability") or HEALTH_CAPABILITY
+            if requested_capability != HEALTH_CAPABILITY:
+                return {"error": "unsupported_health_capability"}
+            schema_version = HEALTH_SCHEMA_VERSION
             attempt_id = req.get("attempt_id")
             if not isinstance(attempt_id, str) or not attempt_id or len(attempt_id) > 256:
                 return {"error": "invalid_health_attempt_id"}
@@ -995,8 +1017,8 @@ class Daemon:
                 return copy.deepcopy(existing["begin"])
             await self._settle_background_tasks()
             begin = {
-                "capability": HEALTH_CAPABILITY,
-                "schema_version": HEALTH_SCHEMA_VERSION,
+                "capability": requested_capability,
+                "schema_version": schema_version,
                 "attempt_id": attempt_id,
                 "daemon_fingerprint": self.daemon_fingerprint,
                 "start_sequence": self.health_events.sequence,
@@ -1037,8 +1059,8 @@ class Daemon:
                 seal["sealed_through_sequence"] if seal else None
             )
             return {
-                "capability": HEALTH_CAPABILITY,
-                "schema_version": HEALTH_SCHEMA_VERSION,
+                "capability": attempt["begin"]["capability"],
+                "schema_version": attempt["begin"]["schema_version"],
                 "attempt_id": attempt_id,
                 "daemon_fingerprint": self.daemon_fingerprint,
                 **result,
@@ -1051,8 +1073,8 @@ class Daemon:
             if attempt["seal"]:
                 return copy.deepcopy(attempt["seal"])
             seal = {
-                "capability": HEALTH_CAPABILITY,
-                "schema_version": HEALTH_SCHEMA_VERSION,
+                "capability": attempt["begin"]["capability"],
+                "schema_version": attempt["begin"]["schema_version"],
                 "attempt_id": attempt_id,
                 "daemon_fingerprint": self.daemon_fingerprint,
                 "start_sequence": attempt["begin"]["start_sequence"],

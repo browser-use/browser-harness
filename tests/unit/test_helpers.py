@@ -79,7 +79,7 @@ def test_page_info_raises_clear_error_on_js_exception():
 
 def test_health_helpers_send_the_versioned_protocol_operations():
     responses = [
-        {"capabilities": {"health_events_v1": {"schema_version": 1}}},
+        {"capabilities": {"health_events_v2": {"schema_version": 2}}},
         {"attempt_id": "attempt-1", "start_sequence": 4},
         {"attempt_id": "attempt-1", "events": [], "range": {"complete": True}},
         {"attempt_id": "attempt-1", "sealed_through_sequence": 9},
@@ -91,16 +91,16 @@ def test_health_helpers_send_the_versioned_protocol_operations():
         return responses.pop(0)
 
     with patch("browser_harness.helpers._send", side_effect=fake_send):
-        assert helpers.health_capabilities()["capabilities"]["health_events_v1"][
+        assert helpers.health_capabilities()["capabilities"]["health_events_v2"][
             "schema_version"
-        ] == 1
+        ] == 2
         assert helpers.health_begin("attempt-1")["start_sequence"] == 4
         assert helpers.health_events_since("attempt-1", 4)["events"] == []
         assert helpers.health_seal("attempt-1")["sealed_through_sequence"] == 9
 
     assert requests == [
         {"meta": "health_capabilities"},
-        {"meta": "health_begin", "attempt_id": "attempt-1"},
+        {"meta": "health_begin", "attempt_id": "attempt-1", "capability": "health_events_v2"},
         {
             "meta": "health_events_since",
             "attempt_id": "attempt-1",
@@ -108,6 +108,19 @@ def test_health_helpers_send_the_versioned_protocol_operations():
         },
         {"meta": "health_seal", "attempt_id": "attempt-1"},
     ]
+
+
+def test_health_v2_helpers_select_the_normalized_capability():
+    requests = []
+
+    with patch("browser_harness.helpers._send", side_effect=lambda request: requests.append(request) or {}):
+        helpers.health_v2_begin("attempt-2")
+
+    assert requests == [{
+        "meta": "health_begin",
+        "attempt_id": "attempt-2",
+        "capability": "health_events_v2",
+    }]
 
 
 def test_browser_capabilities_returns_the_protocol_neutral_manifest():
@@ -263,6 +276,23 @@ def test_fill_input_no_clear_skips_ctrl_a():
 
     keys_seen = [e.get("key") for e in key_events if e.get("type") == "keyDown"]
     assert "Backspace" not in keys_seen
+
+
+def test_printable_key_inserts_text_once_per_protocol_sequence():
+    key_events = []
+
+    def fake_cdp(method, **kwargs):
+        if method == "Input.dispatchKeyEvent":
+            key_events.append(kwargs)
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.press_key("x")
+
+    key_down = next(event for event in key_events if event["type"] == "keyDown")
+    char = next(event for event in key_events if event["type"] == "char")
+    assert "text" not in key_down
+    assert char["text"] == "x"
 
 
 # --- wait_for_element ---

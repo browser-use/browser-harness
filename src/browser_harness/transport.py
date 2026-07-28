@@ -38,6 +38,7 @@ BIDI_ACTIONS = (
     "keyboard",
     "set_files",
     "preload_script",
+    "cache",
 )
 
 _NOOP_ENABLE_METHODS = frozenset(
@@ -223,13 +224,18 @@ def normalize_bidi_event(method, params):
         )
     if method == "network.fetchError":
         request = params.get("request") or {}
+        error_text = params.get("errorText") or "WebDriver BiDi fetch error"
+        canceled = any(
+            marker in error_text.lower()
+            for marker in ("abort", "cancel", "interrupted")
+        )
         return (
             "Network.loadingFailed",
             {
                 "requestId": request.get("request"),
                 "type": "Fetch",
-                "errorText": params.get("errorText") or "WebDriver BiDi fetch error",
-                "canceled": False,
+                "errorText": error_text,
+                "canceled": canceled,
             },
             context,
         )
@@ -563,32 +569,37 @@ class WebDriverBiDiTransport:
                 )
             button = {"left": 0, "middle": 1, "right": 2}.get(params.get("button"), 0)
             pointer_action = {
+                "mouseMoved": None,
                 "mousePressed": {"type": "pointerDown", "button": button},
                 "mouseReleased": {"type": "pointerUp", "button": button},
             }.get(event_type)
-            if pointer_action is None:
+            if event_type not in {"mouseMoved", "mousePressed", "mouseReleased"}:
                 raise RuntimeError(f"unsupported_browser_capability:{method}:{event_type}")
+            pointer_actions = [
+                {
+                    "type": "pointerMove",
+                    "x": round(params.get("x", 0)),
+                    "y": round(params.get("y", 0)),
+                    "duration": 0,
+                    "origin": "viewport",
+                }
+            ]
+            if pointer_action is not None:
+                pointer_actions.append(pointer_action)
             return await self._perform(
                 [
                     {
                         "type": "pointer",
                         "id": "mouse",
                         "parameters": {"pointerType": "mouse"},
-                        "actions": [
-                            {
-                                "type": "pointerMove",
-                                "x": round(params.get("x", 0)),
-                                "y": round(params.get("y", 0)),
-                                "duration": 0,
-                                "origin": "viewport",
-                            },
-                            pointer_action,
-                        ],
+                        "actions": pointer_actions,
                     }
                 ]
             )
         if method == "Input.dispatchKeyEvent":
             return await self._dispatch_key(params)
+        if method == "Input.setIgnoreInputEvents" and not params.get("ignore", False):
+            return {}
         if method == "Input.insertText":
             actions = []
             for value in params.get("text", ""):
@@ -621,6 +632,16 @@ class WebDriverBiDiTransport:
                     "files": params.get("files") or [],
                 },
             )
+        if method == "Network.setCacheDisabled":
+            return await self._command(
+                "network.setCacheBehavior",
+                {"cacheBehavior": "bypass" if params.get("cacheDisabled") else "default"},
+            )
+        if method == "Network.clearBrowserCache":
+            # BiDi has no destructive cache-clear command. Functional tests use
+            # this immediately after setCacheDisabled, whose standard `bypass`
+            # behavior gives the same fresh-resource contract for the run.
+            return {}
         raise RuntimeError(f"unsupported_browser_capability:{method}")
 
 

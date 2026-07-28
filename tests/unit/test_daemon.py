@@ -29,9 +29,9 @@ def test_health_capabilities_advertise_exact_schema_and_daemon_identity():
     result = run(daemon.handle({"meta": "health_capabilities"}))
 
     assert result["capabilities"] == {
-        "health_events_v1": {
-            "schema_version": 1,
-            "event_schema_version": 1,
+        "health_events_v2": {
+            "schema_version": 2,
+            "event_schema_version": 2,
             "operations": ["begin", "events_since", "seal"],
             "sequence_origin": 1,
             "continuity_proofs": ["same_target_paused_session_handoff_v1"],
@@ -40,7 +40,8 @@ def test_health_capabilities_advertise_exact_schema_and_daemon_identity():
                 "max_total_bytes": 4096,
                 "max_event_bytes": 512,
             },
-        }
+            "identity": ["engine", "protocol", "browser_session"],
+        },
     }
     assert result["daemon_fingerprint"]
     assert result["observation"] == {
@@ -88,6 +89,38 @@ def test_health_capabilities_include_the_live_browser_transport_manifest():
         },
         "raw_protocol": False,
     }
+
+
+def test_health_v2_binds_normalized_events_to_transport_identity():
+    class FirefoxTransport:
+        protocol = "bidi"
+        engine = "firefox"
+        session_id = "browser-session-1"
+
+    daemon = Daemon()
+    daemon.cdp = FirefoxTransport()
+    begun = run(daemon.handle({
+        "meta": "health_begin",
+        "attempt_id": "attempt-v2",
+        "capability": "health_events_v2",
+    }))
+    daemon._record_health_event(
+        "Network.loadingFailed",
+        {"requestId": "request-1", "errorText": "offline"},
+        "context-1",
+    )
+    observed = run(daemon.handle({
+        "meta": "health_events_since",
+        "attempt_id": "attempt-v2",
+        "after_sequence": begun["start_sequence"],
+    }))
+
+    assert begun["schema_version"] == 2
+    assert observed["schema_version"] == 2
+    assert observed["events"][0]["kind"] == "network-failure"
+    assert observed["events"][0]["engine"] == "firefox"
+    assert observed["events"][0]["source_protocol"] == "bidi"
+    assert observed["events"][0]["browser_session_id"] == "browser-session-1"
 
 
 def test_connection_status_resolves_the_exact_attached_target_from_inventory():
@@ -247,7 +280,11 @@ def test_events_since_is_non_destructive_and_returns_sequenced_identity():
         {
             "sequence": 1,
             "method": "Runtime.exceptionThrown",
-            "params": {"exceptionDetails": {"text": "boom"}},
+                "params": {"exceptionDetails": {"text": "boom"}},
+                "kind": "script-exception",
+                "engine": None,
+                "source_protocol": None,
+                "browser_session_id": "session-1",
             "session_id": "session-1",
             "daemon_fingerprint": daemon.daemon_fingerprint,
             "target_id": "target-1",

@@ -118,6 +118,15 @@ def test_bidi_events_normalize_to_guardian_health_categories():
     )
 
     assert normalize_bidi_event(
+        "network.fetchError",
+        {
+            "request": {"request": "request-2", "url": "https://angel3.test/old"},
+            "errorText": "NS_BINDING_ABORTED",
+            "context": "context-1",
+        },
+    )[1]["canceled"] is True
+
+    assert normalize_bidi_event(
         "network.responseStarted",
         {
             "request": {"request": "request-1", "url": "https://angel3.test/api"},
@@ -179,3 +188,43 @@ def test_bidi_transport_ends_session_before_closing_socket():
     assert calls == [("session.end", {}), ("socket.close", None)]
     assert transport._socket is None
     assert transport.session_id is None
+
+
+def test_bidi_transport_supports_pointer_move_without_a_button_action():
+    transport = WebDriverBiDiTransport("http://firefox.test:9222")
+    transport.current_context = "context-1"
+    performed = []
+
+    async def perform(actions, context=None):
+        performed.append((actions, context))
+        return {}
+
+    transport._perform = perform
+
+    run(transport.send_raw("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 12.4, "y": 18.6}))
+
+    assert performed[0][0][0]["actions"] == [{
+        "type": "pointerMove",
+        "x": 12,
+        "y": 19,
+        "duration": 0,
+        "origin": "viewport",
+    }]
+
+
+def test_bidi_transport_maps_cache_bypass_and_safe_input_restore():
+    transport = WebDriverBiDiTransport("http://firefox.test:9222")
+    transport.current_context = "context-1"
+    calls = []
+
+    async def command(method, params=None):
+        calls.append((method, params))
+        return {}
+
+    transport._command = command
+
+    run(transport.send_raw("Network.setCacheDisabled", {"cacheDisabled": True}))
+    assert run(transport.send_raw("Network.clearBrowserCache")) == {}
+    assert run(transport.send_raw("Input.setIgnoreInputEvents", {"ignore": False})) == {}
+
+    assert calls == [("network.setCacheBehavior", {"cacheBehavior": "bypass"})]

@@ -70,8 +70,12 @@ def browser_capabilities():
     return {key: value for key, value in manifest.items() if key != "schema_version"}
 
 
-def health_begin(attempt_id):
-    return _send({"meta": "health_begin", "attempt_id": attempt_id})
+def health_begin(attempt_id, capability=None):
+    request = {"meta": "health_begin", "attempt_id": attempt_id}
+    selected_capability = capability or os.environ.get("BH_HEALTH_CAPABILITY") or "health_events_v2"
+    if selected_capability:
+        request["capability"] = selected_capability
+    return _send(request)
 
 
 def health_events_since(attempt_id, after_sequence, through_sequence=None):
@@ -87,6 +91,19 @@ def health_events_since(attempt_id, after_sequence, through_sequence=None):
 
 def health_seal(attempt_id):
     return _send({"meta": "health_seal", "attempt_id": attempt_id})
+
+def health_v2_begin(attempt_id):
+    return _send({
+        "meta": "health_begin",
+        "attempt_id": attempt_id,
+        "capability": "health_events_v2",
+    })
+
+def health_v2_events_since(attempt_id, after_sequence, through_sequence=None):
+    return health_events_since(attempt_id, after_sequence, through_sequence)
+
+def health_v2_seal(attempt_id):
+    return health_seal(attempt_id)
 
 
 def _js_snippet(expression, limit=160):
@@ -195,6 +212,10 @@ def goto_url(url):
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
 
+def stop_loading():
+    """Stop the current document load through the active browser adapter."""
+    return cdp("Page.stopLoading")
+
 def page_info():
     """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
 
@@ -288,7 +309,11 @@ def press_key(key, modifiers=0):
     so listeners checking e.keyCode / e.key all fire."""
     vk, code, text = _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
-    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
+    # CDP inserts printable text on the dedicated `char` event. Including the
+    # same text on keyDown inserts every character twice in Chromium. BiDi's
+    # adapter uses the keyDown value and deliberately ignores the compatibility
+    # `char`, so this sequence has one insertion in either protocol.
+    cdp("Input.dispatchKeyEvent", type="keyDown", **base)
     if text and len(text) == 1:
         cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
