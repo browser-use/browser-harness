@@ -524,7 +524,13 @@ class WebDriverBiDiTransport:
             return {"frameId": context, "loaderId": result.get("navigation")}
         if method == "Page.stopLoading":
             await self._command(
-                "browsingContext.stopLoading", {"context": self._context(session_id)}
+                "script.evaluate",
+                {
+                    "expression": "window.stop();",
+                    "target": {"context": self._context(session_id)},
+                    "awaitPromise": False,
+                    "resultOwnership": "none",
+                },
             )
             return {}
         if method == "Page.captureScreenshot":

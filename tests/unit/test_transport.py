@@ -228,3 +228,23 @@ def test_bidi_transport_maps_cache_bypass_and_safe_input_restore():
     assert run(transport.send_raw("Input.setIgnoreInputEvents", {"ignore": False})) == {}
 
     assert calls == [("network.setCacheBehavior", {"cacheBehavior": "bypass"})]
+
+
+def test_bidi_transport_stops_loading_without_a_nonstandard_context_command():
+    transport = WebDriverBiDiTransport("http://firefox.test:9222")
+    transport.current_context = "context-1"
+    calls = []
+
+    async def command(method, params=None):
+        calls.append((method, params))
+        return {}
+
+    transport._command = command
+
+    assert run(transport.send_raw("Page.stopLoading")) == {}
+    assert calls == [("script.evaluate", {
+        "expression": "window.stop();",
+        "target": {"context": "context-1"},
+        "awaitPromise": False,
+        "resultOwnership": "none",
+    })]
