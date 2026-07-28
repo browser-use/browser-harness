@@ -53,6 +53,43 @@ def test_health_capabilities_advertise_exact_schema_and_daemon_identity():
     }
 
 
+def test_health_capabilities_include_the_live_browser_transport_manifest():
+    class FirefoxTransport:
+        protocol = "bidi"
+        engine = "firefox"
+
+        def capabilities(self):
+            return {
+                "engine": "firefox",
+                "protocol": "bidi",
+                "browser_version": "153.0",
+                "actions": ["evaluate", "navigate"],
+                "events": {
+                    "supported": ["log.entryAdded"],
+                    "unsupported": {},
+                },
+                "raw_protocol": False,
+            }
+
+    daemon = Daemon()
+    daemon.cdp = FirefoxTransport()
+
+    result = run(daemon.handle({"meta": "health_capabilities"}))
+
+    assert result["capabilities"]["browser_transport_v1"] == {
+        "schema_version": 1,
+        "engine": "firefox",
+        "protocol": "bidi",
+        "browser_version": "153.0",
+        "actions": ["evaluate", "navigate"],
+        "events": {
+            "supported": ["log.entryAdded"],
+            "unsupported": {},
+        },
+        "raw_protocol": False,
+    }
+
+
 def test_connection_status_resolves_the_exact_attached_target_from_inventory():
     class TargetInventoryCDP:
         async def send_raw(self, method, params=None, session_id=None):

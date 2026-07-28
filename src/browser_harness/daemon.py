@@ -1,10 +1,10 @@
-"""CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
+"""Browser protocol holder + IPC relay. One daemon per BU_NAME."""
 import asyncio, copy, json, os, socket, sys, time, urllib.error, urllib.request, uuid
 from collections import deque
 from pathlib import Path
 
 from . import _ipc as ipc
-from cdp_use.client import CDPClient
+from .transport import transport_from_environment
 
 
 def _load_env():
@@ -533,22 +533,28 @@ class Daemon:
 
     def _capabilities(self):
         ring = self.health_events
+        capabilities = {
+            HEALTH_CAPABILITY: {
+                "schema_version": HEALTH_SCHEMA_VERSION,
+                "event_schema_version": HEALTH_EVENT_SCHEMA_VERSION,
+                "operations": ["begin", "events_since", "seal"],
+                "sequence_origin": 1,
+                "continuity_proofs": ["same_target_paused_session_handoff_v1"],
+                "retention": {
+                    "max_events": ring.max_count,
+                    "max_total_bytes": ring.max_bytes,
+                    "max_event_bytes": ring.max_item_bytes,
+                },
+            }
+        }
+        if self.cdp is not None and callable(getattr(self.cdp, "capabilities", None)):
+            capabilities["browser_transport_v1"] = {
+                "schema_version": 1,
+                **self.cdp.capabilities(),
+            }
         return {
             "daemon_fingerprint": self.daemon_fingerprint,
-            "capabilities": {
-                HEALTH_CAPABILITY: {
-                    "schema_version": HEALTH_SCHEMA_VERSION,
-                    "event_schema_version": HEALTH_EVENT_SCHEMA_VERSION,
-                    "operations": ["begin", "events_since", "seal"],
-                    "sequence_origin": 1,
-                    "continuity_proofs": ["same_target_paused_session_handoff_v1"],
-                    "retention": {
-                        "max_events": ring.max_count,
-                        "max_total_bytes": ring.max_bytes,
-                        "max_event_bytes": ring.max_item_bytes,
-                    },
-                }
-            },
+            "capabilities": capabilities,
             "observation": self._observation(),
         }
 
@@ -922,12 +928,17 @@ class Daemon:
 
     async def start(self):
         self.stop = asyncio.Event()
-        url = get_ws_url()
-        log(f"connecting to {url}")
-        self.cdp = CDPClient(url)
+        protocol = os.environ.get("BU_BROWSER_PROTOCOL", "cdp").strip().lower()
+        endpoint = None if protocol == "bidi" else get_ws_url()
+        self.cdp = transport_from_environment(cdp_endpoint=endpoint)
+        log(f"connecting to {self.cdp.endpoint} ({self.cdp.engine}/{self.cdp.protocol})")
         try:
             await self.cdp.start()
         except Exception as e:
+            if protocol == "bidi":
+                raise RuntimeError(
+                    f"WebDriver BiDi connection failed: {e} -- verify the dedicated Firefox lane and endpoint"
+                )
             if os.environ.get("BU_CDP_WS"):
                 raise RuntimeError(
                     f"CDP WS handshake failed: {e} -- remote browser WebSocket connection failed. "
@@ -951,6 +962,12 @@ class Daemon:
         self.cdp._event_registry.handle_event = tap
         await self.attach_first_page(reason="initial_attach")
         await self._settle_background_tasks()
+
+    async def close(self):
+        await self._settle_background_tasks()
+        if self.cdp is not None:
+            await self.cdp.close()
+            self.cdp = None
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -1174,6 +1191,7 @@ async def serve(d):
             t.cancel()
             try: await t
             except (asyncio.CancelledError, Exception): pass
+        await d.close()
         ipc.cleanup_endpoint(NAME)
 
 

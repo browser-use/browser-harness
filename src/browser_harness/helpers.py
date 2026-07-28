@@ -1,4 +1,4 @@
-"""Browser control via CDP.
+"""Browser control through the persistent protocol-neutral session.
 
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
@@ -59,6 +59,15 @@ def drain_events():  return _send({"meta": "drain_events"})["events"]
 
 def health_capabilities():
     return _send({"meta": "health_capabilities"})
+
+
+def browser_capabilities():
+    """Return the live engine/protocol action and event capability manifest."""
+    capabilities = health_capabilities().get("capabilities", {})
+    manifest = capabilities.get("browser_transport_v1")
+    if not isinstance(manifest, dict):
+        raise RuntimeError("Browser-Harness daemon does not expose browser_transport_v1")
+    return {key: value for key, value in manifest.items() if key != "schema_version"}
 
 
 def health_begin(attempt_id):
@@ -469,11 +478,15 @@ def dispatch_key(selector, key="Enter", event="keypress"):
     )
 
 def upload_file(selector, path):
-    """Set files on a file input via CDP DOM.setFileInputFiles. `path` is an absolute filepath (use tempfile.mkstemp if needed)."""
+    """Set absolute file paths on a file input in the attached browser context."""
+    files = [path] if isinstance(path, str) else list(path)
+    if browser_capabilities().get("protocol") == "bidi":
+        cdp("BrowserHarness.setFiles", selector=selector, files=files)
+        return
     doc = cdp("DOM.getDocument", depth=-1)
     nid = cdp("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector=selector)["nodeId"]
     if not nid: raise RuntimeError(f"no element for {selector}")
-    cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
+    cdp("DOM.setFileInputFiles", files=files, nodeId=nid)
 
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.

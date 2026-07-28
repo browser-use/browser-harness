@@ -110,6 +110,48 @@ def test_health_helpers_send_the_versioned_protocol_operations():
     ]
 
 
+def test_browser_capabilities_returns_the_protocol_neutral_manifest():
+    with patch(
+        "browser_harness.helpers._send",
+        return_value={
+            "capabilities": {
+                "browser_transport_v1": {
+                    "engine": "firefox",
+                    "protocol": "bidi",
+                }
+            }
+        },
+    ):
+        assert helpers.browser_capabilities() == {
+            "engine": "firefox",
+            "protocol": "bidi",
+        }
+
+
+def test_upload_file_uses_protocol_neutral_set_files_for_bidi():
+    calls = []
+
+    def fake_cdp(method, **params):
+        calls.append((method, params))
+        return {}
+
+    with patch(
+        "browser_harness.helpers.browser_capabilities",
+        return_value={"protocol": "bidi"},
+    ), patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.upload_file("#upload", ["/tmp/one.glb", "/tmp/two.glb"])
+
+    assert calls == [
+        (
+            "BrowserHarness.setFiles",
+            {
+                "selector": "#upload",
+                "files": ["/tmp/one.glb", "/tmp/two.glb"],
+            },
+        )
+    ]
+
+
 def test_current_tab_uses_daemon_attachment_without_creating_a_manual_session():
     with patch(
         "browser_harness.helpers._send",
