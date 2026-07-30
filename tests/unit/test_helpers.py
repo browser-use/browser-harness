@@ -367,3 +367,22 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+def test_fill_input_append_moves_caret_to_end_for_contenteditable():
+    js_calls = []
+
+    def fake_js(expr, **kwargs):
+        js_calls.append(expr)
+        return True
+
+    with patch("browser_harness.helpers.cdp", side_effect=lambda *a, **k: {}), \
+         patch("browser_harness.helpers.js", side_effect=fake_js):
+        helpers.fill_input("#ce", "x", clear_first=False)
+
+    # contenteditable has no setSelectionRange; without a Range fallback the
+    # caret stays at 0 and "append" silently prepends.
+    caret = [e for e in js_calls if "setSelectionRange" in e or "collapse" in e]
+    assert caret, "clear_first=False must move the caret to the end"
+    assert any("collapse(false)" in e and "selectNodeContents" in e for e in caret), \
+        "caret move must fall back to a collapsed Range for contenteditable"
