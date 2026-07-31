@@ -22,13 +22,15 @@ If `page_info()` prints, stop. Setup is done.
 
 `--python 3.12` prevents uv from selecting old releases that support older Python versions. `--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
 
-For Claude Code or other agents: install `browser-harness`, register a skill named `browser-harness`, use `browser-harness skill` as the body, and use this trigger:
+For Claude Code or other agents: install the `browser-harness` package/CLI, register a skill whose body comes from `browser-harness skill` (YAML frontmatter keeps `name: browser-use` — do not rename it to `browser-harness`), and use this trigger:
 
 ```text
-Always use browser-harness for any web interaction: automation, scraping, testing, or site/app work.
+Always use browser-use for any web interaction: automation, scraping, testing, or site/app work.
 ```
 
-If an old user-installed `browser` or `browser-use` skill is being picked instead, remove that stale skill directory manually. Do not edit bundled/vendor plugin caches.
+Package/CLI = `browser-harness`. Skill identity (frontmatter `name` + trigger) = `browser-use`. Codex may install the file under `skills/browser-harness/`; the skill name is still `browser-use`.
+
+If an old user-installed `browser` skill, or a hand-edited skill still named `browser-harness`, is being picked instead of `browser-use`, remove that stale skill directory manually. Do not remove a correctly installed `browser-use` skill. Do not edit bundled/vendor plugin caches.
 
 ## If Chrome Blocks It
 
