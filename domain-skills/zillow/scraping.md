@@ -431,3 +431,32 @@ If you need property data without scraping Zillow or Redfin at scale:
 - **Zillow total count can exceed 800 but pagination caps at page ~20.** Zillow caps search results at around 800 listings even if `totalResultCount` shows 1037. Narrow by ZIP code, neighborhood, or price range to stay within bounds.
 
 - **URL filter syntax for Zillow:** Beds: `3-_beds` prefix; price: `0-1800000_price` suffix; ZIP: use `{zip}_rb` instead of city slug. Test by building the URL in a browser and copying the pattern.
+
+## Photo galleries for a specific address (the /homedetails/ 403 workaround)
+
+Field-tested 2026-07-31. Task: "download all listing photos" for one address when
+`/homedetails/` is PX-walled (curl AND `--headless=new` both get the captcha page).
+
+**Don't fight Zillow — the same MLS gallery is syndicated everywhere.** Ranked by yield:
+
+1. **Movoto — best source, full gallery, no bot wall.** Find the listing URL via a web
+   search for `"<address>" movoto` (their slug embeds an internal ID you can't guess).
+   The listing page (`/for-sale/` variant for sold homes) embeds every gallery image as
+   `https://pi.movoto.com/p/101/<MLS#>_0_<hash>.jpeg` — plain curl with a Chrome UA
+   returns all of them (a 54-photo gallery came back complete). ~1150px is the stored
+   size; there is no larger variant on that CDN.
+2. **Redfin CDN sequential probe — covers only, not the gallery.** Sold-home pages
+   render just photo 1, but the CDN pattern `ssl.cdn-redfin.com/photo/27/bigphoto/
+   <last3-of-MLS>/<MLS#>_<n>.jpg` answers HEAD requests. In practice only `_0`/`_1`
+   exist for sold listings — the rest 404. Don't waste time probing 0-60.
+3. **Compass/Coldwell Banker — server-render one photo only.** Sold-listing galleries
+   lazy-load behind auth'd XHR; `--virtual-time-budget` headless rendering still yields
+   only `img_0`. The `/m/<hash>_img_<n>_<suffix>/origin.jpg` suffix is per-image and
+   not enumerable.
+4. **Estately** — dead for sold homes (redirects to city search). **Wayback** — listing
+   pages are almost never archived (CDX returns empty).
+
+Traps: Redfin's `stingray` API 403s from datacenter IPs even when page HTML fetches
+fine; Movoto search-page HTML also contains *other* listings' `pi.movoto.com` URLs —
+filter by the target MLS number, then dedupe by image dimensions (small 480/960
+variants of the cover ship alongside the 1150px set).
