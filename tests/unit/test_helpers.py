@@ -77,6 +77,75 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
+# --- tabs ---
+
+def _tab_cdp(calls):
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-1"}
+        if method == "Target.createTarget":
+            return {"targetId": "target-1"}
+        return {}
+
+    return fake_cdp
+
+
+def test_switch_tab_activates_by_default():
+    calls = []
+
+    with patch("browser_harness.helpers.cdp", side_effect=_tab_cdp(calls)), \
+         patch("browser_harness.helpers._send"):
+        helpers.switch_tab("target-1")
+
+    assert ("Target.activateTarget", {"targetId": "target-1"}) in calls
+    assert ("Target.attachToTarget", {"targetId": "target-1", "flatten": True}) in calls
+
+
+def test_switch_tab_can_attach_without_activating():
+    calls = []
+
+    with patch("browser_harness.helpers.cdp", side_effect=_tab_cdp(calls)), \
+         patch("browser_harness.helpers._send") as send:
+        helpers.switch_tab("target-1", activate=False)
+
+    assert not any(method == "Target.activateTarget" for method, _ in calls)
+    assert ("Target.attachToTarget", {"targetId": "target-1", "flatten": True}) in calls
+    send.assert_called_once_with({
+        "meta": "set_session",
+        "session_id": "session-1",
+        "target_id": "target-1",
+    })
+
+
+def test_new_tab_can_create_and_attach_in_background():
+    calls = []
+
+    with patch("browser_harness.helpers.cdp", side_effect=_tab_cdp(calls)), \
+         patch("browser_harness.helpers.current_tab") as current, \
+         patch("browser_harness.helpers.switch_tab") as switch, \
+         patch("browser_harness.helpers.goto_url") as goto:
+        target_id = helpers.new_tab("https://example.com", activate=False)
+
+    assert target_id == "target-1"
+    assert calls == [("Target.createTarget", {"url": "about:blank", "background": True})]
+    current.assert_not_called()
+    switch.assert_called_once_with("target-1", activate=False)
+    goto.assert_called_once_with("https://example.com")
+
+
+def test_ensure_real_tab_can_attach_without_activating():
+    tab = {"targetId": "target-1", "url": "https://example.com"}
+
+    with patch("browser_harness.helpers.list_tabs", return_value=[tab]), \
+         patch("browser_harness.helpers.current_tab", side_effect=RuntimeError("stale")), \
+         patch("browser_harness.helpers.switch_tab") as switch:
+        result = helpers.ensure_real_tab(activate=False)
+
+    assert result == tab
+    switch.assert_called_once_with("target-1", activate=False)
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():

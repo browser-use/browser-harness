@@ -291,7 +291,7 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
-def switch_tab(target):
+def switch_tab(target, activate=True):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
@@ -299,17 +299,18 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    if activate:
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
     return sid
 
-def new_tab(url="about:blank"):
+def new_tab(url="about:blank", activate=True):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
+    if activate and url != "about:blank":
         try:
             cur = current_tab()
             cur_url = cur.get("url") or ""
@@ -323,8 +324,11 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
-    switch_tab(tid)
+    create_args = {"url": "about:blank"}
+    if not activate:
+        create_args["background"] = True
+    tid = cdp("Target.createTarget", **create_args)["targetId"]
+    switch_tab(tid, activate=activate)
     if url != "about:blank":
         goto_url(url)
     return tid
@@ -338,7 +342,7 @@ def close_tab(target=None):
     cdp("Target.closeTarget", targetId=target_id)
 
 
-def ensure_real_tab():
+def ensure_real_tab(activate=True):
     """Switch to a real user tab if current is chrome:// / internal / stale."""
     tabs = list_tabs(include_chrome=False)
     if not tabs:
@@ -349,7 +353,7 @@ def ensure_real_tab():
             return cur
     except Exception:
         pass
-    switch_tab(tabs[0]["targetId"])
+    switch_tab(tabs[0]["targetId"], activate=activate)
     return tabs[0]
 
 def iframe_target(url_substr):

@@ -7,12 +7,21 @@ Use **CDP for control**, **UI automation for user-visible order**.
 ```python
 tabs = list_tabs()                    # includes chrome:// pages too
 real_tabs = list_tabs(include_chrome=False)
-tid = new_tab("https://example.com")  # create + attach
-switch_tab(tid)                       # attach harness to tab
-cdp("Target.activateTarget", targetId=tid)  # show it in Chrome
+tid = new_tab("https://example.com")  # create + attach + show
+switch_tab(tid)                       # attach + show an existing tab
 print(current_tab())
 print(page_info())
 ```
+
+To leave the user's visible Chrome window and tab unchanged:
+
+```python
+tid = new_tab("https://example.com", activate=False)
+switch_tab(real_tabs[0], activate=False)  # attach to an existing tab instead
+```
+
+The harness remains attached to the background target, so its inspection,
+navigation, screenshots, and input helpers continue to address that tab.
 
 What CDP is good at:
 - attach to a tab
@@ -61,8 +70,10 @@ Typical tools:
 
 ## Rules that held up in practice
 
-- `switch_tab()` is **not enough** if the user expects Chrome to visibly change.
-- `Target.activateTarget` is the CDP-side "show this tab".
+- `switch_tab()` activates the target by default. Pass `activate=False` to
+  attach without changing the visible window or tab.
+- `new_tab(..., activate=False)` creates the target with CDP's `background`
+  option and attaches without calling `Target.activateTarget`.
 - `list_tabs()` includes `chrome://newtab/` by default; ask for `include_chrome=False` when you want only real pages.
 - `chrome://omnibox-popup.top-chrome/` can appear as a fake page target; ignore it for user-facing tab lists.
 - If a page has `w=0 h=0`, you may be attached to the wrong target or a non-window surface.

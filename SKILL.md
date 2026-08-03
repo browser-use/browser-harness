@@ -26,6 +26,9 @@ PY
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
 - First navigation is `new_tab(url)`, not `goto_url(url)`.
+- To control a tab without bringing its Chrome window or tab forward, use
+  `new_tab(url, activate=False)`, `switch_tab(target, activate=False)`, or
+  `ensure_real_tab(activate=False)`.
 - The normal local flow attaches to the running Chrome/Chromium CDP endpoint. No browser ids or local profile selection.
 
 ## Local Chrome
