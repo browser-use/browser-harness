@@ -155,7 +155,9 @@ def click_at_xy(x, y, button="left", clicks=1):
         try:
             from PIL import Image, ImageDraw
             dpr = js("window.devicePixelRatio") or 1
-            path = capture_screenshot(str(ipc._TMP / f"debug_click_{_debug_click_counter}.png"))
+            # Native resolution, not the default downscale: the marker below is
+            # positioned in device pixels, so any resampling would misplace it.
+            path = capture_screenshot(str(ipc._TMP / f"debug_click_{_debug_click_counter}.png"), max_dim=None)
             img = Image.open(path)
             draw = ImageDraw.Draw(img)
             px, py = int(x * dpr), int(y * dpr)
@@ -239,18 +241,66 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def capture_screenshot(path=None, full=False, max_dim=None):
-    """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
-    keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
-    path = path or str(ipc._TMP / "shot.png")
+
+# 1568px is the longest edge an image-aware LLM actually uses: larger images are
+# scaled down to it before the model sees them, and cost is roughly
+# (width * height) / 750 tokens. Pixels past that buy no legibility and no extra
+# tokens, they only enlarge the transcript the screenshot is pasted into.
+SCREENSHOT_MAX_DIM = 1568
+SCREENSHOT_JPEG_QUALITY = 75
+
+_UNSET = object()
+
+
+def _compact_screenshots():
+    """True when BH_SCREENSHOT_COMPACT asks for LLM-sized screenshots."""
+    return os.environ.get("BH_SCREENSHOT_COMPACT", "") not in ("", "0")
+
+
+def capture_screenshot(path=None, full=False, max_dim=_UNSET,
+                       quality=SCREENSHOT_JPEG_QUALITY):
+    """Save a screenshot of the current viewport and return its path.
+
+    By default this writes a full-resolution PNG, unchanged.
+
+    Set `BH_SCREENSHOT_COMPACT=1` to size captures for a model instead: the
+    long edge is capped at SCREENSHOT_MAX_DIM and the default filename becomes
+    `shot.jpg`. On a 2× display that turned a real 3024×1432 capture from
+    360 KB into 77 KB with no change in token cost and no visible difference
+    when read back.
+
+    `max_dim` overrides that per call, whatever the environment says. Capture
+    always happens at native resolution and the resize comes after, because
+    downscaling a supersampled 2× capture is sharper than asking Chrome to
+    render at deviceScaleFactor 1.
+
+    Output format follows the path extension: `.jpg`/`.jpeg` writes JPEG,
+    anything else writes PNG. So a caller passing an explicit `.png` keeps PNG
+    and only picks up the resize.
+    """
+    compact = _compact_screenshots()
+    if max_dim is _UNSET:
+        max_dim = SCREENSHOT_MAX_DIM if compact else None
+    path = path or str(ipc._TMP / ("shot.jpg" if compact else "shot.png"))
+
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
-    open(path, "wb").write(base64.b64decode(r["data"]))
-    if max_dim:
-        from PIL import Image
-        img = Image.open(path)
-        if max(img.size) > max_dim:
-            img.thumbnail((max_dim, max_dim))
-            img.save(path)
+    raw = base64.b64decode(r["data"])
+
+    as_jpeg = str(path).lower().endswith((".jpg", ".jpeg"))
+    if max_dim is None and not as_jpeg:
+        open(path, "wb").write(raw)
+        return path
+
+    from io import BytesIO
+    from PIL import Image
+    img = Image.open(BytesIO(raw))
+    if max_dim and max(img.size) > max_dim:
+        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+    if as_jpeg:
+        # JPEG carries no alpha channel, and a screenshot never needs one.
+        img.convert("RGB").save(path, "JPEG", quality=quality, optimize=True)
+    else:
+        img.save(path, "PNG", optimize=True)
     return path
 
 
