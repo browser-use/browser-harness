@@ -9,3 +9,4 @@ build/
 dist/
 .idea/
 .claude/
+.DS_Store
