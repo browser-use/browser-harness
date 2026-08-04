@@ -350,3 +350,60 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+# --- cdp() call forms ---
+
+def _capture_send():
+    sent = []
+    def fake_send(req):
+        sent.append(req)
+        return {"result": {}}
+    return fake_send, sent
+
+
+def test_cdp_kwargs_form():
+    fake_send, sent = _capture_send()
+    with patch("browser_harness.helpers._send", side_effect=fake_send):
+        helpers.cdp("Page.navigate", url="https://x.test")
+    assert sent[0] == {"method": "Page.navigate", "params": {"url": "https://x.test"}, "session_id": None}
+
+
+def test_cdp_params_dict_form():
+    # the form SKILL.md documents: cdp("Domain.method", params)
+    fake_send, sent = _capture_send()
+    with patch("browser_harness.helpers._send", side_effect=fake_send):
+        helpers.cdp("Target.closeTarget", {"targetId": "T1"})
+    assert sent[0]["params"] == {"targetId": "T1"}
+    assert sent[0]["session_id"] is None
+
+
+def test_cdp_dict_and_kwargs_merge_kwargs_win():
+    fake_send, sent = _capture_send()
+    with patch("browser_harness.helpers._send", side_effect=fake_send):
+        helpers.cdp("Runtime.evaluate", {"expression": "1", "returnByValue": False}, returnByValue=True)
+    assert sent[0]["params"] == {"expression": "1", "returnByValue": True}
+
+
+def test_cdp_session_id_stays_keyword():
+    fake_send, sent = _capture_send()
+    with patch("browser_harness.helpers._send", side_effect=fake_send):
+        helpers.cdp("Runtime.evaluate", session_id="S1", expression="1")
+    assert sent[0]["session_id"] == "S1"
+    assert sent[0]["params"] == {"expression": "1"}
+
+
+# --- new_tab() must not leak its about:blank tab ---
+
+def test_new_tab_closes_blank_tab_when_attach_fails():
+    calls = []
+    def fake_cdp(method, params=None, **kwargs):
+        calls.append((method, {**(params or {}), **kwargs}))
+        if method == "Target.createTarget":
+            return {"targetId": "T1"}
+        return {}
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.switch_tab", side_effect=RuntimeError("attach failed")):
+        with pytest.raises(RuntimeError, match="attach failed"):
+            helpers.new_tab("https://x.test")
+    assert ("Target.closeTarget", {"targetId": "T1"}) in calls
