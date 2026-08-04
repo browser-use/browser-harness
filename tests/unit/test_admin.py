@@ -674,3 +674,20 @@ def test_process_start_time_returns_none_for_invalid_pid():
         )
     # 2**31 - 1 is the largest pid_t; in practice no live process at that PID.
     assert admin._process_start_time((1 << 31) - 1) is None
+
+
+def test_show_live_url_bu_no_open_suppresses_auto_open(monkeypatch):
+    """BU_NO_OPEN keeps _show_live_url from popping a local tab (still prints the URL)."""
+    import webbrowser
+
+    monkeypatch.setattr(admin, "_has_local_gui", lambda: True)
+    calls = []
+    monkeypatch.setattr(webbrowser, "open", lambda *a, **k: calls.append(a))
+
+    monkeypatch.setenv("BU_NO_OPEN", "1")
+    admin._show_live_url("https://example.com/live")
+    assert calls == [], "BU_NO_OPEN should suppress the auto-open"
+
+    monkeypatch.delenv("BU_NO_OPEN")
+    admin._show_live_url("https://example.com/live")
+    assert calls, "without BU_NO_OPEN it should auto-open when a GUI is present"
