@@ -1,4 +1,4 @@
-import os, sys, time, urllib.request
+import json, os, sys, time, urllib.request
 from io import StringIO
 
 # Windows default stdout/stderr encoding is cp1252
@@ -77,9 +77,12 @@ USAGE = """Usage:
 def _local_chrome_listening():
     for port in (9222, 9223):
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3).close()
-            return True
-        except OSError: pass
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3) as response:
+                version = json.loads(response.read())
+            if isinstance(version, dict) and isinstance(version.get("webSocketDebuggerUrl"), str) and version["webSocketDebuggerUrl"]:
+                return True
+        except (OSError, TypeError, ValueError):
+            pass
     return False
 
 
