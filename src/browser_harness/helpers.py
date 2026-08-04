@@ -194,16 +194,39 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
     if not focused:
         raise RuntimeError(f"fill_input: element not found: {selector!r}")
     if clear_first:
-        # Dispatch select-all directly — NOT via press_key, which always emits a
-        # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
-        # makes Chrome treat the input as a printable "a" instead of firing the
-        # select-all shortcut, leaving the field uncleared.
-        mods = 4 if sys.platform == "darwin" else 2  # Cmd on macOS, Ctrl elsewhere
-        select_all = {"key": "a", "code": "KeyA", "modifiers": mods,
-                      "windowsVirtualKeyCode": 65, "nativeVirtualKeyCode": 65}
-        cdp("Input.dispatchKeyEvent", type="rawKeyDown", **select_all)
-        cdp("Input.dispatchKeyEvent", type="keyUp", **select_all)
-        press_key("Backspace")
+        # Select via element.select(), not a synthetic Cmd/Ctrl+A: the
+        # shortcut never fires select-all over CDP. Measured on Brave 150,
+        # selectionEnd - selectionStart == 0 on an 11-char field, in all three
+        # tab states (activated, background, background + focus emulation), so
+        # this is not background-tab specific. Backspace then deletes at the
+        # caret and the new text lands beside the old value instead of
+        # replacing it — silently, and the caret position varies, so the same
+        # call can yield 'REPLACEDpreexisting' or 'preexistinREPLACED'.
+        # Only select when there IS content: select() on an empty field leaves
+        # it in a state where subsequent characters don't insert at all.
+        had_content = js(
+            f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+            f"if(!e)return false;"
+            f"const v=('value'in e)?e.value:e.textContent;"
+            f"if(!v)return false;"
+            f"if(e.select)e.select();else document.getSelection().selectAllChildren(e);"
+            f"return true;}})()"
+        )
+        if had_content:
+            press_key("Backspace")
+    else:
+        # Append semantics: focus() parks the caret at 0, so typed text would
+        # land before the existing value. Move it to the end.
+        js(
+            f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+            f"if(!e)return;"
+            f"if('value'in e&&e.setSelectionRange)"
+            f"{{try{{e.setSelectionRange(e.value.length,e.value.length)}}catch(_){{}}return}}"
+            # contenteditable has no setSelectionRange; collapse a Range to the end
+            # instead, or the caret stays at 0 and 'append' prepends.
+            f"const r=document.createRange();r.selectNodeContents(e);r.collapse(false);"
+            f"const s=document.getSelection();s.removeAllRanges();s.addRange(r);}})()"
+        )
     for ch in text:
         press_key(ch)
     js(
