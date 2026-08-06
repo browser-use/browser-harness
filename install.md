@@ -60,12 +60,21 @@ PY
    - **Port present but `connection refused` / `DevTools not live yet` / `/json/version` 404** → Chrome is mid-startup. Just keep polling for up to 30 seconds; do not restart Chrome and do not open the inspect page.
    - **`no close frame received or sent` / stale websocket** → the daemon (not Chrome) is the problem. Run `restart_daemon()` once and retry — see step 7 below.
 
-   When you do need to open the inspect page on macOS and Chrome is already running, prefer AppleScript so it reuses the current profile instead of going through the picker:
+   When you do need to open the inspect page on macOS and Chrome is already running, use
+   `open`. It reuses the running instance and its current profile:
 
 ```bash
-osascript -e 'tell application "Google Chrome" to activate' \
-          -e 'tell application "Google Chrome" to open location "chrome://inspect/#remote-debugging"'
+open -a "Google Chrome" "chrome://inspect/#remote-debugging"
 ```
+
+   **Do not use AppleScript (`osascript -e 'tell application "Google Chrome" ...'`) here.**
+   `tell application` is an Apple Event, so macOS gates it behind an Automation consent
+   dialog — the square "<app> wants access to control Google Chrome" popup with
+   Don't Allow / Allow. That grant is keyed to the *exact binary path* of the calling
+   process, and Homebrew's node lives at `/opt/homebrew/Cellar/node/<version>/bin/node`.
+   Every `brew upgrade node` changes the version in that path and silently invalidates
+   the grant, so the popup returns and looks unfixable no matter how many times the user
+   clicks Allow. `open` is not an Apple Event and needs no grant, so it survives upgrades.
 
    On Linux: open that URL manually in the existing Chrome window.
    If Chrome shows the profile picker first, tell the user to choose their normal profile, *then* (only if `DevToolsActivePort` is still missing) open the inspect page in that profile. Keep polling instead of waiting for the user to type a follow-up.
@@ -101,5 +110,5 @@ PY
 - `DevToolsActivePort` can exist before the port is actually listening. Treat connection refused as "still enabling" and keep polling briefly.
 - If the port is listening but `/json/version` returns `404`, treat that as expected on newer Chrome builds and retry `browser-harness`.
 - Chrome may open the profile picker before any real tab exists.
-- On macOS, prefer AppleScript `open location` over `open -a ... URL` when Chrome is already running.
+- On macOS, use `open -a "Google Chrome" <url>`. Never AppleScript `tell application` — it triggers the macOS Automation consent popup, and that grant dies on every `brew upgrade node`.
 - Microsoft Edge (including Beta/Dev/Canary) works too — substitute the app name; steps are identical.

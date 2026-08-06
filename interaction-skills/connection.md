@@ -34,8 +34,14 @@ If Chrome is behind other windows or on another desktop:
 
 ```python
 import subprocess
-subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate'])
+subprocess.run(["open", "-a", "Google Chrome"])
 ```
+
+Use `open`, not `osascript -e 'tell application "Google Chrome" to activate'`. Both raise
+the window, but `tell application` is an Apple Event and macOS gates those behind an
+Automation consent dialog. The grant is keyed to the calling binary's full path, and
+Homebrew's node is `/opt/homebrew/Cellar/node/<version>/bin/node` — so every node upgrade
+invalidates it and the consent popup comes back. `open` needs no grant.
 
 ## Navigating
 
