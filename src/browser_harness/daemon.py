@@ -385,7 +385,12 @@ class Daemon:
                 take_over = inspect_tabs[0]["targetId"]
         if not pages:
             # No usable pages - create one instead of attaching to omnibox popup.
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            # background under BH_NO_FOCUS so the bootstrap tab doesn't raise the
+            # window (mirrors helpers._no_focus(); the daemon can't import helpers).
+            tid = (await self.cdp.send_raw("Target.createTarget", {
+                "url": "about:blank",
+                "background": os.environ.get("BH_NO_FOCUS") == "1",
+            }))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
         self.session = (await self.cdp.send_raw(

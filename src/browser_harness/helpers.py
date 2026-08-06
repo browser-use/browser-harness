@@ -255,6 +255,19 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 
 
 # --- tabs ---
+def _no_focus():
+    """BH_NO_FOCUS=1: never let a tab operation raise the browser window.
+
+    Opening or switching tabs normally calls Target.activateTarget, which on
+    macOS activates the whole application -- so every new_tab() steals keyboard
+    focus from the terminal driving the run. With this set, tabs are created in
+    the background and activation is skipped; the harness still attaches to and
+    drives the right tab, it just isn't the visibly-selected one. Use
+    cdp("Target.activateTarget", targetId=tid) to show a tab on purpose.
+    """
+    return os.environ.get("BH_NO_FOCUS") == "1"
+
+
 def _is_agent_startup_placeholder(title, url):
     url = str(url or "")
     return str(title or "").startswith("Starting agent ") and (
@@ -291,7 +304,7 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
-def switch_tab(target):
+def switch_tab(target, activate=None):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
@@ -299,7 +312,12 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    # Attaching is what actually drives the tab; activating only makes it the
+    # visible one -- and raises the window with it. See _no_focus().
+    if activate is None:
+        activate = not _no_focus()
+    if activate:
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
@@ -323,7 +341,7 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    tid = cdp("Target.createTarget", url="about:blank", background=_no_focus())["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
