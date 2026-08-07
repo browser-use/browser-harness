@@ -15,17 +15,42 @@ Core code lives in `src/browser_harness/`:
 
 `SKILL.md` tells agents how to use the harness and CLI.
 `install.md` tells agents how to install it, attach a browser, and troubleshoot.
-In this checkout, invoke the current source with `./browser-harness`; do not use
-a globally installed `browser-harness` binary.
-
-For recording or video tasks, follow `SKILL.md` and
-`interaction-skills/make-video.md`. A natural request to show, record, or demo
-the work opts in; significant work alone does not. Keep the exact path returned
-by `start_recording()` and never reenact a finished task.
 
 An agent operating the harness only edits inside `agent-workspace/`:
 - `agent_helpers.py` — task-specific browser helpers the agent adds
 - `domain-skills/` — skills the agent writes and reads
 
+Package/CLI name = `browser-harness`. Skill identity (`name` + trigger) = `browser-use` (do not rename).
+
+# Commands
+
+From a **git checkout** (no global install required for local testing):
+
+```bash
+# doctor — install/daemon/browser state
+./browser-harness --doctor
+
+# smoke — CDP attach + page_info (Chrome remote debugging must be allowed)
+./browser-harness <<'PY'
+print(page_info())
+PY
+
+# unit tests (no live browser)
+uv run --with pytest python -m pytest tests/unit -q
+
+# after core/src edits: reload daemon so next call picks up code
+./browser-harness --reload
+```
+
+Notes:
+- `./browser-harness` = local tree launcher. Agents/docs outside this repo use the installed `browser-harness` command.
+- Integration tests under `tests/integration/` may need a live browser/CDP — prefer unit + doctor for routine PR gates.
+- First-time install / blocked Chrome: follow `install.md` (`chrome://inspect/#remote-debugging`).
+
+# Security
+- Do not commit secrets, Browser Use Cloud tokens, or session cookies.
+- Prefer the smallest change that fixes the bug; do not expand CDP surface without need.
+
 # Contributing
 Consider what is really needed. Prefer the smallest diff that fixes the bug.
+Domain skills under `agent-workspace/domain-skills/` are agent-generated when possible — hand-author only when necessary.
