@@ -57,7 +57,7 @@ def _sock_path(name): return _RUNTIME / f"{_runtime_stem(name)}.sock"
 def _read_port_file(name):
     """(port, token) from the Windows port file, or (None, None) on any failure."""
     try:
-        d = json.loads(port_path(name).read_text())
+        d = json.loads(port_path(name).read_text(encoding="utf-8"))
         return int(d["port"]), d["token"]
     except (FileNotFoundError, ValueError, KeyError, TypeError, OSError):
         return None, None
@@ -181,7 +181,7 @@ async def serve(name, handler):
     pf = port_path(name)
     # Atomic write so a concurrent reader never sees a half-written file.
     tmp = pf.with_name(pf.name + ".tmp")
-    tmp.write_text(json.dumps({"port": port, "token": _server_token}))
+    tmp.write_text(json.dumps({"port": port, "token": _server_token}), encoding="utf-8")
     os.replace(tmp, pf)
     try:
         async with server: await asyncio.Event().wait()

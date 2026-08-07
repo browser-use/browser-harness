@@ -25,7 +25,7 @@ def _load_env():
 
 
 def _load_env_file(p):
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -313,7 +313,12 @@ def new_tab(url="about:blank"):
         try:
             cur = current_tab()
             cur_url = cur.get("url") or ""
-            if cur_url in ("", "about:blank") or cur_url.startswith("about:blank#"):
+            # Reuse attached tab when it's blank
+            if (
+                cur_url in ("", "about:blank")
+                or cur_url.startswith("about:blank#")
+                or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
+            ):
                 goto_url(url)
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
@@ -488,6 +493,11 @@ def http_get(url, headers=None, timeout=20.0):
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
         return data.decode()
+
+
+# Imported at the bottom so recorder's own `from . import helpers` sees a
+# fully-defined module. Exposes the recording helpers via `from .helpers import *`.
+from .recorder import start_recording, stop_recording, recording_dir
 
 
 def _load_agent_helpers():

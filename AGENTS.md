@@ -15,6 +15,13 @@ Core code lives in `src/browser_harness/`:
 
 `SKILL.md` tells agents how to use the harness and CLI.
 `install.md` tells agents how to install it, attach a browser, and troubleshoot.
+In this checkout, invoke the current source with `./browser-harness`; do not use
+a globally installed `browser-harness` binary.
+
+For recording or video tasks, follow `SKILL.md` and
+`interaction-skills/make-video.md`. A natural request to show, record, or demo
+the work opts in; significant work alone does not. Keep the exact path returned
+by `start_recording()` and never reenact a finished task.
 
 An agent operating the harness only edits inside `agent-workspace/`:
 - `agent_helpers.py` — task-specific browser helpers the agent adds

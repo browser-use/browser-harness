@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
+import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -20,7 +20,7 @@ def _load_env():
 
 
 def _load_env_file(p):
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -35,43 +35,149 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
-PROFILES = [
-    Path.home() / "Library/Application Support/Google/Chrome",
-    Path.home() / "Library/Application Support/Google/Chrome Canary",
-    Path.home() / "Library/Application Support/Comet",
-    Path.home() / "Library/Application Support/Arc/User Data",
-    Path.home() / "Library/Application Support/Dia/User Data",
-    Path.home() / "Library/Application Support/Microsoft Edge",
-    Path.home() / "Library/Application Support/Microsoft Edge Beta",
-    Path.home() / "Library/Application Support/Microsoft Edge Dev",
-    Path.home() / "Library/Application Support/Microsoft Edge Canary",
-    Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser",
-    Path.home() / ".config/google-chrome",
-    Path.home() / ".config/chromium",
-    Path.home() / ".config/chromium-browser",
-    Path.home() / ".config/microsoft-edge",
-    Path.home() / ".config/microsoft-edge-beta",
-    Path.home() / ".config/microsoft-edge-dev",
-    Path.home() / ".var/app/org.chromium.Chromium/config/chromium",
-    Path.home() / ".var/app/com.google.Chrome/config/google-chrome",
-    Path.home() / ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
-    Path.home() / ".var/app/com.microsoft.Edge/config/microsoft-edge",
-    Path.home() / "AppData/Local/Google/Chrome/User Data",
-    Path.home() / "AppData/Local/Google/Chrome SxS/User Data",
-    Path.home() / "AppData/Local/Chromium/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge Beta/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge Dev/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge SxS/User Data",
-    Path.home() / "AppData/Local/BraveSoftware/Brave-Browser/User Data",
-]
+_MAC_PROFILES = (
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Google/Chrome Canary",
+    "Library/Application Support/Comet",
+    "Library/Application Support/Arc/User Data",
+    "Library/Application Support/Dia/User Data",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Microsoft Edge Beta",
+    "Library/Application Support/Microsoft Edge Dev",
+    "Library/Application Support/Microsoft Edge Canary",
+    "Library/Application Support/BraveSoftware/Brave-Browser",
+)
+_LINUX_PROFILES = (
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/chromium-browser",
+    ".config/microsoft-edge",
+    ".config/microsoft-edge-beta",
+    ".config/microsoft-edge-dev",
+    ".var/app/org.chromium.Chromium/config/chromium",
+    ".var/app/com.google.Chrome/config/google-chrome",
+    ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
+    ".var/app/com.microsoft.Edge/config/microsoft-edge",
+)
+_WINDOWS_PROFILES = (  # relative to %LOCALAPPDATA%; SxS = Canary channel
+    "Google/Chrome/User Data",
+    "Google/Chrome SxS/User Data",
+    "Google/Chrome Beta/User Data",
+    "Google/Chrome Dev/User Data",
+    "Chromium/User Data",
+    "Microsoft/Edge/User Data",
+    "Microsoft/Edge Beta/User Data",
+    "Microsoft/Edge Dev/User Data",
+    "Microsoft/Edge SxS/User Data",
+    "BraveSoftware/Brave-Browser/User Data",
+)
+
+
+def profile_dirs(system=None):
+    system = system or platform.system()
+    if system == "Windows":
+        local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+        return [local / p for p in _WINDOWS_PROFILES]
+    if system == "Darwin":
+        return [Path.home() / p for p in _MAC_PROFILES]
+    return [Path.home() / p for p in _LINUX_PROFILES]
+
+
+PROFILES = profile_dirs()
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
+BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
+# Chrome 144+ shows a per-connection popup. Keep popup open enough to click.
+LOCAL_HANDSHAKE_TIMEOUT = 45
+# How long get_ws_url() keeps waiting for DevToolsActivePort before giving up
+NO_TOGGLE_GRACE = 3
+TOGGLE_BOOT_GRACE = 12
+
+
+def _devtools_port_live(base):
+    """True when something is listening on the profile's DevToolsActivePort port.
+
+    A stale file left behind by a closed browser must not count as a running
+    instance — it would route recovery to "click Allow" on a popup that can't
+    exist."""
+    try:
+        port = int((base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()[0].strip())
+    except (OSError, ValueError, IndexError):
+        return False
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+        return True
+    except OSError:
+        return False
+
+
+def remote_debugging_user_enabled():
+    """chrome://inspect's "Allow remote debugging" toggle
+
+    True only when a toggle-on profile also has a live DevTools port.
+    False if a profile records it off, None when no profile records it."""
+    seen = None
+    for base in PROFILES:
+        try:
+            state = json.loads((base / "Local State").read_text(encoding="utf-8", errors="replace"))
+            enabled = ((state.get("devtools") or {}).get("remote_debugging") or {}).get("user-enabled")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if enabled is True and _devtools_port_live(base):
+            return True
+        if enabled is False:
+            seen = False
+    return seen
+
+
+def remote_debugging_toggle_profiles():
+    """Profile dirs whose chrome://inspect toggle is recorded on in Local State"""
+    out = []
+    for base in PROFILES:
+        try:
+            state = json.loads((base / "Local State").read_text(encoding="utf-8", errors="replace"))
+            if ((state.get("devtools") or {}).get("remote_debugging") or {}).get("user-enabled") is True:
+                out.append(base)
+        except (OSError, ValueError, AttributeError):
+            continue
+    return out
+
+
+def browser_running_for_profile(base):
+    """True when a running browser instance holds this user-data-dir (POSIX)"""
+    try:
+        target = os.readlink(str(base / "SingletonLock"))
+    except OSError:
+        return False
+    try:
+        pid = int(target.rsplit("-", 1)[-1])
+    except ValueError:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # pid exists but belongs to another user
+
+
+def supported_browser_running():
+    """Is any browser whose profile we scan actually running?"""
+    if platform.system() == "Windows":
+        # Chromium on Windows uses a named mutex instead of SingletonLock —
+        import subprocess
+        try:
+            out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5).lower()
+        except Exception:
+            return True  # can't tell — assume running so recovery stays on the popup/toggle path
+        return any(n in out for n in ("chrome.exe", "msedge.exe", "chromium.exe", "brave.exe", "helium.exe"))
+    return any(browser_running_for_profile(base) for base in PROFILES)
 
 
 def log(msg):
-    open(LOG, "a").write(f"{msg}\n")
+    open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
 
 
 async def _silent(coro):
@@ -92,7 +198,7 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
         host = f"[{host}]"
     for base in PROFILES:
         try:
-            active = (base / "DevToolsActivePort").read_text().splitlines()
+            active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
         except (FileNotFoundError, NotADirectoryError):
             continue
         port = active[0].strip() if active else ""
@@ -125,12 +231,16 @@ def get_ws_url():
             except Exception as e:
                 last_err = e
                 time.sleep(1)
-        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- is the dedicated automation Chrome running?")
+        hint = "is the dedicated automation Chrome running? Launch it with --remote-debugging-port=<port> --user-data-dir=<dedicated dir>"
+        if platform.system() == "Windows":
+            hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
+        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
     deadline = time.time() + 30
+    next_liveness_check = 0.0
     while time.time() < deadline:
         for base in PROFILES:
             try:
-                active = (base / "DevToolsActivePort").read_text().splitlines()
+                active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
             except (FileNotFoundError, NotADirectoryError):
                 continue
             port = active[0].strip() if active else ""
@@ -152,6 +262,18 @@ def get_ws_url():
                     return f"ws://127.0.0.1:{port}{ws_path}"
             except (OSError, KeyError, ValueError):
                 pass
+        # Closed browser leaves stale DevToolsActivePort files
+        now = time.time()
+        if now >= next_liveness_check:
+            if not supported_browser_running():
+                raise RuntimeError(
+                    "chrome-not-running: no supported Chromium-family browser is running -- start Chrome, then retry"
+                )
+            next_liveness_check = now + 2
+        # The browser is running but the port isn't up; waiting 30s
+        grace = TOGGLE_BOOT_GRACE if remote_debugging_toggle_profiles() else NO_TOGGLE_GRACE
+        if now > deadline - 30 + grace:
+            break
         time.sleep(0.2)
     for probe_port in (9222, 9223):
         try:
@@ -162,6 +284,8 @@ def get_ws_url():
                 raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
         except (OSError, KeyError, ValueError):
             continue
+    if remote_debugging_user_enabled() is False:
+        raise RuntimeError('remote debugging is turned off for this browser instance — enable chrome://inspect/#remote-debugging (tick "Allow remote debugging for this browser instance")')
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
@@ -186,6 +310,51 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+def is_reusable_blank_page(t):
+    """A plain about:blank tab that is safe to attach to and navigate"""
+    url = t.get("url", "")
+    return (
+        t["type"] == "page"
+        and (url == "about:blank" or url.startswith("about:blank#"))
+        and not t.get("title", "").startswith("Starting agent ")
+    )
+
+
+def is_inspect_tab(t):
+    """A chrome://inspect tab — normally the one the permission flow opened"""
+    return t["type"] == "page" and t.get("url", "").startswith("chrome://inspect")
+
+
+def harness_opened_inspect():
+    """True when admin's recovery flow opened a chrome://inspect tab that is
+    still awaiting cleanup (the marker survives until the next connect)."""
+    try:
+        return paths.inspect_marker().exists()
+    except OSError:
+        return False
+
+
+def is_reusable_new_tab_page(t):
+    """The browser's own New Tab Page, ex: from a fresh launch"""
+    return t["type"] == "page" and t.get("url", "").startswith(
+        ("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")
+    )
+
+
+class _PatientCDPClient(CDPClient):
+    """CDPClient with the WS opening handshake stretched to LOCAL_HANDSHAKE_TIMEOUT."""
+
+    async def start(self):
+        import websockets
+        if self.ws is not None:
+            raise RuntimeError("Client is already started")
+        connect_kwargs = {"max_size": self.max_ws_frame_size, "open_timeout": LOCAL_HANDSHAKE_TIMEOUT}
+        if self.additional_headers:
+            connect_kwargs["additional_headers"] = self.additional_headers
+        self.ws = await websockets.connect(self.url, **connect_kwargs)
+        self._message_handler_task = asyncio.create_task(self._handle_messages())
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -200,7 +369,22 @@ class Daemon:
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
-            # No real pages - create one instead of attaching to omnibox popup.
+            # Fresh browser (ex: BU cloud) starts w about:blank; reuse it
+            pages = [t for t in targets if is_reusable_blank_page(t)]
+        if not pages:
+            # Freshly launched browser (ex: harness relaunching closed Chrome)
+            # starts with just the New Tab Page. Reuse it — creating about:blank
+            pages = [t for t in targets if is_reusable_new_tab_page(t)]
+        take_over = None
+        if not pages and harness_opened_inspect():
+            # After perms granted, only tab is often chrome://inspect
+            # Attach to it instead of creating a new about:blank
+            inspect_tabs = [t for t in targets if is_inspect_tab(t)]
+            if inspect_tabs:
+                pages = [inspect_tabs[0]]
+                take_over = inspect_tabs[0]["targetId"]
+        if not pages:
+            # No usable pages - create one instead of attaching to omnibox popup.
             tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
@@ -209,8 +393,32 @@ class Daemon:
         ))["sessionId"]
         self.target_id = pages[0]["targetId"]
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
+        if take_over:
+            try:
+                await self.cdp.send_raw("Page.navigate", {"url": "about:blank"}, session_id=self.session)
+                log(f"took over inspect tab {take_over} -> about:blank")
+            except Exception as e:
+                log(f"take over inspect tab {take_over}: {e}")
+        if BROWSER_KIND == "local":
+            await self._close_inspect_tabs(targets)
         await self._enable_default_domains(self.session)
         return pages[0]
+
+    async def _close_inspect_tabs(self, targets):
+        """Close chrome://inspect tabs left open by the permission recovery flow"""
+        if not harness_opened_inspect():
+            return
+        for t in targets:
+            if t["targetId"] != self.target_id and is_inspect_tab(t):
+                try:
+                    await self.cdp.send_raw("Target.closeTarget", {"targetId": t["targetId"]})
+                    log(f"closed leftover chrome://inspect tab {t['targetId']}")
+                except Exception as e:
+                    log(f"close inspect tab {t['targetId']}: {e}")
+        try:
+            paths.inspect_marker().unlink()
+        except OSError:
+            pass
 
     async def _enable_default_domains(self, session_id):
         """Enable Page/DOM/Runtime/Network on a CDP session.
@@ -240,7 +448,10 @@ class Daemon:
         self.stop = asyncio.Event()
         url = get_ws_url()
         log(f"connecting to {url}")
-        self.cdp = CDPClient(url)
+        self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
+        if BROWSER_KIND == "local":
+            # Allow while this handshake is still parked on the popup
+            log("handshake-wait: if Chrome shows an 'Allow remote debugging?' popup, click Allow")
         try:
             await self.cdp.start()
         except Exception as e:
@@ -249,6 +460,11 @@ class Daemon:
                     f"CDP WS handshake failed: {e} -- remote browser WebSocket connection failed. "
                     "This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "
                     "If you use Browser Use cloud, verify auth and get a fresh URL via start_remote_daemon()."
+                )
+            if BROWSER_KIND == "local" and ("timed out" in str(e).lower() or "403" in str(e)) and remote_debugging_user_enabled():
+                raise RuntimeError(
+                    f"permission-blocked: Chrome's 'Allow remote debugging?' popup was not accepted within {LOCAL_HANDSHAKE_TIMEOUT}s"
+                    " -- wait for the user to click Allow, then retry"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
@@ -277,7 +493,7 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid()}
+        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}

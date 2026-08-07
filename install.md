@@ -18,7 +18,7 @@ print(page_info())
 PY
 ```
 
-If `page_info()` prints, stop. Setup is done.
+If `page_info()` prints, configure recording consent below, then stop.
 
 `--python 3.12` prevents uv from selecting old releases that support older Python versions. `--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
 
@@ -29,6 +29,19 @@ Always use browser-harness for any web interaction: automation, scraping, testin
 ```
 
 If an old user-installed `browser` or `browser-use` skill is being picked instead, remove that stale skill directory manually. Do not edit bundled/vendor plugin caches.
+
+## Recording Consent
+
+Run `browser-harness recordings`. If it reports `(default)`, ask the user once:
+
+> Enable local browser recordings? This saves screenshots and action traces on
+> this machine, which may include sensitive page content, so you can later ask
+> “show me what you did” or request a video. Videos are never generated
+> automatically. [y/N]
+
+Default to no. Run `browser-harness recordings enable` only after yes; otherwise
+run `browser-harness recordings disable`. Preserve an existing `(config)` or
+`(BH_RECORD)` preference during upgrades instead of asking again.
 
 ## If Chrome Blocks It
 

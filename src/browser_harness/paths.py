@@ -29,6 +29,11 @@ def config_dir() -> Path:
     return ensure_private_dir(Path(raw).expanduser().resolve() if raw else home_dir())
 
 
+def inspect_marker() -> Path:
+    """Marker recording that the harness opened a chrome://inspect tab"""
+    return config_dir() / "inspect-opened"
+
+
 def runtime_dir() -> Path:
     raw = os.environ.get("BH_RUNTIME_DIR")
     return ensure_private_dir(Path(raw).expanduser().resolve() if raw else home_dir() / "runtime")
