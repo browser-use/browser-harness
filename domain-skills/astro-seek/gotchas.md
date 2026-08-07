@@ -161,9 +161,9 @@ Most tools expose a single user-facing form so `forms[0]` is right. Aspect-searc
 
 The secondary-progressions results page renders both `synastry-chart20-700__progressions_` and `synastry-chart24-700__secondary-progressions_` bi-wheels. The chart20 filename drops the time on the second date (`…_a_19-4-2026.png`) while the chart24 filename keeps it (`…_a_19-4-2026_12-00.png`). Parse the date block by splitting on `_a_` (or `_p_` for synastry) rather than regexing for a fixed `D-M-YYYY_HH-MM` shape on both sides.
 
-## Astro-seek's `r_<planet>=ANO` retrograde flags aren't always ephemerally correct
+## Astro-seek's `r_<planet>=ANO` retrograde flags ARE ephemerally correct (2026-08 correction)
 
-Verified: astro-seek emits `r_venuse=ANO` in the chart URL for 1990-01-01 noon London, but Venus was **direct** at that moment. Treat the `r_<planet>` flags in chart query strings as display hints mirroring astro-seek's rendering, not as ground truth for regression-testing your own retrograde detection. Compute retrograde status yourself from the planet's longitudinal speed (via Swiss Ephemeris) rather than trusting the URL parameter.
+**Correction (2026-08-06):** this file previously claimed `r_venuse=ANO` for 1990-01-01 noon London was wrong ("Venus was direct"). That claim was itself the error — Venus was retrograde Dec 29 1989 – Feb 8 1990; astro-seek's flag, Swiss Ephemeris speed sign, and the page's own coordinate-table speeds all agree. Benchmarks against the `r_<planet>` payload flags have since matched Swiss Ephemeris across natal, transit, progressed, and return charts with zero discrepancies. Trust the flags.
 
 ## Sidereal tool defaults to `whole`-sign houses, not placidus
 
@@ -172,3 +172,40 @@ The `<select name=house_system>` on `/sidereal-astrology-chart-calculator` defau
 ## Aspect-search uses Czech aspect keys + abbreviated months
 
 `kalendar_aspekt` takes Czech values (`konjunkce`, `sextil`, `kvadratura`, `trigon`, `opozice`, `minor`, `hard`, `konjunkce_opozice`), and the result-row format uses **3-letter English month abbreviations** (`Jan`, `Feb`, `Sep`) with a completely different shape from the ephemeris search tool. Don't reuse the ephemeris row regex. See `scraping.md`.
+
+## 2026-08 updates (benchmark campaign, 14 cloud sessions)
+
+- **Cloudflare now challenges plain HTTP.** Every non-browser request (curl,
+  `http_get`) to `horoscopes.astro-seek.com` gets `403 cf-mitigated: challenge`
+  ("Just a moment…"). The April-era bulk-HTTP fast path is dead. Browser Use
+  cloud browsers (stealth + residential proxy) were never challenged across 14
+  sessions. In-page bulk capture still works: submit the form, then dump
+  `document.documentElement.outerHTML` and parse offline.
+- **Ephemeris-search row format changed.** Visible rows are now just
+  `YYYY, Mon DD (display chart)`; the full 13-body noon-UT ephemeris (with R/st
+  flags) moved into each row's `onmouseover` tooltip. The row regex documented
+  in scraping.md no longer matches the visible text — parse the tooltip HTML.
+  Results are day-granular noon-UT snapshots (an ingress after noon lands on
+  the following day's row).
+- **House-systems form URL moved.** `/house-systems-astrology-calculator-comparison`
+  now 404s; live page is `/astrology-house-systems-calculator` (19 systems,
+  no seconds select).
+- **There is no tools index page.** `/astrology-tools-online` 404s — discover
+  tools from the homepage `#calculations` section and footer nav.
+- **Timezone handling is correct and tz-aware.** Transit/mansion/return pages
+  apply historical DST (e.g. 2026-04-19 12:00 London = 11:00 UT, banner says
+  BST). Payload decimals are TRUNCATED, not rounded — compare with one-sided
+  tolerance 10^(−decimals).
+- **Best-precision sources per page family:** birth chart tab-5 coordinate
+  table (arcseconds); progressions payload `luna_denni_00/_24` (11 decimals);
+  sidereal payload `aya_posun` (12-decimal ayanamsa); retrograde calendar
+  "shadow" links (station longitudes to arcseconds); ZR results' plain-text
+  export tabs (cleanest structured export on the whole site).
+- **Aspect-search extras:** `kalendar_aspekt` also accepts `trioktil` (135°)
+  and `kvinkunx` (150°) beyond the documented keys. Sign/aspect in result rows
+  live ONLY in `img alt` attributes; degrees use plain ASCII (no U+2019) unlike
+  chart pages.
+- **Cloud-browser death mode:** a Browser Use browser can die mid-session
+  (daemon websocket keepalive timeout; v4 API still says "active" but `cdpUrl`
+  is null and `/json/version` 503s). Stop it via PATCH and provision a fresh
+  browser — no in-place recovery.

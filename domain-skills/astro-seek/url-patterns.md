@@ -30,7 +30,7 @@ Every tool has a paired form-page URL and results URL. Both are GET. The form's 
 | Progressions (secondary) | `/astrology-secondary-progressions-directions-chart` | `/calculate-secondary-directions-progressions/` (`#tabs_redraw`) |
 | Asteroids | `/asteroids-astrology-online-calculator` | `/calculate-asteroids/` |
 | Sidereal | `/sidereal-astrology-chart-calculator` | `/calculate-sidereal-chart/` |
-| House-systems comparison | `/house-systems-astrology-calculator-comparison` | `/calculate-house-systems/` |
+| House-systems comparison | `/astrology-house-systems-calculator` (moved 2026-08; old `/house-systems-...-comparison` 404s) | `/calculate-house-systems/` |
 | Ephemeris search | `/ephemeris-search-engine-astrology-planet-positions` | `/calculate-ephemeris-search-engine/` |
 | Aspect search | `/astrology-aspects-online-search-engine` | `/calculate-astrology-aspects-online-search-engine/` (`#select_local_tz_anchor`) |
 | Traditional | `/traditional-astrology` | same pattern |
