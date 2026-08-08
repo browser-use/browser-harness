@@ -21,6 +21,24 @@ def test_stdin_executes_code():
     assert stdout.getvalue().strip() == "hello from stdin"
 
 
+def test_cli_telemetry_does_not_receive_script_contents():
+    secret = "secret-token@example.test"
+    captured = []
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO(f"print({secret!r})")), \
+         patch("sys.stdout", StringIO()), \
+         patch("browser_harness.run.daemon_alive", return_value=True), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"), \
+         patch("browser_harness.run._telemetry_browser", return_value=None), \
+         patch("browser_harness.run.telemetry.capture_cli_event", side_effect=lambda **kwargs: captured.append(kwargs)):
+        run.main()
+
+    assert captured[0]["task_length"] == len(f"print({secret!r})")
+    assert {"error_message", "output", "steps", "task"}.isdisjoint(captured[0])
+    assert secret not in captured[0].values()
+
+
 def test_c_flag_is_rejected():
     with patch.object(sys, "argv", ["browser-harness", "-c", "print('old path')"]), \
          patch("sys.stdin", StringIO("print('ignored')")):
