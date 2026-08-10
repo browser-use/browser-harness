@@ -80,6 +80,23 @@ await fetch('/api/admin/upload', {
 
 Each upload creates the next numbered version. The public download route preserves the uploaded extension and returns the original bytes at `/d/{token}/file/{documentId}?download=1` when the room allows downloads.
 
+## Permanently deleting a document
+
+Use the authenticated documents endpoint with both the numeric ID and expected slug. Fetch the catalog first and verify the exact target; the slug guard prevents deleting a different document if an ID is stale.
+
+```javascript
+await fetch('/api/admin/documents', {
+  method: 'DELETE',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({
+    documentId: 123,
+    expectedSlug: 'obsolete-document'
+  })
+}).then(r => r.json())
+```
+
+Successful deletion removes all room memberships and versions, deletes blob-backed files from object storage, and revokes direct document links. Historical view records are retained with their document reference cleared. The response includes `deletedBlobCount`; re-fetch `/api/admin/documents` and `/api/admin/rooms` to verify the document and every membership are gone.
+
 ## Rooms and public routes
 
 Admin room membership is managed through `/api/admin/rooms`. Its `set_documents` action replaces the complete room membership, so fetch the current room first, preserve its document order and permissions, and append or insert the new document deliberately.
