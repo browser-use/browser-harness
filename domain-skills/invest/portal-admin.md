@@ -44,6 +44,22 @@ await fetch('/api/admin/documents', {
 
 The `contentPath` must exactly match `content/decks/{slug}/v{version}`. The server returns `Deck content directory does not exist` if the deploy has not completed.
 
+To move every direct document link and every room link containing the document to the new version, call the bulk-upgrade endpoint after version registration:
+
+```javascript
+await fetch('/api/admin/links/bulk-upgrade', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({
+    documentId: 123,
+    version: 4,
+    excludeLinkIds: []
+  })
+}).then(r => r.json())
+```
+
+The response reports `updated`. This pins the version on all matching links, including revoked links; put link IDs in `excludeLinkIds` only when an older version must remain frozen. Re-fetch `/api/admin/links` and verify `pinnedVersions[String(documentId)]` for every direct link and every room link whose current room contains the document.
+
 ## Important trap: the upload form is not the deck publisher
 
 `POST /api/admin/upload` stores a blob-backed document version with no deck `contentPath`. Using it for a deck can create a numbered version that renders as `Not found` in the viewer. If those versions already exist, publish the repository directory using the next available version number, then call `add_version` with that matching number and path.
