@@ -56,9 +56,33 @@ const document = data.documents.find(d => d.slug === 'document-slug')
 console.log(document.versions)
 ```
 
+## Uploading PDF and file documents
+
+For blob-backed PDFs and files, first create a document through `POST /api/admin/documents` with `type: 'pdf'` or `type: 'file'`. Then upload the local file to `POST /api/admin/upload` as multipart form data with fields named `documentId` and `file`.
+
+When using the harness, attach the local file to the admin page's existing file input, then reuse that browser `File` object in the request:
+
+```python
+upload_file('input[type=file]', '/absolute/path/to/file.xlsx')
+```
+
+```javascript
+const input = document.querySelector('input[type=file]')
+const form = new FormData()
+form.append('documentId', '123')
+form.append('file', input.files[0], input.files[0].name)
+
+await fetch('/api/admin/upload', {
+  method: 'POST',
+  body: form
+}).then(r => r.json())
+```
+
+Each upload creates the next numbered version. The public download route preserves the uploaded extension and returns the original bytes at `/d/{token}/file/{documentId}?download=1` when the room allows downloads.
+
 ## Rooms and public routes
 
-Admin room membership is managed through `/api/admin/rooms`. Its `set_documents` action takes the room ID and the ordered document ID list; preserve the existing order and append or insert the new document deliberately.
+Admin room membership is managed through `/api/admin/rooms`. Its `set_documents` action replaces the complete room membership, so fetch the current room first, preserve its document order and permissions, and append or insert the new document deliberately.
 
 ```javascript
 await fetch('/api/admin/rooms', {
@@ -67,10 +91,15 @@ await fetch('/api/admin/rooms', {
   body: JSON.stringify({
     action: 'set_documents',
     roomId: 1,
-    documentIds: [1, 2, 3]
+    documents: [
+      {documentId: 1, sortOrder: 0, allowDownload: false},
+      {documentId: 2, sortOrder: 1, allowDownload: true}
+    ]
   })
 }).then(r => r.json())
 ```
+
+Room documents returned by `GET /api/admin/rooms` have the shape `{document, sortOrder, allowDownload}`. Set `allowDownload: true` to show a Download button and authorize the `?download=1` route.
 
 Stable public paths:
 
