@@ -95,6 +95,7 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
+- Stale sessions re-attach to the SAME tab only. If that tab is gone, calls fail with an error instead of silently attaching to whatever tab is frontmost — dispatching a replayed click into an unrelated tab (possibly a different app the user switched to) is worse than failing. Re-anchor explicitly with `list_tabs()` + `switch_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
 - Raw CDP is available with `cdp("Domain.method", ...)`.
