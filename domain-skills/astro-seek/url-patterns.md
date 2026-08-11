@@ -34,6 +34,7 @@ Every tool has a paired form-page URL and results URL. Both are GET. The form's 
 | Ephemeris search | `/ephemeris-search-engine-astrology-planet-positions` | `/calculate-ephemeris-search-engine/` |
 | Aspect search | `/astrology-aspects-online-search-engine` | `/calculate-astrology-aspects-online-search-engine/` (`#select_local_tz_anchor`) |
 | Traditional | `/traditional-astrology` | same pattern |
+| Custom bi/tri/quadri-wheel generators (paste positions, not birth data) | see `custom-chart-generators.md` | `/calculate-tri-wheel-chart-astrology-calculator/` |
 
 Discover the results URL on a new tool by reading `document.forms[0].action`. The action sometimes ends with `#tabs_redraw` — that's a scroll anchor, not a query. **A tool may have multiple forms** — aspect-search has four (`forms[0]` is a timezone sub-form, `forms[1]` is the real search); always read the action of the specific form you plan to submit.
 
