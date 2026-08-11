@@ -250,3 +250,70 @@ Six tabs share the same DOM, all server-rendered up front (so they're scrapeable
 | `#tab6` | Dominant planets analysis |
 
 Tab 3's content is the only lazy-loaded part. If you need it, click the tab in a real browser and wait for the image gallery to populate. Tabs 1, 2, 4, 5, 6 are present in the initial HTML response — `http_get` is sufficient.
+
+## Some tools ship real SVG, not a bitmap (2026-08-11)
+
+**"No SVG anywhere" is no longer universal.** The 90° dial
+(`/90-degree-dial-uranian-astrology-online-calculator` →
+`/calculate-90-degree-dial/`) renders its chart as an interactive **SVG
+document in an `<object>`**, not an `<img>`:
+
+```html
+<object id="svg_horoskop" type="image/svg+xml"
+        data="https://horoscopes.astro-seek.com/horoscope-chart8uranian7-700__radix_21-10-2002_14-40.svg?...">
+```
+
+Consequences:
+
+- **Every `<img>`-based recipe finds nothing on these pages.** `querySelectorAll('img')`
+  returns only chrome (logo, flags, icons); `document.querySelectorAll('svg').length`
+  is also **0** at the top level, because the SVG lives in the object's own
+  document. Check for `object[type="image/svg+xml"]` before concluding a tool
+  is chart-less.
+- **The vector source is same-origin readable** — far better than screenshotting:
+
+  ```python
+  src = js("""(function(){var o=document.querySelector('#svg_horoskop');
+    return o.contentDocument ? new XMLSerializer().serializeToString(o.contentDocument.documentElement) : null;})()""")
+  ```
+
+  ~300 KB for the dial, with an embedded woff2 astro font (`AstroFontPhysis`),
+  a `<style>` block of semantic classes (`line-zodiac-main`, `planet-guide-line`,
+  `planet-marker-outer`, `strip-line-thick`) and inline `<script>` for the
+  rotatable pointer. Class names make the geometry directly measurable.
+- **The `data` URL's query string carries the full computed payload**, same as
+  bitmap charts (`planeta_*`, `dum_*`, `r_*=ANO`), plus dial extras:
+  `dial_cislo`, `planeta_tnp*` (the eight Uranian TNPs), `planeta_fortune`,
+  `planeta_vertex`, and precomputed midpoints (`planeta_asc_mc`,
+  `planeta_slunce_luna`, …).
+- Style token is `chart8uranian7-700` and the extension is a genuine **`.svg`**.
+
+### Capturing one as a reference image
+
+Ads are injected *over* the figure, and hiding them reflows the page — so hide
+first, then re-read the rect, or the clip lands on stale coordinates:
+
+```python
+js("document.querySelectorAll('iframe,ins,[id*=google],[class*=adsbygoogle]').forEach(e=>e.style.display='none')")
+r = json.loads(js("""(function(){var b=document.querySelector('#svg_horoskop').getBoundingClientRect();
+  return JSON.stringify({x:b.x,y:b.y+scrollY,w:b.width,h:b.height});})()"""))
+shot = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=True,
+           clip={"x":r["x"],"y":r["y"],"width":r["w"],"height":r["h"],"scale":2})
+```
+
+`Page.captureScreenshot`'s `clip` is in **page** coordinates (document origin),
+not viewport coordinates — pass `y + scrollY`, and don't assume a fresh
+`window.scrollTo` moved what you think it moved.
+
+## 90° dial form fields
+
+`document.forms[0]` (action `/calculate-90-degree-dial/`); single-subject, so
+the city input is `#city`. Beyond the usual `narozeni_*` set (**no
+`narozeni_sekunda` on this tool**):
+
+| Field | Values |
+|---|---|
+| `dial_cislo` | dial modulus — `90` (default), `45`, `22.5`, `30`, `36`, `40`, `51.428`, `60`, `72`, `120`, `135`, `144`, `150`, `180`, `360`, `3`, `6`, `7.5`, `9`, `12`, `15` |
+| `orb` | `0.05`–`4` (default `1`) |
+| `hid_uranian_check` / `hid_midpointy_check` / `hid_asteroidy_check` | `on` — TNPs / midpoints / asteroids; uranian + midpoints default **on** |
+| `planeta_midpoint1_leva` / `_prava` | the two bodies of the highlighted midpoint pair |
