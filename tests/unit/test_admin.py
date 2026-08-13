@@ -48,6 +48,52 @@ def test_stale_websocket_does_not_open_chrome_inspect():
     assert not admin._needs_chrome_remote_debugging_prompt(msg)
 
 
+def test_open_chrome_inspect_uses_running_edge_on_macos(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: (
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge\n"
+        ),
+    )
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert admin._open_chrome_inspect()
+    assert calls == [
+        ["open", "-Ra", "Microsoft Edge"],
+        ["open", "-a", "Microsoft Edge", "edge://inspect/#remote-debugging"],
+    ]
+
+
+def test_open_chrome_inspect_does_not_fall_back_to_safari_on_macos(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: "Safari\n")
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+
+    class Result:
+        returncode = 1
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr(
+        "webbrowser.open",
+        lambda *args, **kwargs: pytest.fail("macOS must not send chrome:// URLs to the default browser"),
+    )
+
+    assert not admin._open_chrome_inspect()
+
+
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", None)  # shared-tmpdir mode

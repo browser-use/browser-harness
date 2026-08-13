@@ -900,21 +900,39 @@ def _launch_browser():
 
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
-    import platform, subprocess, webbrowser
-    url = "chrome://inspect/#remote-debugging"
+    import platform, shutil, subprocess, webbrowser
     if platform.system() == "Darwin":
         try:
-            r = subprocess.run([
-                "osascript",
-                "-e", 'tell application "Google Chrome" to activate',
-                "-e", f'tell application "Google Chrome" to open location "{url}"',
-            ], timeout=5, check=False, capture_output=True)
-            if r.returncode == 0:
-                return True
+            running = subprocess.check_output(
+                ["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5,
+            ).lower()
         except Exception:
-            pass
+            running = ""
+
+        apps = [(mac_app, "edge" if frag == "edge" else "chrome") for frag, mac_app, _, _ in _BROWSER_LAUNCH]
+        apps.sort(key=lambda spec: (spec[0].lower() not in running, spec[0] == "Google Chrome"))
+        for app, scheme in apps:
+            if not shutil.which("open"):
+                break
+            try:
+                installed = subprocess.run(
+                    ["open", "-Ra", app], timeout=5, check=False, capture_output=True,
+                )
+                if installed.returncode != 0:
+                    continue
+                opened = subprocess.run(
+                    ["open", "-a", app, f"{scheme}://inspect/#remote-debugging"],
+                    timeout=5,
+                    check=False,
+                    capture_output=True,
+                )
+                if opened.returncode == 0:
+                    return True
+            except (OSError, subprocess.SubprocessError):
+                continue
+        return False
     try:
-        return bool(webbrowser.open(url, new=2))
+        return bool(webbrowser.open("chrome://inspect/#remote-debugging", new=2))
     except Exception:
         return False
 
