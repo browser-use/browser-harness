@@ -814,8 +814,13 @@ def _chrome_running():
 _BROWSER_LAUNCH = (
     # (profile-dir fragment, macOS app name, POSIX commands, Windows `start` target)
     ("chrome canary", "Google Chrome Canary", ("google-chrome-canary",), "chrome"),
+    ("chrome beta", "Google Chrome Beta", ("google-chrome-beta",), "chrome"),
+    ("chrome dev", "Google Chrome Dev", ("google-chrome-unstable",), "chrome"),
     ("chromium", "Chromium", ("chromium", "chromium-browser"), "chromium"),
     ("chrome", "Google Chrome", ("google-chrome-stable", "google-chrome"), "chrome"),
+    ("edge beta", "Microsoft Edge Beta", ("microsoft-edge-beta",), "msedge"),
+    ("edge dev", "Microsoft Edge Dev", ("microsoft-edge-dev",), "msedge"),
+    ("edge canary", "Microsoft Edge Canary", ("microsoft-edge-canary",), "msedge"),
     ("edge", "Microsoft Edge", ("microsoft-edge", "microsoft-edge-stable"), "msedge"),
     ("brave", "Brave Browser", ("brave-browser", "brave"), "brave"),
     ("arc", "Arc", (), None),
@@ -903,13 +908,14 @@ def _open_chrome_inspect():
     import platform, shutil, subprocess, webbrowser
     if platform.system() == "Darwin":
         try:
-            running = subprocess.check_output(
+            process_output = subprocess.check_output(
                 ["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5,
-            ).lower()
+            )
+            running = {Path(line.strip()).name.lower() for line in process_output.splitlines() if line.strip()}
         except Exception:
-            running = ""
+            running = set()
 
-        apps = [(mac_app, "edge" if frag == "edge" else "chrome") for frag, mac_app, _, _ in _BROWSER_LAUNCH]
+        apps = [(mac_app, "edge" if frag.startswith("edge") else "chrome") for frag, mac_app, _, _ in _BROWSER_LAUNCH]
         apps.sort(key=lambda spec: (spec[0].lower() not in running, spec[0] == "Google Chrome"))
         for app, scheme in apps:
             if not shutil.which("open"):

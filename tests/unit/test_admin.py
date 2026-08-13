@@ -77,6 +77,61 @@ def test_open_chrome_inspect_uses_running_edge_on_macos(monkeypatch):
     ]
 
 
+def test_open_chrome_inspect_does_not_substring_match_process_names(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: (
+            "/usr/libexec/searchpartyd\n"
+            "/Applications/Dia.app/Contents/MacOS/Dia\n"
+        ),
+    )
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert admin._open_chrome_inspect()
+    assert calls[:2] == [
+        ["open", "-Ra", "Dia"],
+        ["open", "-a", "Dia", "chrome://inspect/#remote-debugging"],
+    ]
+
+
+def test_open_chrome_inspect_supports_running_edge_beta_on_macos(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta\n",
+    )
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert admin._open_chrome_inspect()
+    assert calls == [
+        ["open", "-Ra", "Microsoft Edge Beta"],
+        ["open", "-a", "Microsoft Edge Beta", "edge://inspect/#remote-debugging"],
+    ]
+
+
 def test_open_chrome_inspect_does_not_fall_back_to_safari_on_macos(monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Darwin")
     monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: "Safari\n")
