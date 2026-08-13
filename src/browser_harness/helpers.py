@@ -359,14 +359,17 @@ def close_tab(target=None):
         fallback_id = new_tab()
     try:
         _close_target(target_id)
-    except Exception:
-        switch_tab(cur)
+    except Exception as close_error:
+        try:
+            switch_tab(cur)
+        except Exception:
+            pass
         if fallback_id is not None:
             try:
                 _close_target(fallback_id)
             except Exception:
                 pass
-        raise
+        raise close_error
 
 
 def ensure_real_tab():

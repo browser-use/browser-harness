@@ -259,6 +259,30 @@ def test_close_tab_current_closes_fallback_when_single_tab_close_fails(failure_m
     assert browser.session_id == "session-current"
 
 
+def test_close_tab_cleanup_survives_failed_session_rollback():
+    browser = _FakeTabs(
+        [{"targetId": "current", "url": "https://current.example/", "title": "Current"}],
+        current="current",
+    )
+    browser.fail_close_targets.add("current")
+    real_switch_tab = helpers.switch_tab
+
+    def switch_tab(target):
+        target_id = target.get("targetId") if isinstance(target, dict) else target
+        if target_id == "current":
+            raise RuntimeError("rollback failed")
+        return real_switch_tab(target)
+
+    with patch("browser_harness.helpers.cdp", side_effect=browser.cdp), \
+         patch("browser_harness.helpers._send", side_effect=browser.send), \
+         patch("browser_harness.helpers.switch_tab", side_effect=switch_tab):
+        with pytest.raises(RuntimeError, match="close failed"):
+            helpers.close_tab()
+
+    assert [t["targetId"] for t in browser.tabs] == ["current"]
+    assert browser.closed == ["new-tab-1"]
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():
