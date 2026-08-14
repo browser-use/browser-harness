@@ -551,7 +551,7 @@ class Daemon:
             if is_real_page(info):
                 page = {
                     "targetId": info.get("targetId"),
-                    "title": info.get("title") or "(untitled)",
+                    "title": tab_marker.strip_title(info.get("title")) or "(untitled)",
                     "url": info.get("url") or "",
                 }
             return {"target_id": self.target_id, "session_id": self.session, "page": page}

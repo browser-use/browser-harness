@@ -209,3 +209,20 @@ def test_list_tabs_returns_titles_without_the_marker():
     ]}
     with patch("browser_harness.helpers.cdp", return_value=targets):
         assert [t["title"] for t in helpers.list_tabs()] == ["Driven tab", "Other tab"]
+
+
+def test_connection_status_reports_the_page_title_without_the_marker():
+    """`browser-harness status` prints this title, and agents read it back."""
+    d = _daemon(headless=False)
+    d.target_id = "t1"
+
+    class _Info(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            await super().send_raw(method, params, session_id)
+            if method == "Target.getTargetInfo":
+                return {"targetInfo": {"targetId": "t1", "type": "page",
+                                       "url": "https://example.com/", "title": MARKER + "Dashboard"}}
+            return {}
+
+    d.cdp = _Info()
+    assert _handle(d, {"meta": "connection_status"})["page"]["title"] == "Dashboard"
