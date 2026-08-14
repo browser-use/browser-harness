@@ -573,9 +573,27 @@ class Daemon:
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid == self.session and sid:
-                log(f"stale session {sid}, re-attaching")
-                if await self.attach_first_page():
+                # Re-attach ONLY to the target we were pinned to. Falling over to
+                # attach_first_page() here grabs whatever tab is frontmost and
+                # replays the pending command into it — if the user moved to a
+                # different window mid-script, that replays clicks/keys into an
+                # unrelated app (observed: a click meant for a PBX admin page
+                # landed in a production EHR tab). Same-target re-attach keeps
+                # the replay safe; a vanished target must fail loudly instead.
+                try:
+                    self.session = (await self.cdp.send_raw(
+                        "Target.attachToTarget", {"targetId": self.target_id, "flatten": True}
+                    ))["sessionId"]
+                    await self._enable_default_domains(self.session)
+                    log(f"stale session, re-attached to same target {self.target_id}")
                     return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
+                except Exception as e2:
+                    log(f"stale session and target {self.target_id} unavailable: {e2}")
+                    return {"error": (
+                        f"stale session and original target {self.target_id} is gone: {e2}. "
+                        "Not attaching to another tab automatically — re-anchor explicitly "
+                        "with list_tabs() + switch_tab(), or ensure_real_tab()."
+                    )}
             return {"error": msg}
 
 
