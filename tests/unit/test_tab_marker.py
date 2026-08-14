@@ -279,3 +279,29 @@ def test_switch_tab_does_not_mark_titles_from_the_client_side():
 
     title_writes = [kw.get("expression", "") for m, kw in cdp_calls if m == "Runtime.evaluate"]
     assert not title_writes, f"switch_tab wrote to document.title itself: {title_writes}"
+
+
+def test_the_marked_startup_placeholder_is_not_reused_as_a_blank_page(monkeypatch):
+    """The daemon reuses a fresh about:blank tab, but never the placeholder it
+    opened for the session — a tab it recognises by title, and marks."""
+    class _Targets(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            await super().send_raw(method, params, session_id)
+            if method == "Target.getTargets":
+                return {"targetInfos": [{"targetId": "t1", "type": "page", "url": "about:blank",
+                                         "title": MARKER + "Starting agent session"}]}
+            if method == "Target.createTarget":
+                return {"targetId": "fresh"}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "s1"}
+            return {}
+
+    monkeypatch.setattr(daemon, "harness_opened_inspect", lambda: False)
+    d = daemon.Daemon()
+    d.cdp = _Targets()
+
+    attached = asyncio.run(d.attach_first_page())
+
+    assert attached["targetId"] == "fresh", (
+        f"the daemon took over its own startup placeholder: {attached}"
+    )

@@ -317,7 +317,7 @@ def is_reusable_blank_page(t):
     return (
         t["type"] == "page"
         and (url == "about:blank" or url.startswith("about:blank#"))
-        and not t.get("title", "").startswith("Starting agent ")
+        and not tab_marker.strip_title(t.get("title")).startswith("Starting agent ")
     )
 
 
