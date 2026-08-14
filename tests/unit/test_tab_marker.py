@@ -261,3 +261,21 @@ def test_switching_away_leaves_the_previous_tab_clean():
         f"old tab was never unmarked: {_writes_on(d, 's1')}"
     )
     assert tab_marker.MARK_JS in _writes_on(d, "s2"), "the new tab must be the marked one"
+
+
+def test_switch_tab_does_not_mark_titles_from_the_client_side():
+    """The daemon decides whether a tab gets marked — it is the side that
+    knows whether the browser has a window. A helper writing the prefix
+    itself puts it back on a headless tab."""
+    cdp_calls = []
+
+    def fake_cdp(method, **kwargs):
+        cdp_calls.append((method, kwargs))
+        return {"sessionId": "s2", "targetId": "t2"}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", return_value={}):
+        helpers.switch_tab("t2")
+
+    title_writes = [kw.get("expression", "") for m, kw in cdp_calls if m == "Runtime.evaluate"]
+    assert not title_writes, f"switch_tab wrote to document.title itself: {title_writes}"
