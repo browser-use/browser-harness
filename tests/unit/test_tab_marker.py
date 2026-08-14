@@ -9,9 +9,17 @@ import asyncio
 import json
 from unittest.mock import patch
 
+import pytest
+
 from browser_harness import daemon, helpers, tab_marker
 
 MARKER = "\U0001F434 "
+
+
+@pytest.fixture(autouse=True)
+def _no_marker_override(monkeypatch):
+    """Every test states its own mode; a developer's shell must not decide."""
+    monkeypatch.delenv("BH_TAB_MARKER", raising=False)
 
 
 class _FakeCDP:
@@ -170,6 +178,25 @@ def test_bh_tab_marker_0_never_marks(monkeypatch):
 
     assert not [e for e in _title_writes(d) if "title" in e], (
         f"BH_TAB_MARKER=0 still marked a headed browser: {_title_writes(d)}"
+    )
+
+
+def test_bh_tab_marker_1_always_marks(monkeypatch):
+    """The other direction: a browser reporting HeadlessChrome that a human is
+    in fact watching still gets its horse."""
+    monkeypatch.setenv("BH_TAB_MARKER", "1")
+    d = daemon.Daemon()
+    d.cdp = _VersionCDP("Mozilla/5.0 (Macintosh) HeadlessChrome/151.0.0.0 Safari/537.36")
+
+    async def go():
+        await d.detect_headless()
+        d.mark_tab_soon("s1")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert tab_marker.MARK_JS in _title_writes(d), (
+        f"BH_TAB_MARKER=1 did not mark: {_title_writes(d)}"
     )
 
 

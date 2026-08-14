@@ -365,7 +365,8 @@ class Daemon:
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
         # No window means nobody is watching the tab: the marker would have no
-        # reader and could only pollute the titles the agent reads.
+        # reader and could only pollute the titles the agent reads. Detection
+        # decides, unless the caller says so through BH_TAB_MARKER.
         self.headless = False
 
     async def detect_headless(self):
@@ -375,8 +376,8 @@ class Daemon:
         pollutes are not, so a browser that will not say costs us a horse.
         BH_TAB_MARKER=0/1 settles it when the caller knows better."""
         override = os.environ.get("BH_TAB_MARKER")
-        if override == "0":
-            self.headless = True
+        if override in ("0", "1"):
+            self.headless = override == "0"
             return
         try:
             ua = (await self.cdp.send_raw("Browser.getVersion")).get("userAgent", "")

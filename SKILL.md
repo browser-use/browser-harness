@@ -162,7 +162,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - `chrome://inspect/#remote-debugging` must be enabled for local Chrome control.
 - Chrome may show an "Allow remote debugging?" popup; wait for the user to click Allow. Do not retry in a loop — Chrome pops a fresh dialog for every new connection, and the daemon's single held connection is what makes this a one-time click.
 - Omnibox popups are not real work tabs.
-- A headed browser gets a `🐴 ` prefix on the driven tab's title, so the user can see which tab is yours. `page_info()`, `current_tab()` and `list_tabs()` return the page's own title, without it; raw reads like `js("document.title")` still see it.
+- A headed browser gets a `🐴 ` prefix on the driven tab's title, so the user can see which tab is yours. `page_info()`, `current_tab()` and `list_tabs()` return the page's own title, without it; raw reads like `js("document.title")` still see it. Headless browsers are never marked; `BH_TAB_MARKER=0` or `=1` forces the choice when detection gets it wrong.
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
