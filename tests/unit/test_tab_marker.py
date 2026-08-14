@@ -190,3 +190,22 @@ def test_page_info_keeps_a_horse_the_page_itself_put_there():
     """Only a leading marker-plus-space is ours. Anything else is the page's."""
     assert _page_info_with_title("Horses \U0001F434 for sale") == "Horses \U0001F434 for sale"
     assert _page_info_with_title("\U0001F434Emoji-first title") == "\U0001F434Emoji-first title"
+
+
+def test_current_tab_returns_the_title_without_the_marker():
+    """current_tab() reads the title from the CDP target, a second channel the
+    marker leaks through."""
+    reply = {"targetId": "t1", "url": "https://example.com/", "title": MARKER + "Dashboard"}
+    with patch("browser_harness.helpers._send", return_value=reply):
+        assert helpers.current_tab()["title"] == "Dashboard"
+
+
+def test_list_tabs_returns_titles_without_the_marker():
+    """One tab in the list is the driven one; it must not look different from
+    the others to the agent."""
+    targets = {"targetInfos": [
+        {"targetId": "t1", "type": "page", "url": "https://a.test/", "title": MARKER + "Driven tab"},
+        {"targetId": "t2", "type": "page", "url": "https://b.test/", "title": "Other tab"},
+    ]}
+    with patch("browser_harness.helpers.cdp", return_value=targets):
+        assert [t["title"] for t in helpers.list_tabs()] == ["Driven tab", "Other tab"]

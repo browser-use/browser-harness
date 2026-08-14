@@ -269,12 +269,13 @@ def list_tabs(include_chrome=True):
     for t in cdp("Target.getTargets")["targetInfos"]:
         if t["type"] != "page": continue
         url = t.get("url", "")
+        title = strip_title(t.get("title"))
         if _is_agent_startup_placeholder(t.get("title", ""), url): continue
         if not include_chrome and url.startswith(INTERNAL): continue
         out.append({
             "targetId": t["targetId"],
             "target_id": t["targetId"],
-            "title": t.get("title", ""),
+            "title": title,
             "url": url,
         })
     return out
@@ -285,7 +286,7 @@ def current_tab():
         "targetId": r["targetId"],
         "target_id": r["targetId"],
         "url": r["url"],
-        "title": r["title"],
+        "title": strip_title(r["title"]),
     }
 
 def _mark_tab():
