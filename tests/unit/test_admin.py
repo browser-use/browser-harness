@@ -1,6 +1,6 @@
 import pytest
 
-from browser_harness import admin
+from browser_harness import admin, daemon
 
 
 class FakeSocket:
@@ -28,6 +28,92 @@ def test_local_chrome_mode_is_false_when_process_env_provides_remote_cdp(monkeyp
     monkeypatch.setenv("BU_CDP_WS", "ws://example.test/devtools/browser/1")
 
     assert not admin._is_local_chrome_mode()
+
+
+def test_named_daemon_without_endpoint_is_not_local_chrome_mode(monkeypatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+
+    assert not admin._is_local_chrome_mode(name="managed")
+
+
+def test_named_daemon_failure_does_not_trigger_local_recovery(monkeypatch, tmp_path):
+    class _ExitedProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "chrome-not-running: strict named daemon failure")
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / "managed.log")
+    monkeypatch.setattr(admin.subprocess, "Popen", lambda *args, **kwargs: _ExitedProcess())
+    monkeypatch.setattr(admin, "_launch_browser", lambda: (_ for _ in ()).throw(AssertionError("local Chrome launch attempted")))
+    monkeypatch.setattr(admin, "_open_chrome_inspect_once", lambda: (_ for _ in ()).throw(AssertionError("chrome://inspect recovery attempted")))
+
+    with pytest.raises(RuntimeError, match="chrome-not-running"):
+        admin.ensure_daemon(name="managed", wait=0)
+
+
+def test_named_daemon_respawn_without_endpoint_remains_strict(monkeypatch, tmp_path):
+    spawned_envs = []
+
+    class _Process:
+        def poll(self):
+            return None
+
+    def fake_popen(*args, **kwargs):
+        spawned_envs.append(kwargs["env"])
+        return _Process()
+
+    monkeypatch.setattr(admin.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / f"{name}.log")
+    monkeypatch.setattr(admin, "restart_daemon", lambda name: None)
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "BU_NAME='managed' requires BU_CDP_WS or BU_CDP_URL")
+
+    alive = iter([False, True, False])
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: next(alive))
+    admin.ensure_daemon(name="managed", env={"BU_CDP_WS": "ws://cloud.example"}, wait=1)
+
+    with pytest.raises(RuntimeError, match="requires BU_CDP_WS or BU_CDP_URL"):
+        admin.ensure_daemon(name="managed", wait=0)
+
+    assert spawned_envs[0]["BU_CDP_WS"] == "ws://cloud.example"
+    assert spawned_envs[1].get("BU_CDP_WS") is None
+    assert spawned_envs[1].get("BU_CDP_URL") is None
+
+    monkeypatch.setattr(daemon, "NAME", spawned_envs[1]["BU_NAME"])
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+
+    class _NoProfiles:
+        def __iter__(self):
+            raise AssertionError("respawned named daemon must not scan local profiles")
+
+    monkeypatch.setattr(daemon, "PROFILES", _NoProfiles())
+
+    with pytest.raises(RuntimeError, match="requires BU_CDP_WS or BU_CDP_URL"):
+        daemon.get_ws_url()
+
+
+def test_requested_daemon_name_wins_over_child_environment(monkeypatch, tmp_path):
+    spawned_envs = []
+
+    class _ExitedProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "BU_NAME='managed' requires BU_CDP_WS or BU_CDP_URL")
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / "managed.log")
+    monkeypatch.setattr(
+        admin.subprocess,
+        "Popen",
+        lambda *args, **kwargs: spawned_envs.append(kwargs["env"]) or _ExitedProcess(),
+    )
+
+    with pytest.raises(RuntimeError, match="requires BU_CDP_WS or BU_CDP_URL"):
+        admin.ensure_daemon(name="managed", env={"BU_NAME": "default"}, wait=0)
+
+    assert spawned_envs[0]["BU_NAME"] == "managed"
 
 
 def test_handshake_timeout_needs_chrome_remote_debugging_prompt():

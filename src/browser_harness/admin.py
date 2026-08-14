@@ -169,9 +169,11 @@ def _chrome_not_running(msg):
     return "chrome-not-running" in (msg or "").lower()
 
 
-def _is_local_chrome_mode(env=None):
-    """True when the daemon discovers a local Chrome instead of a remote CDP WS."""
+def _is_local_chrome_mode(env=None, name=None):
+    """True when the default daemon discovers local Chrome."""
     env = env or {}
+    if (name or env.get("BU_NAME") or os.environ.get("BU_NAME") or NAME) != "default":
+        return False
     return not (
         env.get("BU_CDP_WS")
         or env.get("BU_CDP_URL")
@@ -351,11 +353,11 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         restart_daemon(name)
 
     import subprocess, sys
-    local = _is_local_chrome_mode(env)
+    local = _is_local_chrome_mode(env, name)
     launched_browser = False
     opened_inspect = False
     for _ in range(3):
-        e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+        e = {**os.environ, **(env or {}), **({"BU_NAME": name} if name else {})}
         try:
             stderr_sink = open(ipc.log_path(name or NAME), "ab")
         except OSError:

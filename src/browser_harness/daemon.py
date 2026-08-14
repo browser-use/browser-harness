@@ -235,6 +235,10 @@ def get_ws_url():
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
+    if NAME != "default":
+        raise RuntimeError(
+            f"BU_NAME={NAME!r} requires BU_CDP_WS or BU_CDP_URL; refusing local Chrome discovery"
+        )
     deadline = time.time() + 30
     next_liveness_check = 0.0
     while time.time() < deadline:
