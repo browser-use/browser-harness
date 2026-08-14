@@ -372,7 +372,12 @@ class Daemon:
         """Chrome reports itself as HeadlessChrome when it runs without a window.
 
         Undetermined counts as headless: the marker is cosmetic, the titles it
-        pollutes are not, so a browser that will not say costs us a horse."""
+        pollutes are not, so a browser that will not say costs us a horse.
+        BH_TAB_MARKER=0/1 settles it when the caller knows better."""
+        override = os.environ.get("BH_TAB_MARKER")
+        if override == "0":
+            self.headless = True
+            return
         try:
             ua = (await self.cdp.send_raw("Browser.getVersion")).get("userAgent", "")
         except Exception as e:

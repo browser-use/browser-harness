@@ -154,6 +154,25 @@ def test_a_session_that_cannot_detect_the_mode_does_not_mark():
     )
 
 
+def test_bh_tab_marker_0_never_marks(monkeypatch):
+    """Detection reads a string the project does not control. Whoever launched
+    the browser can settle the question instead."""
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+    d = daemon.Daemon()
+    d.cdp = _VersionCDP("Mozilla/5.0 (Macintosh) Chrome/151.0.0.0 Safari/537.36")
+
+    async def go():
+        await d.detect_headless()
+        d.mark_tab_soon("s1")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"BH_TAB_MARKER=0 still marked a headed browser: {_title_writes(d)}"
+    )
+
+
 class _FakeBrowser(_FakeCDP):
     """Stands in for a live CDP connection, headless or headed."""
 
