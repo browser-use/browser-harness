@@ -6,8 +6,10 @@ leaked into every title the agent read, and agents repeatedly mistook it
 for a property of the site under test.
 """
 import asyncio
+import json
+from unittest.mock import patch
 
-from browser_harness import daemon, tab_marker
+from browser_harness import daemon, helpers, tab_marker
 
 MARKER = "\U0001F434 "
 
@@ -164,3 +166,27 @@ def test_a_headed_browser_session_still_marks_the_tab(monkeypatch):
     assert tab_marker.MARK_JS in _title_writes(d), (
         f"headed session lost the marker: {_title_writes(d)}"
     )
+
+
+# --- what the agent reads ---
+
+def _page_info_with_title(title):
+    payload = json.dumps({
+        "url": "https://example.com/", "title": title,
+        "w": 1, "h": 1, "sx": 0, "sy": 0, "pw": 1, "ph": 1,
+    })
+    with patch("browser_harness.helpers._send", return_value={}), \
+         patch("browser_harness.helpers.cdp", return_value={"result": {"type": "string", "value": payload}}):
+        return helpers.page_info()["title"]
+
+
+def test_page_info_returns_the_page_title_without_the_marker():
+    """The marker says how the agent reached the tab, not what the page is.
+    Reading it back as a page property has led agents to false findings."""
+    assert _page_info_with_title(MARKER + "Community Events | example.test") == "Community Events | example.test"
+
+
+def test_page_info_keeps_a_horse_the_page_itself_put_there():
+    """Only a leading marker-plus-space is ours. Anything else is the page's."""
+    assert _page_info_with_title("Horses \U0001F434 for sale") == "Horses \U0001F434 for sale"
+    assert _page_info_with_title("\U0001F434Emoji-first title") == "\U0001F434Emoji-first title"

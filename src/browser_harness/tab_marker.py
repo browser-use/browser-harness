@@ -8,6 +8,13 @@ not recognise is exactly the leak this module exists to prevent.
 
 MARKER = "\U0001F434 "
 
+
+def strip_title(title):
+    """The page's own title: our prefix removed, anything else left alone."""
+    title = title or ""
+    return title[len(MARKER):] if title.startswith(MARKER) else title
+
+
 MARK_JS = (
     "(function(){var M='" + MARKER + "';"
     "if(!document.title.startsWith(M))document.title=M+document.title})()"

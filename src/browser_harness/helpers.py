@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from . import _ipc as ipc
 from . import paths
+from .tab_marker import strip_title
 
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -144,7 +145,8 @@ def page_info():
     if dialog:
         return {"dialog": dialog}
     expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
-    return json.loads(_runtime_evaluate(expression))
+    info = json.loads(_runtime_evaluate(expression))
+    return {**info, "title": strip_title(info.get("title"))}
 
 # --- input ---
 _debug_click_counter = 0
