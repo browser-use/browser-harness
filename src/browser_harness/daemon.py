@@ -7,6 +7,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from . import tab_marker
 from cdp_use.client import CDPClient
 
 
@@ -316,7 +317,7 @@ def is_reusable_blank_page(t):
     return (
         t["type"] == "page"
         and (url == "about:blank" or url.startswith("about:blank#"))
-        and not t.get("title", "").startswith("Starting agent ")
+        and not tab_marker.strip_title(t.get("title")).startswith("Starting agent ")
     )
 
 
@@ -363,6 +364,32 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        # No window means nobody is watching the tab: the marker would have no
+        # reader and could only pollute the titles the agent reads. Detection
+        # decides, unless the caller says so through BH_TAB_MARKER.
+        self.headless = False
+
+    async def detect_headless(self):
+        """Chrome reports itself as HeadlessChrome when it runs without a window.
+
+        Undetermined counts as headless: the marker is cosmetic, the titles it
+        pollutes are not, so a browser that will not say costs us a horse.
+        BH_TAB_MARKER=0/1 settles it when the caller knows better."""
+        override = os.environ.get("BH_TAB_MARKER")
+        if override in ("0", "1"):
+            self.headless = override == "0"
+            return
+        try:
+            ua = (await self.cdp.send_raw("Browser.getVersion")).get("userAgent", "")
+        except Exception as e:
+            log(f"headless detection: {e}")
+            self.headless = True
+            return
+        if not ua:
+            log("headless detection: browser reported no user agent")
+            self.headless = True
+            return
+        self.headless = "HeadlessChrome" in ua
 
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -467,19 +494,45 @@ class Daemon:
                     " -- wait for the user to click Allow, then retry"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
+        await self.detect_headless()
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
-        mark_js = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
-            if method == "Page.javascriptDialogOpening":
-                self.dialog = params
-            elif method == "Page.javascriptDialogClosed":
-                self.dialog = None
-            elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-                asyncio.create_task(_silent(asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)))
+            self.on_cdp_event(method, params)
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+
+    def on_cdp_event(self, method, params):
+        """Side effects of a browser event, off the request path."""
+        if method == "Page.javascriptDialogOpening":
+            self.dialog = params
+        elif method == "Page.javascriptDialogClosed":
+            self.dialog = None
+        elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
+            self.mark_tab_soon(self.session)
+
+    def mark_tab_soon(self, session_id):
+        """Show the 🐴 marker on the driven tab, without blocking the caller.
+
+        Purely cosmetic, so never on the synchronous path: awaiting it cost
+        ~4s per navigation (#136). Skipped headless: no window, no one to
+        read it, and it would only leak into the titles the agent reads."""
+        if self.headless or not session_id:
+            return
+        asyncio.create_task(_silent(asyncio.wait_for(
+            self.cdp.send_raw("Runtime.evaluate", {"expression": tab_marker.MARK_JS}, session_id=session_id),
+            timeout=2,
+        )))
+
+    def unmark_tab_soon(self, session_id):
+        """Give the tab we are leaving its own title back."""
+        if self.headless or not session_id:
+            return
+        asyncio.create_task(_silent(asyncio.wait_for(
+            self.cdp.send_raw("Runtime.evaluate", {"expression": tab_marker.UNMARK_JS}, session_id=session_id),
+            timeout=2,
+        )))
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -521,7 +574,7 @@ class Daemon:
             if is_real_page(info):
                 page = {
                     "targetId": info.get("targetId"),
-                    "title": info.get("title") or "(untitled)",
+                    "title": tab_marker.strip_title(info.get("title")) or "(untitled)",
                     "url": info.get("url") or "",
                 }
             return {"target_id": self.target_id, "session_id": self.session, "page": page}
@@ -549,16 +602,9 @@ class Daemon:
                 tasks.append(disable_old())
             tasks.append(self._enable_default_domains(self.session))
             await asyncio.gather(*tasks)
-            # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
-            # it doesn't add to the synchronous IPC budget.
-            asyncio.create_task(_silent(asyncio.wait_for(
-                self.cdp.send_raw(
-                    "Runtime.evaluate",
-                    {"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"},
-                    session_id=self.session,
-                ),
-                timeout=2,
-            )))
+            if old_session and old_session != self.session:
+                self.unmark_tab_soon(old_session)
+            self.mark_tab_soon(self.session)
             return {"session_id": self.session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}

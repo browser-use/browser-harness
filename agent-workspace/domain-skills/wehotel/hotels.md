@@ -180,7 +180,7 @@ return rows.map(row => {
 }).filter(r => r.price > 0);
 ```
 
-Title pattern: stays `🟢 锦江酒店WeHotel官网` (the harness 🟢 prefix). The
+Title pattern: stays `锦江酒店WeHotel官网`. The
 hotel name is in the page body, not the title — extract via the page header,
 which uses generic `[class*=name]` or `[class*=title]` selectors.
 

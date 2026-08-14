@@ -2,7 +2,7 @@ import os, sys, time, urllib.request
 from io import StringIO
 
 # Windows default stdout/stderr encoding is cp1252
-# which can't encode the 🐴 marker helpers prepend to tab titles (or anything
+# which can't encode the 🐴 marker the daemon prepends to tab titles (or anything
 # else outside the locale charset). Force UTF-8 so `print(page_info())` and
 # tracebacks carrying page titles don't UnicodeEncodeError on Windows. #124(4).
 for _stream in (sys.stdout, sys.stderr):

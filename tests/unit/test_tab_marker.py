@@ -1,0 +1,418 @@
+"""The 🐴 tab marker: visible to the human, invisible to the agent.
+
+The marker exists so the user can see which tab the agent drives. It is
+written into document.title — the same channel the page writes to — so it
+leaked into every title the agent read, and agents repeatedly mistook it
+for a property of the site under test.
+"""
+import asyncio
+import json
+from unittest.mock import patch
+
+import pytest
+
+from browser_harness import daemon, helpers, tab_marker
+
+MARKER = "\U0001F434 "
+
+
+@pytest.fixture(autouse=True)
+def _no_marker_override(monkeypatch):
+    """Every test states its own mode; a developer's shell must not decide."""
+    monkeypatch.delenv("BH_TAB_MARKER", raising=False)
+
+
+class _FakeCDP:
+    """Records send_raw calls."""
+
+    def __init__(self):
+        self.calls = []  # list of (method, params, session_id)
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.calls.append((method, params, session_id))
+        return {}
+
+
+def _daemon(headless):
+    d = daemon.Daemon()
+    d.cdp = _FakeCDP()
+    d.headless = headless
+    return d
+
+
+def _handle(d, req):
+    """Run an IPC request and let its fire-and-forget tasks finish."""
+    async def go():
+        result = await d.handle(req)
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return result
+    return asyncio.run(go())
+
+
+def _title_writes(d):
+    return [
+        (params or {}).get("expression", "")
+        for (method, params, _sid) in d.cdp.calls
+        if method == "Runtime.evaluate"
+    ]
+
+
+def test_headless_session_never_marks_the_tab():
+    """No window, nobody watching: the marker can only pollute what the agent
+    reads. So a headless session must not touch document.title at all."""
+    d = _daemon(headless=True)
+
+    _handle(d, {"meta": "set_session", "session_id": "session-2", "target_id": "target-2"})
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"headless session wrote to document.title: {_title_writes(d)}"
+    )
+
+
+def test_headless_session_never_marks_on_page_load():
+    """The load-event marking path is separate from the session one, and fires
+    on every navigation — it must respect headless too."""
+    d = _daemon(headless=True)
+    d.session = "session-1"
+
+    async def go():
+        d.on_cdp_event("Page.loadEventFired", {})
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"headless session wrote to document.title on load: {_title_writes(d)}"
+    )
+
+
+class _VersionCDP(_FakeCDP):
+    def __init__(self, user_agent):
+        super().__init__()
+        self.user_agent = user_agent
+
+    async def send_raw(self, method, params=None, session_id=None):
+        await super().send_raw(method, params, session_id)
+        if method == "Browser.getVersion":
+            return {"userAgent": self.user_agent}
+        return {}
+
+
+def test_headless_is_detected_from_the_browser_user_agent():
+    """Chrome announces itself as HeadlessChrome when it runs without a window."""
+    d = daemon.Daemon()
+    d.cdp = _VersionCDP("Mozilla/5.0 (Macintosh) HeadlessChrome/151.0.0.0 Safari/537.36")
+
+    asyncio.run(d.detect_headless())
+
+    assert d.headless is True
+
+
+def test_headed_browser_is_not_reported_as_headless():
+    d = daemon.Daemon()
+    d.cdp = _VersionCDP("Mozilla/5.0 (Macintosh) Chrome/151.0.0.0 Safari/537.36")
+
+    asyncio.run(d.detect_headless())
+
+    assert d.headless is False
+
+
+class _BrokenVersionCDP(_FakeCDP):
+    async def send_raw(self, method, params=None, session_id=None):
+        await super().send_raw(method, params, session_id)
+        if method == "Browser.getVersion":
+            raise RuntimeError("CDP went away")
+        return {}
+
+
+def test_a_browser_that_reports_no_user_agent_does_not_mark():
+    """A reply without a user agent determines nothing either — same safe side."""
+    d = daemon.Daemon()
+    d.cdp = _FakeCDP()  # Browser.getVersion answers {}
+
+    async def go():
+        await d.detect_headless()
+        d.mark_tab_soon("s1")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"a browser with no user agent still got marked: {_title_writes(d)}"
+    )
+
+
+def test_a_session_that_cannot_detect_the_mode_does_not_mark():
+    """Marking is cosmetic; polluting a headless title is a bug. When the
+    browser will not say which mode it runs in, take the safe side."""
+    d = daemon.Daemon()
+    d.cdp = _BrokenVersionCDP()
+
+    async def go():
+        await d.detect_headless()
+        d.mark_tab_soon("s1")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"undetectable mode still marked the tab: {_title_writes(d)}"
+    )
+
+
+def test_bh_tab_marker_0_never_marks(monkeypatch):
+    """Detection reads a string the project does not control. Whoever launched
+    the browser can settle the question instead."""
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+    d = daemon.Daemon()
+    d.cdp = _VersionCDP("Mozilla/5.0 (Macintosh) Chrome/151.0.0.0 Safari/537.36")
+
+    async def go():
+        await d.detect_headless()
+        d.mark_tab_soon("s1")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"BH_TAB_MARKER=0 still marked a headed browser: {_title_writes(d)}"
+    )
+
+
+def test_bh_tab_marker_1_always_marks(monkeypatch):
+    """The other direction: a browser reporting HeadlessChrome that a human is
+    in fact watching still gets its horse."""
+    monkeypatch.setenv("BH_TAB_MARKER", "1")
+    d = daemon.Daemon()
+    d.cdp = _VersionCDP("Mozilla/5.0 (Macintosh) HeadlessChrome/151.0.0.0 Safari/537.36")
+
+    async def go():
+        await d.detect_headless()
+        d.mark_tab_soon("s1")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert tab_marker.MARK_JS in _title_writes(d), (
+        f"BH_TAB_MARKER=1 did not mark: {_title_writes(d)}"
+    )
+
+
+class _FakeBrowser(_FakeCDP):
+    """Stands in for a live CDP connection, headless or headed."""
+
+    def __init__(self, user_agent):
+        super().__init__()
+        self.user_agent = user_agent
+        self._event_registry = type("R", (), {"handle_event": None})()
+
+    async def start(self):
+        pass
+
+    async def send_raw(self, method, params=None, session_id=None):
+        await super().send_raw(method, params, session_id)
+        if method == "Browser.getVersion":
+            return {"userAgent": self.user_agent}
+        if method == "Target.getTargets":
+            return {"targetInfos": [{"targetId": "t1", "type": "page", "url": "https://example.com/"}]}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "s1"}
+        return {}
+
+
+def _started_daemon(monkeypatch, user_agent):
+    browser = _FakeBrowser(user_agent)
+    monkeypatch.setattr(daemon, "get_ws_url", lambda: "ws://fake")
+    monkeypatch.setattr(daemon, "CDPClient", lambda url: browser)
+    monkeypatch.setattr(daemon, "_PatientCDPClient", lambda url: browser)
+    d = daemon.Daemon()
+    asyncio.run(d.start())
+    return d
+
+
+def test_a_headless_browser_session_marks_nothing_end_to_end(monkeypatch):
+    """From connection to tab switch: a daemon that connected to a headless
+    browser never writes the marker, without anyone setting a flag by hand."""
+    d = _started_daemon(monkeypatch, "Mozilla/5.0 HeadlessChrome/151.0.0.0 Safari/537.36")
+
+    _handle(d, {"meta": "set_session", "session_id": "s2", "target_id": "t2"})
+    _handle(d, {"meta": "ping"})
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"headless browser got its titles rewritten: {_title_writes(d)}"
+    )
+
+
+def test_a_headed_browser_session_still_marks_the_tab(monkeypatch):
+    """The marker is what tells the user which tab the agent drives — it must
+    survive the headless work."""
+    d = _started_daemon(monkeypatch, "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36")
+
+    _handle(d, {"meta": "set_session", "session_id": "s2", "target_id": "t2"})
+
+    assert tab_marker.MARK_JS in _title_writes(d), (
+        f"headed session lost the marker: {_title_writes(d)}"
+    )
+
+
+# --- what the agent reads ---
+
+def _page_info_with_title(title):
+    payload = json.dumps({
+        "url": "https://example.com/", "title": title,
+        "w": 1, "h": 1, "sx": 0, "sy": 0, "pw": 1, "ph": 1,
+    })
+    with patch("browser_harness.helpers._send", return_value={}), \
+         patch("browser_harness.helpers.cdp", return_value={"result": {"type": "string", "value": payload}}):
+        return helpers.page_info()["title"]
+
+
+def test_page_info_returns_the_page_title_without_the_marker():
+    """The marker says how the agent reached the tab, not what the page is.
+    Reading it back as a page property has led agents to false findings."""
+    assert _page_info_with_title(MARKER + "Community Events | example.test") == "Community Events | example.test"
+
+
+def test_page_info_keeps_a_horse_the_page_itself_put_there():
+    """Only a leading marker-plus-space is ours. Anything else is the page's."""
+    assert _page_info_with_title("Horses \U0001F434 for sale") == "Horses \U0001F434 for sale"
+    assert _page_info_with_title("\U0001F434Emoji-first title") == "\U0001F434Emoji-first title"
+
+
+def test_current_tab_returns_the_title_without_the_marker():
+    """current_tab() reads the title from the CDP target, a second channel the
+    marker leaks through."""
+    reply = {"targetId": "t1", "url": "https://example.com/", "title": MARKER + "Dashboard"}
+    with patch("browser_harness.helpers._send", return_value=reply):
+        assert helpers.current_tab()["title"] == "Dashboard"
+
+
+def test_list_tabs_returns_titles_without_the_marker():
+    """One tab in the list is the driven one; it must not look different from
+    the others to the agent."""
+    targets = {"targetInfos": [
+        {"targetId": "t1", "type": "page", "url": "https://a.test/", "title": MARKER + "Driven tab"},
+        {"targetId": "t2", "type": "page", "url": "https://b.test/", "title": "Other tab"},
+    ]}
+    with patch("browser_harness.helpers.cdp", return_value=targets):
+        assert [t["title"] for t in helpers.list_tabs()] == ["Driven tab", "Other tab"]
+
+
+def test_connection_status_reports_the_page_title_without_the_marker():
+    """`browser-harness status` prints this title, and agents read it back."""
+    d = _daemon(headless=False)
+    d.target_id = "t1"
+
+    class _Info(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            await super().send_raw(method, params, session_id)
+            if method == "Target.getTargetInfo":
+                return {"targetInfo": {"targetId": "t1", "type": "page",
+                                       "url": "https://example.com/", "title": MARKER + "Dashboard"}}
+            return {}
+
+    d.cdp = _Info()
+    assert _handle(d, {"meta": "connection_status"})["page"]["title"] == "Dashboard"
+
+
+def test_a_marked_startup_placeholder_tab_stays_out_of_list_tabs():
+    """The placeholder the harness opens at startup is filtered by title —
+    a filter the marker used to defeat on the very tab the agent drives."""
+    targets = {"targetInfos": [
+        {"targetId": "t1", "type": "page", "url": "about:blank", "title": MARKER + "Starting agent session"},
+        {"targetId": "t2", "type": "page", "url": "https://b.test/", "title": "Other tab"},
+    ]}
+    with patch("browser_harness.helpers.cdp", return_value=targets):
+        assert [t["targetId"] for t in helpers.list_tabs()] == ["t2"]
+
+
+# --- one marked tab at a time ---
+
+def _writes_on(d, session_id):
+    return [
+        (params or {}).get("expression", "")
+        for (method, params, sid) in d.cdp.calls
+        if method == "Runtime.evaluate" and sid == session_id
+    ]
+
+
+def test_switching_away_leaves_the_previous_tab_clean():
+    """Exactly one tab is the driven one. The tab left behind gets its own
+    title back — trailing space included — while the new one gets marked."""
+    d = _daemon(headless=False)
+    _handle(d, {"meta": "set_session", "session_id": "s1", "target_id": "t1"})
+
+    _handle(d, {"meta": "set_session", "session_id": "s2", "target_id": "t2"})
+
+    assert tab_marker.UNMARK_JS in _writes_on(d, "s1"), (
+        f"old tab was never unmarked: {_writes_on(d, 's1')}"
+    )
+    assert tab_marker.MARK_JS in _writes_on(d, "s2"), "the new tab must be the marked one"
+
+
+def test_switch_tab_does_not_mark_titles_from_the_client_side():
+    """The daemon decides whether a tab gets marked — it is the side that
+    knows whether the browser has a window. A helper writing the prefix
+    itself puts it back on a headless tab."""
+    cdp_calls = []
+
+    def fake_cdp(method, **kwargs):
+        cdp_calls.append((method, kwargs))
+        return {"sessionId": "s2", "targetId": "t2"}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", return_value={}):
+        helpers.switch_tab("t2")
+
+    title_writes = [kw.get("expression", "") for m, kw in cdp_calls if m == "Runtime.evaluate"]
+    assert not title_writes, f"switch_tab wrote to document.title itself: {title_writes}"
+
+
+def test_the_marked_startup_placeholder_is_not_reused_as_a_blank_page(monkeypatch):
+    """The daemon reuses a fresh about:blank tab, but never the placeholder it
+    opened for the session — a tab it recognises by title, and marks."""
+    class _Targets(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            await super().send_raw(method, params, session_id)
+            if method == "Target.getTargets":
+                return {"targetInfos": [{"targetId": "t1", "type": "page", "url": "about:blank",
+                                         "title": MARKER + "Starting agent session"}]}
+            if method == "Target.createTarget":
+                return {"targetId": "fresh"}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "s1"}
+            return {}
+
+    monkeypatch.setattr(daemon, "harness_opened_inspect", lambda: False)
+    d = daemon.Daemon()
+    d.cdp = _Targets()
+
+    attached = asyncio.run(d.attach_first_page())
+
+    assert attached["targetId"] == "fresh", (
+        f"the daemon took over its own startup placeholder: {attached}"
+    )
+
+
+def test_a_recorded_event_carries_the_page_title_without_the_marker(tmp_path, monkeypatch):
+    """events.jsonl is copied into recording-summary.json, which make-video
+    hands straight to an agent — a fourth way the marker reached one."""
+    from browser_harness import recorder
+
+    monkeypatch.setattr(recorder, "_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(recorder, "recording_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(recorder, "_is_auto_recording", lambda d: False)
+    monkeypatch.setattr(recorder, "_auto_is_stale", lambda d: False)
+
+    def boom(*a, **kw):
+        raise RuntimeError("no browser in this test")
+
+    with patch("browser_harness.helpers.js", return_value={"url": "https://example.com/",
+                                                           "title": MARKER + "Dashboard"}), \
+         patch("browser_harness.helpers.cdp", side_effect=boom):
+        recorder.observe("click_at_xy", (1, 2), {})
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [e["title"] for e in events] == ["Dashboard"], f"recorded titles: {events}"

@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from . import _ipc as ipc
 from . import paths
+from .tab_marker import strip_title
 
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -144,7 +145,8 @@ def page_info():
     if dialog:
         return {"dialog": dialog}
     expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
-    return json.loads(_runtime_evaluate(expression))
+    info = json.loads(_runtime_evaluate(expression))
+    return {**info, "title": strip_title(info.get("title"))}
 
 # --- input ---
 _debug_click_counter = 0
@@ -267,12 +269,13 @@ def list_tabs(include_chrome=True):
     for t in cdp("Target.getTargets")["targetInfos"]:
         if t["type"] != "page": continue
         url = t.get("url", "")
-        if _is_agent_startup_placeholder(t.get("title", ""), url): continue
+        title = strip_title(t.get("title"))
+        if _is_agent_startup_placeholder(title, url): continue
         if not include_chrome and url.startswith(INTERNAL): continue
         out.append({
             "targetId": t["targetId"],
             "target_id": t["targetId"],
-            "title": t.get("title", ""),
+            "title": title,
             "url": url,
         })
     return out
@@ -283,26 +286,18 @@ def current_tab():
         "targetId": r["targetId"],
         "target_id": r["targetId"],
         "url": r["url"],
-        "title": r["title"],
+        "title": strip_title(r["title"]),
     }
-
-def _mark_tab():
-    """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
-    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
-    except Exception: pass
 
 def switch_tab(target):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
-    # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
-    # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
-    except Exception: pass
     cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
+    # set_session moves the 🐴 marker to this tab: the daemon owns it, being
+    # the side that knows whether the browser has a window at all.
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
-    _mark_tab()
     return sid
 
 def new_tab(url="about:blank"):

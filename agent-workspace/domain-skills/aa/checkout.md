@@ -149,7 +149,6 @@ For the PAN / CVV specifically, prefer the harness's `type_text()` (CDP keystrok
 - **`gender` values are single letters** (`M`, `F`, `U`, `X`), not `MALE`/`FEMALE`. The a11y label shows "MaleFemaleUnspecifiedUndisclosed" concatenated, which is misleading.
 - **Formcontrolname `firstName` exists twice in the DOM** — once on the passenger modal (`<adc-text-input id="firstName">`) and once on the checkout payment form (`<input id="firstNameInput">`). Target by the specific id to avoid collisions.
 - **Viewport emulation resets across `Emulation.setDeviceMetricsOverride` boundaries** after navigation. Re-apply `setDeviceMetricsOverride` if the later page's `page_info().w` jumps back up.
-- **Tab title is prefixed with the harness's `🟢 ` marker** on each real page, so `page_info().title` will start with that emoji — don't treat it as site content.
 
 ## Waits
 
