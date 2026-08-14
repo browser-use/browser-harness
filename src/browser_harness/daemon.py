@@ -363,6 +363,9 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        # No window means nobody is watching the tab: the marker would have no
+        # reader and could only pollute the titles the agent reads.
+        self.headless = False
 
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -550,15 +553,18 @@ class Daemon:
             tasks.append(self._enable_default_domains(self.session))
             await asyncio.gather(*tasks)
             # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
-            # it doesn't add to the synchronous IPC budget.
-            asyncio.create_task(_silent(asyncio.wait_for(
-                self.cdp.send_raw(
-                    "Runtime.evaluate",
-                    {"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"},
-                    session_id=self.session,
-                ),
-                timeout=2,
-            )))
+            # it doesn't add to the synchronous IPC budget. Skipped headless:
+            # no window, no one to read it, and it would only leak into the
+            # titles the agent reads.
+            if not self.headless:
+                asyncio.create_task(_silent(asyncio.wait_for(
+                    self.cdp.send_raw(
+                        "Runtime.evaluate",
+                        {"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"},
+                        session_id=self.session,
+                    ),
+                    timeout=2,
+                )))
             return {"session_id": self.session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
