@@ -24,6 +24,7 @@ import base64, json, os, re, time
 from pathlib import Path
 
 from . import paths
+from . import tab_marker
 
 # Helpers that change what's on screen. Read-only helpers (js, page_info,
 # capture_screenshot, ...) don't get frames — they'd bloat recordings of
@@ -265,7 +266,12 @@ def _capture(d, helper, args=(), kwargs=None, duration=None):
     if duration is not None:
         event["duration"] = duration
     try:
-        event.update(helpers.js(_CTX_JS) or {})
+        ctx = helpers.js(_CTX_JS) or {}
+        # The 🐴 marker is the harness's, not the page's, and this trace ends
+        # up in recording-summary.json, which an agent reads.
+        if "title" in ctx:
+            ctx["title"] = tab_marker.strip_title(ctx["title"])
+        event.update(ctx)
     except Exception:
         pass
     event.update(_details(helper, args, kwargs or {}, event))

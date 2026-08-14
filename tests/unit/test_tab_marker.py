@@ -305,3 +305,25 @@ def test_the_marked_startup_placeholder_is_not_reused_as_a_blank_page(monkeypatc
     assert attached["targetId"] == "fresh", (
         f"the daemon took over its own startup placeholder: {attached}"
     )
+
+
+def test_a_recorded_event_carries_the_page_title_without_the_marker(tmp_path, monkeypatch):
+    """events.jsonl is copied into recording-summary.json, which make-video
+    hands straight to an agent — a fourth way the marker reached one."""
+    from browser_harness import recorder
+
+    monkeypatch.setattr(recorder, "_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(recorder, "recording_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(recorder, "_is_auto_recording", lambda d: False)
+    monkeypatch.setattr(recorder, "_auto_is_stale", lambda d: False)
+
+    def boom(*a, **kw):
+        raise RuntimeError("no browser in this test")
+
+    with patch("browser_harness.helpers.js", return_value={"url": "https://example.com/",
+                                                           "title": MARKER + "Dashboard"}), \
+         patch("browser_harness.helpers.cdp", side_effect=boom):
+        recorder.observe("click_at_xy", (1, 2), {})
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [e["title"] for e in events] == ["Dashboard"], f"recorded titles: {events}"
