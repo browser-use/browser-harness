@@ -369,11 +369,19 @@ class Daemon:
         self.headless = False
 
     async def detect_headless(self):
-        """Chrome reports itself as HeadlessChrome when it runs without a window."""
+        """Chrome reports itself as HeadlessChrome when it runs without a window.
+
+        Undetermined counts as headless: the marker is cosmetic, the titles it
+        pollutes are not, so a browser that will not say costs us a horse."""
         try:
             ua = (await self.cdp.send_raw("Browser.getVersion")).get("userAgent", "")
         except Exception as e:
             log(f"headless detection: {e}")
+            self.headless = True
+            return
+        if not ua:
+            log("headless detection: browser reported no user agent")
+            self.headless = True
             return
         self.headless = "HeadlessChrome" in ua
 

@@ -111,6 +111,49 @@ def test_headed_browser_is_not_reported_as_headless():
     assert d.headless is False
 
 
+class _BrokenVersionCDP(_FakeCDP):
+    async def send_raw(self, method, params=None, session_id=None):
+        await super().send_raw(method, params, session_id)
+        if method == "Browser.getVersion":
+            raise RuntimeError("CDP went away")
+        return {}
+
+
+def test_a_browser_that_reports_no_user_agent_does_not_mark():
+    """A reply without a user agent determines nothing either — same safe side."""
+    d = daemon.Daemon()
+    d.cdp = _FakeCDP()  # Browser.getVersion answers {}
+
+    async def go():
+        await d.detect_headless()
+        d.mark_tab_soon("s1")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"a browser with no user agent still got marked: {_title_writes(d)}"
+    )
+
+
+def test_a_session_that_cannot_detect_the_mode_does_not_mark():
+    """Marking is cosmetic; polluting a headless title is a bug. When the
+    browser will not say which mode it runs in, take the safe side."""
+    d = daemon.Daemon()
+    d.cdp = _BrokenVersionCDP()
+
+    async def go():
+        await d.detect_headless()
+        d.mark_tab_soon("s1")
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"undetectable mode still marked the tab: {_title_writes(d)}"
+    )
+
+
 class _FakeBrowser(_FakeCDP):
     """Stands in for a live CDP connection, headless or headed."""
 
