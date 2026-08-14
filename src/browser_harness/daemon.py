@@ -511,6 +511,15 @@ class Daemon:
             timeout=2,
         )))
 
+    def unmark_tab_soon(self, session_id):
+        """Give the tab we are leaving its own title back."""
+        if self.headless or not session_id:
+            return
+        asyncio.create_task(_silent(asyncio.wait_for(
+            self.cdp.send_raw("Runtime.evaluate", {"expression": tab_marker.UNMARK_JS}, session_id=session_id),
+            timeout=2,
+        )))
+
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
         # connect and issue CDP commands. expected_token() is None on POSIX so
@@ -579,6 +588,8 @@ class Daemon:
                 tasks.append(disable_old())
             tasks.append(self._enable_default_domains(self.session))
             await asyncio.gather(*tasks)
+            if old_session and old_session != self.session:
+                self.unmark_tab_soon(old_session)
             self.mark_tab_soon(self.session)
             return {"session_id": self.session}
         if meta == "pending_dialog": return {"dialog": self.dialog}

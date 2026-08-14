@@ -19,3 +19,8 @@ MARK_JS = (
     "(function(){var M='" + MARKER + "';"
     "if(!document.title.startsWith(M))document.title=M+document.title})()"
 )
+
+UNMARK_JS = (
+    "(function(){var M='" + MARKER + "';"
+    "if(document.title.startsWith(M))document.title=document.title.slice(M.length)})()"
+)

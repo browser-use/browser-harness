@@ -237,3 +237,27 @@ def test_a_marked_startup_placeholder_tab_stays_out_of_list_tabs():
     ]}
     with patch("browser_harness.helpers.cdp", return_value=targets):
         assert [t["targetId"] for t in helpers.list_tabs()] == ["t2"]
+
+
+# --- one marked tab at a time ---
+
+def _writes_on(d, session_id):
+    return [
+        (params or {}).get("expression", "")
+        for (method, params, sid) in d.cdp.calls
+        if method == "Runtime.evaluate" and sid == session_id
+    ]
+
+
+def test_switching_away_leaves_the_previous_tab_clean():
+    """Exactly one tab is the driven one. The tab left behind gets its own
+    title back — trailing space included — while the new one gets marked."""
+    d = _daemon(headless=False)
+    _handle(d, {"meta": "set_session", "session_id": "s1", "target_id": "t1"})
+
+    _handle(d, {"meta": "set_session", "session_id": "s2", "target_id": "t2"})
+
+    assert tab_marker.UNMARK_JS in _writes_on(d, "s1"), (
+        f"old tab was never unmarked: {_writes_on(d, 's1')}"
+    )
+    assert tab_marker.MARK_JS in _writes_on(d, "s2"), "the new tab must be the marked one"
