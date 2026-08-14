@@ -14,6 +14,13 @@ print(current_tab())
 print(page_info())
 ```
 
+With `BH_NO_FOCUS=1`, `new_tab()` creates tabs in the background and `switch_tab()`
+skips `Target.activateTarget` — nothing raises the browser window, so a run never steals
+focus from the terminal (on macOS activating a target activates the whole application).
+The harness still attaches to and drives the tab; it just isn't the visibly-selected one,
+so the explicit `cdp("Target.activateTarget", ...)` above is how you show a tab on
+purpose. Pass `switch_tab(tid, activate=True)` to force it per call.
+
 What CDP is good at:
 - attach to a tab
 - open a tab
