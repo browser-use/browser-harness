@@ -38,6 +38,27 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+TAB_MARKER = f"\U0001F434 [{NAME}]"
+TAB_MARKER_SUFFIX = f" | {TAB_MARKER}"
+
+
+def _tab_marker_expression():
+    marker = json.dumps(TAB_MARKER)
+    suffix = json.dumps(TAB_MARKER_SUFFIX)
+    return f"""(()=>{{
+        const marker = {marker};
+        const suffix = {suffix};
+        const clean = document.title
+            .replace(/\\s*\\|\\s*🐴\\s*\\[[^\\]]+\\]\\s*$/, \"\")
+            .replace(/^🐴\\s*/, \"\");
+        document.title = clean ? clean + suffix : marker;
+    }})()"""
+
+
+def _tab_unmarker_expression():
+    return r'''document.title = document.title
+        .replace(/\s*\|\s*🐴\s*\[[^\]]+\]\s*$/, "")
+        .replace(/^🐴\s*/, "")'''
 
 
 def _send(req):
@@ -287,17 +308,16 @@ def current_tab():
     }
 
 def _mark_tab():
-    """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
-    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
+    """Append the daemon identity to the title of the controlled tab."""
+    try: cdp("Runtime.evaluate", expression=_tab_marker_expression())
     except Exception: pass
 
 def switch_tab(target):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
-    # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
-    # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
+    # Unmark the old tab before attaching to the new target.
+    try: cdp("Runtime.evaluate", expression=_tab_unmarker_expression())
     except Exception: pass
     cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
