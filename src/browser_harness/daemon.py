@@ -7,6 +7,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from . import tab_marker
 from cdp_use.client import CDPClient
 
 
@@ -472,17 +473,33 @@ class Daemon:
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
-        mark_js = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
-            if method == "Page.javascriptDialogOpening":
-                self.dialog = params
-            elif method == "Page.javascriptDialogClosed":
-                self.dialog = None
-            elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-                asyncio.create_task(_silent(asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)))
+            self.on_cdp_event(method, params)
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+
+    def on_cdp_event(self, method, params):
+        """Side effects of a browser event, off the request path."""
+        if method == "Page.javascriptDialogOpening":
+            self.dialog = params
+        elif method == "Page.javascriptDialogClosed":
+            self.dialog = None
+        elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
+            self.mark_tab_soon(self.session)
+
+    def mark_tab_soon(self, session_id):
+        """Show the 🐴 marker on the driven tab, without blocking the caller.
+
+        Purely cosmetic, so never on the synchronous path: awaiting it cost
+        ~4s per navigation (#136). Skipped headless: no window, no one to
+        read it, and it would only leak into the titles the agent reads."""
+        if self.headless or not session_id:
+            return
+        asyncio.create_task(_silent(asyncio.wait_for(
+            self.cdp.send_raw("Runtime.evaluate", {"expression": tab_marker.MARK_JS}, session_id=session_id),
+            timeout=2,
+        )))
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -552,19 +569,7 @@ class Daemon:
                 tasks.append(disable_old())
             tasks.append(self._enable_default_domains(self.session))
             await asyncio.gather(*tasks)
-            # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
-            # it doesn't add to the synchronous IPC budget. Skipped headless:
-            # no window, no one to read it, and it would only leak into the
-            # titles the agent reads.
-            if not self.headless:
-                asyncio.create_task(_silent(asyncio.wait_for(
-                    self.cdp.send_raw(
-                        "Runtime.evaluate",
-                        {"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"},
-                        session_id=self.session,
-                    ),
-                    timeout=2,
-                )))
+            self.mark_tab_soon(self.session)
             return {"session_id": self.session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}

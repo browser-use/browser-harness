@@ -59,3 +59,20 @@ def test_headless_session_never_marks_the_tab():
     assert not [e for e in _title_writes(d) if "title" in e], (
         f"headless session wrote to document.title: {_title_writes(d)}"
     )
+
+
+def test_headless_session_never_marks_on_page_load():
+    """The load-event marking path is separate from the session one, and fires
+    on every navigation — it must respect headless too."""
+    d = _daemon(headless=True)
+    d.session = "session-1"
+
+    async def go():
+        d.on_cdp_event("Page.loadEventFired", {})
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(go())
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"headless session wrote to document.title on load: {_title_writes(d)}"
+    )
