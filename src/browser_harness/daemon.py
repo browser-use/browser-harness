@@ -368,6 +368,15 @@ class Daemon:
         # reader and could only pollute the titles the agent reads.
         self.headless = False
 
+    async def detect_headless(self):
+        """Chrome reports itself as HeadlessChrome when it runs without a window."""
+        try:
+            ua = (await self.cdp.send_raw("Browser.getVersion")).get("userAgent", "")
+        except Exception as e:
+            log(f"headless detection: {e}")
+            return
+        self.headless = "HeadlessChrome" in ua
+
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
@@ -471,6 +480,7 @@ class Daemon:
                     " -- wait for the user to click Allow, then retry"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
+        await self.detect_headless()
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
         async def tap(method, params, session_id=None):

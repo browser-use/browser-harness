@@ -7,7 +7,7 @@ for a property of the site under test.
 """
 import asyncio
 
-from browser_harness import daemon
+from browser_harness import daemon, tab_marker
 
 MARKER = "\U0001F434 "
 
@@ -75,4 +75,92 @@ def test_headless_session_never_marks_on_page_load():
 
     assert not [e for e in _title_writes(d) if "title" in e], (
         f"headless session wrote to document.title on load: {_title_writes(d)}"
+    )
+
+
+class _VersionCDP(_FakeCDP):
+    def __init__(self, user_agent):
+        super().__init__()
+        self.user_agent = user_agent
+
+    async def send_raw(self, method, params=None, session_id=None):
+        await super().send_raw(method, params, session_id)
+        if method == "Browser.getVersion":
+            return {"userAgent": self.user_agent}
+        return {}
+
+
+def test_headless_is_detected_from_the_browser_user_agent():
+    """Chrome announces itself as HeadlessChrome when it runs without a window."""
+    d = daemon.Daemon()
+    d.cdp = _VersionCDP("Mozilla/5.0 (Macintosh) HeadlessChrome/151.0.0.0 Safari/537.36")
+
+    asyncio.run(d.detect_headless())
+
+    assert d.headless is True
+
+
+def test_headed_browser_is_not_reported_as_headless():
+    d = daemon.Daemon()
+    d.cdp = _VersionCDP("Mozilla/5.0 (Macintosh) Chrome/151.0.0.0 Safari/537.36")
+
+    asyncio.run(d.detect_headless())
+
+    assert d.headless is False
+
+
+class _FakeBrowser(_FakeCDP):
+    """Stands in for a live CDP connection, headless or headed."""
+
+    def __init__(self, user_agent):
+        super().__init__()
+        self.user_agent = user_agent
+        self._event_registry = type("R", (), {"handle_event": None})()
+
+    async def start(self):
+        pass
+
+    async def send_raw(self, method, params=None, session_id=None):
+        await super().send_raw(method, params, session_id)
+        if method == "Browser.getVersion":
+            return {"userAgent": self.user_agent}
+        if method == "Target.getTargets":
+            return {"targetInfos": [{"targetId": "t1", "type": "page", "url": "https://example.com/"}]}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "s1"}
+        return {}
+
+
+def _started_daemon(monkeypatch, user_agent):
+    browser = _FakeBrowser(user_agent)
+    monkeypatch.setattr(daemon, "get_ws_url", lambda: "ws://fake")
+    monkeypatch.setattr(daemon, "CDPClient", lambda url: browser)
+    monkeypatch.setattr(daemon, "_PatientCDPClient", lambda url: browser)
+    d = daemon.Daemon()
+    asyncio.run(d.start())
+    return d
+
+
+def test_a_headless_browser_session_marks_nothing_end_to_end(monkeypatch):
+    """From connection to tab switch: a daemon that connected to a headless
+    browser never writes the marker, without anyone setting a flag by hand."""
+    d = _started_daemon(monkeypatch, "Mozilla/5.0 HeadlessChrome/151.0.0.0 Safari/537.36")
+
+    _handle(d, {"meta": "set_session", "session_id": "s2", "target_id": "t2"})
+    _handle(d, {"meta": "ping"})
+
+    assert not [e for e in _title_writes(d) if "title" in e], (
+        f"headless browser got its titles rewritten: {_title_writes(d)}"
+    )
+
+
+def test_a_headed_browser_session_still_marks_the_tab(monkeypatch):
+    """The marker is what tells the user which tab the agent drives — it must
+    survive the headless work."""
+    d = _started_daemon(monkeypatch, "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36")
+
+    _handle(d, {"meta": "set_session", "session_id": "s2", "target_id": "t2"})
+
+    assert tab_marker.MARK_JS in _title_writes(d), (
+        f"headed session lost the marker: {_title_writes(d)}"
     )
