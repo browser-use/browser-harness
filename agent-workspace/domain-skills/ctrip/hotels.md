@@ -161,8 +161,7 @@ https://hotels.ctrip.com/hotel/<hotelId>.html?checkin=YYYY-MM-DD&checkout=YYYY-M
 ```
 
 Works pre-login. Server normalizes to `/hotels/detail/?...` but the data is
-identical. Title format: `🟢 <hotelName>预订价格,联系电话位置地址【携程酒店】`
-(the 🟢 prefix is from `browser-harness`, not ctrip).
+identical. Title format: `<hotelName>预订价格,联系电话位置地址【携程酒店】`.
 
 Detail page renders multiple room-rate rows with the same `¥orig ¥current`
 shape as the list. Look for `<button>` or `<a>` whose text is exactly `预订`
