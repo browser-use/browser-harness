@@ -86,6 +86,12 @@ print(page_info())
 PY
 ```
 
+The named daemon holds its remote endpoint while it is alive. Non-default
+`BU_NAME` values are managed/isolated and never fall back to local Chrome; if a
+named daemon must be recreated, call `start_remote_daemon(name)` again or pass
+`BU_CDP_WS`/`BU_CDP_URL`. Invoking with only `BU_NAME` fails closed. The
+unset/default daemon is the local Chrome discovery path.
+
 ## If Still Broken
 
 ```bash
