@@ -270,7 +270,7 @@ def list_tabs(include_chrome=True):
         if t["type"] != "page": continue
         url = t.get("url", "")
         title = strip_title(t.get("title"))
-        if _is_agent_startup_placeholder(t.get("title", ""), url): continue
+        if _is_agent_startup_placeholder(title, url): continue
         if not include_chrome and url.startswith(INTERNAL): continue
         out.append({
             "targetId": t["targetId"],

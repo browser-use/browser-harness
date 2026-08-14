@@ -226,3 +226,14 @@ def test_connection_status_reports_the_page_title_without_the_marker():
 
     d.cdp = _Info()
     assert _handle(d, {"meta": "connection_status"})["page"]["title"] == "Dashboard"
+
+
+def test_a_marked_startup_placeholder_tab_stays_out_of_list_tabs():
+    """The placeholder the harness opens at startup is filtered by title —
+    a filter the marker used to defeat on the very tab the agent drives."""
+    targets = {"targetInfos": [
+        {"targetId": "t1", "type": "page", "url": "about:blank", "title": MARKER + "Starting agent session"},
+        {"targetId": "t2", "type": "page", "url": "https://b.test/", "title": "Other tab"},
+    ]}
+    with patch("browser_harness.helpers.cdp", return_value=targets):
+        assert [t["targetId"] for t in helpers.list_tabs()] == ["t2"]
