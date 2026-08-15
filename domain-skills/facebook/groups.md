@@ -35,7 +35,7 @@ hold up well. Anchor on those, not on hashed CSS classes.
 
 | Anchor | Selector | Notes |
 |--------|----------|-------|
-| Each post container | `div[role="article"]` | Stable. One per visible post. |
+| Each post container | direct children of `div[role="feed"]` (real posts have `innerText.length > 100`) | **`div[role="article"]` stopped matching group-feed posts (observed 2026-08-14)** — iterate feed children instead |
 | Post permalink | `a[href*="/groups/"][href*="/posts/"], a[href*="/groups/"][href*="/permalink/"]` | First match per article = the post link |
 | Post body text | `div[data-ad-preview="message"], div[data-ad-comet-preview="message"]` | One of these is the visible body |
 | Post author | `h3 a, h4 a` (first inside the article) | Falls back to `strong a` |
@@ -234,3 +234,21 @@ downstream task (competitor inventory, pricing intel, boat listings, etc).
 - **2026-04-18:** Fresh install verified. People-search URL requires login;
   page search `/search/pages/?q=` works the same way. Groups feed defaults to
   algorithmic sort — always append `?sorting_setting=CHRONOLOGICAL`.
+- **2026-08-15:** The feed only lazy-loads while the tab is VISIBLE. A background
+  tab freezes at ~5 posts: `scrollY` moves but page height never grows, and every
+  collect round returns the same 1-5 posts. Fix: `cdp("Page.bringToFront")` right
+  after `goto` (activates the tab without focusing the Chrome app).
+- **2026-08-15:** `div[role="article"]` no longer matches group-feed posts; use
+  `div[role="feed"]` direct children (see anchors table). Group search results
+  (`/search/groups/?q=`) DO still carry member count + posts/day in each card's
+  innerText, and public groups' `/about` pages (rules, activity stats) are
+  readable without joining.
+- **2026-08-15:** "See more" truncation hides the bottom of long posts, which is
+  where contact details (email/phone) usually sit. Before each collect round,
+  click every `div[role="button"]` whose trimmed innerText === "See more", then
+  wait ~1.5s. On permalink pages the post may render inside `div[role="dialog"]`;
+  prefer that container's innerText when present.
+- **2026-08-15:** Some posts carry an anti-scrape watermark: hundreds of scrambled
+  single characters with combining mark U+034F interleaved in innerText. Strip or
+  ignore when parsing. Post innerText is also polluted with repeated "Facebook"
+  strings (SVG titles) and UI residue ("Comment as X", reaction counts).
