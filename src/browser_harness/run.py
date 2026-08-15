@@ -381,7 +381,7 @@ def _run(args):
             and _cloud_auth_configured()
             and os.environ.get("BU_AUTOSPAWN")
         ):
-            start_remote_daemon(NAME)
+            start_remote_daemon(NAME, openLiveUrl=False)
         try:
             ensure_daemon()
         except RuntimeError as e:

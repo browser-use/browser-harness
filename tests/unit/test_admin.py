@@ -413,6 +413,21 @@ def test_start_remote_daemon_does_not_stop_created_browser_on_success(monkeypatc
     ]
 
 
+def test_start_remote_daemon_can_keep_live_viewer_closed(monkeypatch, capsys):
+    browser = {"id": "browser-123", "cdpUrl": "http://127.0.0.1:9333", "liveUrl": "https://live.example"}
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin, "_browser_use", lambda *args: browser)
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda url: "ws://example.test/devtools/browser/1")
+    monkeypatch.setattr(admin, "ensure_daemon", lambda **kwargs: None)
+    show_calls = []
+    monkeypatch.setattr(admin, "_show_live_url", lambda url: show_calls.append(url))
+
+    assert admin.start_remote_daemon(openLiveUrl=False) == browser
+    assert show_calls == []
+    assert capsys.readouterr().out.strip() == "https://live.example"
+
+
 # --- restart_daemon: PID-reuse safety ---
 
 def test_restart_daemon_does_not_signal_when_daemon_unreachable(monkeypatch, tmp_path):

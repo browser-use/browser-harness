@@ -291,7 +291,24 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
-def switch_tab(target):
+def activate_tab(target):
+    """Make a target the visible Chrome tab.
+
+    This is intentionally separate from switch_tab(): attaching the agent to a
+    target does not require taking Chrome or the user's current application to
+    the foreground.
+    """
+    target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
+    cdp("Target.activateTarget", targetId=target_id)
+    return target_id
+
+def switch_tab(target, activate=False):
+    """Attach the agent to a target without changing Chrome's visible tab.
+
+    Pass activate=True when a caller explicitly needs Chrome to show the tab.
+    The horse marker still moves to the attached target so the user can find it
+    and switch to it manually.
+    """
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
@@ -299,7 +316,8 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    if activate:
+        activate_tab(target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()

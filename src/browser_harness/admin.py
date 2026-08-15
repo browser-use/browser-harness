@@ -623,7 +623,7 @@ def _resolve_profile_name(profile_name):
     return matches[0]["id"]
 
 
-def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
+def start_remote_daemon(name="remote", profileName=None, openLiveUrl=True, **create_kwargs):
     """Provision a Browser Use cloud browser and start a daemon attached to it.
 
     kwargs forwarded to `POST /browsers` (camelCase):
@@ -633,9 +633,12 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
       timeout          — minutes, 1..240.
       customProxy      — {host, port, username, password, ignoreCertErrors}.
       browserScreenWidth / browserScreenHeight, allowResizing, enableRecording.
+      openLiveUrl      — open the cloud live viewer locally (default True). Set
+                         False to keep the local browser completely untouched.
 
     Returns the full browser dict including `liveUrl`. Prints the liveUrl and
-    auto-opens it locally when a GUI is detected, so the user can watch along."""
+    auto-opens it locally when `openLiveUrl=True` and a GUI is detected, so the
+    user can watch along."""
     if daemon_alive(name):
         raise RuntimeError(f"daemon {name!r} already alive -- restart_daemon({name!r}) first")
     if profileName:
@@ -651,7 +654,10 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
     except BaseException:
         _stop_cloud_browser(browser.get("id"))
         raise
-    _show_live_url(browser.get("liveUrl"))
+    if openLiveUrl:
+        _show_live_url(browser.get("liveUrl"))
+    elif browser.get("liveUrl"):
+        print(browser["liveUrl"])
     return browser
 
 

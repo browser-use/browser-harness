@@ -27,6 +27,7 @@ sync_local_profile(profile_name, browser=None,
 # (the existing one if cloud_profile_id was passed, else the newly-created one).
 
 start_remote_daemon("work", profileName="my-work")   # name→id resolved client-side
+start_remote_daemon("work", profileName="my-work", openLiveUrl=False)  # keep local browser untouched
 start_remote_daemon("work", profileId="<uuid>")      # or pass UUID directly
 
 stop_remote_daemon("work")                           # shut the daemon and PATCH the cloud browser to stop — billing ends

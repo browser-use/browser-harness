@@ -69,7 +69,7 @@ def test_cloud_bootstrap_on_headless_server(monkeypatch):
          patch("browser_harness.run.ensure_daemon"), \
          patch("browser_harness.run.print_update_banner"):
         run.main()
-    mock_start.assert_called_once()
+    mock_start.assert_called_once_with("default", openLiveUrl=False)
 
 
 def test_explicit_bu_cdp_url_blocks_cloud_bootstrap(monkeypatch):
