@@ -14,6 +14,10 @@ print(current_tab())
 print(page_info())
 ```
 
+Each daemon marks its attached tab with its actual `BU_NAME` as a suffix, for
+example `Example Domain | 🐴 [research-7f3a]`. Give parallel daemons distinct
+names; the harness does not invent a shared `worker-` prefix.
+
 What CDP is good at:
 - attach to a tab
 - open a tab

@@ -77,6 +77,33 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
+def test_tab_marker_appends_dynamic_daemon_identity(monkeypatch):
+    monkeypatch.setattr(helpers, "TAB_MARKER", "🐴 [research-7f3a]")
+    monkeypatch.setattr(helpers, "TAB_MARKER_SUFFIX", " | 🐴 [research-7f3a]")
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers._mark_tab()
+
+    assert calls == [("Runtime.evaluate", {"expression": helpers._tab_marker_expression()})]
+    expression = calls[0][1]["expression"]
+    assert "research-7f3a" in expression
+    assert "document.title" in expression
+    assert "clean + suffix" in expression
+
+
+def test_tab_unmarker_expression_removes_identity_suffix():
+    expression = helpers._tab_unmarker_expression()
+
+    assert "document.title" in expression
+    assert "\\s*\\|\\s*🐴" in expression
+    assert "replace" in expression
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():

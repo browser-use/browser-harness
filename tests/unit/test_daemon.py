@@ -21,6 +21,14 @@ def _fresh_daemon():
     return d
 
 
+def test_daemon_tab_marker_appends_dynamic_name():
+    expression = daemon._tab_marker_expression()
+
+    assert daemon.NAME in expression
+    assert "clean + suffix" in expression
+    assert "document.title" in expression
+
+
 def test_set_session_enables_all_four_default_domains_on_new_session():
     """Regression: switch_tab() / new_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new
