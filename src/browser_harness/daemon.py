@@ -360,12 +360,30 @@ class Daemon:
         self.cdp = None
         self.session = None
         self.target_id = None
+        self.owns_target = False  # True when this daemon created its own tab
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
+        # Named daemons (BU_NAME != "default") share one browser with other
+        # daemons — attaching to the first page makes parallel daemons fight
+        # over a single tab (navigations clobber each other). Give each named
+        # daemon its own dedicated tab instead. REMOTE_ID (cloud) browsers are
+        # already exclusive to this daemon, so first-page attach stays.
+        if NAME != "default" and not REMOTE_ID:
+            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            self.owns_target = True
+            log(f"named daemon {NAME}: created dedicated tab ({tid})")
+            page = {"targetId": tid, "url": "about:blank", "type": "page"}
+            self.session = (await self.cdp.send_raw(
+                "Target.attachToTarget", {"targetId": tid, "flatten": True}
+            ))["sessionId"]
+            self.target_id = tid
+            log(f"attached {tid} (about:blank) session={self.session}")
+            await self._enable_default_domains(self.session)
+            return page
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
@@ -615,7 +633,21 @@ async def serve(d):
 async def main():
     d = Daemon()
     await d.start()
-    await serve(d)
+    try:
+        await serve(d)
+    finally:
+        # A named daemon owns the tab it created — close it on shutdown so
+        # parallel workers don't leak about:blank/leftover tabs into the
+        # shared browser. Best-effort: the WS may already be gone.
+        if d.owns_target and d.target_id:
+            try:
+                await asyncio.wait_for(
+                    d.cdp.send_raw("Target.closeTarget", {"targetId": d.target_id}),
+                    timeout=2,
+                )
+                log(f"closed owned tab {d.target_id}")
+            except Exception as e:
+                log(f"close owned tab {d.target_id}: {e}")
 
 
 def already_running():

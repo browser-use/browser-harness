@@ -293,3 +293,81 @@ def test_current_tab_meta_returns_not_attached_when_no_target_id():
     assert result == {"error": "not_attached"}
     # No CDP call should have been issued.
     assert d.cdp.calls == []
+
+
+class _AttachCDP(_FakeCDP):
+    """FakeCDP with realistic responses for the attach flow."""
+
+    def __init__(self, targets=None):
+        super().__init__()
+        self.targets = targets or []
+        self.created = 0
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.calls.append((method, params, session_id))
+        if method == "Target.getTargets":
+            return {"targetInfos": self.targets}
+        if method == "Target.createTarget":
+            self.created += 1
+            return {"targetId": f"created-{self.created}"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-for-{params['targetId']}"}
+        return {}
+
+
+def test_named_daemon_creates_dedicated_tab(monkeypatch):
+    """A named daemon (BU_NAME != default) on a shared local/CDP browser must
+    create its own tab rather than attaching to the first existing page —
+    otherwise parallel named daemons all grab the same tab and clobber each
+    other's navigations (#375 / #582)."""
+    monkeypatch.setattr(daemon, "NAME", "worker-a")
+    monkeypatch.setattr(daemon, "REMOTE_ID", None)
+    existing = [{"targetId": "someone-elses-tab", "url": "https://example.com/", "type": "page"}]
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP(existing)
+
+    page = asyncio.run(d.attach_first_page())
+
+    assert page["targetId"] == "created-1"
+    assert d.target_id == "created-1"
+    assert d.owns_target is True
+    assert d.session == "session-for-created-1"
+    # It must NOT have attached to the pre-existing tab.
+    attach_calls = [p for (m, p, _s) in d.cdp.calls if m == "Target.attachToTarget"]
+    assert attach_calls == [{"targetId": "created-1", "flatten": True}]
+    # Domains enabled on the new session (parity with default attach).
+    enabled = {m for (m, _p, s) in d.cdp.calls if s == d.session and m.endswith(".enable")}
+    assert enabled == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}
+
+
+def test_default_daemon_still_attaches_first_page(monkeypatch):
+    """The default daemon keeps the existing attach-to-first-real-page
+    behavior (single-user flow: reuse the tab the user is looking at)."""
+    monkeypatch.setattr(daemon, "NAME", "default")
+    monkeypatch.setattr(daemon, "REMOTE_ID", None)
+    existing = [{"targetId": "user-tab", "url": "https://example.com/", "type": "page"}]
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP(existing)
+
+    page = asyncio.run(d.attach_first_page())
+
+    assert page["targetId"] == "user-tab"
+    assert d.owns_target is False
+    assert d.cdp.created == 0
+
+
+def test_named_remote_daemon_keeps_first_page_attach(monkeypatch):
+    """A named CLOUD daemon (REMOTE_ID set) has the whole browser to itself —
+    creating an extra tab would just leak one. First-page attach stays."""
+    monkeypatch.setattr(daemon, "NAME", "r7k2")
+    monkeypatch.setattr(daemon, "REMOTE_ID", "remote-browser-id")
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cloud")
+    existing = [{"targetId": "cloud-blank", "url": "about:blank", "type": "page"}]
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP(existing)
+
+    page = asyncio.run(d.attach_first_page())
+
+    assert page["targetId"] == "cloud-blank"
+    assert d.owns_target is False
+    assert d.cdp.created == 0
