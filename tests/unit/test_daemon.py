@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from browser_harness import daemon
 
 
@@ -293,3 +295,44 @@ def test_current_tab_meta_returns_not_attached_when_no_target_id():
     assert result == {"error": "not_attached"}
     # No CDP call should have been issued.
     assert d.cdp.calls == []
+
+
+class _DeniedProfile:
+    """A profile dir whose DevToolsActivePort read is refused by the OS.
+
+    macOS TCC guards ~/Library/Application Support/Google/Chrome, so a terminal
+    without Full Disk Access gets EPERM -- not ENOENT -- when reading the file.
+    """
+
+    def __truediv__(self, _name):
+        return self
+
+    def read_text(self, *_args, **_kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    def __str__(self):
+        return "<denied-profile>"
+
+
+def test_ws_from_devtools_active_port_skips_profiles_it_cannot_read(monkeypatch):
+    monkeypatch.setattr(daemon, "PROFILES", [_DeniedProfile()])
+
+    # Must return None (no match) rather than propagating PermissionError.
+    assert daemon._ws_from_devtools_active_port("http://127.0.0.1:9222") is None
+
+
+def test_get_ws_url_reports_chrome_not_running_when_profiles_are_unreadable(monkeypatch):
+    """An unreadable profile must not abort discovery.
+
+    Before this was handled, a PermissionError escaped get_ws_url() as a fatal
+    traceback, so the daemon never reached its own fallbacks or the actionable
+    "start Chrome" error below.
+    """
+    # An explicit endpoint short-circuits discovery, so clear both overrides.
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setattr(daemon, "PROFILES", [_DeniedProfile()])
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: False)
+
+    with pytest.raises(RuntimeError, match="chrome-not-running"):
+        daemon.get_ws_url()

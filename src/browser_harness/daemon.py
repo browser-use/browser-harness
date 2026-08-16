@@ -199,7 +199,10 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     for base in PROFILES:
         try:
             active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
-        except (FileNotFoundError, NotADirectoryError):
+        # PermissionError: macOS TCC guards ~/Library/Application Support/Google/Chrome,
+        # so a terminal without Full Disk Access gets EPERM here. Skip the profile and
+        # keep looking rather than killing discovery outright.
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
             continue
         port = active[0].strip() if active else ""
         ws_path = active[1].strip() if len(active) > 1 else ""
@@ -241,7 +244,9 @@ def get_ws_url():
         for base in PROFILES:
             try:
                 active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
-            except (FileNotFoundError, NotADirectoryError):
+            # PermissionError: see _ws_from_devtools_active_port — an FDA-less terminal
+            # gets EPERM from TCC. Skipping lets the 9222/9223 probe below still run.
+            except (FileNotFoundError, NotADirectoryError, PermissionError):
                 continue
             port = active[0].strip() if active else ""
             ws_path = active[1].strip() if len(active) > 1 else ""
