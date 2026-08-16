@@ -9,24 +9,73 @@ from PIL import Image
 from browser_harness import helpers
 
 
-def _run(fake_png, width, height, **kwargs):
+def _run(fake_png, width, height, name="shot.png", **kwargs):
     fake = lambda method, **_: {"data": fake_png(width, height)}
     with patch("browser_harness.helpers.cdp", side_effect=fake), tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "shot.png")
+        path = os.path.join(d, name)
         helpers.capture_screenshot(path, **kwargs)
-        return Image.open(path).size
+        img = Image.open(path)
+        return img.size, img.format, os.path.getsize(path)
 
 
 def test_max_dim_downsizes_oversized_image(fake_png):
-    assert max(_run(fake_png, 4592, 2286, max_dim=1800)) == 1800
+    assert max(_run(fake_png, 4592, 2286, max_dim=1800)[0]) == 1800
 
 
 def test_max_dim_skips_when_image_already_small(fake_png):
-    assert _run(fake_png, 800, 400, max_dim=1800) == (800, 400)
+    assert _run(fake_png, 800, 400, max_dim=1800)[0] == (800, 400)
 
 
-def test_max_dim_default_is_no_resize(fake_png):
-    assert _run(fake_png, 4592, 2286) == (4592, 2286)
+def test_max_dim_default_is_no_resize(fake_png, monkeypatch):
+    monkeypatch.delenv("BH_SCREENSHOT_COMPACT", raising=False)
+    assert _run(fake_png, 4592, 2286)[0] == (4592, 2286)
+
+
+def test_compact_env_caps_the_long_edge(fake_png, monkeypatch):
+    # Anything past 1568 is resized away before a model sees it, so compact
+    # mode stops there rather than shipping pixels nobody reads.
+    monkeypatch.setenv("BH_SCREENSHOT_COMPACT", "1")
+    size = _run(fake_png, 4592, 2286)[0]
+    assert max(size) == helpers.SCREENSHOT_MAX_DIM == 1568
+    assert size[1] == round(2286 * 1568 / 4592)  # aspect ratio preserved
+
+
+def test_compact_env_off_by_default_and_disableable(fake_png, monkeypatch):
+    monkeypatch.setenv("BH_SCREENSHOT_COMPACT", "0")
+    assert _run(fake_png, 4592, 2286)[0] == (4592, 2286)
+
+
+def test_explicit_max_dim_overrides_the_env(fake_png, monkeypatch):
+    # Pixel-diff baselines need the native capture even in compact mode.
+    monkeypatch.setenv("BH_SCREENSHOT_COMPACT", "1")
+    assert _run(fake_png, 4592, 2286, max_dim=None)[0] == (4592, 2286)
+
+
+def test_format_follows_the_path_extension(fake_png):
+    assert _run(fake_png, 4592, 2286, name="shot.jpg")[1] == "JPEG"
+    assert _run(fake_png, 4592, 2286, name="shot.jpeg")[1] == "JPEG"
+    assert _run(fake_png, 4592, 2286, name="shot.png")[1] == "PNG"
+
+
+def test_jpeg_output_drops_the_alpha_channel(fake_png):
+    # JPEG carries no alpha and PIL raises rather than converting silently.
+    assert _run(fake_png, 2000, 1000, name="shot.jpg")[1] == "JPEG"
+
+
+def test_compact_default_filename_is_jpeg(fake_png, monkeypatch, tmp_path):
+    monkeypatch.setenv("BH_SCREENSHOT_COMPACT", "1")
+    monkeypatch.setattr(helpers.ipc, "_TMP", tmp_path)
+    fake = lambda method, **_: {"data": fake_png(4592, 2286)}
+    with patch("browser_harness.helpers.cdp", side_effect=fake):
+        assert helpers.capture_screenshot().endswith("shot.jpg")
+
+
+def test_default_filename_stays_png(fake_png, monkeypatch, tmp_path):
+    monkeypatch.delenv("BH_SCREENSHOT_COMPACT", raising=False)
+    monkeypatch.setattr(helpers.ipc, "_TMP", tmp_path)
+    fake = lambda method, **_: {"data": fake_png(4592, 2286)}
+    with patch("browser_harness.helpers.cdp", side_effect=fake):
+        assert helpers.capture_screenshot().endswith("shot.png")
 
 
 def _seed_skill(tmp_path):
