@@ -47,6 +47,13 @@ the checkbox so the agent can connect to your browser:
 
 Use your local browser for logged-in, personal work. When you want many browsers in parallel—with live previews, proxies, stealth, CAPTCHA solving, and more—scale with [Browser Use Cloud](https://cloud.browser-use.com/new-api-key).
 
+## MCP server
+
+`mcp_server.py` exposes the browser control helpers as MCP tools over stdio,
+so any MCP client (Claude Code, Devin, Cursor, etc.) can drive the browser
+without writing a second CDP layer. See [docs/MCP.md](docs/MCP.md) for setup and
+client configuration.
+
 ## Contributing
 
 Bug fixes, documentation improvements, and agent-generated domain skills are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).

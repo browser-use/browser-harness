@@ -28,6 +28,9 @@ dependencies = [
     "websockets==15.0.1",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=2.0.0,<3"]
+
 [project.scripts]
 browser-harness = "browser_harness.run:main"
 
