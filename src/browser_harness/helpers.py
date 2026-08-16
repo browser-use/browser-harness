@@ -235,6 +235,19 @@ def press_key(key, modifiers=0):
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
 def scroll(x, y, dy=-300, dx=0):
+    # (x, y) is a viewport POSITION and the movement is dy/dx. That is not the
+    # scroll(direction, amount) convention most browser tools use, so the wrong
+    # call is easy to make: scroll("down", 1400) binds x="down", y=1400 and
+    # leaves dy at its default of -300, turning "down 1400" into up 300.
+    # CDP does reject the string, but as "Failed to deserialize params.x -
+    # BINDINGS: double value expected at position 26", which names a byte
+    # offset rather than the mistake and says nothing about dy having defaulted.
+    if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+        raise TypeError(
+            "scroll(x, y, dy=-300, dx=0) takes a viewport position first, not a "
+            "direction. To scroll down 1400px from mid-viewport: "
+            "scroll(640, 400, dy=1400). Negative dy scrolls up."
+        )
     cdp("Input.dispatchMouseEvent", type="mouseWheel", x=x, y=y, deltaX=dx, deltaY=dy)
 
 
