@@ -9,7 +9,7 @@ tabs = list_tabs()                    # includes chrome:// pages too
 real_tabs = list_tabs(include_chrome=False)
 tid = new_tab("https://example.com")  # create + attach
 switch_tab(tid)                       # attach harness to tab
-cdp("Target.activateTarget", targetId=tid)  # show it in Chrome
+cdp("Target.activateTarget", targetId=tid)  # show it in Chrome (steals focus; switch_tab no longer does this by default — see connection.md)
 print(current_tab())
 print(page_info())
 ```

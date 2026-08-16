@@ -4,7 +4,13 @@
 
 When Chrome opens fresh, the only CDP `type: "page"` targets are `chrome://inspect` and `chrome://omnibox-popup.top-chrome/` (a 1px invisible viewport). If the daemon attaches to the omnibox popup, all subsequent work — including `new_tab()` and `goto_url()` — happens on tabs that exist in CDP but may not be visible in the Chrome UI.
 
-The daemon's `attach_first_page()` handles this by creating an `about:blank` tab when no real pages exist. If you still end up on an invisible tab, use `switch_tab()` which calls `Target.activateTarget` to bring the tab to front.
+The daemon's `attach_first_page()` handles this by creating an `about:blank` tab when no real pages exist. If you still end up on an invisible tab, use `switch_tab()` to attach to the right tab.
+
+## Focus / tab activation
+
+`switch_tab()` (and `new_tab()`, which calls it) no longer raises the tab to the foreground by default — `Target.activateTarget` stole the user's window/tab focus mid-work while an agent ran in parallel. CDP drives the attached background tab fine, so this is purely cosmetic for the human watching along. The horse-emoji (\U0001F434) title prefix still marks which tab the agent controls.
+
+Caveat: Chrome throttles/pauses compositing on fully hidden tabs, so `capture_screenshot()` of an occluded tab can occasionally come back blank or stale. If you need reliable screenshots of a tab, set `BH_ACTIVATE=1` to restore foregrounding on `switch_tab()`.
 
 ## Startup sequence
 
