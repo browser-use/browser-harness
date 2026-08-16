@@ -23,6 +23,75 @@ def _fresh_daemon():
     return d
 
 
+class _JsonResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def read(self):
+        return self.body
+
+
+def test_named_daemon_requires_explicit_endpoint_before_local_discovery(monkeypatch):
+    monkeypatch.setattr(daemon, "NAME", "managed")
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+
+    class _NoProfiles:
+        def __iter__(self):
+            raise AssertionError("named daemons must not scan local profiles")
+
+    def fail_urlopen(*args, **kwargs):
+        raise AssertionError("named daemons must not probe local CDP ports")
+
+    monkeypatch.setattr(daemon, "PROFILES", _NoProfiles())
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fail_urlopen)
+
+    with pytest.raises(RuntimeError, match="requires BU_CDP_WS or BU_CDP_URL"):
+        daemon.get_ws_url()
+
+
+def test_named_daemon_with_cdp_ws_keeps_explicit_endpoint(monkeypatch):
+    monkeypatch.setattr(daemon, "NAME", "managed")
+    monkeypatch.setenv("BU_CDP_WS", "ws://dedicated.example/devtools/browser/1")
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+
+    assert daemon.get_ws_url() == "ws://dedicated.example/devtools/browser/1"
+
+
+def test_named_daemon_with_cdp_url_keeps_explicit_endpoint(monkeypatch):
+    monkeypatch.setattr(daemon, "NAME", "managed")
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
+    calls = []
+
+    def fake_urlopen(url, timeout):
+        calls.append((url, timeout))
+        return _JsonResponse(b'{"webSocketDebuggerUrl":"ws://dedicated.example/devtools/browser/2"}')
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    assert daemon.get_ws_url() == "ws://dedicated.example/devtools/browser/2"
+    assert calls == [("http://127.0.0.1:9333/json/version", 5)]
+
+
+def test_default_daemon_without_endpoint_keeps_local_profile_discovery(monkeypatch, tmp_path):
+    monkeypatch.setattr(daemon, "NAME", "default")
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/default")
+    calls = []
+
+    def fake_urlopen(url, timeout):
+        calls.append((url, timeout))
+        return _JsonResponse(b'{"webSocketDebuggerUrl":"ws://local.example/devtools/browser/1"}')
+
+    monkeypatch.setattr(daemon, "PROFILES", [tmp_path])
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    assert daemon.get_ws_url() == "ws://local.example/devtools/browser/1"
+    assert calls == [("http://127.0.0.1:9222/json/version", 1)]
+
+
 def test_set_session_enables_all_four_default_domains_on_new_session():
     """Regression: switch_tab() / new_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new

@@ -93,6 +93,12 @@ print(page_info())
 PY
 ```
 
+The live named daemon holds the remote endpoint, so the example reuses it with
+only `BU_NAME`. Non-default names are managed/isolated daemons and never fall
+back to local Chrome. If one disappears, call `start_remote_daemon("r7k2")`
+again or provide `BU_CDP_WS`/`BU_CDP_URL`; a `BU_NAME`-only respawn fails
+closed. The unset/default daemon is the only daemon that discovers local Chrome.
+
 When the task is done and a cloud browser is still running, ask directly: "Should I close this browser now?" If yes, run `stop_remote_daemon(name)`. Remote daemons bill until they stop or time out.
 
 Do not start a remote daemon and then keep using the default daemon. Use the same name for `BU_NAME`.

@@ -376,6 +376,7 @@ def _run(args):
     if not cloud_admin:
         if (
             not daemon_alive()
+            and NAME == "default"
             and not _local_chrome_listening()
             and not _explicit_cdp_configured()
             and _cloud_auth_configured()

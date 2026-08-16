@@ -72,6 +72,24 @@ def test_cloud_bootstrap_on_headless_server(monkeypatch):
     mock_start.assert_called_once()
 
 
+def test_named_daemon_does_not_probe_local_chrome_before_strict_ensure(monkeypatch):
+    monkeypatch.setattr(run, "NAME", "managed")
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
+    monkeypatch.setenv("BU_AUTOSPAWN", "1")
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.daemon_alive", return_value=False), \
+         patch("browser_harness.run._local_chrome_listening", side_effect=AssertionError("named daemon probed local CDP ports")), \
+         patch("browser_harness.run._cloud_auth_configured", side_effect=AssertionError("named daemon attempted cloud bootstrap")), \
+         patch("browser_harness.run.start_remote_daemon") as mock_start, \
+         patch("browser_harness.run.ensure_daemon") as mock_ensure, \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+
+    mock_start.assert_not_called()
+    mock_ensure.assert_called_once()
+
+
 def test_explicit_bu_cdp_url_blocks_cloud_bootstrap(monkeypatch):
     """BU_CDP_URL is documented to override local Chrome discovery (install.md:58-59),
     so it must also block cloud auto-bootstrap. Otherwise start_remote_daemon would
