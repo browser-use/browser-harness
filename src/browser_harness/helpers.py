@@ -299,7 +299,13 @@ def switch_tab(target):
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
     try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    # Target.activateTarget raises the tab to the foreground in the user's real
+    # Chrome, stealing window/tab focus mid-work. It's only a "let the human watch"
+    # nicety — CDP drives the attached tab fine in the background. Off by default;
+    # set BH_ACTIVATE=1 to opt back in. The horse-emoji title marker still tells
+    # you which tab the agent controls without grabbing focus.
+    if os.environ.get("BH_ACTIVATE") == "1":
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()

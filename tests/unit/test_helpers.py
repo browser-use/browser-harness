@@ -350,3 +350,39 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+def _switch_tab_methods(monkeypatch):
+    """Run switch_tab against a stubbed transport, returning the CDP methods called."""
+    methods = []
+
+    def fake_send(req):
+        method = req.get("method")
+        if method:
+            methods.append(method)
+        if method == "Target.attachToTarget":
+            return {"result": {"sessionId": "sid-1"}}
+        return {"result": {}}
+
+    monkeypatch.setattr(helpers, "_send", fake_send)
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+    helpers.switch_tab("TARGET-1")
+    return methods
+
+
+def test_switch_tab_does_not_steal_focus_by_default(monkeypatch):
+    monkeypatch.delenv("BH_ACTIVATE", raising=False)
+
+    assert "Target.activateTarget" not in _switch_tab_methods(monkeypatch)
+
+
+def test_switch_tab_activates_when_bh_activate_is_set(monkeypatch):
+    monkeypatch.setenv("BH_ACTIVATE", "1")
+
+    assert "Target.activateTarget" in _switch_tab_methods(monkeypatch)
+
+
+def test_switch_tab_still_attaches_when_activation_is_off(monkeypatch):
+    monkeypatch.delenv("BH_ACTIVATE", raising=False)
+
+    assert "Target.attachToTarget" in _switch_tab_methods(monkeypatch)
