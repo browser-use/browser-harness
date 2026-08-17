@@ -69,6 +69,12 @@ After each click, verify the selected element has `aria-checked="true"` before a
 5. After publishing, verify the **Video published** dialog and capture the Shorts/watch link shown
    there. Open that link in a new tab and confirm the title and playback page load.
 
+For a multi-video batch, capture each published URL but defer opening the public pages until every
+upload is finished. Switching from Studio to a new public tab and back can leave the default harness
+session unable to run `Runtime.evaluate`. If that happens, start a fresh harness invocation, list the
+tabs, and explicitly switch to the Studio target before continuing. Verify all captured public URLs in
+a separate pass after the batch.
+
 Vertical videos around one minute are presented as Shorts, and the resulting link uses
 `https://youtube.com/shorts/<video-id>`.
 
