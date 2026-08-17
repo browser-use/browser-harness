@@ -47,6 +47,17 @@ js("""(()=>{
 The advanced section also contains optional paid-promotion, remixing, category, language, comments,
 and other settings. Leave them unchanged unless the task specifies otherwise.
 
+The current radio selectors are stable and more reliable than matching the short **Yes**/**No** labels:
+
+```text
+tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_MFK"]
+tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]
+tp-yt-paper-radio-button[name="VIDEO_HAS_ALTERED_CONTENT_YES"]
+tp-yt-paper-radio-button[name="VIDEO_HAS_ALTERED_CONTENT_NO"]
+```
+
+After each click, verify the selected element has `aria-checked="true"` before advancing.
+
 ## Wizard and verification
 
 1. Complete **Details**, including the two required disclosures.
@@ -60,6 +71,20 @@ and other settings. Leave them unchanged unless the task specifies otherwise.
 
 Vertical videos around one minute are presented as Shorts, and the resulting link uses
 `https://youtube.com/shorts/<video-id>`.
+
+## Daily upload limit
+
+An unverified or low-history channel can hit **Daily upload limit reached** during a batch. Studio may
+show the normal metadata form while the side panel says **Creating link...**; in this state the upload
+was rejected, the title can revert to the filename, and the advanced disclosure controls never render.
+Treat the limit warning as the cause instead of retrying **Show more** or continuing the wizard.
+
+The warning offers either a 24-hour wait or one-time advanced-feature verification. The current
+verification choices are a six-second selfie video, a photo ID, or building channel history (usually
+about two months). Video and ID approval can take a few hours and requires the account owner's direct
+participation. Do not choose or submit an identity-verification method on the user's behalf. Record the
+successfully published links, close the rejected upload, and resume the remaining files only after the
+owner completes verification or the daily limit resets.
 
 ## Editing an existing video
 
