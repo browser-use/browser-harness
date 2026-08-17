@@ -686,3 +686,87 @@ def test_process_start_time_returns_none_for_invalid_pid():
         )
     # 2**31 - 1 is the largest pid_t; in practice no live process at that PID.
     assert admin._process_start_time((1 << 31) - 1) is None
+
+
+# --- _repo_dir / _install_mode ---
+
+def _fake_install(monkeypatch, package_dir):
+    """Point admin at a package laid out under `package_dir`."""
+    package_dir.mkdir(parents=True, exist_ok=True)
+    module = package_dir / "admin.py"
+    module.touch()
+    monkeypatch.setattr(admin, "__file__", str(module))
+
+
+def test_repo_dir_detects_editable_src_layout_clone(tmp_path, monkeypatch):
+    """The real case this exists for: `src/browser_harness` inside a git clone."""
+    clone = tmp_path / "browser-harness"
+    (clone / ".git").mkdir(parents=True)
+    _fake_install(monkeypatch, clone / "src" / "browser_harness")
+
+    assert admin._repo_dir() == clone
+
+
+def test_repo_dir_detects_flat_layout_clone(tmp_path, monkeypatch):
+    clone = tmp_path / "browser-harness"
+    (clone / ".git").mkdir(parents=True)
+    _fake_install(monkeypatch, clone / "browser_harness")
+
+    assert admin._repo_dir() == clone
+
+
+def test_repo_dir_ignores_repo_enclosing_an_installed_wheel(tmp_path, monkeypatch):
+    """A wheel installed into a venv inside the user's own project is NOT a
+    browser-harness clone. Claiming it would make run_update() `git pull` an
+    unrelated repository instead of upgrading the package."""
+    project = tmp_path / "my-project"
+    (project / ".git").mkdir(parents=True)
+    _fake_install(
+        monkeypatch,
+        project / ".venv" / "lib" / "python3.12" / "site-packages" / "browser_harness",
+    )
+
+    assert admin._repo_dir() is None
+
+
+def test_repo_dir_ignores_dotfiles_repo_above_a_tool_install(tmp_path, monkeypatch):
+    """`uv tool install` under a $HOME that is itself a dotfiles git repo."""
+    home = tmp_path / "home"
+    (home / ".git").mkdir(parents=True)
+    _fake_install(
+        monkeypatch,
+        home / ".local/share/uv/tools/browser-harness/lib/python3.12/site-packages/browser_harness",
+    )
+
+    assert admin._repo_dir() is None
+
+
+def test_run_update_of_installed_wheel_never_pulls_an_enclosing_repo(tmp_path, monkeypatch):
+    """End-to-end symptom: `browser-harness --update -y` must upgrade the
+    package, not run git against the repository that happens to contain it."""
+    import subprocess
+
+    project = tmp_path / "my-project"
+    (project / ".git").mkdir(parents=True)
+    _fake_install(
+        monkeypatch,
+        project / ".venv" / "lib" / "python3.12" / "site-packages" / "browser_harness",
+    )
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda *a, **k: "0.2.0")
+    monkeypatch.setattr(admin, "_cache_read", lambda: {})
+    monkeypatch.setattr(admin, "_cache_write", lambda data: None)
+    monkeypatch.setattr(admin, "daemon_alive", lambda *a, **k: False)
+    commands = []
+
+    def fake_run(command, *args, **kwargs):
+        commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert admin.run_update(yes=True) == 0
+    assert not any(command[:1] == ["git"] for command in commands), (
+        f"run_update must not shell out to git for a wheel install; ran {commands}"
+    )
+    assert ["uv", "tool", "upgrade", "browser-harness"] in commands

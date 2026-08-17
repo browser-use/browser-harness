@@ -723,10 +723,19 @@ def _version():
 
 
 def _repo_dir():
-    """Return the repo root if this install is an editable git clone, else None."""
-    for p in Path(__file__).resolve().parents:
-        if (p / ".git").is_dir():
-            return p
+    """Return the repo root if this install is an editable git clone, else None.
+
+    Only the directories that could actually hold this package as source count:
+    the package's own parent (flat layout) and its grandparent (src layout).
+    Walking all the way up would claim any enclosing repository — a wheel
+    installed into a venv inside the user's project, or a tool install under a
+    dotfiles-managed $HOME — and run_update() would then `git pull` that repo
+    instead of upgrading browser-harness.
+    """
+    package = Path(__file__).resolve().parent
+    for candidate in (package.parent, package.parent.parent):
+        if (candidate / ".git").is_dir():
+            return candidate
     return None
 
 
