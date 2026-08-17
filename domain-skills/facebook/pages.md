@@ -293,3 +293,24 @@ underneath; personal profiles have a cover photo component and a "Friends" tab.
   contexts. Run the self-inspection block on first live use to confirm no drift
   since the groups.md verification date, and append a note here with what you
   found.
+- **2026-08-17:** On Page feeds, post bodies are NO LONGER inside
+  `div[role="article"]` (matches the groups.md drift note) — iterate
+  `div[data-ad-preview="message"], div[data-ad-comet-preview="message"]`
+  directly and walk up ~7 parents for the post container (reaction counts,
+  tail text). Permalink anchors (`pfbid` etc.) often have no href until
+  hover, so key posts by `body.innerText.slice(0,80)` instead of URL when you
+  only need content + engagement, not permalinks.
+- **2026-08-17:** `role="article"` DOES still match Messenger chat-dock
+  bubbles — if the user has a chat open, an unscoped `div[role="article"]`
+  sweep reads their private messages. Scope everything to
+  `div[role="main"]`.
+- **2026-08-17:** Repeated js()/scroll() round-trips over a long collect loop
+  wedged the daemon twice on heavy Page feeds (client hangs, needs
+  `restart_daemon()` + a fresh Chrome Allow click). Do the whole
+  scroll+collect as ONE `js()` call: an in-page `async` IIFE that loops
+  `window.scrollBy` + `await sleep(2500)` and returns the collected JSON at
+  the end. One round-trip, no wedge, ~12 scrolls ≈ 35 s.
+- **2026-08-17:** Engagement extraction without hover: collect `span` texts
+  matching `/^[0-9][0-9.,]*[KM]?$/` in the post container and take the max as
+  the reaction count proxy; parse `([\d.,]+[KM]?) comments|shares` from the
+  container's trailing innerText.
