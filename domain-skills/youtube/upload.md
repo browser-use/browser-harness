@@ -60,3 +60,20 @@ and other settings. Leave them unchanged unless the task specifies otherwise.
 
 Vertical videos around one minute are presented as Shorts, and the resulting link uses
 `https://youtube.com/shorts/<video-id>`.
+
+## Editing an existing video
+
+Open an existing video's details directly at:
+
+```text
+https://studio.youtube.com/video/<video-id>/edit
+```
+
+The title is the contenteditable `#title-textarea #textbox`. Change it, blur the field, and confirm the
+top **Save** button becomes enabled. Audience is visible on the main details page; advanced disclosures
+remain behind **Show more**. Expand it, scroll the **AI use** label into view, select the required
+**Yes** or **No** radio, and click **Save**. Wait until Studio displays **Changes saved** or **All changes
+saved** and the Save button becomes disabled.
+
+For a public video, verify the edit on the live Shorts/watch URL in a new tab. The browser tab title and
+the rendered title below the player should both contain the updated title.
