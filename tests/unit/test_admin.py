@@ -63,6 +63,7 @@ def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatc
 def test_daemon_endpoint_names_with_bh_runtime_dir_returns_local_name_when_sock_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
     monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
     monkeypatch.setattr(admin, "NAME", "session-xyz")
     (tmp_path / "bu.sock").touch()
@@ -73,10 +74,24 @@ def test_daemon_endpoint_names_with_bh_runtime_dir_returns_local_name_when_sock_
 def test_daemon_endpoint_names_with_bh_runtime_dir_returns_empty_when_sock_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
     monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
     monkeypatch.setattr(admin, "NAME", "session-xyz")
 
     assert admin._daemon_endpoint_names() == []
+
+
+def test_daemon_endpoint_names_with_shared_bh_runtime_dir_discovers_named_sockets(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", True)
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    (tmp_path / "bu-default.sock").touch()
+    (tmp_path / "bu-work.sock").touch()
+    (tmp_path / "bu-invalid.name.sock").touch()
+    (tmp_path / "bu.sock").touch()  # stale isolated-runtime endpoint
+
+    assert admin._daemon_endpoint_names() == ["default", "work"]
 
 
 def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
@@ -92,6 +107,18 @@ def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
     monkeypatch.setattr(admin.ipc, "connect", fake_connect)
 
     assert admin.active_browser_connections() == 1
+
+
+def test_daemon_browser_ready_checks_the_selected_daemon(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        admin,
+        "_daemon_browser_connection",
+        lambda name: calls.append(name) or {"name": name, "page": None},
+    )
+
+    assert admin.daemon_browser_ready("work")
+    assert calls == ["work"]
 
 
 def test_active_browser_connections_skips_daemons_reporting_cdp_disconnected(monkeypatch):
@@ -226,6 +253,24 @@ def test_run_doctor_skips_snap_detect_on_non_linux(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "[snap-detect]" not in out
+
+
+def test_run_doctor_reports_bad_stored_cloud_auth_without_crashing(monkeypatch, capsys):
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "git")
+    monkeypatch.setattr(admin, "_chrome_running", lambda: True)
+    monkeypatch.setattr(admin, "daemon_alive", lambda: True)
+    monkeypatch.setattr(admin, "browser_connections", lambda: [])
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_doctor_probe_chrome_binary_for_snap", lambda: (None, None))
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(admin.auth, "auth_status", lambda: (_ for _ in ()).throw(admin.auth.AuthError("auth file is not valid JSON")))
+
+    assert admin.run_doctor() == 0
+
+    out = capsys.readouterr().out
+    assert "Browser Use cloud auth" in out
+    assert "auth file is not valid JSON" in out
 
 
 def test_run_doctor_fix_snap_prints_steps(capsys):

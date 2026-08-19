@@ -2,9 +2,9 @@
 
 # Browser Harness ♞
 
-Connect an LLM directly to your real browser with a thin, editable CDP harness. For browser tasks where you need **complete freedom**.
+Connect an LLM directly to your real browser through one editable CDP websocket. The agent writes missing helpers as it works, so the harness improves with every task.
 
-One websocket to Chrome, nothing between. The agent writes what's missing during execution. The harness improves itself every run.
+Try browser-harness in [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_campaign=browser-harness-use-in-cloud&utm_source=github) or paste the setup prompt into your coding agent.
 
 ```
   ● agent: wants to upload a file
@@ -18,56 +18,38 @@ One websocket to Chrome, nothing between. The agent writes what's missing during
 
 **You will never use the browser again.**
 
+## See it work
+
+**Task:** "Open my X profile, find my latest 20 video posts, and download them."
+
+[![Download my latest 20 X videos](docs/download-latest-20-x-videos.gif)](https://browser-use.com/showcase/videos/download-latest-20-x-videos.mp4)
+
 ## Setup prompt
 
 Paste into Claude Code or Codex:
 
 ```text
-Set up https://github.com/browser-use/browser-harness for me.
-
-Read `install.md` and follow the steps to install browser-harness and connect it to my browser.
+Install or upgrade browser-harness to the latest stable version with uv using Python 3.12, register the skill from `browser-harness skill`, and connect it to my browser. Ask whether I want local browser recordings enabled; default to no and preserve my existing preference on upgrades. Follow https://github.com/browser-use/browser-harness/blob/main/install.md if setup or connection fails.
 ```
 
-The agent will open `chrome://inspect/#remote-debugging`. Tick the checkbox so the agent can connect to your browser:
+The agent will open `chrome://inspect/#remote-debugging`. On first setup, tick
+the checkbox so the agent can connect to your browser:
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
-Click Allow when the per-attach popup appears (Chrome 144+):
+## How it works
 
-<img src="docs/allow-remote-debugging.png" alt="Allow remote debugging popup" width="520" style="border-radius: 12px;" />
+- [`install.md`](install.md) connects the agent to your browser.
+- [`SKILL.md`](SKILL.md) teaches it the browser workflow.
+- [`src/browser_harness/`](src/browser_harness/) stays protected while the agent writes reusable helpers in its local workspace.
 
-See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
+## Scale with Browser Use Cloud
 
-## Free Browser Use Cloud browsers
-
-Stealth, sub-agents, or headless deployment.<br>
-**Browser Use Cloud free tier: 3 concurrent browsers, proxies, captcha solving, and more. No card required.**
-
-- Grab a key at [cloud.browser-use.com/new-api-key](https://cloud.browser-use.com/new-api-key)
-- Or let the agent sign up itself via [docs.browser-use.com/llms.txt](https://docs.browser-use.com/llms.txt) (setup flow + challenge context included).
-
-## Architecture (~1k lines across 4 core files)
-
-- `install.md` — first-time install and browser bootstrap
-- `SKILL.md` — day-to-day usage
-- `src/browser_harness/` — protected core package
-- `agent-workspace/agent_helpers.py` — helper code the agent edits
-- `agent-workspace/domain-skills/` — reusable site-specific skills the agent edits
+Use your local browser for logged-in, personal work. When you want many browsers in parallel—with live previews, proxies, stealth, CAPTCHA solving, and more—scale with [Browser Use Cloud](https://cloud.browser-use.com/new-api-key).
 
 ## Contributing
 
-PRs and improvements welcome. The best way to help: **contribute a new domain skill** under [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for a site or task you use often (LinkedIn outreach, ordering on Amazon, filing expenses, etc.). Each skill teaches the agent the selectors, flows, and edge cases it would otherwise have to rediscover.
-
-- **Skills are written by the harness, not by you.** Just run your task with the agent — when it figures something non-obvious out, it files the skill itself (see [SKILL.md](SKILL.md)). Please don't hand-author skill files; agent-generated ones reflect what actually works in the browser.
-- Open a PR with the generated `agent-workspace/domain-skills/<site>/` folder — small and focused is great.
-- Bug fixes, docs tweaks, and helper improvements are equally welcome.
-- Browse existing skills (`github/`, `linkedin/`, `amazon/`, ...) to see the shape.
-
-If you're not sure where to start, open an issue and we'll point you somewhere useful.
-
-## Domain skills
-
-Set `BH_DOMAIN_SKILLS=1` to enable [agent-workspace/domain-skills/](agent-workspace/domain-skills/) — community-contributed per-site playbooks `goto_url` surfaces by domain. Contribute via PR.
+Bug fixes, documentation improvements, and agent-generated domain skills are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

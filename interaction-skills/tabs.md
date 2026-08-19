@@ -7,9 +7,9 @@ Use **CDP for control**, **UI automation for user-visible order**.
 ```python
 tabs = list_tabs()                    # includes chrome:// pages too
 real_tabs = list_tabs(include_chrome=False)
-tid = new_tab("https://example.com")  # create + attach
-switch_tab(tid)                       # attach harness to tab
-cdp("Target.activateTarget", targetId=tid)  # show it in Chrome
+tid = new_tab("https://example.com")  # create + attach in the background
+switch_tab(tid)                       # attach harness, move the horse marker
+activate_tab(tid)                     # optional: explicitly show it in Chrome
 print(current_tab())
 print(page_info())
 ```
@@ -61,7 +61,9 @@ Typical tools:
 
 ## Rules that held up in practice
 
-- `switch_tab()` is **not enough** if the user expects Chrome to visibly change.
+- `switch_tab()` intentionally does **not** change Chrome's visible tab.
+- Static screenshots and normal CDP input work on the attached background tab.
+- `activate_tab()` is the explicit opt-in for visibility-dependent rendering or a user-requested visible switch.
 - `Target.activateTarget` is the CDP-side "show this tab".
 - `list_tabs()` includes `chrome://newtab/` by default; ask for `include_chrome=False` when you want only real pages.
 - `chrome://omnibox-popup.top-chrome/` can appear as a fake page target; ignore it for user-facing tab lists.

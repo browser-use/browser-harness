@@ -127,6 +127,21 @@ def test_empty_bu_cdp_url_does_not_block_bootstrap(monkeypatch):
     mock_start.assert_called_once()
 
 
+def test_bad_stored_cloud_auth_does_not_bootstrap_or_crash(monkeypatch):
+    monkeypatch.setenv("BU_AUTOSPAWN", "1")
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.daemon_alive", return_value=False), \
+         patch("browser_harness.run._local_chrome_listening", return_value=False), \
+         patch("browser_harness.run.auth.get_browser_use_api_key", side_effect=run.auth.AuthError("auth file is not valid JSON")), \
+         patch("browser_harness.run.start_remote_daemon") as mock_start, \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+
+    mock_start.assert_not_called()
+
+
 def test_both_bu_cdp_url_and_bu_cdp_ws_set_blocks_bootstrap(monkeypatch):
     """When the caller has BOTH endpoints configured (e.g. a parent agent that probes
     BU_CDP_URL first and falls back to a known BU_CDP_WS), bootstrap must still defer
@@ -237,4 +252,3 @@ def test_cli_doctor_rejects_unknown_flags():
             run.main()
     assert ei.value.code == 2
     assert "usage" in err.getvalue().lower()
-

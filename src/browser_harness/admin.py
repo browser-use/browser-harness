@@ -1,14 +1,16 @@
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 from . import _ipc as ipc
+from . import auth
+from . import paths
 
 
 def _process_start_time(pid):
@@ -104,7 +106,7 @@ def _process_start_time(pid):
 
 def _load_env():
     repo_root = Path(__file__).resolve().parents[2]
-    workspace = Path(os.environ.get("BH_AGENT_WORKSPACE", repo_root / "agent-workspace")).expanduser()
+    workspace = paths.workspace_dir()
     for p in (repo_root / ".env", workspace / ".env"):
         if not p.exists():
             continue
@@ -112,7 +114,7 @@ def _load_env():
 
 
 def _load_env_file(p):
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -124,21 +126,21 @@ _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"
-GH_RELEASES = "https://api.github.com/repos/browser-use/browser-harness/releases/latest"
-VERSION_CACHE = Path(tempfile.gettempdir()) / "bu-version-cache.json"
+PYPI_JSON = "https://pypi.org/pypi/browser-harness/json"
+VERSION_CACHE = paths.config_dir() / "version-cache.json"
 VERSION_CACHE_TTL = 24 * 3600
 DOCTOR_TEXT_LIMIT = 140
 
 
 def _log_tail(name):
     try:
-        return ipc.log_path(name or NAME).read_text().strip().splitlines()[-1]
-    except (FileNotFoundError, IndexError):
+        return ipc.log_path(name or NAME).read_text(encoding="utf-8", errors="replace").strip().splitlines()[-1]
+    except (FileNotFoundError, IndexError, OSError):
         return None
 
 
 def _needs_chrome_remote_debugging_prompt(msg):
-    """True when Chrome needs the inspect-page permission/profile flow."""
+    """True when Chrome needs the inspect-page permission flow."""
     lower = (msg or "").lower()
     return (
         "devtoolsactiveport not found" in lower
@@ -156,9 +158,26 @@ def _needs_chrome_remote_debugging_prompt(msg):
     )
 
 
+def _needs_chrome_permission_popup(msg):
+    """True when Chrome is reachable but waiting on the per-session Allow popup."""
+    lower = (msg or "").lower()
+    return "permission-blocked" in lower
+
+
+def _chrome_not_running(msg):
+    """True when the daemon found no running supported browser"""
+    return "chrome-not-running" in (msg or "").lower()
+
+
 def _is_local_chrome_mode(env=None):
     """True when the daemon discovers a local Chrome instead of a remote CDP WS."""
-    return not (env or {}).get("BU_CDP_WS") and not os.environ.get("BU_CDP_WS")
+    env = env or {}
+    return not (
+        env.get("BU_CDP_WS")
+        or env.get("BU_CDP_URL")
+        or os.environ.get("BU_CDP_WS")
+        or os.environ.get("BU_CDP_URL")
+    )
 
 
 def daemon_alive(name=None):
@@ -167,13 +186,31 @@ def daemon_alive(name=None):
     return ipc.ping(name or NAME, timeout=1.0)
 
 
+def daemon_browser_kind(name=None):
+    """'cloud' | 'cdp' | 'local' as self-reported by a live daemon, else None.
+
+    None covers unreachable daemons and pre-browser_kind daemons still running
+    from an older version."""
+    c = None
+    try:
+        c, token = ipc.connect(name or NAME, timeout=1.0)
+        response = ipc.request(c, token, {"meta": "ping"})
+        kind = response.get("browser_kind") if isinstance(response, dict) else None
+        return kind if kind in {"cloud", "cdp", "local"} else None
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, ValueError):
+        return None
+    finally:
+        if c:
+            c.close()
+
+
 def _daemon_endpoint_names():
     # BH_RUNTIME_DIR isolates one daemon per dir → no filename-prefix discovery,
-    # just check whether our local endpoint exists. Without BH_RUNTIME_DIR,
-    # _RUNTIME is the shared default (`/tmp` etc.) and we glob `bu-*.<suffix>`
-    # to find every daemon on the machine.
+    # just check whether our local endpoint exists. Without BH_RUNTIME_DIR, or
+    # with BH_RUNTIME_DIR_SHARED=1, _RUNTIME is shared and we glob `bu-*.<suffix>`
+    # to find every daemon in that runtime dir.
     suffix = ".port" if ipc.IS_WINDOWS else ".sock"
-    if ipc.BH_RUNTIME_DIR:
+    if ipc.BH_RUNTIME_DIR and not ipc.BH_RUNTIME_DIR_SHARED:
         return [NAME] if (ipc._RUNTIME / f"bu{suffix}").exists() else []
     names = []
     for p in sorted(ipc._RUNTIME.glob(f"bu-*{suffix}")):
@@ -202,6 +239,11 @@ def _daemon_browser_connection(name):
     finally:
         if c:
             c.close()
+
+
+def daemon_browser_ready(name=None):
+    """Whether the selected daemon has a healthy attached browser connection."""
+    return _daemon_browser_connection(name or NAME) is not None
 
 
 def browser_connections():
@@ -288,7 +330,7 @@ def run_doctor_fix_snap():
     print("   export BH_CHROME_PATH=/usr/bin/google-chrome-stable")
     print("   # CHROME_PATH is also honored by doctor's snap probe if you prefer that name.")
     print()
-    print("3. Launch Chrome from that path (Way 2) or open your profile Chrome (Way 1),")
+    print("3. Launch Chrome from that path (Way 2) or open Chrome normally (Way 1),")
     print("   enable remote debugging per install.md, then verify:")
     print("   browser-harness --doctor")
     print()
@@ -296,38 +338,106 @@ def run_doctor_fix_snap():
 
 
 def ensure_daemon(wait=60.0, name=None, env=None):
-    """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
+    """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
+    Chrome, and missing Allow on chrome://inspect."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         # Must go through ipc.connect so this works on Windows (TCP loopback) too;
         # raw AF_UNIX here would fail on every warm call and churn the daemon.
-        try:
-            s, token = ipc.connect(name or NAME, timeout=3.0)
-            resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
-            if "result" in resp: return
-        except Exception: pass
+        for last in (False, True):
+            try:
+                s, token = ipc.connect(name or NAME, timeout=3.0)
+                resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+                if "result" in resp: return
+            except Exception:
+                pass
+            if not last: time.sleep(0.5)
         restart_daemon(name)
 
     import subprocess, sys
     local = _is_local_chrome_mode(env)
-    for attempt in (0, 1):
+    launched_browser = False
+    opened_inspect = False
+    for _ in range(3):
         e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+        try:
+            stderr_sink = open(ipc.log_path(name or NAME), "ab")
+        except OSError:
+            stderr_sink = subprocess.DEVNULL
         p = subprocess.Popen(
             [sys.executable, "-m", "browser_harness.daemon"],
-            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
+            env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
         )
-        deadline = time.time() + wait
+        if stderr_sink is not subprocess.DEVNULL:
+            stderr_sink.close()
+        spawned = time.time()
+        deadline = spawned + wait
+        hinted = not local
         while time.time() < deadline:
             if daemon_alive(name): return
             if p.poll() is not None: break
+            if not hinted and time.time() - spawned > 2 and (_log_tail(name) or "").startswith("handshake-wait"):
+                action = (
+                    "run `browser-harness mac-approve` in another shell or click Allow"
+                    if sys.platform == "darwin"
+                    else "click Allow"
+                )
+                print(
+                    f'browser-harness: Chrome is asking "Allow remote debugging?" — {action} to continue.',
+                    file=sys.stderr,
+                )
+                hinted = True
             time.sleep(0.2)
         msg = _log_tail(name) or ""
-        if local and attempt == 0 and _needs_chrome_remote_debugging_prompt(msg):
-            _open_chrome_inspect()
-            print('browser-harness: at chrome://inspect/#remote-debugging, tick "Allow remote debugging for this browser instance" and click Allow on the popup that appears', file=sys.stderr)
+        if local and msg.startswith("handshake-wait"):
             restart_daemon(name)
+            raise RuntimeError(
+                "permission-blocked: Chrome's Allow popup was not clicked in time -- wait for the user to click Allow, then retry."
+            )
+        if local and _needs_chrome_permission_popup(msg):
+            print('browser-harness: Chrome is asking "Allow remote debugging?". Click Allow in Chrome, then retry browser work.', file=sys.stderr)
+            restart_daemon(name)
+            raise RuntimeError(
+                "permission-blocked: wait for the user to click Allow in the Chrome permission popup before retrying."
+            )
+        if local and not launched_browser and _chrome_not_running(msg):
+            # Chrome is closed — launch the browser and retry
+            launched_browser = True
+            restart_daemon(name)
+            if not _launch_browser():
+                raise RuntimeError(
+                    "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+                )
+            print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
+            from .daemon import supported_browser_running
+            boot_deadline = time.time() + 15
+            while time.time() < boot_deadline and not supported_browser_running():
+                time.sleep(0.3)
             continue
+        if local and not opened_inspect and _needs_chrome_remote_debugging_prompt(msg):
+            opened_inspect = True
+            from .daemon import remote_debugging_toggle_profiles, remote_debugging_user_enabled
+            if remote_debugging_user_enabled():
+                # chrome://inspect toggle is already on — connection died
+                print('browser-harness: Chrome is asking "Allow remote debugging?". Click Allow in Chrome, then retry browser work.', file=sys.stderr)
+                restart_daemon(name)
+                raise RuntimeError(
+                    "permission-blocked: wait for the user to click Allow in the Chrome permission popup before retrying."
+                )
+            restart_daemon(name)
+            _open_chrome_inspect_once()
+            if remote_debugging_toggle_profiles():
+                # Toggle already ticked from a previous run, but Chrome 144+
+                # wants new Allow for this browser run.
+                todo = 'click Allow on Chrome\'s "Allow remote debugging?" popup (the checkbox is already ticked; if no popup appears, untick and re-tick it)'
+            else:
+                todo = 'tick "Allow remote debugging for this browser instance" and click Allow on the popup'
+            raise RuntimeError(
+                f"remote-debugging-setup: opened chrome://inspect/#remote-debugging in Chrome -- ask the user to {todo}. "
+                "Warn them Chrome shows ONE more Allow popup when the harness connects on the next attempt (per-connection approval; it is expected, not a re-ask). "
+                "Retry after the user confirms; do not retry before."
+            )
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
 
 
@@ -424,9 +534,7 @@ def restart_daemon(name=None):
 
 
 def _browser_use(path, method, body=None):
-    key = os.environ.get("BROWSER_USE_API_KEY")
-    if not key:
-        raise RuntimeError("BROWSER_USE_API_KEY missing -- see .env.example")
+    key = auth.get_browser_use_api_key()
     req = urllib.request.Request(
         f"{BU_API}{path}",
         method=method,
@@ -548,13 +656,11 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
 
 
 def list_local_profiles():
-    """Detected local browser profiles on this machine. Shells out to `profile-use list --json`.
-    Returns [{BrowserName, BrowserPath, ProfileName, ProfilePath, DisplayName}, ...].
-    Requires `profile-use` (see interaction-skills/profile-sync.md for install)."""
+    """Detected local browser profiles on this machine. Shells out to `profile-use list --json`."""
     import json, shutil, subprocess
     if not shutil.which("profile-use"):
         raise RuntimeError("profile-use not installed -- curl -fsSL https://browser-use.com/profile.sh | sh")
-    return json.loads(subprocess.check_output(["profile-use", "list", "--json"], text=True))
+    return json.loads(subprocess.check_output(["profile-use", "list", "--json"], text=True, encoding="utf-8", errors="replace"))
 
 
 def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
@@ -576,11 +682,10 @@ def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
                           Leading dot is optional. Example: ["google.com", "stripe.com"].
       exclude_domains:    drop cookies for these domains (and subdomains). Applied
                           before `include_domains` so exclude wins on overlap."""
-    import os, re, shutil, subprocess, sys
+    import shutil, subprocess, sys
     if not shutil.which("profile-use"):
         raise RuntimeError("profile-use not installed -- curl -fsSL https://browser-use.com/profile.sh | sh")
-    if not os.environ.get("BROWSER_USE_API_KEY"):
-        raise RuntimeError("BROWSER_USE_API_KEY missing")
+    key = auth.get_browser_use_api_key()
     cmd = ["profile-use", "sync", "--profile", profile_name]
     if browser:
         cmd += ["--browser", browser]
@@ -590,7 +695,7 @@ def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
         cmd += ["--domain", d]
     for d in exclude_domains or []:
         cmd += ["--exclude-domain", d]
-    r = subprocess.run(cmd, text=True, capture_output=True)
+    r = subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True, env={**os.environ, "BROWSER_USE_API_KEY": key})
     sys.stdout.write(r.stdout)
     sys.stderr.write(r.stderr)
     if r.returncode != 0:
@@ -634,27 +739,31 @@ def _install_mode():
 
 def _cache_read():
     try:
-        return json.loads(VERSION_CACHE.read_text())
-    except (FileNotFoundError, ValueError):
+        return json.loads(VERSION_CACHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
 
 
 def _cache_write(data):
     try:
+        VERSION_CACHE.parent.mkdir(parents=True, exist_ok=True)
         VERSION_CACHE.write_text(json.dumps(data))
+        try:
+            os.chmod(VERSION_CACHE, 0o600)
+        except OSError:
+            pass
     except OSError:
         pass
 
 
 def _latest_release_tag(force=False):
-    """Return latest release tag from GitHub, or None. Cached for 24h to avoid hammering the API."""
+    """Return latest PyPI version, or None. Cached for 24h to avoid hammering PyPI."""
     cache = _cache_read()
     now = time.time()
     if not force and cache.get("tag") and now - cache.get("fetched_at", 0) < VERSION_CACHE_TTL:
         return cache["tag"]
     try:
-        req = urllib.request.Request(GH_RELEASES, headers={"Accept": "application/vnd.github+json"})
-        tag = json.loads(urllib.request.urlopen(req, timeout=5).read()).get("tag_name") or ""
+        tag = json.loads(urllib.request.urlopen(PYPI_JSON, timeout=5).read()).get("info", {}).get("version") or ""
     except Exception:
         return cache.get("tag")  # fall back to last known
     tag = tag.lstrip("v")
@@ -663,17 +772,16 @@ def _latest_release_tag(force=False):
 
 
 def _version_tuple(v):
-    """Best-effort semver parse. Non-numeric components sort as 0, so pre-releases may not rank perfectly."""
-    parts = []
-    for s in (v or "").split("."):
-        m = ""
-        for ch in s:
-            if ch.isdigit():
-                m += ch
-            else:
-                break
-        parts.append(int(m) if m else 0)
-    return tuple(parts)
+    """Best-effort PEP 440-ish parse: alpha < beta < rc < final."""
+    m = re.match(r"^\s*v?(\d+(?:\.\d+)*)(?:(a|b|rc)(\d+))?", v or "", re.I)
+    if not m:
+        return (0, 0, 0, 3, 0)
+    nums = [int(p) for p in m.group(1).split(".")[:3]]
+    nums.extend([0] * (3 - len(nums)))
+    pre = (m.group(2) or "").lower()
+    pre_rank = {"a": 0, "b": 1, "rc": 2}.get(pre, 3)
+    pre_num = int(m.group(3) or 0)
+    return (*nums, pre_rank, pre_num)
 
 
 def check_for_update():
@@ -706,13 +814,100 @@ def _chrome_running():
     system = platform.system()
     try:
         if system == "Windows":
-            out = subprocess.check_output(["tasklist"], text=True, timeout=5)
+            out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5)
             names = ("chrome.exe", "msedge.exe", "helium.exe")
         else:
-            out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
+            out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
             names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
         return any(n.lower() in out.lower() for n in names)
     except Exception:
+        return False
+
+
+_BROWSER_LAUNCH = (
+    # (profile-dir fragment, macOS app name, POSIX commands, Windows `start` target)
+    ("chrome canary", "Google Chrome Canary", ("google-chrome-canary",), "chrome"),
+    ("chromium", "Chromium", ("chromium", "chromium-browser"), "chromium"),
+    ("chrome", "Google Chrome", ("google-chrome-stable", "google-chrome"), "chrome"),
+    ("edge", "Microsoft Edge", ("microsoft-edge", "microsoft-edge-stable"), "msedge"),
+    ("brave", "Brave Browser", ("brave-browser", "brave"), "brave"),
+    ("arc", "Arc", (), None),
+    ("dia", "Dia", (), None),
+    ("comet", "Comet", (), None),
+)
+_DEFAULT_LAUNCH = (
+    "Google Chrome",
+    ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "microsoft-edge"),
+    "chrome",
+)
+
+
+def _browser_launch_spec(base):
+    """(mac app, posix commands, windows target) for the browser w profile dir"""
+    tail = "/".join(p.lower() for p in Path(base).parts[-2:])
+    for frag, mac_app, posix_cmds, win_target in _BROWSER_LAUNCH:
+        if frag in tail:
+            return (mac_app, posix_cmds, win_target)
+    return _DEFAULT_LAUNCH
+
+
+def _profile_directory_args(base):
+    """Relaunch skips Chrome's profile picker"""
+    if not base:
+        return []
+    try:
+        state = json.loads((Path(base) / "Local State").read_text(encoding="utf-8", errors="replace"))
+        last = ((state.get("profile") or {}).get("last_used")) or "Default"
+    except (OSError, ValueError, AttributeError):
+        last = "Default"
+    if not isinstance(last, str) or not (Path(base) / last).is_dir():
+        return []
+    return [f"--profile-directory={last}"]
+
+
+def _launch_browser():
+    """Prefers the browser whose profile already has perm box checked"""
+    import platform, shutil, subprocess
+    from .daemon import PROFILES, remote_debugging_toggle_profiles
+
+    for key in ("BH_CHROME_PATH", "CHROME_PATH"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw and Path(raw).expanduser().is_file():
+            try:
+                subprocess.Popen(
+                    [str(Path(raw).expanduser())],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
+                )
+                return True
+            except (OSError, subprocess.SubprocessError):
+                # A path that exists but can't execute (permissions, wrong arch)
+                # must fall through to normal discovery, not abort
+                continue
+
+    enabled = remote_debugging_toggle_profiles()
+    base = enabled[0] if enabled else next((b for b in PROFILES if (b / "Local State").exists()), None)
+    mac_app, posix_cmds, win_target = _browser_launch_spec(base) if base else _DEFAULT_LAUNCH
+    profile_args = _profile_directory_args(base)
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            cmd = ["open", "-a", mac_app] + (["--args"] + profile_args if profile_args else [])
+            r = subprocess.run(cmd, timeout=10, check=False, capture_output=True)
+            if r.returncode != 0 and mac_app != "Google Chrome":
+                # Different app → its profile dir may not match; launch plain
+                r = subprocess.run(["open", "-a", "Google Chrome"], timeout=10, check=False, capture_output=True)
+            return r.returncode == 0
+        if system == "Windows":
+            # `start <name>` resolves browsers via App Paths without knowing the install dir
+            subprocess.Popen(["cmd", "/c", "start", "", win_target or "chrome"] + profile_args, **ipc.spawn_kwargs())
+            return True
+        for cmd in posix_cmds or _DEFAULT_LAUNCH[1]:
+            w = shutil.which(cmd)
+            if w:
+                subprocess.Popen([w] + profile_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs())
+                return True
+        return False
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -722,30 +917,54 @@ def _open_chrome_inspect():
     url = "chrome://inspect/#remote-debugging"
     if platform.system() == "Darwin":
         try:
-            subprocess.run([
+            r = subprocess.run([
                 "osascript",
                 "-e", 'tell application "Google Chrome" to activate',
                 "-e", f'tell application "Google Chrome" to open location "{url}"',
-            ], timeout=5, check=False)
-            return
+            ], timeout=5, check=False, capture_output=True)
+            if r.returncode == 0:
+                return True
         except Exception:
             pass
     try:
-        webbrowser.open(url, new=2)
+        return bool(webbrowser.open(url, new=2))
     except Exception:
+        return False
+
+
+INSPECT_REOPEN_TTL = 180.0  # seconds open new chrome://inspect tab
+
+
+def _open_chrome_inspect_once():
+    """Open chrome://inspect at most once per INSPECT_REOPEN_TTL across invocations"""
+    marker = paths.inspect_marker()
+    try:
+        if time.time() - marker.stat().st_mtime < INSPECT_REOPEN_TTL:
+            return
+    except OSError:
+        pass
+    if not _open_chrome_inspect():
+        return
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
         pass
 
 
 def run_doctor():
     """Read-only diagnostics. Exit 0 iff everything looks healthy."""
-    import platform, shutil, sys
+    import platform, sys
     cur = _version()
     mode = _install_mode()
     chrome = _chrome_running()
     daemon = daemon_alive()
     connections = browser_connections()
-    profile_use = shutil.which("profile-use") is not None
-    api_key = bool(os.environ.get("BROWSER_USE_API_KEY"))
+    try:
+        auth_state = auth.auth_status()
+    except (auth.AuthError, OSError) as e:
+        auth_state = {"status": "error", "source": None, "reason": str(e)}
+    cloud_auth = auth_state.get("status") == "authenticated"
     latest = _latest_release_tag()
     # Only claim an update when we know the installed version — `cur or "(unknown)"`
     # for display would otherwise be parsed as (0,) and flag every latest as newer.
@@ -764,7 +983,7 @@ def run_doctor():
     if latest:
         print(f"  latest release    {latest}" + (" (update available)" if newer else ""))
     else:
-        print("  latest release    (could not reach github)")
+        print("  latest release    (could not reach PyPI)")
     if platform.system() == "Linux":
         bname, bpath = _doctor_probe_chrome_binary_for_snap()
         if bname and bpath and _is_snap_browser(bpath):
@@ -783,9 +1002,8 @@ def run_doctor():
             print(f"        {conn['name']} — active page: {title} — {url}")
         else:
             print(f"        {conn['name']} — active page: (no real page)")
-    row("profile-use installed", profile_use, "" if profile_use else "optional: curl -fsSL https://browser-use.com/profile.sh | sh")
-    row("BROWSER_USE_API_KEY set", api_key, "" if api_key else "optional: needed only for cloud browsers / profile sync")
-    # Core health = chrome + daemon. Profile-use/api-key are optional.
+    row("Browser Use cloud auth", cloud_auth, auth_state.get("source") or auth_state.get("reason") or "optional: browser-harness auth login")
+    # Core health = chrome + daemon. Cloud auth is optional.
     return 0 if (chrome and daemon) else 1
 
 
@@ -818,7 +1036,7 @@ def run_update(yes=False):
     elif latest:
         print(f"installed version unknown; will try to update to {latest}.")
     else:
-        print("could not reach github; will try to update anyway.")
+        print("could not reach PyPI; will try to update anyway.")
 
     mode = _install_mode()
     if mode == "git":
@@ -837,10 +1055,7 @@ def run_update(yes=False):
     elif mode == "pypi":
         tool_upgrade = subprocess.run(["uv", "tool", "upgrade", "browser-harness"])
         if tool_upgrade.returncode != 0:
-            # Fall back to pip in case this wasn't a `uv tool install`.
-            pip = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "browser-harness"])
-            if pip.returncode != 0:
-                return pip.returncode
+            return tool_upgrade.returncode
     else:
         print("unknown install mode; can't auto-update.", file=sys.stderr)
         return 1

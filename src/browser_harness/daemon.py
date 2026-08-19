@@ -1,16 +1,18 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.error, urllib.request
+import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
 
 from . import _ipc as ipc
+from . import auth
+from . import paths
 from cdp_use.client import CDPClient
 
 
 def _load_env():
     repo_root = Path(__file__).resolve().parents[2]
-    workspace = Path(os.environ.get("BH_AGENT_WORKSPACE", repo_root / "agent-workspace")).expanduser()
+    workspace = paths.workspace_dir()
     for p in (repo_root / ".env", workspace / ".env"):
         if not p.exists():
             continue
@@ -18,7 +20,7 @@ def _load_env():
 
 
 def _load_env_file(p):
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -33,44 +35,149 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
-PROFILES = [
-    Path.home() / "Library/Application Support/Google/Chrome",
-    Path.home() / "Library/Application Support/Google/Chrome Canary",
-    Path.home() / "Library/Application Support/Comet",
-    Path.home() / "Library/Application Support/Arc/User Data",
-    Path.home() / "Library/Application Support/Dia/User Data",
-    Path.home() / "Library/Application Support/Microsoft Edge",
-    Path.home() / "Library/Application Support/Microsoft Edge Beta",
-    Path.home() / "Library/Application Support/Microsoft Edge Dev",
-    Path.home() / "Library/Application Support/Microsoft Edge Canary",
-    Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser",
-    Path.home() / ".config/google-chrome",
-    Path.home() / ".config/chromium",
-    Path.home() / ".config/chromium-browser",
-    Path.home() / ".config/microsoft-edge",
-    Path.home() / ".config/microsoft-edge-beta",
-    Path.home() / ".config/microsoft-edge-dev",
-    Path.home() / ".var/app/org.chromium.Chromium/config/chromium",
-    Path.home() / ".var/app/com.google.Chrome/config/google-chrome",
-    Path.home() / ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
-    Path.home() / ".var/app/com.microsoft.Edge/config/microsoft-edge",
-    Path.home() / "AppData/Local/Google/Chrome/User Data",
-    Path.home() / "AppData/Local/Google/Chrome SxS/User Data",
-    Path.home() / "AppData/Local/Chromium/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge Beta/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge Dev/User Data",
-    Path.home() / "AppData/Local/Microsoft/Edge SxS/User Data",
-    Path.home() / "AppData/Local/BraveSoftware/Brave-Browser/User Data",
-]
+_MAC_PROFILES = (
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Google/Chrome Canary",
+    "Library/Application Support/Comet",
+    "Library/Application Support/Arc/User Data",
+    "Library/Application Support/Dia/User Data",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Microsoft Edge Beta",
+    "Library/Application Support/Microsoft Edge Dev",
+    "Library/Application Support/Microsoft Edge Canary",
+    "Library/Application Support/BraveSoftware/Brave-Browser",
+)
+_LINUX_PROFILES = (
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/chromium-browser",
+    ".config/microsoft-edge",
+    ".config/microsoft-edge-beta",
+    ".config/microsoft-edge-dev",
+    ".var/app/org.chromium.Chromium/config/chromium",
+    ".var/app/com.google.Chrome/config/google-chrome",
+    ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
+    ".var/app/com.microsoft.Edge/config/microsoft-edge",
+)
+_WINDOWS_PROFILES = (  # relative to %LOCALAPPDATA%; SxS = Canary channel
+    "Google/Chrome/User Data",
+    "Google/Chrome SxS/User Data",
+    "Google/Chrome Beta/User Data",
+    "Google/Chrome Dev/User Data",
+    "Chromium/User Data",
+    "Microsoft/Edge/User Data",
+    "Microsoft/Edge Beta/User Data",
+    "Microsoft/Edge Dev/User Data",
+    "Microsoft/Edge SxS/User Data",
+    "BraveSoftware/Brave-Browser/User Data",
+)
+
+
+def profile_dirs(system=None):
+    system = system or platform.system()
+    if system == "Windows":
+        local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+        return [local / p for p in _WINDOWS_PROFILES]
+    if system == "Darwin":
+        return [Path.home() / p for p in _MAC_PROFILES]
+    return [Path.home() / p for p in _LINUX_PROFILES]
+
+
+PROFILES = profile_dirs()
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
-API_KEY = os.environ.get("BROWSER_USE_API_KEY")
+BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
+# Chrome 144+ shows a per-connection popup. Keep popup open enough to click.
+LOCAL_HANDSHAKE_TIMEOUT = 45
+# How long get_ws_url() keeps waiting for DevToolsActivePort before giving up
+NO_TOGGLE_GRACE = 3
+TOGGLE_BOOT_GRACE = 12
+
+
+def _devtools_port_live(base):
+    """True when something is listening on the profile's DevToolsActivePort port.
+
+    A stale file left behind by a closed browser must not count as a running
+    instance — it would route recovery to "click Allow" on a popup that can't
+    exist."""
+    try:
+        port = int((base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()[0].strip())
+    except (OSError, ValueError, IndexError):
+        return False
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+        return True
+    except OSError:
+        return False
+
+
+def remote_debugging_user_enabled():
+    """chrome://inspect's "Allow remote debugging" toggle
+
+    True only when a toggle-on profile also has a live DevTools port.
+    False if a profile records it off, None when no profile records it."""
+    seen = None
+    for base in PROFILES:
+        try:
+            state = json.loads((base / "Local State").read_text(encoding="utf-8", errors="replace"))
+            enabled = ((state.get("devtools") or {}).get("remote_debugging") or {}).get("user-enabled")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if enabled is True and _devtools_port_live(base):
+            return True
+        if enabled is False:
+            seen = False
+    return seen
+
+
+def remote_debugging_toggle_profiles():
+    """Profile dirs whose chrome://inspect toggle is recorded on in Local State"""
+    out = []
+    for base in PROFILES:
+        try:
+            state = json.loads((base / "Local State").read_text(encoding="utf-8", errors="replace"))
+            if ((state.get("devtools") or {}).get("remote_debugging") or {}).get("user-enabled") is True:
+                out.append(base)
+        except (OSError, ValueError, AttributeError):
+            continue
+    return out
+
+
+def browser_running_for_profile(base):
+    """True when a running browser instance holds this user-data-dir (POSIX)"""
+    try:
+        target = os.readlink(str(base / "SingletonLock"))
+    except OSError:
+        return False
+    try:
+        pid = int(target.rsplit("-", 1)[-1])
+    except ValueError:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # pid exists but belongs to another user
+
+
+def supported_browser_running():
+    """Is any browser whose profile we scan actually running?"""
+    if platform.system() == "Windows":
+        # Chromium on Windows uses a named mutex instead of SingletonLock —
+        import subprocess
+        try:
+            out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5).lower()
+        except Exception:
+            return True  # can't tell — assume running so recovery stays on the popup/toggle path
+        return any(n in out for n in ("chrome.exe", "msedge.exe", "chromium.exe", "brave.exe", "helium.exe"))
+    return any(browser_running_for_profile(base) for base in PROFILES)
 
 
 def log(msg):
-    open(LOG, "a").write(f"{msg}\n")
+    open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
 
 
 async def _silent(coro):
@@ -91,7 +198,7 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
         host = f"[{host}]"
     for base in PROFILES:
         try:
-            active = (base / "DevToolsActivePort").read_text().splitlines()
+            active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
         except (FileNotFoundError, NotADirectoryError):
             continue
         port = active[0].strip() if active else ""
@@ -116,58 +223,82 @@ def get_ws_url():
                 return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
                 last_err = e
+                if e.code == 403:
+                    raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
                 if e.code == 404 and (ws := _ws_from_devtools_active_port(url)):
                     return ws
                 time.sleep(1)
             except Exception as e:
                 last_err = e
                 time.sleep(1)
-        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- is the dedicated automation Chrome running?")
-    for base in PROFILES:
-        try:
-            active = (base / "DevToolsActivePort").read_text().splitlines()
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        port = active[0].strip() if active else ""
-        ws_path = active[1].strip() if len(active) > 1 else ""
-        if not port:
-            continue
-        # Resolve the live WS URL via /json/version instead of trusting the path stored
-        # alongside the port in DevToolsActivePort: if Chrome was previously launched
-        # with a different --user-data-dir on the same port, that file is left behind
-        # with a stale browser UUID and the WS upgrade returns 404.
-        deadline = time.time() + 30
-        while time.time() < deadline:
+        hint = "is the dedicated automation Chrome running? Launch it with --remote-debugging-port=<port> --user-data-dir=<dedicated dir>"
+        if platform.system() == "Windows":
+            hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
+        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
+    deadline = time.time() + 30
+    next_liveness_check = 0.0
+    while time.time() < deadline:
+        for base in PROFILES:
+            try:
+                active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            port = active[0].strip() if active else ""
+            ws_path = active[1].strip() if len(active) > 1 else ""
+            if not port:
+                continue
+            # Resolve the live WS URL via /json/version instead of trusting the path stored
+            # alongside the port in DevToolsActivePort: if Chrome was previously launched
+            # with a different --user-data-dir on the same port, that file is left behind
+            # with a stale browser UUID and the WS upgrade returns 404.
             try:
                 return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
+                if e.code == 403:
+                    raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
                 # Chrome 147+ disables /json/* HTTP discovery on the default user-data-dir;
                 # the ws path Chrome wrote to DevToolsActivePort still works.
                 if e.code == 404 and ws_path:
                     return f"ws://127.0.0.1:{port}{ws_path}"
-                time.sleep(1)
             except (OSError, KeyError, ValueError):
-                time.sleep(1)
-        raise RuntimeError(
-            f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
-        )
+                pass
+        # Closed browser leaves stale DevToolsActivePort files
+        now = time.time()
+        if now >= next_liveness_check:
+            if not supported_browser_running():
+                raise RuntimeError(
+                    "chrome-not-running: no supported Chromium-family browser is running -- start Chrome, then retry"
+                )
+            next_liveness_check = now + 2
+        # The browser is running but the port isn't up; waiting 30s
+        grace = TOGGLE_BOOT_GRACE if remote_debugging_toggle_profiles() else NO_TOGGLE_GRACE
+        if now > deadline - 30 + grace:
+            break
+        time.sleep(0.2)
     for probe_port in (9222, 9223):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
                 return json.loads(r.read())["webSocketDebuggerUrl"]
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
         except (OSError, KeyError, ValueError):
             continue
+    if remote_debugging_user_enabled() is False:
+        raise RuntimeError('remote debugging is turned off for this browser instance — enable chrome://inspect/#remote-debugging (tick "Allow remote debugging for this browser instance")')
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
 def stop_remote():
-    if not REMOTE_ID or not API_KEY: return
+    if not REMOTE_ID:
+        return
     try:
+        key = auth.get_browser_use_api_key()
         req = urllib.request.Request(
             f"{BU_API}/browsers/{REMOTE_ID}",
             data=json.dumps({"action": "stop"}).encode(),
             method="PATCH",
-            headers={"X-Browser-Use-API-Key": API_KEY, "Content-Type": "application/json"},
+            headers={"X-Browser-Use-API-Key": key, "Content-Type": "application/json"},
         )
         urllib.request.urlopen(req, timeout=15).read()
         log(f"stopped remote browser {REMOTE_ID}")
@@ -179,31 +310,162 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+def is_reusable_blank_page(t):
+    """A plain about:blank tab that is safe to attach to and navigate"""
+    url = t.get("url", "")
+    return (
+        t["type"] == "page"
+        and (url == "about:blank" or url.startswith("about:blank#"))
+        and not t.get("title", "").startswith("Starting agent ")
+    )
+
+
+def is_inspect_tab(t):
+    """A chrome://inspect tab — normally the one the permission flow opened"""
+    return t["type"] == "page" and t.get("url", "").startswith("chrome://inspect")
+
+
+def harness_opened_inspect():
+    """True when admin's recovery flow opened a chrome://inspect tab that is
+    still awaiting cleanup (the marker survives until the next connect)."""
+    try:
+        return paths.inspect_marker().exists()
+    except OSError:
+        return False
+
+
+def is_reusable_new_tab_page(t):
+    """The browser's own New Tab Page, ex: from a fresh launch"""
+    return t["type"] == "page" and t.get("url", "").startswith(
+        ("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")
+    )
+
+
+class _PatientCDPClient(CDPClient):
+    """CDPClient with the WS opening handshake stretched to LOCAL_HANDSHAKE_TIMEOUT."""
+
+    async def start(self):
+        import websockets
+        if self.ws is not None:
+            raise RuntimeError("Client is already started")
+        connect_kwargs = {"max_size": self.max_ws_frame_size, "open_timeout": LOCAL_HANDSHAKE_TIMEOUT}
+        if self.additional_headers:
+            connect_kwargs["additional_headers"] = self.additional_headers
+        self.ws = await websockets.connect(self.url, **connect_kwargs)
+        self._message_handler_task = asyncio.create_task(self._handle_messages())
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
         self.session = None
         self.target_id = None
+        self.dedicated_target_id = None
+        self._dedicated_target_lock = asyncio.Lock()
+        self._session_state_lock = asyncio.Lock()
+        self._session_replacements = {}
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
-    async def attach_first_page(self):
+    async def attach_first_page(self, replaces_session=None, enable_domains=True):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        # Named daemons (BU_NAME != "default") share one browser with other
+        # daemons — attaching to the first page makes parallel daemons fight
+        # over a single tab (navigations clobber each other). Give each named
+        # daemon its own dedicated tab instead. REMOTE_ID (cloud) browsers are
+        # already exclusive to this daemon, so first-page attach stays.
+        if NAME != "default" and not REMOTE_ID:
+            # The permission recovery flow can leave chrome://inspect open.
+            # Clean it up before returning from this early path as well.
+            if BROWSER_KIND == "local":
+                await self._close_inspect_tabs(targets)
+            pages_by_id = {t["targetId"]: t for t in targets if t["type"] == "page"}
+            # A stale CDP session does not necessarily mean its tab disappeared.
+            # Reattach to the current tab first, then the daemon's dedicated tab.
+            page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
+            if page is None:
+                # Two stale IPC requests can recover concurrently. Recheck
+                # inside a narrow lock so they share one replacement tab.
+                async with self._dedicated_target_lock:
+                    refreshed = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+                    pages_by_id = {t["targetId"]: t for t in refreshed if t["type"] == "page"}
+                    page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
+                    if page is None:
+                        tid = (await self.cdp.send_raw(
+                            "Target.createTarget", {"url": "about:blank", "background": True}
+                        ))["targetId"]
+                        self.dedicated_target_id = tid
+                        log(f"named daemon {NAME}: created dedicated tab ({tid})")
+                        page = {"targetId": tid, "url": "about:blank", "type": "page"}
+            tid = page["targetId"]
+            self.session = (await self.cdp.send_raw(
+                "Target.attachToTarget", {"targetId": tid, "flatten": True}
+            ))["sessionId"]
+            self._record_session_replacement(replaces_session, self.session)
+            self.target_id = tid
+            log(f"attached {tid} ({page.get('url','')[:80]}) session={self.session}")
+            if enable_domains:
+                await self._enable_default_domains(self.session)
+            return page
+
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
-            # No real pages — create one instead of attaching to omnibox popup
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            # Fresh browser (ex: BU cloud) starts w about:blank; reuse it
+            pages = [t for t in targets if is_reusable_blank_page(t)]
+        if not pages:
+            # Freshly launched browser (ex: harness relaunching closed Chrome)
+            # starts with just the New Tab Page. Reuse it — creating about:blank
+            pages = [t for t in targets if is_reusable_new_tab_page(t)]
+        take_over = None
+        if not pages and harness_opened_inspect():
+            # After perms granted, only tab is often chrome://inspect
+            # Attach to it instead of creating a new about:blank
+            inspect_tabs = [t for t in targets if is_inspect_tab(t)]
+            if inspect_tabs:
+                pages = [inspect_tabs[0]]
+                take_over = inspect_tabs[0]["targetId"]
+        if not pages:
+            # No usable pages - create one instead of attaching to omnibox popup.
+            tid = (await self.cdp.send_raw(
+                "Target.createTarget", {"url": "about:blank", "background": True}
+            ))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
         self.session = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
         ))["sessionId"]
+        self._record_session_replacement(replaces_session, self.session)
         self.target_id = pages[0]["targetId"]
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
-        await self._enable_default_domains(self.session)
+        if take_over:
+            try:
+                await self.cdp.send_raw("Page.navigate", {"url": "about:blank"}, session_id=self.session)
+                log(f"took over inspect tab {take_over} -> about:blank")
+            except Exception as e:
+                log(f"take over inspect tab {take_over}: {e}")
+        if BROWSER_KIND == "local":
+            await self._close_inspect_tabs(targets)
+        if enable_domains:
+            await self._enable_default_domains(self.session)
         return pages[0]
+
+    async def _close_inspect_tabs(self, targets):
+        """Close chrome://inspect tabs left open by the permission recovery flow"""
+        if not harness_opened_inspect():
+            return
+        for t in targets:
+            if t["targetId"] != self.target_id and is_inspect_tab(t):
+                try:
+                    await self.cdp.send_raw("Target.closeTarget", {"targetId": t["targetId"]})
+                    log(f"closed leftover chrome://inspect tab {t['targetId']}")
+                except Exception as e:
+                    log(f"close inspect tab {t['targetId']}: {e}")
+        try:
+            paths.inspect_marker().unlink()
+        except OSError:
+            pass
 
     async def _enable_default_domains(self, session_id):
         """Enable Page/DOM/Runtime/Network on a CDP session.
@@ -229,11 +491,27 @@ class Daemon:
                 log(f"enable {d} on {session_id}: {e}")
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
 
+    def _record_session_replacement(self, stale_session, replacement_session):
+        """Remember which recovered session still controls the same tab."""
+        if not stale_session or not replacement_session or stale_session == replacement_session:
+            return
+        # Preserve chains so requests delayed across multiple recoveries still
+        # land on their original tab, never whichever tab is current now.
+        for source, replacement in list(self._session_replacements.items()):
+            if replacement == stale_session:
+                self._session_replacements[source] = replacement_session
+        self._session_replacements[stale_session] = replacement_session
+        while len(self._session_replacements) > 32:
+            self._session_replacements.pop(next(iter(self._session_replacements)))
+
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
         log(f"connecting to {url}")
-        self.cdp = CDPClient(url)
+        self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
+        if BROWSER_KIND == "local":
+            # Allow while this handshake is still parked on the popup
+            log("handshake-wait: if Chrome shows an 'Allow remote debugging?' popup, click Allow")
         try:
             await self.cdp.start()
         except Exception as e:
@@ -241,7 +519,12 @@ class Daemon:
                 raise RuntimeError(
                     f"CDP WS handshake failed: {e} -- remote browser WebSocket connection failed. "
                     "This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "
-                    "If you use Browser Use cloud, verify BROWSER_USE_API_KEY and get a fresh URL via start_remote_daemon()."
+                    "If you use Browser Use cloud, verify auth and get a fresh URL via start_remote_daemon()."
+                )
+            if BROWSER_KIND == "local" and ("timed out" in str(e).lower() or "403" in str(e)) and remote_debugging_user_enabled():
+                raise RuntimeError(
+                    f"permission-blocked: Chrome's 'Allow remote debugging?' popup was not accepted within {LOCAL_HANDSHAKE_TIMEOUT}s"
+                    " -- wait for the user to click Allow, then retry"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
@@ -270,7 +553,7 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid()}
+        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
@@ -303,9 +586,11 @@ class Daemon:
                 }
             return {"target_id": self.target_id, "session_id": self.session, "page": page}
         if meta == "set_session":
-            old_session = self.session
-            self.session = req.get("session_id")
-            self.target_id = req.get("target_id") or self.target_id
+            async with self._session_state_lock:
+                old_session = self.session
+                self.session = req.get("session_id")
+                self.target_id = req.get("target_id") or self.target_id
+                new_session = self.session
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
             # consumer-side filter in wait_for_network_idle is the actual
@@ -315,7 +600,7 @@ class Daemon:
             # even on a remote daemon — sequentially these would have stacked
             # to ~22s worst case.
             tasks = []
-            if old_session and old_session != self.session:
+            if old_session and old_session != new_session:
                 async def disable_old():
                     try:
                         await asyncio.wait_for(
@@ -324,7 +609,7 @@ class Daemon:
                         )
                     except Exception: pass
                 tasks.append(disable_old())
-            tasks.append(self._enable_default_domains(self.session))
+            tasks.append(self._enable_default_domains(new_session))
             await asyncio.gather(*tasks)
             # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
             # it doesn't add to the synchronous IPC budget.
@@ -332,11 +617,11 @@ class Daemon:
                 self.cdp.send_raw(
                     "Runtime.evaluate",
                     {"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"},
-                    session_id=self.session,
+                    session_id=new_session,
                 ),
                 timeout=2,
             )))
-            return {"session_id": self.session}
+            return {"session_id": new_session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":    self.stop.set(); return {"ok": True}
 
@@ -349,10 +634,34 @@ class Daemon:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
-            if "Session with given id not found" in msg and sid == self.session and sid:
-                log(f"stale session {sid}, re-attaching")
-                if await self.attach_first_page():
-                    return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
+            if "Session with given id not found" in msg and sid:
+                # Explicit session callers asked for that exact session; do not
+                # silently redirect them to the daemon's current tab.
+                if req.get("session_id"):
+                    return {"error": msg}
+                recovered_here = False
+                async with self._session_state_lock:
+                    replacement_session = self._session_replacements.get(sid)
+                    if replacement_session is None and sid == self.session:
+                        log(f"stale session {sid}, re-attaching")
+                        if not await self.attach_first_page(
+                            replaces_session=sid, enable_domains=False
+                        ):
+                            return {"error": msg}
+                        replacement_session = self._session_replacements.get(sid)
+                        recovered_here = replacement_session is not None
+                if recovered_here:
+                    await self._enable_default_domains(replacement_session)
+                # Retry only on a session known to replace this exact stale
+                # session. self.session may instead have changed because the
+                # user deliberately switched tabs while this request waited.
+                if replacement_session:
+                    try:
+                        return {"result": await self.cdp.send_raw(
+                            method, params, session_id=replacement_session
+                        )}
+                    except Exception as retry_error:
+                        return {"error": str(retry_error)}
             return {"error": msg}
 
 
