@@ -803,10 +803,11 @@ def _chrome_running():
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5)
             names = ("chrome.exe", "msedge.exe", "helium.exe")
-        else:
-            out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
-        return any(n.lower() in out.lower() for n in names)
+            return any(n.lower() in out.lower() for n in names)
+        out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
+        running = {Path(line.strip()).name.lower() for line in out.splitlines() if line.strip()}
+        names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
+        return any(n.lower() in running for n in names)
     except Exception:
         return False
 
@@ -903,6 +904,42 @@ def _launch_browser():
         return False
 
 
+def _mac_app_installed(app):
+    """Check whether a macOS app is installed, without revealing it in Finder.
+
+    `open -Ra` also reveals the app in Finder as a side effect, popping a
+    Finder window to the front for every browser probed. Check well-known
+    install locations first, then fall back to Spotlight metadata; neither
+    has that side effect.
+
+    Trade-off: the `mdfind` fallback depends on Spotlight indexing, so an
+    app on a non-indexed volume, with indexing disabled, or installed just
+    before this runs, can produce a false negative. Accepted limitation -
+    Spotlight and Launch Services are different subsystems, and there is no
+    clean fix without reintroducing the `open -Ra` Finder-reveal side effect
+    this function exists to avoid.
+    """
+    name = f"{app}.app"
+    bases = [Path("/Applications")]
+    try:
+        bases.append(Path.home() / "Applications")
+    except RuntimeError:
+        pass  # HOME unresolvable (e.g. sandboxed/CI) - skip the per-user check, don't crash the probe loop
+    for base in bases:
+        try:
+            if (base / name).exists():
+                return True
+        except OSError:
+            continue  # e.g. PermissionError on a base dir - skip it, don't crash the probe loop
+    try:
+        result = subprocess.run(
+            ["mdfind", "-name", name], timeout=5, check=False, capture_output=True, text=True,
+        )
+        return bool(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, shutil, subprocess, webbrowser
@@ -920,12 +957,9 @@ def _open_chrome_inspect():
         for app, scheme in apps:
             if not shutil.which("open"):
                 break
+            if not _mac_app_installed(app):
+                continue
             try:
-                installed = subprocess.run(
-                    ["open", "-Ra", app], timeout=5, check=False, capture_output=True,
-                )
-                if installed.returncode != 0:
-                    continue
                 opened = subprocess.run(
                     ["open", "-a", app, f"{scheme}://inspect/#remote-debugging"],
                     timeout=5,
