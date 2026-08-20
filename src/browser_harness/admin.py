@@ -125,6 +125,12 @@ def _load_env_file(p):
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
+# Mirrors daemon.py's LOCAL_HANDSHAKE_TIMEOUT (same env var): how long a daemon
+# parks its CDP opening handshake on Chrome's "Allow remote debugging?" popup.
+try:
+    _ALLOW_POPUP_TIMEOUT = int(os.environ.get("BH_ALLOW_TIMEOUT", "600"))
+except ValueError:
+    _ALLOW_POPUP_TIMEOUT = 600
 BU_API = "https://api.browser-use.com/api/v3"
 PYPI_JSON = "https://pypi.org/pypi/browser-harness/json"
 VERSION_CACHE = paths.config_dir() / "version-cache.json"
@@ -337,6 +343,88 @@ def run_doctor_fix_snap():
     return 0
 
 
+def _parked_pid(name=None):
+    """PID of a daemon that is alive but not serving IPC yet — parked on the CDP
+    opening handshake, keeping Chrome's "Allow remote debugging?" popup on screen.
+
+    None when no such daemon exists. A parked daemon holds the one pending
+    connection whose popup the user must click; spawning a second daemon stacks
+    a second popup and dismiss-races the first, so callers treat parked as
+    "join and wait", never "restart". Only fresh pid files count (a parked
+    daemon is by definition younger than the handshake window) — an ancient pid
+    file whose number was reused by an unrelated process must not wedge spawns."""
+    p = ipc.pid_path(name or NAME)
+    try:
+        age = time.time() - p.stat().st_mtime
+        pid = int(p.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    if pid <= 0 or age > _ALLOW_POPUP_TIMEOUT + 120:
+        return None
+    return pid if _process_start_time(pid) is not None else None
+
+
+def _harness_daemon_cmdline(pid):
+    """True when PID's command line is a browser-harness daemon.
+
+    Identity check for signaling a parked daemon: it has no IPC yet, so the
+    identify()-based verification restart_daemon normally requires can't run.
+    The command line is the next-strongest evidence that the pid file's number
+    still belongs to us and not to a PID-reuse victim."""
+    try:
+        if sys.platform.startswith("linux"):
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+        elif sys.platform == "darwin":
+            raw = subprocess.check_output(
+                ["ps", "-o", "command=", "-p", str(pid)],
+                stderr=subprocess.DEVNULL, timeout=2,
+            ).decode("utf-8", "replace")
+        else:
+            return False
+    except Exception:
+        return False
+    return "browser_harness.daemon" in raw
+
+
+def _allow_action():
+    """How the pending Allow popup gets accepted on this platform."""
+    if sys.platform == "darwin":
+        return "run `browser-harness mac-approve` in another shell or click Allow"
+    return "click Allow"
+
+
+def _join_parked_daemon(name, wait):
+    """When a daemon is already parked on the Allow popup, wait for the click
+    instead of spawning a second daemon (which would stack a second popup).
+
+    True once the parked daemon comes alive; False when none is parked or the
+    parked one exited (caller proceeds to spawn); raises permission-blocked
+    when the popup is still pending after `wait` seconds."""
+    if not _parked_pid(name):
+        return False
+    print(f'browser-harness: Chrome\'s "Allow remote debugging?" popup is already on screen — {_allow_action()} to continue.', file=sys.stderr)
+    deadline = time.time() + wait
+    parked_check_at = 0.0
+    while time.time() < deadline:
+        if daemon_alive(name):
+            return True
+        now = time.time()
+        if now >= parked_check_at:
+            if not _parked_pid(name):
+                # Parked daemon gave up (handshake window expired) or crashed —
+                # let the caller spawn a fresh one (one new popup).
+                return False
+            parked_check_at = now + 2
+        time.sleep(0.3)
+    raise RuntimeError(
+        "permission-blocked: Chrome's 'Allow remote debugging?' popup has not been accepted yet. "
+        f"It is STILL ON SCREEN and its connection is being held open -- {_allow_action()}, "
+        "then retry this command (the retry attaches to the same pending connection; no new "
+        "popup appears). Do NOT call restart_daemon(); that dismisses the pending popup and "
+        "forces a fresh one."
+    )
+
+
 def ensure_daemon(wait=60.0, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
     Chrome, and missing Allow on chrome://inspect."""
@@ -345,18 +433,25 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         # Must go through ipc.connect so this works on Windows (TCP loopback) too;
         # raw AF_UNIX here would fail on every warm call and churn the daemon.
-        for last in (False, True):
+        # Chrome 144+ prices every new CDP connection at one Allow click, so a live
+        # daemon is only declared stale after patient probing: a dead CDP WS answers
+        # each probe instantly with {"error": ...} (restart stays fast), while a
+        # slow-but-alive Chrome only times out — it gets growing budgets before we
+        # pay a restart (= another popup) for what was just a busy browser.
+        probe_timeouts = (3.0, 6.0, 10.0)
+        for i, timeout in enumerate(probe_timeouts):
             try:
-                s, token = ipc.connect(name or NAME, timeout=3.0)
+                s, token = ipc.connect(name or NAME, timeout=timeout)
                 resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
                 if "result" in resp: return
             except Exception:
                 pass
-            if not last: time.sleep(0.5)
+            if i < len(probe_timeouts) - 1: time.sleep(0.5)
         restart_daemon(name)
 
-    import subprocess, sys
     local = _is_local_chrome_mode(env)
+    if local and _join_parked_daemon(name, wait):
+        return
     launched_browser = False
     opened_inspect = False
     for _ in range(3):
@@ -378,22 +473,31 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             if daemon_alive(name): return
             if p.poll() is not None: break
             if not hinted and time.time() - spawned > 2 and (_log_tail(name) or "").startswith("handshake-wait"):
-                action = (
-                    "run `browser-harness mac-approve` in another shell or click Allow"
-                    if sys.platform == "darwin"
-                    else "click Allow"
-                )
                 print(
-                    f'browser-harness: Chrome is asking "Allow remote debugging?" — {action} to continue.',
+                    f'browser-harness: Chrome is asking "Allow remote debugging?" — {_allow_action()} to continue.',
                     file=sys.stderr,
                 )
                 hinted = True
             time.sleep(0.2)
         msg = _log_tail(name) or ""
         if local and msg.startswith("handshake-wait"):
+            if p.poll() is None or _parked_pid(name) is not None:
+                # The daemon is still parked on the WS handshake, holding the
+                # Allow popup on screen. Leave it running: killing it here (the
+                # old behavior) dismissed the popup mid-click and cost a fresh
+                # popup on every retry. Retries join it via _join_parked_daemon.
+                raise RuntimeError(
+                    "permission-blocked: Chrome's 'Allow remote debugging?' popup has not been accepted yet. "
+                    f"It is STILL ON SCREEN and its connection is being held open -- {_allow_action()}, "
+                    "then retry this command (the retry attaches to the same pending connection; no new "
+                    "popup appears). Do NOT call restart_daemon(); that dismisses the pending popup and "
+                    "forces a fresh one."
+                )
             restart_daemon(name)
             raise RuntimeError(
-                "permission-blocked: Chrome's Allow popup was not clicked in time -- wait for the user to click Allow, then retry."
+                "permission-blocked: Chrome's Allow popup expired before it was clicked "
+                f"(the daemon holds it open for BH_ALLOW_TIMEOUT={_ALLOW_POPUP_TIMEOUT}s) -- "
+                f"retry to show a fresh popup, then {_allow_action()}."
             )
         if local and _needs_chrome_permission_popup(msg):
             print('browser-harness: Chrome is asking "Allow remote debugging?". Click Allow in Chrome, then retry browser work.', file=sys.stderr)
@@ -525,6 +629,20 @@ def restart_daemon(name=None):
                     os.kill(daemon_pid, signal.SIGTERM)
                 except (ProcessLookupError, OSError, SystemError, OverflowError):
                     pass
+
+    if daemon_pid is None and not daemon_alive:
+        # A parked daemon (mid CDP handshake, holding Chrome's Allow popup) has
+        # no IPC yet, so identify()/ping() can't see it. Left alone it would
+        # survive this "restart" as an orphan holding a stale popup while the
+        # next spawn raises a second one. Signal it only when the pid file is
+        # fresh AND the process's command line proves it is a harness daemon —
+        # the pid file's number alone is never trusted (PID reuse).
+        parked = _parked_pid(name)
+        if parked is not None and _harness_daemon_cmdline(parked):
+            try:
+                os.kill(parked, signal.SIGTERM)
+            except (ProcessLookupError, OSError, SystemError, OverflowError):
+                pass
 
     ipc.cleanup_endpoint(name)
     try:
