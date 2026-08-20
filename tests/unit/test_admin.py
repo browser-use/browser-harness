@@ -20,6 +20,31 @@ class FakeSocket:
         self.closed = True
 
 
+@pytest.mark.parametrize("value", ["0", "false", "NO", " off "])
+def test_update_banner_can_be_disabled_without_network_or_cache_access(monkeypatch, value):
+    monkeypatch.setenv("BH_UPDATE_CHECK", value)
+    monkeypatch.setattr(admin, "_cache_read", lambda: pytest.fail("cache should not be read"))
+    monkeypatch.setattr(admin, "check_for_update", lambda: pytest.fail("network should not run"))
+
+    admin.print_update_banner()
+
+
+def test_update_banner_remains_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("BH_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(admin, "_cache_read", lambda: {"banner_shown_on": "1970-01-01"})
+    called = []
+
+    def fake_check_for_update():
+        called.append(True)
+        return "0.1.0", "0.1.0", False
+
+    monkeypatch.setattr(admin, "check_for_update", fake_check_for_update)
+
+    admin.print_update_banner()
+
+    assert called == [True]
+
+
 def test_local_chrome_mode_is_false_when_env_provides_remote_cdp():
     assert not admin._is_local_chrome_mode({"BU_CDP_WS": "ws://example.test/devtools/browser/1"})
 
