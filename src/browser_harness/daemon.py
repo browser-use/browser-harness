@@ -89,8 +89,15 @@ BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 _REMOTE_STOPPED = False
 BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
-# Chrome 144+ shows a per-connection popup. Keep popup open enough to click.
-LOCAL_HANDSHAKE_TIMEOUT = 45
+# Chrome 144+ shows a per-connection popup. The daemon parks its single WS
+# handshake on that popup, so this is how long the popup stays clickable before
+# the daemon gives up. Generous by default — the user may not be looking at
+# Chrome — because every expiry costs a fresh popup on the next attempt.
+# Override with BH_ALLOW_TIMEOUT (seconds); admin.py reads the same variable.
+try:
+    LOCAL_HANDSHAKE_TIMEOUT = int(os.environ.get("BH_ALLOW_TIMEOUT", "600"))
+except ValueError:
+    LOCAL_HANDSHAKE_TIMEOUT = 600
 # How long get_ws_url() keeps waiting for DevToolsActivePort before giving up
 NO_TOGGLE_GRACE = 3
 TOGGLE_BOOT_GRACE = 12
@@ -834,6 +841,15 @@ def already_running():
 if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
+        sys.exit(0)
+    from .admin import _parked_pid
+    _parked = _parked_pid(NAME)
+    if _parked is not None and _parked != os.getpid():
+        # A sibling daemon is mid-connect — it can't answer pings yet because it
+        # is parked on Chrome's Allow popup. Starting a second daemon here would
+        # raise a second popup, truncate the sibling's log, and clobber its pid
+        # file. Exit instead; ensure_daemon joins the sibling's pending popup.
+        print(f"daemon {_parked} is already connecting (waiting on Chrome's Allow popup)", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))

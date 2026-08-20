@@ -772,3 +772,127 @@ def test_process_start_time_returns_none_for_invalid_pid():
         )
     # 2**31 - 1 is the largest pid_t; in practice no live process at that PID.
     assert admin._process_start_time((1 << 31) - 1) is None
+
+
+# --- parked-daemon handling: one Allow popup per Chrome run ---
+
+def test_parked_pid_returns_live_pid_from_fresh_pid_file(monkeypatch, tmp_path):
+    import os as _os
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text(str(_os.getpid()))
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+
+    assert admin._parked_pid("default") == _os.getpid()
+
+
+def test_parked_pid_ignores_stale_pid_file(monkeypatch, tmp_path):
+    """An ancient pid file (older than the popup window) must not count as
+    parked even when its number matches a live process — that's the PID-reuse
+    wedge guard."""
+    import os as _os
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text(str(_os.getpid()))
+    old = admin.time.time() - (admin._ALLOW_POPUP_TIMEOUT + 121)
+    _os.utime(pid_path, (old, old))
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+
+    assert admin._parked_pid("default") is None
+
+
+def test_parked_pid_returns_none_for_dead_process(monkeypatch, tmp_path):
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text(str((1 << 31) - 1))  # no live process at pid_t max
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+
+    assert admin._parked_pid("default") is None
+
+
+def test_join_parked_daemon_returns_false_when_nothing_parked(monkeypatch):
+    monkeypatch.setattr(admin, "_parked_pid", lambda name: None)
+
+    assert admin._join_parked_daemon("default", wait=5.0) is False
+
+
+def test_join_parked_daemon_returns_true_once_daemon_comes_alive(monkeypatch):
+    alive = iter([False, False, True])
+    monkeypatch.setattr(admin, "_parked_pid", lambda name: 4242)
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: next(alive))
+
+    assert admin._join_parked_daemon("default", wait=10.0) is True
+
+
+def test_join_parked_daemon_raises_permission_blocked_while_popup_pending(monkeypatch):
+    monkeypatch.setattr(admin, "_parked_pid", lambda name: 4242)
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+
+    with pytest.raises(RuntimeError) as exc:
+        admin._join_parked_daemon("default", wait=0.4)
+    assert "permission-blocked" in str(exc.value)
+    assert "STILL ON SCREEN" in str(exc.value)
+
+
+def test_join_parked_daemon_falls_through_when_parked_daemon_exits(monkeypatch):
+    """If the parked daemon gives up mid-wait, the caller must get False so it
+    can spawn a fresh daemon (one new popup) instead of raising forever."""
+    parked = iter([4242, None])
+    monkeypatch.setattr(admin, "_parked_pid", lambda name: next(parked, None))
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+
+    assert admin._join_parked_daemon("default", wait=10.0) is False
+
+
+def test_ensure_daemon_joins_parked_daemon_instead_of_spawning(monkeypatch):
+    """A second invocation while a daemon is parked on the Allow popup must
+    wait on that daemon, never spawn a sibling (= second popup)."""
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_join_parked_daemon", lambda name, wait: True)
+    monkeypatch.setattr(
+        admin.subprocess, "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("spawned a second daemon while one was parked")),
+    )
+
+    admin.ensure_daemon(name="default")
+
+
+def test_restart_daemon_sigterms_parked_daemon_with_verified_cmdline(monkeypatch, tmp_path):
+    """A parked daemon has no IPC, so identify()/ping() can't see it. It must
+    still be killed on restart — but only after its command line proves the
+    pid file's number is really a harness daemon."""
+    import signal
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text("4242")
+
+    kill_calls = []
+    monkeypatch.setattr(admin.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin, "_parked_pid", lambda name: 4242)
+    monkeypatch.setattr(admin, "_harness_daemon_cmdline", lambda pid: True)
+
+    admin.restart_daemon("default")
+
+    assert kill_calls == [(4242, signal.SIGTERM)]
+    assert not pid_path.exists()
+
+
+def test_restart_daemon_never_signals_parked_pid_without_cmdline_proof(monkeypatch, tmp_path):
+    """Same setup, but the command line does not match a harness daemon — the
+    PID was likely reused, so no signal may fire."""
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text("4242")
+
+    kill_calls = []
+    monkeypatch.setattr(admin.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin, "_parked_pid", lambda name: 4242)
+    monkeypatch.setattr(admin, "_harness_daemon_cmdline", lambda pid: False)
+
+    admin.restart_daemon("default")
+
+    assert kill_calls == []
+    assert not pid_path.exists()
