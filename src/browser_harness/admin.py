@@ -816,10 +816,11 @@ def _chrome_running():
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5)
             names = ("chrome.exe", "msedge.exe", "helium.exe")
-        else:
-            out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
-        return any(n.lower() in out.lower() for n in names)
+            return any(n.lower() in out.lower() for n in names)
+        out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
+        running = {Path(line.strip()).name.lower() for line in out.splitlines() if line.strip()}
+        names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
+        return any(n.lower() in running for n in names)
     except Exception:
         return False
 
@@ -827,8 +828,13 @@ def _chrome_running():
 _BROWSER_LAUNCH = (
     # (profile-dir fragment, macOS app name, POSIX commands, Windows `start` target)
     ("chrome canary", "Google Chrome Canary", ("google-chrome-canary",), "chrome"),
+    ("chrome beta", "Google Chrome Beta", ("google-chrome-beta",), "chrome"),
+    ("chrome dev", "Google Chrome Dev", ("google-chrome-unstable",), "chrome"),
     ("chromium", "Chromium", ("chromium", "chromium-browser"), "chromium"),
     ("chrome", "Google Chrome", ("google-chrome-stable", "google-chrome"), "chrome"),
+    ("edge beta", "Microsoft Edge Beta", ("microsoft-edge-beta",), "msedge"),
+    ("edge dev", "Microsoft Edge Dev", ("microsoft-edge-dev",), "msedge"),
+    ("edge canary", "Microsoft Edge Canary", ("microsoft-edge-canary",), "msedge"),
     ("edge", "Microsoft Edge", ("microsoft-edge", "microsoft-edge-stable"), "msedge"),
     ("brave", "Brave Browser", ("brave-browser", "brave"), "brave"),
     ("arc", "Arc", (), None),
@@ -911,23 +917,75 @@ def _launch_browser():
         return False
 
 
+def _mac_app_installed(app):
+    """Check whether a macOS app is installed, without revealing it in Finder.
+
+    `open -Ra` also reveals the app in Finder as a side effect, popping a
+    Finder window to the front for every browser probed. Check well-known
+    install locations first, then fall back to Spotlight metadata; neither
+    has that side effect.
+
+    Trade-off: the `mdfind` fallback depends on Spotlight indexing, so an
+    app on a non-indexed volume, with indexing disabled, or installed just
+    before this runs, can produce a false negative. Accepted limitation -
+    Spotlight and Launch Services are different subsystems, and there is no
+    clean fix without reintroducing the `open -Ra` Finder-reveal side effect
+    this function exists to avoid.
+    """
+    name = f"{app}.app"
+    bases = [Path("/Applications")]
+    try:
+        bases.append(Path.home() / "Applications")
+    except RuntimeError:
+        pass  # HOME unresolvable (e.g. sandboxed/CI) - skip the per-user check, don't crash the probe loop
+    for base in bases:
+        try:
+            if (base / name).exists():
+                return True
+        except OSError:
+            continue  # e.g. PermissionError on a base dir - skip it, don't crash the probe loop
+    try:
+        result = subprocess.run(
+            ["mdfind", "-name", name], timeout=5, check=False, capture_output=True, text=True,
+        )
+        return bool(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
-    import platform, subprocess, webbrowser
-    url = "chrome://inspect/#remote-debugging"
+    import platform, shutil, subprocess, webbrowser
     if platform.system() == "Darwin":
         try:
-            r = subprocess.run([
-                "osascript",
-                "-e", 'tell application "Google Chrome" to activate',
-                "-e", f'tell application "Google Chrome" to open location "{url}"',
-            ], timeout=5, check=False, capture_output=True)
-            if r.returncode == 0:
-                return True
+            process_output = subprocess.check_output(
+                ["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5,
+            )
+            running = {Path(line.strip()).name.lower() for line in process_output.splitlines() if line.strip()}
         except Exception:
-            pass
+            running = set()
+
+        apps = [(mac_app, "edge" if frag.startswith("edge") else "chrome") for frag, mac_app, _, _ in _BROWSER_LAUNCH]
+        apps.sort(key=lambda spec: (spec[0].lower() not in running, spec[0] == "Google Chrome"))
+        for app, scheme in apps:
+            if not shutil.which("open"):
+                break
+            if not _mac_app_installed(app):
+                continue
+            try:
+                opened = subprocess.run(
+                    ["open", "-a", app, f"{scheme}://inspect/#remote-debugging"],
+                    timeout=5,
+                    check=False,
+                    capture_output=True,
+                )
+                if opened.returncode == 0:
+                    return True
+            except (OSError, subprocess.SubprocessError):
+                continue
+        return False
     try:
-        return bool(webbrowser.open(url, new=2))
+        return bool(webbrowser.open("chrome://inspect/#remote-debugging", new=2))
     except Exception:
         return False
 
