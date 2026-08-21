@@ -25,7 +25,7 @@ editor.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: tr
 ```python
 js("window.__b64 = ''")
 for i in range(0, len(b64), 60000):
-    js("window.__b64 += '%s'" % b64[i:i+60000])
+    js("window.__b64 += '%s'; 0" % b64[i:i+60000])
 ```
 
 Wait for the attachment thumbnail (`img.preview-image` / `uploader-file-preview-container`) before typing the prompt, then `type_text(prompt)` + `press_key("Enter")`.
