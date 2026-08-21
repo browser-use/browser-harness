@@ -7,7 +7,9 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -373,7 +375,7 @@ def _ensure_daemon_locked(wait=60.0, name=None, env=None):
             if not last: time.sleep(0.5)
         daemon_name = name or NAME
         daemon_kind = daemon_browser_kind(daemon_name)
-        has_remote_recovery = _read_remote_browser_id(daemon_name) is not None
+        has_remote_recovery = _read_remote_browser_recovery(daemon_name) is not None
         if daemon_kind == "cloud" or has_remote_recovery:
             # A cloud daemon that cannot answer CDP may still own a billable
             # browser. Use the durable cleanup path before replacing it; if
@@ -491,15 +493,22 @@ def require_existing_daemon(name=None):
 
 
 def _persist_remote_browser_id(name, browser_id):
-    if not isinstance(browser_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", browser_id):
-        raise RuntimeError("Browser Use Cloud returned an invalid browser id")
+    return _persist_remote_browser_recovery(name, browser_id=browser_id)
+
+
+def _persist_remote_browser_recovery(name, *, client_session_id=None, browser_id=None):
+    if client_session_id is None and browser_id is None:
+        raise RuntimeError("remote browser recovery state needs a client key or browser id")
+    encoded = _encode_remote_browser_recovery(
+        client_session_id=client_session_id, browser_id=browser_id
+    )
     state_path = ipc.remote_id_path(name)
     pending_path = state_path.with_name(state_path.name + ".pending")
     pending_complete = False
     try:
         fd = os.open(pending_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as state_file:
-            state_file.write(_encode_remote_browser_id(browser_id))
+            state_file.write(encoded)
             state_file.flush()
             os.fsync(state_file.fileno())
         pending_complete = True
@@ -518,6 +527,30 @@ def _persist_remote_browser_id(name, browser_id):
         raise
 
 
+def _validate_remote_browser_identifier(value, label):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", value):
+        raise RuntimeError(f"Browser Use Cloud returned an invalid {label}")
+    return value
+
+
+def _encode_remote_browser_recovery(*, client_session_id=None, browser_id=None):
+    if client_session_id is None:
+        return _encode_remote_browser_id(browser_id)
+    _validate_remote_browser_identifier(client_session_id, "client session id")
+    if browser_id is not None:
+        _validate_remote_browser_identifier(browser_id, "browser id")
+    payload = {
+        "browser_id": browser_id,
+        "client_session_id": client_session_id,
+        "version": 2,
+    }
+    digest_source = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    payload["sha256"] = hashlib.sha256(
+        f"browser-harness-remote-id-v2\0{digest_source}".encode()
+    ).hexdigest()
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n"
+
+
 def _encode_remote_browser_id(browser_id):
     if not isinstance(browser_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", browser_id):
         raise RuntimeError("Browser Use Cloud returned an invalid browser id")
@@ -529,19 +562,41 @@ def _encode_remote_browser_id(browser_id):
     ) + "\n"
 
 
-def _decode_remote_browser_id(raw, *, name, pending):
+def _decode_remote_browser_recovery(raw, *, name, pending):
     label = "pending remote browser recovery state" if pending else "remote browser recovery state"
     try:
         record = json.loads(raw)
-        browser_id = record["browser_id"]
+        version = record["version"]
+        if version == 1:
+            browser_id = record["browser_id"]
+            expected = _encode_remote_browser_id(browser_id)
+            recovery = {"browser_id": browser_id, "client_session_id": None}
+        elif version == 2:
+            browser_id = record.get("browser_id")
+            client_session_id = record["client_session_id"]
+            expected = _encode_remote_browser_recovery(
+                client_session_id=client_session_id, browser_id=browser_id
+            )
+            recovery = {
+                "browser_id": browser_id,
+                "client_session_id": client_session_id,
+            }
+        else:
+            raise KeyError("version")
     except (json.JSONDecodeError, KeyError, TypeError):
         raise RuntimeError(f"invalid {label} for daemon {name!r}") from None
-    if raw != _encode_remote_browser_id(browser_id):
+    except RuntimeError:
+        raise RuntimeError(f"invalid {label} for daemon {name!r}") from None
+    if raw != expected:
         raise RuntimeError(f"invalid {label} for daemon {name!r}")
-    return browser_id
+    return recovery
 
 
-def _read_remote_browser_id(name):
+def _decode_remote_browser_id(raw, *, name, pending):
+    return _decode_remote_browser_recovery(raw, name=name, pending=pending)["browser_id"]
+
+
+def _read_remote_browser_recovery(name):
     state_path = ipc.remote_id_path(name)
     try:
         raw = state_path.read_text(encoding="utf-8")
@@ -551,11 +606,16 @@ def _read_remote_browser_id(name):
             raw = pending_path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
-        browser_id = _decode_remote_browser_id(raw, name=name, pending=True)
+        recovery = _decode_remote_browser_recovery(raw, name=name, pending=True)
         os.replace(pending_path, state_path)
         _fsync_directory(state_path.parent)
-        return browser_id
-    return _decode_remote_browser_id(raw, name=name, pending=False)
+        return recovery
+    return _decode_remote_browser_recovery(raw, name=name, pending=False)
+
+
+def _read_remote_browser_id(name):
+    recovery = _read_remote_browser_recovery(name)
+    return recovery["browser_id"] if recovery is not None else None
 
 
 def _clear_remote_browser_id(name):
@@ -644,7 +704,11 @@ def _stop_remote_daemon_locked(name):
     if daemon_alive(name):
         daemon_kind, daemon_browser_id = _daemon_browser_identity(name)
         try:
-            persisted_browser_id = _read_remote_browser_id(name)
+            persisted_recovery = _read_remote_browser_recovery(name)
+            persisted_browser_id = (
+                _resolve_remote_browser_recovery(name, persisted_recovery)
+                if persisted_recovery is not None else None
+            )
         except RuntimeError:
             # Preserve the established behavior for corrupt legacy state after
             # a live daemon confirms a clean shutdown. There is no validated id
@@ -686,11 +750,11 @@ def _stop_remote_daemon_locked(name):
         _clear_remote_browser_id(name)
         return
 
-    browser_id = _read_remote_browser_id(name)
-    if browser_id:
+    recovery = _read_remote_browser_recovery(name)
+    if recovery is not None:
         # The daemon may have crashed or been SIGKILLed. Its environment is
-        # gone, so use the private runtime state to stop the exact cloud browser.
-        _stop_cloud_browser(browser_id, strict=True)
+        # gone, so resolve the durable client key and stop the exact server browser.
+        _stop_remote_browser_recovery(name, recovery, strict=True)
     _restart_daemon_locked(name)
     _clear_remote_browser_id(name)
 
@@ -799,6 +863,32 @@ def _browser_use(path, method, body=None):
         headers={"X-Browser-Use-API-Key": key, "Content-Type": "application/json"},
     )
     return json.loads(urllib.request.urlopen(req, timeout=60).read() or b"{}")
+
+
+def _resolve_remote_browser_recovery(name, recovery):
+    browser_id = recovery.get("browser_id")
+    if browser_id:
+        return _validate_remote_browser_identifier(browser_id, "browser id")
+    client_session_id = recovery.get("client_session_id")
+    if not client_session_id:
+        raise RuntimeError(f"remote browser recovery state for daemon {name!r} has no identifier")
+    try:
+        browser = _browser_use(f"/browsers/client-session/{client_session_id}", "GET")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    browser_id = browser.get("id") if isinstance(browser, dict) else None
+    _validate_remote_browser_identifier(browser_id, "browser id")
+    _persist_remote_browser_recovery(
+        name, client_session_id=client_session_id, browser_id=browser_id
+    )
+    return browser_id
+
+
+def _stop_remote_browser_recovery(name, recovery, strict=False):
+    browser_id = _resolve_remote_browser_recovery(name, recovery)
+    return True if browser_id is None else _stop_cloud_browser(browser_id, strict=strict)
 
 
 def _stop_cloud_browser(browser_id, strict=False):
@@ -917,7 +1007,7 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
 def _start_remote_daemon_locked(name, profileName=None, **create_kwargs):
     if daemon_alive(name):
         raise RuntimeError(f"daemon {name!r} already alive -- restart_daemon({name!r}) first")
-    if _read_remote_browser_id(name):
+    if _read_remote_browser_recovery(name) is not None:
         raise RuntimeError(
             f"remote browser cleanup is still pending for daemon {name!r} -- call stop_remote_daemon({name!r}) first"
         )
@@ -925,19 +1015,33 @@ def _start_remote_daemon_locked(name, profileName=None, **create_kwargs):
         if "profileId" in create_kwargs:
             raise RuntimeError("pass profileName OR profileId, not both")
         create_kwargs["profileId"] = _resolve_profile_name(profileName)
-    browser = _browser_use("/browsers", "POST", create_kwargs)
+
+    if "clientSessionId" in create_kwargs:
+        raise ValueError("clientSessionId is managed internally by browser-harness")
+    client_session_id = str(uuid.uuid4())
+    # Persist the project-scoped idempotency key before the billable POST. Cloud
+    # resolves it to the server-owned browser ID after an interrupted response.
+    _persist_remote_browser_recovery(name, client_session_id=client_session_id)
     try:
-        # Persist the exact billable resource before starting the daemon. Keep
-        # persistence in the same rollback boundary: a full disk or permission
-        # error must stop the browser we just created instead of orphaning it.
-        _persist_remote_browser_id(name, browser.get("id"))
+        browser = _browser_use(
+            "/browsers",
+            "POST",
+            {**create_kwargs, "clientSessionId": client_session_id},
+        )
+        browser_id = browser.get("id") if isinstance(browser, dict) else None
+        _validate_remote_browser_identifier(browser_id, "browser id")
+        _persist_remote_browser_recovery(
+            name, client_session_id=client_session_id, browser_id=browser_id
+        )
         _ensure_daemon_locked(
             name=name,
-            env={"BU_CDP_WS": _cdp_ws_from_url(browser["cdpUrl"]), "BU_BROWSER_ID": browser["id"]},
+            env={"BU_CDP_WS": _cdp_ws_from_url(browser["cdpUrl"]), "BU_BROWSER_ID": browser_id},
         )
     except BaseException as start_error:
         try:
-            _stop_cloud_browser(browser.get("id"), strict=True)
+            recovery = _read_remote_browser_recovery(name)
+            if recovery is not None:
+                _stop_remote_browser_recovery(name, recovery, strict=True)
         except BaseException as cleanup_error:
             raise BaseExceptionGroup(
                 "remote daemon startup and cloud browser cleanup both failed",
