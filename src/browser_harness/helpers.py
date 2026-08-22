@@ -335,7 +335,7 @@ def new_tab(url="about:blank"):
             cur_url = cur.get("url") or ""
             # Reuse attached tab when it's blank
             if (
-                cur_url in ("", "about:blank")
+                cur_url in ("", "about:blank", "data:text/html,")
                 or cur_url.startswith("about:blank#")
                 or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
             ):

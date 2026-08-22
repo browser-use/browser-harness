@@ -404,3 +404,21 @@ def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     assert helpers.new_tab() == "target-new"
     assert ("Target.createTarget", {"url": "about:blank", "background": True}) in calls
     assert not any(method == "Target.activateTarget" for method, _ in calls)
+
+
+def test_new_tab_reuses_an_empty_data_document(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        helpers,
+        "current_tab",
+        lambda: {"targetId": "target-placeholder", "url": "data:text/html,"},
+    )
+    monkeypatch.setattr(helpers, "goto_url", lambda url: calls.append(("goto_url", url)))
+    monkeypatch.setattr(
+        helpers,
+        "cdp",
+        lambda method, **kwargs: calls.append((method, kwargs)) or {},
+    )
+
+    assert helpers.new_tab("https://example.com") == "target-placeholder"
+    assert calls == [("goto_url", "https://example.com")]
