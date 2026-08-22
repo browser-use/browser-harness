@@ -180,6 +180,19 @@ def log(msg):
     open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
 
 
+def _safe_connection_label(url):
+    """Log only endpoint topology, never CDP credentials or provider session paths."""
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.hostname:
+            return "<redacted-cdp-endpoint>"
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{host}{port}"
+    except (TypeError, ValueError):
+        return "<redacted-cdp-endpoint>"
+
+
 async def _silent(coro):
     try:
         await coro
@@ -507,7 +520,7 @@ class Daemon:
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
-        log(f"connecting to {url}")
+        log(f"connecting to {_safe_connection_label(url)}")
         self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
         if BROWSER_KIND == "local":
             # Allow while this handshake is still parked on the popup

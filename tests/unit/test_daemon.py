@@ -5,6 +5,22 @@ import pytest
 from browser_harness import daemon
 
 
+@pytest.mark.parametrize(
+    ("url", "label"),
+    [
+        (
+            "ws://openclaw-internal:secret@127.0.0.1:18792/devtools/browser/id?token=x",
+            "ws://127.0.0.1:18792",
+        ),
+        ("wss://provider.example/session/private-id?token=secret", "wss://provider.example"),
+        ("wss://[::1]:9222/devtools/browser/id", "wss://[::1]:9222"),
+        ("not-a-url", "<redacted-cdp-endpoint>"),
+    ],
+)
+def test_safe_connection_label_removes_credentials_paths_and_queries(url, label):
+    assert daemon._safe_connection_label(url) == label
+
+
 class _FakeCDP:
     """Records send_raw calls so tests can assert which CDP methods fired."""
 
