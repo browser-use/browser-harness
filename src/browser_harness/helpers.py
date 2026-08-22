@@ -38,21 +38,37 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+IPC_CONNECT_TIMEOUT_SECONDS = 5.0
+DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
+# Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
+# their IPC socket alive within the caller's existing 90-second process budget.
+SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
 
 
-def _send(req):
-    c, token = ipc.connect(NAME, timeout=5.0)
+class _IPCResponseTimeout(TimeoutError):
+    pass
+
+
+def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
+    c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
     try:
-        r = ipc.request(c, token, req)
+        c.settimeout(response_timeout)
+        try:
+            r = ipc.request(c, token, req)
+        except TimeoutError as e:
+            raise _IPCResponseTimeout from e
     finally:
         c.close()
     if "error" in r: raise RuntimeError(r["error"])
     return r
 
 
-def cdp(method, session_id=None, **params):
+def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
-    return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
+    return _send(
+        {"method": method, "params": params, "session_id": session_id},
+        response_timeout=_response_timeout,
+    ).get("result", {})
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
@@ -243,7 +259,17 @@ def capture_screenshot(path=None, full=False, max_dim=None):
     """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
     keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
     path = path or str(ipc._TMP / "shot.png")
-    r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
+    try:
+        r = cdp(
+            "Page.captureScreenshot",
+            _response_timeout=SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS,
+            format="png",
+            captureBeyondViewport=full,
+        )
+    except _IPCResponseTimeout as e:
+        raise RuntimeError(
+            f"Page.captureScreenshot timed out after {SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS:g}s"
+        ) from e
     open(path, "wb").write(base64.b64decode(r["data"]))
     if max_dim:
         from PIL import Image

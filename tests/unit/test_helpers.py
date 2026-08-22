@@ -29,6 +29,50 @@ def test_max_dim_default_is_no_resize(fake_png):
     assert _run(fake_png, 4592, 2286) == (4592, 2286)
 
 
+def test_send_keeps_connect_timeout_short_and_sets_response_budget():
+    class FakeSocket:
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+        def close(self):
+            pass
+
+    socket = FakeSocket()
+    with patch("browser_harness.helpers.ipc.connect", return_value=(socket, None)) as connect, \
+         patch("browser_harness.helpers.ipc.request", return_value={}):
+        helpers._send({"meta": "ping"}, response_timeout=60.0)
+
+    connect.assert_called_once_with(helpers.NAME, timeout=helpers.IPC_CONNECT_TIMEOUT_SECONDS)
+    assert socket.timeouts == [60.0]
+
+
+def test_screenshot_uses_long_response_timeout_without_forwarding_it_to_cdp(fake_png, tmp_path):
+    with patch(
+        "browser_harness.helpers._send",
+        return_value={"result": {"data": fake_png(800, 400)}},
+    ) as send:
+        helpers.capture_screenshot(str(tmp_path / "shot.png"))
+
+    request = send.call_args.args[0]
+    assert request == {
+        "method": "Page.captureScreenshot",
+        "params": {"format": "png", "captureBeyondViewport": False},
+        "session_id": None,
+    }
+    assert send.call_args.kwargs == {
+        "response_timeout": helpers.SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS
+    }
+
+
+def test_screenshot_timeout_has_context(tmp_path):
+    with patch("browser_harness.helpers._send", side_effect=helpers._IPCResponseTimeout):
+        with pytest.raises(RuntimeError, match="Page.captureScreenshot timed out after 60s"):
+            helpers.capture_screenshot(str(tmp_path / "shot.png"))
+
+
 def _seed_skill(tmp_path):
     site = tmp_path / "domain-skills" / "example"
     site.mkdir(parents=True)
