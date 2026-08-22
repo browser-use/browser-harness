@@ -24,6 +24,67 @@ def test_local_chrome_mode_is_false_when_env_provides_remote_cdp():
     assert not admin._is_local_chrome_mode({"BU_CDP_WS": "ws://example.test/devtools/browser/1"})
 
 
+def test_require_existing_daemon_fails_without_spawning(monkeypatch):
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: False)
+
+    with pytest.raises(RuntimeError, match="required daemon 'scoped' is not running"):
+        admin.require_existing_daemon("scoped")
+
+
+def test_require_existing_daemon_probes_cdp(monkeypatch):
+    sock = FakeSocket(response=b'{"result":{"targetInfos":[]}}\n')
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (sock, None))
+
+    admin.require_existing_daemon("scoped")
+
+    assert b'"method": "Target.getTargets"' in sock.sent
+    assert sock.closed is True
+
+
+def test_strict_remote_stop_propagates_daemon_error(monkeypatch):
+    sock = FakeSocket(response=b'{"error":"billing stop failed"}\n')
+    monkeypatch.setattr(admin.ipc, "identify", lambda _name, timeout: 123)
+    monkeypatch.setattr(admin, "_process_start_time", lambda _pid: 1)
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (sock, None))
+
+    with pytest.raises(RuntimeError, match="billing stop failed"):
+        admin.stop_remote_daemon("scoped")
+
+    assert sock.closed is True
+
+
+def test_remote_start_retries_cleanup_and_preserves_both_failures(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: False)
+    monkeypatch.setattr(
+        admin,
+        "_browser_use",
+        lambda path, method, body=None: (
+            {"id": "browser-1", "cdpUrl": "https://cdp.example.test"}
+            if method == "POST"
+            else attempts.append((path, method, body))
+            or (_ for _ in ()).throw(OSError("billing stop failed"))
+        ),
+    )
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda _url: "wss://cdp.example.test/ws")
+    monkeypatch.setattr(
+        admin,
+        "ensure_daemon",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("daemon start failed")),
+    )
+    monkeypatch.setattr(admin.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        admin.start_remote_daemon("scoped")
+
+    assert [str(error) for error in exc_info.value.exceptions] == [
+        "daemon start failed",
+        "failed to stop remote browser browser-1: billing stop failed",
+    ]
+    assert len(attempts) == 3
+
+
 def test_local_chrome_mode_is_false_when_process_env_provides_remote_cdp(monkeypatch):
     monkeypatch.setenv("BU_CDP_WS", "ws://example.test/devtools/browser/1")
 

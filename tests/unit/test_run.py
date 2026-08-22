@@ -21,6 +21,19 @@ def test_stdin_executes_code():
     assert stdout.getvalue().strip() == "hello from stdin"
 
 
+def test_require_existing_daemon_never_auto_starts(monkeypatch):
+    monkeypatch.setenv("BH_REQUIRE_EXISTING_DAEMON", "1")
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.require_existing_daemon") as mock_require, \
+         patch("browser_harness.run.ensure_daemon") as mock_ensure, \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+
+    mock_require.assert_called_once_with()
+    mock_ensure.assert_not_called()
+
+
 def test_c_flag_is_rejected():
     with patch.object(sys, "argv", ["browser-harness", "-c", "print('old path')"]), \
          patch("sys.stdin", StringIO("print('ignored')")):

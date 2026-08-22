@@ -19,6 +19,7 @@ from .admin import (
     list_cloud_profiles,
     list_local_profiles,
     print_update_banner,
+    require_existing_daemon,
     restart_daemon,
     run_doctor,
     run_doctor_fix_snap,
@@ -383,7 +384,10 @@ def _run(args):
         ):
             start_remote_daemon(NAME)
         try:
-            ensure_daemon()
+            if os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1":
+                require_existing_daemon()
+            else:
+                ensure_daemon()
         except RuntimeError as e:
             # Setup/permission errors are instructions for calling agent
             print(f"browser-harness: {e}", file=sys.stderr)

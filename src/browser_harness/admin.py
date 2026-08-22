@@ -441,6 +441,28 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
 
 
+def require_existing_daemon(name=None):
+    """Require a healthy existing daemon without spawning or reconnecting.
+
+    Trusted orchestrators use this after they provision a scoped CDP transport.
+    Failing closed prevents a later CLI call from silently discovering a
+    different local Chrome when that orchestrator-owned daemon dies.
+    """
+    daemon_name = name or NAME
+    if not daemon_alive(daemon_name):
+        raise RuntimeError(f"required daemon {daemon_name!r} is not running")
+    try:
+        s, token = ipc.connect(daemon_name, timeout=3.0)
+        try:
+            resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+        finally:
+            s.close()
+    except Exception as exc:
+        raise RuntimeError(f"required daemon {daemon_name!r} is unhealthy: {exc}") from exc
+    if not isinstance(resp, dict) or "result" not in resp:
+        raise RuntimeError(f"required daemon {daemon_name!r} failed its CDP health check")
+
+
 def stop_remote_daemon(name="remote"):
     """Stop a remote daemon and its backing Browser Use cloud browser.
 
@@ -452,10 +474,10 @@ def stop_remote_daemon(name="remote"):
     # restarts anything on its own; a follow-up `browser-harness`
     # call would auto-spawn a fresh one via ensure_daemon(). That
     # "run-it-again-to-restart" workflow is why it was named that way.
-    restart_daemon(name)
+    restart_daemon(name, require_clean=True)
 
 
-def restart_daemon(name=None):
+def restart_daemon(name=None, require_clean=False):
     """Best-effort daemon shutdown + socket/pid cleanup.
 
     Name is historical: callers typically follow this with another
@@ -492,12 +514,20 @@ def restart_daemon(name=None):
     daemon_start = _process_start_time(daemon_pid)
 
     if daemon_alive:
+        c = None
         try:
-            c, token = ipc.connect(name, timeout=5.0)
-            ipc.request(c, token, {"meta": "shutdown"})
-            c.close()
+            c, token = ipc.connect(name, timeout=50.0 if require_clean else 5.0)
+            response = ipc.request(c, token, {"meta": "shutdown"})
+            if require_clean and isinstance(response, dict) and response.get("error"):
+                raise RuntimeError(response["error"])
         except Exception:
-            pass
+            if require_clean:
+                raise
+        finally:
+            if c is not None:
+                close = getattr(c, "close", None)
+                if close:
+                    close()
 
     if daemon_pid is not None:
         for _ in range(75):
@@ -544,13 +574,21 @@ def _browser_use(path, method, body=None):
     return json.loads(urllib.request.urlopen(req, timeout=60).read() or b"{}")
 
 
-def _stop_cloud_browser(browser_id):
+def _stop_cloud_browser(browser_id, strict=False):
     if not browser_id:
-        return
-    try:
-        _browser_use(f"/browsers/{browser_id}", "PATCH", {"action": "stop"})
-    except BaseException:
-        pass
+        return True
+    last_error = None
+    for attempt in range(3):
+        try:
+            _browser_use(f"/browsers/{browser_id}", "PATCH", {"action": "stop"})
+            return True
+        except BaseException as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+    if strict:
+        raise RuntimeError(f"failed to stop remote browser {browser_id}: {last_error}")
+    return False
 
 
 def _cdp_ws_from_url(cdp_url):
@@ -648,8 +686,14 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
             name=name,
             env={"BU_CDP_WS": _cdp_ws_from_url(browser["cdpUrl"]), "BU_BROWSER_ID": browser["id"]},
         )
-    except BaseException:
-        _stop_cloud_browser(browser.get("id"))
+    except BaseException as start_error:
+        try:
+            _stop_cloud_browser(browser.get("id"), strict=True)
+        except BaseException as cleanup_error:
+            raise BaseExceptionGroup(
+                "remote daemon startup and cloud browser cleanup both failed",
+                [start_error, cleanup_error],
+            )
         raise
     _show_live_url(browser.get("liveUrl"))
     return browser

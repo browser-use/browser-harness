@@ -87,6 +87,7 @@ PROFILES = profile_dirs()
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
+_REMOTE_STOPPED = False
 BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
 # Chrome 144+ shows a per-connection popup. Keep popup open enough to click.
 LOCAL_HANDSHAKE_TIMEOUT = 45
@@ -302,21 +303,34 @@ def get_ws_url():
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
-def stop_remote():
+def stop_remote(strict=False):
+    global _REMOTE_STOPPED
     if not REMOTE_ID:
-        return
-    try:
-        key = auth.get_browser_use_api_key()
-        req = urllib.request.Request(
-            f"{BU_API}/browsers/{REMOTE_ID}",
-            data=json.dumps({"action": "stop"}).encode(),
-            method="PATCH",
-            headers={"X-Browser-Use-API-Key": key, "Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=15).read()
-        log(f"stopped remote browser {REMOTE_ID}")
-    except Exception as e:
-        log(f"stop_remote failed ({REMOTE_ID}): {e}")
+        return True
+    if _REMOTE_STOPPED:
+        return True
+    last_error = None
+    for attempt in range(3):
+        try:
+            key = auth.get_browser_use_api_key()
+            req = urllib.request.Request(
+                f"{BU_API}/browsers/{REMOTE_ID}",
+                data=json.dumps({"action": "stop"}).encode(),
+                method="PATCH",
+                headers={"X-Browser-Use-API-Key": key, "Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=15).read()
+            _REMOTE_STOPPED = True
+            log(f"stopped remote browser {REMOTE_ID}")
+            return True
+        except Exception as e:
+            last_error = e
+            log(f"stop_remote attempt {attempt + 1}/3 failed ({REMOTE_ID}): {e}")
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+    if strict:
+        raise RuntimeError(f"failed to stop remote browser {REMOTE_ID}: {last_error}")
+    return False
 
 
 def is_real_page(t):
@@ -636,7 +650,13 @@ class Daemon:
             )))
             return {"session_id": new_session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
-        if meta == "shutdown":    self.stop.set(); return {"ok": True}
+        if meta == "shutdown":
+            try:
+                stop_remote(strict=True)
+            except Exception as e:
+                return {"error": str(e)}
+            self.stop.set()
+            return {"ok": True}
 
         method = req["method"]
         params = req.get("params") or {}
@@ -708,6 +728,16 @@ async def serve(d):
             t.cancel()
             try: await t
             except (asyncio.CancelledError, Exception): pass
+        # Named non-cloud daemons create one dedicated background tab. Close
+        # only that owned tab on shutdown; never close a user-selected tab.
+        if d.dedicated_target_id and d.cdp:
+            try:
+                await d.cdp.send_raw(
+                    "Target.closeTarget", {"targetId": d.dedicated_target_id}
+                )
+                d.dedicated_target_id = None
+            except Exception as e:
+                log(f"close dedicated tab on shutdown: {e}")
         ipc.cleanup_endpoint(NAME)
 
 
