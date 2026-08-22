@@ -166,6 +166,8 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 
 - Coordinate clicks default. CDP mouse events pass through iframes/shadow/cross-origin at the compositor level.
 - Keep the connection model simple: use the default daemon, `BU_NAME`, `BU_CDP_URL`, `BU_CDP_WS`, or `start_remote_daemon(...)`.
+- Trusted orchestrators can set `BH_OPEN_LIVE_URL=0` while provisioning a Cloud
+  daemon to keep its interactive live-view URL from being printed or opened.
 - Core helpers stay short. Put task-specific helper additions in `$BH_AGENT_WORKSPACE/agent_helpers.py`.
 
 ## Gotchas

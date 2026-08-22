@@ -413,6 +413,52 @@ def test_start_remote_daemon_does_not_stop_created_browser_on_success(monkeypatc
     ]
 
 
+def test_start_remote_daemon_opens_live_view_by_default(monkeypatch):
+    shown = []
+    monkeypatch.delenv("BH_OPEN_LIVE_URL", raising=False)
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: False)
+    monkeypatch.setattr(
+        admin,
+        "_browser_use",
+        lambda *_args, **_kwargs: {
+            "id": "browser-123",
+            "cdpUrl": "https://cdp.example.test",
+            "liveUrl": "https://live.example",
+        },
+    )
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda _url: "wss://cdp.example.test/ws")
+    monkeypatch.setattr(admin, "ensure_daemon", lambda **_kwargs: None)
+    monkeypatch.setattr(admin, "_show_live_url", shown.append)
+
+    admin.start_remote_daemon("scoped")
+
+    assert shown == ["https://live.example"]
+
+
+@pytest.mark.parametrize("value", ["0", "false", "NO", " off "])
+def test_start_remote_daemon_can_suppress_live_view_for_orchestrators(monkeypatch, value):
+    monkeypatch.setenv("BH_OPEN_LIVE_URL", value)
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: False)
+    monkeypatch.setattr(
+        admin,
+        "_browser_use",
+        lambda *_args, **_kwargs: {
+            "id": "browser-123",
+            "cdpUrl": "https://cdp.example.test",
+            "liveUrl": "https://live.example",
+        },
+    )
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda _url: "wss://cdp.example.test/ws")
+    monkeypatch.setattr(admin, "ensure_daemon", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        admin,
+        "_show_live_url",
+        lambda _url: pytest.fail("suppressed live view must not be printed or opened"),
+    )
+
+    admin.start_remote_daemon("scoped")
+
+
 # --- restart_daemon: PID-reuse safety ---
 
 def test_restart_daemon_does_not_signal_when_daemon_unreachable(monkeypatch, tmp_path):
