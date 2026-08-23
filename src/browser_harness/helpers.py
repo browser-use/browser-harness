@@ -286,6 +286,31 @@ def current_tab():
         "title": r["title"],
     }
 
+def _owned_tab_path():
+    from .paths import config_dir
+    return config_dir() / "agent-tab"
+
+
+def _owned_tab():
+    """The tab this harness opened for browsing, remembered across processes.
+
+    Each heredoc invocation is a fresh process, so module state cannot carry
+    this, and the title marker cannot either because page loads overwrite it.
+    A file survives both.
+    """
+    try:
+        return _owned_tab_path().read_text().strip() or None
+    except Exception:
+        return None
+
+
+def _own_tab(target_id):
+    try:
+        _owned_tab_path().write_text(str(target_id))
+    except Exception:
+        pass
+
+
 def _mark_tab():
     """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
@@ -325,28 +350,52 @@ def switch_tab(target, activate=False):
     _mark_tab()
     return sid
 
-def new_tab(url="about:blank"):
+def new_tab(url="about:blank", force=False):
+    """Open `url`, reusing the agent's own tab rather than opening another one.
+
+    An agent sweeping many pages calls this in a loop, and a tab per page leaves
+    the user closing dozens by hand. So a call carrying a real url navigates the
+    attached tab whenever that tab is blank or is one the harness already owns,
+    which `_mark_tab` records by prefixing the title with the horse marker. A
+    tab the user opened has no marker and is never taken over.
+
+    Pass force=True for the rare case that genuinely needs a second tab, such as
+    comparing two pages side by side or following a popup flow.
+    """
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
+    if url != "about:blank" and not force:
         try:
+            owned = _owned_tab()
+            live = {_target_id(t) for t in list_tabs()}
             cur = current_tab()
+            cur_id = cur.get("targetId") or cur.get("target_id")
             cur_url = cur.get("url") or ""
-            # Reuse attached tab when it's blank
-            if (
+            blank = (
                 cur_url in ("", "about:blank")
                 or cur_url.startswith("about:blank#")
                 or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
-            ):
+            )
+            # Reuse the tab this harness opened, or the attached tab if blank.
+            # The title marker cannot carry ownership: goto_url replaces the
+            # title as the page loads, so a marker written before the load is
+            # gone by the next call and every call opens another tab.
+            target = owned if owned in live else (cur_id if blank else None)
+            if target:
+                if target != cur_id:
+                    switch_tab(target)
                 goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
+                _own_tab(target)
+                return target
         except Exception:
             pass
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
+        if not force:
+            _own_tab(tid)
     return tid
 
 def close_tab(target=None):
