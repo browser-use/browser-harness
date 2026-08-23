@@ -487,3 +487,73 @@ def test_new_tab_force_opens_a_second_tab_even_when_one_is_owned(monkeypatch, tm
     assert helpers.new_tab("https://b.test", force=True) == "target-created"
     assert any(method == "Target.createTarget" for method, _ in calls)
     assert (tmp_path / "agent-tab").read_text() == "target-owned"
+
+
+def test_owned_tab_record_is_scoped_by_bu_name(monkeypatch, tmp_path):
+    # Named daemons share one Chrome. An unscoped record lets one agent adopt
+    # another's live tab, which is the whole reason the name is in the filename.
+    monkeypatch.setattr(helpers.paths, "config_dir", lambda: tmp_path)
+
+    monkeypatch.setattr(helpers, "NAME", "alpha")
+    alpha = helpers._owned_tab_path()
+    monkeypatch.setattr(helpers, "NAME", "beta")
+    beta = helpers._owned_tab_path()
+
+    assert alpha != beta
+    assert alpha.name.endswith("alpha") and beta.name.endswith("beta")
+
+
+def test_owned_tab_path_rejects_a_traversing_bu_name(monkeypatch, tmp_path):
+    monkeypatch.setattr(helpers.paths, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(helpers, "NAME", "../escape")
+    with pytest.raises(ValueError):
+        helpers._owned_tab_path()
+
+
+def test_owned_tab_lock_breaks_a_stale_lock_rather_than_hanging(monkeypatch, tmp_path):
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+    stale = tmp_path / "agent-tab.lock"
+    stale.write_text("")
+    os.utime(stale, (time.time() - 3600, time.time() - 3600))
+
+    started = time.time()
+    with helpers._owned_tab_lock(timeout=1.0):
+        pass
+    # Broken immediately, not waited out.
+    assert time.time() - started < 0.5
+
+
+def test_concurrent_new_tab_calls_share_one_tab(monkeypatch, tmp_path):
+    import threading
+
+    created = []
+    state = {"tabs": [{"targetId": "target-user", "url": "https://user.test", "title": "u"}]}
+    lock = threading.Lock()
+
+    def fake_cdp(method, **kwargs):
+        if method == "Target.createTarget":
+            with lock:
+                tid = f"target-{len(created)}"
+                created.append(tid)
+                state["tabs"].append({"targetId": tid, "url": "", "title": ""})
+            return {"targetId": tid}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "s"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+    monkeypatch.setattr(helpers, "goto_url", lambda url: time.sleep(0.02))
+    monkeypatch.setattr(helpers, "list_tabs", lambda *a, **k: list(state["tabs"]))
+    monkeypatch.setattr(helpers, "current_tab", lambda: state["tabs"][0])
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(helpers.new_tab("https://a.test")))
+               for _ in range(4)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    assert len(created) == 1, f"opened {len(created)} tabs for 4 concurrent calls"
+    assert len(set(out)) == 1

@@ -288,7 +288,54 @@ def current_tab():
 
 def _owned_tab_path():
     from .paths import config_dir
-    return config_dir() / "agent-tab"
+    # Named daemons share one Chrome, so the record has to be per BU_NAME or one
+    # agent adopts another's live tab and navigates it out from under it. Same
+    # convention the recorder uses for its active marker.
+    return config_dir() / f"agent-tab-{ipc._check(NAME)}"
+
+
+def _owned_tab_lock(timeout=5.0):
+    """Serialise select-or-create so two agents do not each open a tab.
+
+    O_CREAT|O_EXCL rather than fcntl because the daemon runs on Windows too. A
+    lock older than the timeout is treated as abandoned, and a lock that cannot
+    be taken at all is proceeded past rather than raised: a crashed neighbour
+    should cost a duplicate tab at worst, never a failed call.
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        path = _owned_tab_path().with_name(_owned_tab_path().name + ".lock")
+        deadline = time.time() + timeout
+        fd = None
+        while True:
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - os.path.getmtime(path) > timeout:
+                        os.unlink(path)
+                        continue
+                except OSError:
+                    pass
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.05)
+            except OSError:
+                break
+        try:
+            yield
+        finally:
+            if fd is not None:
+                os.close(fd)
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    return _cm()
 
 
 def _owned_tab():
@@ -365,7 +412,12 @@ def new_tab(url="about:blank", force=False):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank" and not force:
+    if url == "about:blank" or force:
+        return _create_tab(url, own=False)
+
+    # Held across select-and-create so two agents cannot both find nothing to
+    # reuse and both open a tab.
+    with _owned_tab_lock():
         try:
             owned = _owned_tab()
             live = {_target_id(t) for t in list_tabs()}
@@ -390,11 +442,15 @@ def new_tab(url="about:blank", force=False):
                 return target
         except Exception:
             pass
+        return _create_tab(url, own=True)
+
+
+def _create_tab(url, own):
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
-        if not force:
+        if own:
             _own_tab(tid)
     return tid
 
