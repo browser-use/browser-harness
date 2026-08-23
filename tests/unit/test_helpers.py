@@ -404,3 +404,86 @@ def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     assert helpers.new_tab() == "target-new"
     assert ("Target.createTarget", {"url": "about:blank", "background": True}) in calls
     assert not any(method == "Target.activateTarget" for method, _ in calls)
+
+
+def _tab_stubs(monkeypatch, tmp_path, live_tabs, current):
+    """Wire new_tab's collaborators so only the reuse decision is under test."""
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            return {"targetId": "target-created"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+    monkeypatch.setattr(helpers, "goto_url", lambda url: calls.append(("goto", url)))
+    monkeypatch.setattr(helpers, "list_tabs", lambda *a, **k: live_tabs)
+    monkeypatch.setattr(helpers, "current_tab", lambda: current)
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+    return calls
+
+
+def test_new_tab_reuses_the_owned_tab_instead_of_opening_another(monkeypatch, tmp_path):
+    (tmp_path / "agent-tab").write_text("target-owned")
+    calls = _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-owned", "url": "https://a.test", "title": "a"}],
+        current={"targetId": "target-owned", "url": "https://a.test", "title": "a"},
+    )
+
+    assert helpers.new_tab("https://b.test") == "target-owned"
+    assert ("goto", "https://b.test") in calls
+    assert not any(method == "Target.createTarget" for method, _ in calls)
+
+
+def test_new_tab_records_the_tab_it_creates_so_the_next_call_reuses_it(monkeypatch, tmp_path):
+    _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-user", "url": "https://user.test", "title": "user"}],
+        current={"targetId": "target-user", "url": "https://user.test", "title": "user"},
+    )
+
+    assert helpers.new_tab("https://a.test") == "target-created"
+    assert (tmp_path / "agent-tab").read_text() == "target-created"
+
+
+def test_new_tab_does_not_take_over_a_tab_the_user_opened(monkeypatch, tmp_path):
+    # No record on disk, and the attached tab holds a real page: creating is right.
+    calls = _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-user", "url": "https://user.test", "title": "user"}],
+        current={"targetId": "target-user", "url": "https://user.test", "title": "user"},
+    )
+
+    assert helpers.new_tab("https://a.test") == "target-created"
+    assert any(method == "Target.createTarget" for method, _ in calls)
+
+
+def test_new_tab_creates_again_when_the_recorded_tab_is_gone(monkeypatch, tmp_path):
+    (tmp_path / "agent-tab").write_text("target-closed")
+    calls = _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-user", "url": "https://user.test", "title": "user"}],
+        current={"targetId": "target-user", "url": "https://user.test", "title": "user"},
+    )
+
+    assert helpers.new_tab("https://a.test") == "target-created"
+    assert any(method == "Target.createTarget" for method, _ in calls)
+
+
+def test_new_tab_force_opens_a_second_tab_even_when_one_is_owned(monkeypatch, tmp_path):
+    (tmp_path / "agent-tab").write_text("target-owned")
+    calls = _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-owned", "url": "https://a.test", "title": "a"}],
+        current={"targetId": "target-owned", "url": "https://a.test", "title": "a"},
+    )
+
+    assert helpers.new_tab("https://b.test", force=True) == "target-created"
+    assert any(method == "Target.createTarget" for method, _ in calls)
+    assert (tmp_path / "agent-tab").read_text() == "target-owned"
