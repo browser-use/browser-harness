@@ -294,33 +294,34 @@ def _owned_tab_path():
     return config_dir() / f"agent-tab-{ipc._check(NAME)}"
 
 
+try:
+    import fcntl as _fcntl
+except ImportError:  # Windows
+    _fcntl = None
+    import msvcrt as _msvcrt
+else:
+    _msvcrt = None
+
+
 def _try_lock_fd(fd):
     """Take an exclusive advisory lock on an open fd, or raise if held.
 
     The kernel drops it when the holder exits, however it exits, which is the
-    property the hand-rolled version could not have.
+    property a lock file whose contents encode ownership cannot have.
     """
-    try:
-        import fcntl
-    except ImportError:
-        import msvcrt
-
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    if _fcntl is not None:
+        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
         return
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.lseek(fd, 0, os.SEEK_SET)
+    _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
 
 
 def _unlock_fd(fd):
-    try:
-        import fcntl
-    except ImportError:
-        import msvcrt
-
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    if _fcntl is not None:
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
         return
-    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.lseek(fd, 0, os.SEEK_SET)
+    _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
 
 
 def _owned_tab_lock(wait=5.0):
@@ -348,7 +349,8 @@ def _owned_tab_lock(wait=5.0):
 
     @contextlib.contextmanager
     def _cm():
-        path = _owned_tab_path().with_name(_owned_tab_path().name + ".lock")
+        record = _owned_tab_path()
+        path = record.with_name(record.name + ".lock")
         fd = None
         held = False
         try:

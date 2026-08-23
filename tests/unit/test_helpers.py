@@ -510,63 +510,85 @@ def test_owned_tab_path_rejects_a_traversing_bu_name(monkeypatch, tmp_path):
         helpers._owned_tab_path()
 
 
-def test_owned_tab_lock_is_exclusive_between_processes(monkeypatch, tmp_path):
-    # Two subprocesses race for the lock; the second must wait rather than run
-    # alongside the first.
-    import subprocess
-    import sys
+def _lock_race_child(tmp_path, body):
+    """A child script that takes the lock on the same file this test uses.
+
+    The path comes through PYTHONPATH rather than being computed inside the
+    script: this is a src layout, so deriving it from helpers.__file__ is one
+    parents[] index away from a ModuleNotFoundError on a fresh checkout, and it
+    only worked here because an editable install happened to be on the path.
+    """
     import textwrap
 
-    script = textwrap.dedent(f"""
-        import sys, time
-        sys.path.insert(0, {str(__import__('pathlib').Path(helpers.__file__).parents[2])!r})
+    src = tmp_path / f"child_{abs(hash(body)) % 10000}.py"
+    src.write_text(textwrap.dedent(f"""
+        import pathlib, sys, time
         from browser_harness import helpers
-        helpers._owned_tab_path = lambda: __import__('pathlib').Path({str(tmp_path / 'agent-tab')!r})
-        hold = sys.argv[1] == 'hold'
+        helpers._owned_tab_path = lambda: pathlib.Path({str(tmp_path / 'agent-tab')!r})
+        {body}
+    """))
+    return src
+
+
+def _child_env():
+    import sys
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    return env
+
+
+def test_owned_tab_lock_is_exclusive_between_processes(tmp_path):
+    import subprocess
+    import sys
+
+    holder = _lock_race_child(tmp_path, """
         with helpers._owned_tab_lock(wait=5.0):
             print(time.time(), flush=True)
-            if hold:
-                time.sleep(1.0)
+            time.sleep(1.0)
         print(time.time(), flush=True)
     """)
-    src = tmp_path / "race.py"
-    src.write_text(script)
+    waiter = _lock_race_child(tmp_path, """
+        with helpers._owned_tab_lock(wait=5.0):
+            print(time.time(), flush=True)
+        print(time.time(), flush=True)
+    """)
 
-    a = subprocess.Popen([sys.executable, str(src), "hold"], stdout=subprocess.PIPE, text=True)
+    env = _child_env()
+    a = subprocess.Popen([sys.executable, str(holder)], stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, env=env)
     time.sleep(0.3)
-    b = subprocess.Popen([sys.executable, str(src), "wait"], stdout=subprocess.PIPE, text=True)
-    a_out = a.communicate()[0].split()
-    b_out = b.communicate()[0].split()
+    b = subprocess.Popen([sys.executable, str(waiter)], stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, env=env)
+    a_out, a_err = a.communicate(timeout=30)
+    b_out, b_err = b.communicate(timeout=30)
+    assert a.returncode == 0, a_err
+    assert b.returncode == 0, b_err
 
-    a_enter, a_exit = float(a_out[0]), float(a_out[1])
-    b_enter = float(b_out[0])
+    a_exit = float(a_out.split()[1])
+    b_enter = float(b_out.split()[0])
     assert b_enter >= a_exit - 0.05, "second process entered while the first held the lock"
 
 
 def test_owned_tab_lock_is_released_when_the_holder_dies(monkeypatch, tmp_path):
-    # The kernel drops an advisory lock on exit, so a killed holder cannot
-    # wedge the next caller. This is the property the stamp-and-pid version
-    # had to reason about and this one gets for free.
+    # The kernel drops an advisory lock on exit, so a killed holder cannot wedge
+    # the next caller. This is the property the earlier stamp-and-pid version had
+    # to reason about and this one gets for free.
     import subprocess
     import sys
-    import textwrap
 
-    script = textwrap.dedent(f"""
-        import sys, time
-        sys.path.insert(0, {str(__import__('pathlib').Path(helpers.__file__).parents[2])!r})
-        from browser_harness import helpers
-        helpers._owned_tab_path = lambda: __import__('pathlib').Path({str(tmp_path / 'agent-tab')!r})
+    holder = _lock_race_child(tmp_path, """
         with helpers._owned_tab_lock(wait=5.0):
             print("in", flush=True)
             time.sleep(30)
     """)
-    src = tmp_path / "holder.py"
-    src.write_text(script)
-
-    holder = subprocess.Popen([sys.executable, str(src)], stdout=subprocess.PIPE, text=True)
-    assert holder.stdout.readline().strip() == "in"
-    holder.kill()
-    holder.wait()
+    proc = subprocess.Popen([sys.executable, str(holder)], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=_child_env())
+    try:
+        assert proc.stdout.readline().strip() == "in", proc.stderr.read()
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
 
     monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
     started = time.time()
