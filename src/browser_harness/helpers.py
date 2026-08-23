@@ -286,6 +286,125 @@ def current_tab():
         "title": r["title"],
     }
 
+def _owned_tab_path():
+    from .paths import config_dir
+    # Named daemons share one Chrome, so the record has to be per BU_NAME or one
+    # agent adopts another's live tab and navigates it out from under it. Same
+    # convention the recorder uses for its active marker.
+    return config_dir() / f"agent-tab-{ipc._check(NAME)}"
+
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # Windows
+    _fcntl = None
+    import msvcrt as _msvcrt
+else:
+    _msvcrt = None
+
+
+def _try_lock_fd(fd):
+    """Take an exclusive advisory lock on an open fd, or raise if held.
+
+    The kernel drops it when the holder exits, however it exits, which is the
+    property a lock file whose contents encode ownership cannot have.
+    """
+    if _fcntl is not None:
+        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        return
+    os.lseek(fd, 0, os.SEEK_SET)
+    _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+
+
+def _unlock_fd(fd):
+    if _fcntl is not None:
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
+        return
+    os.lseek(fd, 0, os.SEEK_SET)
+    _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+
+
+def _owned_tab_lock(wait=5.0):
+    """Serialise select-or-create so two agents do not each open a tab.
+
+    This is an advisory lock held on an open descriptor, not a lock file whose
+    existence means something. Three earlier rounds of this were a file plus a
+    stamp plus a staleness rule, and each round closed one hole and left another:
+    a shared timeout let a waiter evict a live holder mid goto_url; splitting the
+    timeouts left the release racing a successor with no atomic
+    compare-and-unlink to fix it; and pinning ownership to a pid inherited both a
+    window where a crash leaves the record unwritten and the question of what a
+    reused pid means. The kernel answers all of that by releasing on exit, so the
+    machinery is gone rather than repaired.
+
+    The file is only a handle to lock. It is never unlinked, so no caller can
+    delete a lock another one is holding, and an empty or leftover file means
+    nothing to anybody.
+
+    A lock that cannot be taken within `wait` is run past unlocked rather than
+    raised on: the worst case is the duplicate tab this exists to avoid, and a
+    wedged neighbour should not take the harness down with it.
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        record = _owned_tab_path()
+        path = record.with_name(record.name + ".lock")
+        fd = None
+        held = False
+        try:
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
+            except OSError:
+                yield  # cannot even open a lock file; proceed unlocked
+                return
+            deadline = time.time() + wait
+            while True:
+                try:
+                    _try_lock_fd(fd)
+                    held = True
+                    break
+                except OSError:
+                    if time.time() >= deadline:
+                        break
+                    time.sleep(0.05)
+            yield
+        finally:
+            if fd is not None:
+                if held:
+                    try:
+                        _unlock_fd(fd)
+                    except OSError:
+                        pass
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    return _cm()
+
+
+def _owned_tab():
+    """The tab this harness opened for browsing, remembered across processes.
+
+    Each heredoc invocation is a fresh process, so module state cannot carry
+    this, and the title marker cannot either because page loads overwrite it.
+    A file survives both.
+    """
+    try:
+        return _owned_tab_path().read_text().strip() or None
+    except Exception:
+        return None
+
+
+def _own_tab(target_id):
+    try:
+        _owned_tab_path().write_text(str(target_id))
+    except Exception:
+        pass
+
+
 def _mark_tab():
     """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
@@ -325,28 +444,61 @@ def switch_tab(target, activate=False):
     _mark_tab()
     return sid
 
-def new_tab(url="about:blank"):
+def new_tab(url="about:blank", force=False):
+    """Open `url`, reusing the agent's own tab rather than opening another one.
+
+    An agent sweeping many pages calls this in a loop, and a tab per page leaves
+    the user closing dozens by hand. So a call carrying a real url navigates the
+    attached tab whenever that tab is blank or is one the harness already owns,
+    which `_mark_tab` records by prefixing the title with the horse marker. A
+    tab the user opened has no marker and is never taken over.
+
+    Pass force=True for the rare case that genuinely needs a second tab, such as
+    comparing two pages side by side or following a popup flow.
+    """
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
+    if url == "about:blank" or force:
+        return _create_tab(url, own=False)
+
+    # Held across select-and-create so two agents cannot both find nothing to
+    # reuse and both open a tab.
+    with _owned_tab_lock():
         try:
+            owned = _owned_tab()
+            live = {_target_id(t) for t in list_tabs()}
             cur = current_tab()
+            cur_id = cur.get("targetId") or cur.get("target_id")
             cur_url = cur.get("url") or ""
-            # Reuse attached tab when it's blank
-            if (
+            blank = (
                 cur_url in ("", "about:blank")
                 or cur_url.startswith("about:blank#")
                 or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
-            ):
+            )
+            # Reuse the tab this harness opened, or the attached tab if blank.
+            # The title marker cannot carry ownership: goto_url replaces the
+            # title as the page loads, so a marker written before the load is
+            # gone by the next call and every call opens another tab.
+            target = owned if owned in live else (cur_id if blank else None)
+            if target:
+                if target != cur_id:
+                    switch_tab(target)
                 goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
+                _own_tab(target)
+                return target
         except Exception:
             pass
+        return _create_tab(url, own=True)
+
+
+def _create_tab(url, own):
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
+        if own:
+            _own_tab(tid)
     return tid
 
 def close_tab(target=None):

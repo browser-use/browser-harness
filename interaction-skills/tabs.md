@@ -7,12 +7,19 @@ Use **CDP for control**, **UI automation for user-visible order**.
 ```python
 tabs = list_tabs()                    # includes chrome:// pages too
 real_tabs = list_tabs(include_chrome=False)
-tid = new_tab("https://example.com")  # create + attach in the background
+tid = new_tab("https://example.com")  # reuse this harness's tab, else create
+tid = new_tab("https://example.com", force=True)   # insist on a second tab
 switch_tab(tid)                       # attach harness, move the horse marker
 activate_tab(tid)                     # optional: explicitly show it in Chrome
 print(current_tab())
 print(page_info())
 ```
+
+Sweeping many pages is `new_tab(url)` in a loop, not a tab per page. It
+navigates the tab this harness already owns, so a twenty page sweep leaves one
+tab rather than twenty. `force=True` is for the cases that genuinely need two at
+once, such as comparing pages side by side or following a popup. A tab the user
+opened is never taken over.
 
 What CDP is good at:
 - attach to a tab

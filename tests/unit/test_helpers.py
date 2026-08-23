@@ -404,3 +404,265 @@ def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     assert helpers.new_tab() == "target-new"
     assert ("Target.createTarget", {"url": "about:blank", "background": True}) in calls
     assert not any(method == "Target.activateTarget" for method, _ in calls)
+
+
+def _tab_stubs(monkeypatch, tmp_path, live_tabs, current):
+    """Wire new_tab's collaborators so only the reuse decision is under test."""
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            return {"targetId": "target-created"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+    monkeypatch.setattr(helpers, "goto_url", lambda url: calls.append(("goto", url)))
+    monkeypatch.setattr(helpers, "list_tabs", lambda *a, **k: live_tabs)
+    monkeypatch.setattr(helpers, "current_tab", lambda: current)
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+    return calls
+
+
+def test_new_tab_reuses_the_owned_tab_instead_of_opening_another(monkeypatch, tmp_path):
+    (tmp_path / "agent-tab").write_text("target-owned")
+    calls = _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-owned", "url": "https://a.test", "title": "a"}],
+        current={"targetId": "target-owned", "url": "https://a.test", "title": "a"},
+    )
+
+    assert helpers.new_tab("https://b.test") == "target-owned"
+    assert ("goto", "https://b.test") in calls
+    assert not any(method == "Target.createTarget" for method, _ in calls)
+
+
+def test_new_tab_records_the_tab_it_creates_so_the_next_call_reuses_it(monkeypatch, tmp_path):
+    _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-user", "url": "https://user.test", "title": "user"}],
+        current={"targetId": "target-user", "url": "https://user.test", "title": "user"},
+    )
+
+    assert helpers.new_tab("https://a.test") == "target-created"
+    assert (tmp_path / "agent-tab").read_text() == "target-created"
+
+
+def test_new_tab_does_not_take_over_a_tab_the_user_opened(monkeypatch, tmp_path):
+    # No record on disk, and the attached tab holds a real page: creating is right.
+    calls = _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-user", "url": "https://user.test", "title": "user"}],
+        current={"targetId": "target-user", "url": "https://user.test", "title": "user"},
+    )
+
+    assert helpers.new_tab("https://a.test") == "target-created"
+    assert any(method == "Target.createTarget" for method, _ in calls)
+
+
+def test_new_tab_creates_again_when_the_recorded_tab_is_gone(monkeypatch, tmp_path):
+    (tmp_path / "agent-tab").write_text("target-closed")
+    calls = _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-user", "url": "https://user.test", "title": "user"}],
+        current={"targetId": "target-user", "url": "https://user.test", "title": "user"},
+    )
+
+    assert helpers.new_tab("https://a.test") == "target-created"
+    assert any(method == "Target.createTarget" for method, _ in calls)
+
+
+def test_new_tab_force_opens_a_second_tab_even_when_one_is_owned(monkeypatch, tmp_path):
+    (tmp_path / "agent-tab").write_text("target-owned")
+    calls = _tab_stubs(
+        monkeypatch, tmp_path,
+        live_tabs=[{"targetId": "target-owned", "url": "https://a.test", "title": "a"}],
+        current={"targetId": "target-owned", "url": "https://a.test", "title": "a"},
+    )
+
+    assert helpers.new_tab("https://b.test", force=True) == "target-created"
+    assert any(method == "Target.createTarget" for method, _ in calls)
+    assert (tmp_path / "agent-tab").read_text() == "target-owned"
+
+
+def test_owned_tab_record_is_scoped_by_bu_name(monkeypatch, tmp_path):
+    # Named daemons share one Chrome. An unscoped record lets one agent adopt
+    # another's live tab, which is the whole reason the name is in the filename.
+    monkeypatch.setattr(helpers.paths, "config_dir", lambda: tmp_path)
+
+    monkeypatch.setattr(helpers, "NAME", "alpha")
+    alpha = helpers._owned_tab_path()
+    monkeypatch.setattr(helpers, "NAME", "beta")
+    beta = helpers._owned_tab_path()
+
+    assert alpha != beta
+    assert alpha.name.endswith("alpha") and beta.name.endswith("beta")
+
+
+def test_owned_tab_path_rejects_a_traversing_bu_name(monkeypatch, tmp_path):
+    monkeypatch.setattr(helpers.paths, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(helpers, "NAME", "../escape")
+    with pytest.raises(ValueError):
+        helpers._owned_tab_path()
+
+
+def _lock_race_child(tmp_path, name, body):
+    """A child script that takes the lock on the same file this test uses.
+
+    The path comes through PYTHONPATH rather than being computed inside the
+    script: this is a src layout, so deriving it from helpers.__file__ is one
+    parents[] index away from a ModuleNotFoundError on a fresh checkout, and it
+    only worked here because an editable install happened to be on the path.
+
+    `name` is given by the caller. Deriving it from the body via hash() would be
+    PYTHONHASHSEED-randomised and could collide, and a collision would have both
+    children run the same body and quietly make the exclusivity assertion
+    vacuous.
+    """
+    import textwrap
+
+    src = tmp_path / f"child_{name}.py"
+    src.write_text(textwrap.dedent(f"""
+        import pathlib, sys, time
+        from browser_harness import helpers
+        helpers._owned_tab_path = lambda: pathlib.Path({str(tmp_path / 'agent-tab')!r})
+        {body}
+    """))
+    return src
+
+
+def _child_env():
+    import sys
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    return env
+
+
+def test_owned_tab_lock_is_exclusive_between_processes(tmp_path):
+    import subprocess
+    import sys
+
+    # The holder prints from inside the locked block, so the line means the lock
+    # is already taken and the waiter can be launched on it rather than on a
+    # sleep the machine has to be fast enough to honour. Keep the print inside
+    # the with: moved outside it would announce intent rather than possession,
+    # and the waiter could then start first and the assertion would be vacuous.
+    holder = _lock_race_child(tmp_path, "holder", """
+        with helpers._owned_tab_lock(wait=5.0):
+            print("held", flush=True)
+            time.sleep(1.0)
+        print(time.time(), flush=True)
+    """)
+    waiter = _lock_race_child(tmp_path, "waiter", """
+        with helpers._owned_tab_lock(wait=5.0):
+            print(time.time(), flush=True)
+    """)
+
+    env = _child_env()
+    a = subprocess.Popen([sys.executable, str(holder)], stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        assert a.stdout.readline().strip() == "held", a.stderr.read()
+        b = subprocess.Popen([sys.executable, str(waiter)], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=env)
+        a_out, a_err = a.communicate(timeout=30)
+        b_out, b_err = b.communicate(timeout=30)
+    finally:
+        a.kill()
+    assert a.returncode == 0, a_err
+    assert b.returncode == 0, b_err
+
+    a_released = float(a_out.split()[0])
+    b_entered = float(b_out.split()[0])
+    assert b_entered >= a_released - 0.05, "second process entered while the first held the lock"
+
+
+def test_owned_tab_lock_is_released_when_the_holder_dies(monkeypatch, tmp_path):
+    # The kernel drops an advisory lock on exit, so a killed holder cannot wedge
+    # the next caller. This is the property the earlier stamp-and-pid version had
+    # to reason about and this one gets for free.
+    import subprocess
+    import sys
+
+    holder = _lock_race_child(tmp_path, "dying_holder", """
+        with helpers._owned_tab_lock(wait=5.0):
+            print("held", flush=True)
+            time.sleep(30)
+    """)
+    proc = subprocess.Popen([sys.executable, str(holder)], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=_child_env())
+    try:
+        assert proc.stdout.readline().strip() == "held", proc.stderr.read()
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+    started = time.time()
+    with helpers._owned_tab_lock(wait=5.0):
+        pass
+    assert time.time() - started < 1.0, "a dead holder's lock was still blocking"
+
+
+def test_owned_tab_lock_proceeds_unlocked_rather_than_raising(monkeypatch, tmp_path):
+    # A neighbour that never lets go must not take the harness down with it.
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+
+    def always_held(fd):
+        raise OSError("held")
+
+    monkeypatch.setattr(helpers, "_try_lock_fd", always_held)
+    ran = False
+    with helpers._owned_tab_lock(wait=0.2):
+        ran = True
+    assert ran
+
+
+def test_owned_tab_lock_never_unlinks_the_lock_file(monkeypatch, tmp_path):
+    # Nothing deletes it, so no caller can remove a lock another one holds.
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+    lock = tmp_path / "agent-tab.lock"
+    with helpers._owned_tab_lock(wait=1.0):
+        assert lock.exists()
+    assert lock.exists()
+
+
+def test_concurrent_new_tab_calls_share_one_tab(monkeypatch, tmp_path):
+    import threading
+
+    created = []
+    state = {"tabs": [{"targetId": "target-user", "url": "https://user.test", "title": "u"}]}
+    lock = threading.Lock()
+
+    def fake_cdp(method, **kwargs):
+        if method == "Target.createTarget":
+            with lock:
+                tid = f"target-{len(created)}"
+                created.append(tid)
+                state["tabs"].append({"targetId": tid, "url": "", "title": ""})
+            return {"targetId": tid}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "s"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+    monkeypatch.setattr(helpers, "goto_url", lambda url: time.sleep(0.02))
+    monkeypatch.setattr(helpers, "list_tabs", lambda *a, **k: list(state["tabs"]))
+    monkeypatch.setattr(helpers, "current_tab", lambda: state["tabs"][0])
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(helpers.new_tab("https://a.test")))
+               for _ in range(4)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    assert len(created) == 1, f"opened {len(created)} tabs for 4 concurrent calls"
+    assert len(set(out)) == 1
