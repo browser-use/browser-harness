@@ -510,17 +510,22 @@ def test_owned_tab_path_rejects_a_traversing_bu_name(monkeypatch, tmp_path):
         helpers._owned_tab_path()
 
 
-def _lock_race_child(tmp_path, body):
+def _lock_race_child(tmp_path, name, body):
     """A child script that takes the lock on the same file this test uses.
 
     The path comes through PYTHONPATH rather than being computed inside the
     script: this is a src layout, so deriving it from helpers.__file__ is one
     parents[] index away from a ModuleNotFoundError on a fresh checkout, and it
     only worked here because an editable install happened to be on the path.
+
+    `name` is given by the caller. Deriving it from the body via hash() would be
+    PYTHONHASHSEED-randomised and could collide, and a collision would have both
+    children run the same body and quietly make the exclusivity assertion
+    vacuous.
     """
     import textwrap
 
-    src = tmp_path / f"child_{abs(hash(body)) % 10000}.py"
+    src = tmp_path / f"child_{name}.py"
     src.write_text(textwrap.dedent(f"""
         import pathlib, sys, time
         from browser_harness import helpers
@@ -542,32 +547,37 @@ def test_owned_tab_lock_is_exclusive_between_processes(tmp_path):
     import subprocess
     import sys
 
-    holder = _lock_race_child(tmp_path, """
+    # The holder announces that it is inside before it starts holding, so the
+    # waiter is launched on that signal rather than on a sleep the machine has
+    # to be fast enough to honour.
+    holder = _lock_race_child(tmp_path, "holder", """
         with helpers._owned_tab_lock(wait=5.0):
-            print(time.time(), flush=True)
+            print("held", flush=True)
             time.sleep(1.0)
         print(time.time(), flush=True)
     """)
-    waiter = _lock_race_child(tmp_path, """
+    waiter = _lock_race_child(tmp_path, "waiter", """
         with helpers._owned_tab_lock(wait=5.0):
             print(time.time(), flush=True)
-        print(time.time(), flush=True)
     """)
 
     env = _child_env()
     a = subprocess.Popen([sys.executable, str(holder)], stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, env=env)
-    time.sleep(0.3)
-    b = subprocess.Popen([sys.executable, str(waiter)], stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True, env=env)
-    a_out, a_err = a.communicate(timeout=30)
-    b_out, b_err = b.communicate(timeout=30)
+    try:
+        assert a.stdout.readline().strip() == "held", a.stderr.read()
+        b = subprocess.Popen([sys.executable, str(waiter)], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=env)
+        a_out, a_err = a.communicate(timeout=30)
+        b_out, b_err = b.communicate(timeout=30)
+    finally:
+        a.kill()
     assert a.returncode == 0, a_err
     assert b.returncode == 0, b_err
 
-    a_exit = float(a_out.split()[1])
-    b_enter = float(b_out.split()[0])
-    assert b_enter >= a_exit - 0.05, "second process entered while the first held the lock"
+    a_released = float(a_out.split()[0])
+    b_entered = float(b_out.split()[0])
+    assert b_entered >= a_released - 0.05, "second process entered while the first held the lock"
 
 
 def test_owned_tab_lock_is_released_when_the_holder_dies(monkeypatch, tmp_path):
@@ -577,15 +587,15 @@ def test_owned_tab_lock_is_released_when_the_holder_dies(monkeypatch, tmp_path):
     import subprocess
     import sys
 
-    holder = _lock_race_child(tmp_path, """
+    holder = _lock_race_child(tmp_path, "dying_holder", """
         with helpers._owned_tab_lock(wait=5.0):
-            print("in", flush=True)
+            print("held", flush=True)
             time.sleep(30)
     """)
     proc = subprocess.Popen([sys.executable, str(holder)], stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, env=_child_env())
     try:
-        assert proc.stdout.readline().strip() == "in", proc.stderr.read()
+        assert proc.stdout.readline().strip() == "held", proc.stderr.read()
     finally:
         proc.kill()
         proc.wait(timeout=30)
