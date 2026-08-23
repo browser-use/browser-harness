@@ -510,46 +510,63 @@ def test_owned_tab_path_rejects_a_traversing_bu_name(monkeypatch, tmp_path):
         helpers._owned_tab_path()
 
 
-def test_owned_tab_lock_breaks_a_stale_lock_rather_than_hanging(monkeypatch, tmp_path):
-    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
-    stale = tmp_path / "agent-tab.lock"
-    stale.write_text("someone-else")
-    os.utime(stale, (time.time() - 3600, time.time() - 3600))
-
-    started = time.time()
-    with helpers._owned_tab_lock(wait=1.0, stale_after=60.0):
-        pass
-    # Broken immediately, not waited out.
-    assert time.time() - started < 0.5
-
-
-def test_owned_tab_lock_does_not_evict_a_slow_but_live_holder(monkeypatch, tmp_path):
-    # The create path holds the lock across goto_url. A slow page must not look
-    # like a crash, which is what one shared timeout made it look like.
+def test_owned_tab_lock_reclaims_a_dead_holders_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
     lock = tmp_path / "agent-tab.lock"
-    lock.write_text("live-holder")
-    os.utime(lock, (time.time() - 10, time.time() - 10))
+    lock.write_text("999999:deadholder")
+    monkeypatch.setattr(helpers, "_holder_is_alive", lambda pid: False)
 
-    with helpers._owned_tab_lock(wait=0.2, stale_after=120.0):
-        # Waiter gave up and proceeded unlocked; the holder's lock is untouched.
-        assert lock.read_text() == "live-holder"
-    assert lock.read_text() == "live-holder"
+    started = time.time()
+    with helpers._owned_tab_lock(wait=1.0):
+        assert lock.read_text().startswith(f"{os.getpid()}:")
+    assert time.time() - started < 0.5
+    assert not lock.exists()
+
+
+def test_owned_tab_lock_never_takes_a_live_holders_lock(monkeypatch, tmp_path):
+    # The create path holds this across goto_url. A slow page must not be
+    # mistaken for a crash, which is what age-based reclaiming did.
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+    lock = tmp_path / "agent-tab.lock"
+    lock.write_text("424242:liveholder")
+    os.utime(lock, (time.time() - 86400, time.time() - 86400))  # ancient, but alive
+    monkeypatch.setattr(helpers, "_holder_is_alive", lambda pid: True)
+
+    with helpers._owned_tab_lock(wait=0.2):
+        assert lock.read_text() == "424242:liveholder"
+    assert lock.read_text() == "424242:liveholder"
 
 
 def test_owned_tab_lock_holder_does_not_delete_a_successors_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
     lock = tmp_path / "agent-tab.lock"
 
-    cm = helpers._owned_tab_lock(wait=1.0, stale_after=120.0)
+    cm = helpers._owned_tab_lock(wait=1.0)
     cm.__enter__()
-    mine = lock.read_text()
-    assert mine
-    # Simulate being evicted and a successor taking the lock.
-    lock.write_text("successor-token")
+    assert lock.read_text().startswith(f"{os.getpid()}:")
+    # Simulate the lock having been taken over despite everything.
+    lock.write_text("777:successor")
     cm.__exit__(None, None, None)
 
-    assert lock.exists() and lock.read_text() == "successor-token"
+    assert lock.exists() and lock.read_text() == "777:successor"
+
+
+def test_holder_is_alive_says_no_for_a_pid_that_is_gone(monkeypatch):
+    def gone(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(helpers.os, "kill", gone)
+    assert helpers._holder_is_alive(999999) is False
+
+
+def test_holder_is_alive_is_conservative_when_it_cannot_tell(monkeypatch):
+    # A pid owned by another user raises PermissionError: it exists, so the lock
+    # stays. Same for a platform without os.kill.
+    def not_ours(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr(helpers.os, "kill", not_ours)
+    assert helpers._holder_is_alive(1) is True
 
 
 def test_concurrent_new_tab_calls_share_one_tab(monkeypatch, tmp_path):

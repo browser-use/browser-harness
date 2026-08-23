@@ -294,22 +294,44 @@ def _owned_tab_path():
     return config_dir() / f"agent-tab-{ipc._check(NAME)}"
 
 
-def _owned_tab_lock(wait=5.0, stale_after=120.0):
+def _holder_is_alive(pid):
+    """Whether the process that stamped a lock is still running.
+
+    Only a dead holder's lock is ever taken, which is what removes the release
+    race: nobody can replace a live holder's lock, so a holder always finds its
+    own stamp when it exits. POSIX only. Elsewhere the answer is a conservative
+    yes, so the lock is simply never reclaimed and callers fall through to
+    running unlocked.
+    """
+    if not hasattr(os, "kill"):
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but not ours to signal
+
+
+def _owned_tab_lock(wait=5.0):
     """Serialise select-or-create so two agents do not each open a tab.
 
     O_CREAT|O_EXCL rather than fcntl because the daemon runs on Windows too.
 
-    The two timeouts are deliberately different, and collapsing them into one
-    was a bug. The create path holds this across createTarget, attach and
-    goto_url, so a slow page load looks exactly like a crashed holder: a waiter
-    on the same threshold evicts a live holder, both run, and the duplicate tab
-    the lock exists to prevent comes back. `wait` is how long a caller queues,
-    `stale_after` is how old a lock must be before it is presumed abandoned, and
-    it sits well above any plausible hold.
+    Reclaiming by age was wrong twice over and both attempts are worth recording.
+    A shared timeout made a slow goto_url look like a crash, so a waiter evicted
+    a live holder. Splitting the timeouts narrowed that but left the release
+    unsafe: between a holder reading its own stamp and unlinking, a waiter could
+    reclaim and a successor could take the lock, and the departing holder then
+    deleted the successor's. There is no atomic compare-and-unlink to close that
+    window with.
 
-    Each holder stamps a token and removes only a lock still carrying it, so a
-    holder evicted despite that cannot delete its successor's lock on the way
-    out and let a third caller in.
+    So age does not reclaim anything here. A lock is taken only when the process
+    that stamped it is gone, which no living holder can be, and a lock that
+    cannot be taken is waited on and then run past unlocked. The worst case is
+    the duplicate tab this lock exists to avoid, never a wedged caller and never
+    a holder deleting someone else's lock.
     """
     import contextlib
     import secrets
@@ -317,24 +339,25 @@ def _owned_tab_lock(wait=5.0, stale_after=120.0):
     @contextlib.contextmanager
     def _cm():
         path = _owned_tab_path().with_name(_owned_tab_path().name + ".lock")
-        token = f"{os.getpid()}-{secrets.token_hex(8)}"
+        stamp = f"{os.getpid()}:{secrets.token_hex(8)}"
         deadline = time.time() + wait
         held = False
         while True:
             try:
                 fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 try:
-                    os.write(fd, token.encode())
+                    os.write(fd, stamp.encode())
                 finally:
                     os.close(fd)
                 held = True
                 break
             except FileExistsError:
                 try:
-                    if time.time() - os.path.getmtime(path) > stale_after:
+                    holder = path.read_text().split(":", 1)[0]
+                    if not _holder_is_alive(int(holder)):
                         os.unlink(path)
                         continue  # race for it again; the winner stamps its own
-                except OSError:
+                except (OSError, ValueError):
                     pass
                 if time.time() >= deadline:
                     break  # proceed unlocked rather than fail the call
@@ -346,7 +369,7 @@ def _owned_tab_lock(wait=5.0, stale_after=120.0):
         finally:
             if held:
                 try:
-                    if path.read_text() == token:
+                    if path.read_text() == stamp:
                         os.unlink(path)
                 except OSError:
                     pass
