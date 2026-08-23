@@ -294,44 +294,60 @@ def _owned_tab_path():
     return config_dir() / f"agent-tab-{ipc._check(NAME)}"
 
 
-def _owned_tab_lock(timeout=5.0):
+def _owned_tab_lock(wait=5.0, stale_after=120.0):
     """Serialise select-or-create so two agents do not each open a tab.
 
-    O_CREAT|O_EXCL rather than fcntl because the daemon runs on Windows too. A
-    lock older than the timeout is treated as abandoned, and a lock that cannot
-    be taken at all is proceeded past rather than raised: a crashed neighbour
-    should cost a duplicate tab at worst, never a failed call.
+    O_CREAT|O_EXCL rather than fcntl because the daemon runs on Windows too.
+
+    The two timeouts are deliberately different, and collapsing them into one
+    was a bug. The create path holds this across createTarget, attach and
+    goto_url, so a slow page load looks exactly like a crashed holder: a waiter
+    on the same threshold evicts a live holder, both run, and the duplicate tab
+    the lock exists to prevent comes back. `wait` is how long a caller queues,
+    `stale_after` is how old a lock must be before it is presumed abandoned, and
+    it sits well above any plausible hold.
+
+    Each holder stamps a token and removes only a lock still carrying it, so a
+    holder evicted despite that cannot delete its successor's lock on the way
+    out and let a third caller in.
     """
     import contextlib
+    import secrets
 
     @contextlib.contextmanager
     def _cm():
         path = _owned_tab_path().with_name(_owned_tab_path().name + ".lock")
-        deadline = time.time() + timeout
-        fd = None
+        token = f"{os.getpid()}-{secrets.token_hex(8)}"
+        deadline = time.time() + wait
+        held = False
         while True:
             try:
                 fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                try:
+                    os.write(fd, token.encode())
+                finally:
+                    os.close(fd)
+                held = True
                 break
             except FileExistsError:
                 try:
-                    if time.time() - os.path.getmtime(path) > timeout:
+                    if time.time() - os.path.getmtime(path) > stale_after:
                         os.unlink(path)
-                        continue
+                        continue  # race for it again; the winner stamps its own
                 except OSError:
                     pass
                 if time.time() >= deadline:
-                    break
+                    break  # proceed unlocked rather than fail the call
                 time.sleep(0.05)
             except OSError:
                 break
         try:
             yield
         finally:
-            if fd is not None:
-                os.close(fd)
+            if held:
                 try:
-                    os.unlink(path)
+                    if path.read_text() == token:
+                        os.unlink(path)
                 except OSError:
                     pass
 

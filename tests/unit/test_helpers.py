@@ -513,14 +513,43 @@ def test_owned_tab_path_rejects_a_traversing_bu_name(monkeypatch, tmp_path):
 def test_owned_tab_lock_breaks_a_stale_lock_rather_than_hanging(monkeypatch, tmp_path):
     monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
     stale = tmp_path / "agent-tab.lock"
-    stale.write_text("")
+    stale.write_text("someone-else")
     os.utime(stale, (time.time() - 3600, time.time() - 3600))
 
     started = time.time()
-    with helpers._owned_tab_lock(timeout=1.0):
+    with helpers._owned_tab_lock(wait=1.0, stale_after=60.0):
         pass
     # Broken immediately, not waited out.
     assert time.time() - started < 0.5
+
+
+def test_owned_tab_lock_does_not_evict_a_slow_but_live_holder(monkeypatch, tmp_path):
+    # The create path holds the lock across goto_url. A slow page must not look
+    # like a crash, which is what one shared timeout made it look like.
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+    lock = tmp_path / "agent-tab.lock"
+    lock.write_text("live-holder")
+    os.utime(lock, (time.time() - 10, time.time() - 10))
+
+    with helpers._owned_tab_lock(wait=0.2, stale_after=120.0):
+        # Waiter gave up and proceeded unlocked; the holder's lock is untouched.
+        assert lock.read_text() == "live-holder"
+    assert lock.read_text() == "live-holder"
+
+
+def test_owned_tab_lock_holder_does_not_delete_a_successors_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
+    lock = tmp_path / "agent-tab.lock"
+
+    cm = helpers._owned_tab_lock(wait=1.0, stale_after=120.0)
+    cm.__enter__()
+    mine = lock.read_text()
+    assert mine
+    # Simulate being evicted and a successor taking the lock.
+    lock.write_text("successor-token")
+    cm.__exit__(None, None, None)
+
+    assert lock.exists() and lock.read_text() == "successor-token"
 
 
 def test_concurrent_new_tab_calls_share_one_tab(monkeypatch, tmp_path):
