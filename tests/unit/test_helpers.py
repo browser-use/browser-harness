@@ -547,9 +547,11 @@ def test_owned_tab_lock_is_exclusive_between_processes(tmp_path):
     import subprocess
     import sys
 
-    # The holder announces that it is inside before it starts holding, so the
-    # waiter is launched on that signal rather than on a sleep the machine has
-    # to be fast enough to honour.
+    # The holder prints from inside the locked block, so the line means the lock
+    # is already taken and the waiter can be launched on it rather than on a
+    # sleep the machine has to be fast enough to honour. Keep the print inside
+    # the with: moved outside it would announce intent rather than possession,
+    # and the waiter could then start first and the assertion would be vacuous.
     holder = _lock_race_child(tmp_path, "holder", """
         with helpers._owned_tab_lock(wait=5.0):
             print("held", flush=True)
