@@ -510,63 +510,92 @@ def test_owned_tab_path_rejects_a_traversing_bu_name(monkeypatch, tmp_path):
         helpers._owned_tab_path()
 
 
-def test_owned_tab_lock_reclaims_a_dead_holders_lock(monkeypatch, tmp_path):
-    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
-    lock = tmp_path / "agent-tab.lock"
-    lock.write_text("999999:deadholder")
-    monkeypatch.setattr(helpers, "_holder_is_alive", lambda pid: False)
+def test_owned_tab_lock_is_exclusive_between_processes(monkeypatch, tmp_path):
+    # Two subprocesses race for the lock; the second must wait rather than run
+    # alongside the first.
+    import subprocess
+    import sys
+    import textwrap
 
+    script = textwrap.dedent(f"""
+        import sys, time
+        sys.path.insert(0, {str(__import__('pathlib').Path(helpers.__file__).parents[2])!r})
+        from browser_harness import helpers
+        helpers._owned_tab_path = lambda: __import__('pathlib').Path({str(tmp_path / 'agent-tab')!r})
+        hold = sys.argv[1] == 'hold'
+        with helpers._owned_tab_lock(wait=5.0):
+            print(time.time(), flush=True)
+            if hold:
+                time.sleep(1.0)
+        print(time.time(), flush=True)
+    """)
+    src = tmp_path / "race.py"
+    src.write_text(script)
+
+    a = subprocess.Popen([sys.executable, str(src), "hold"], stdout=subprocess.PIPE, text=True)
+    time.sleep(0.3)
+    b = subprocess.Popen([sys.executable, str(src), "wait"], stdout=subprocess.PIPE, text=True)
+    a_out = a.communicate()[0].split()
+    b_out = b.communicate()[0].split()
+
+    a_enter, a_exit = float(a_out[0]), float(a_out[1])
+    b_enter = float(b_out[0])
+    assert b_enter >= a_exit - 0.05, "second process entered while the first held the lock"
+
+
+def test_owned_tab_lock_is_released_when_the_holder_dies(monkeypatch, tmp_path):
+    # The kernel drops an advisory lock on exit, so a killed holder cannot
+    # wedge the next caller. This is the property the stamp-and-pid version
+    # had to reason about and this one gets for free.
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import sys, time
+        sys.path.insert(0, {str(__import__('pathlib').Path(helpers.__file__).parents[2])!r})
+        from browser_harness import helpers
+        helpers._owned_tab_path = lambda: __import__('pathlib').Path({str(tmp_path / 'agent-tab')!r})
+        with helpers._owned_tab_lock(wait=5.0):
+            print("in", flush=True)
+            time.sleep(30)
+    """)
+    src = tmp_path / "holder.py"
+    src.write_text(script)
+
+    holder = subprocess.Popen([sys.executable, str(src)], stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "in"
+    holder.kill()
+    holder.wait()
+
+    monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
     started = time.time()
-    with helpers._owned_tab_lock(wait=1.0):
-        assert lock.read_text().startswith(f"{os.getpid()}:")
-    assert time.time() - started < 0.5
-    assert not lock.exists()
+    with helpers._owned_tab_lock(wait=5.0):
+        pass
+    assert time.time() - started < 1.0, "a dead holder's lock was still blocking"
 
 
-def test_owned_tab_lock_never_takes_a_live_holders_lock(monkeypatch, tmp_path):
-    # The create path holds this across goto_url. A slow page must not be
-    # mistaken for a crash, which is what age-based reclaiming did.
+def test_owned_tab_lock_proceeds_unlocked_rather_than_raising(monkeypatch, tmp_path):
+    # A neighbour that never lets go must not take the harness down with it.
     monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
-    lock = tmp_path / "agent-tab.lock"
-    lock.write_text("424242:liveholder")
-    os.utime(lock, (time.time() - 86400, time.time() - 86400))  # ancient, but alive
-    monkeypatch.setattr(helpers, "_holder_is_alive", lambda pid: True)
 
+    def always_held(fd):
+        raise OSError("held")
+
+    monkeypatch.setattr(helpers, "_try_lock_fd", always_held)
+    ran = False
     with helpers._owned_tab_lock(wait=0.2):
-        assert lock.read_text() == "424242:liveholder"
-    assert lock.read_text() == "424242:liveholder"
+        ran = True
+    assert ran
 
 
-def test_owned_tab_lock_holder_does_not_delete_a_successors_lock(monkeypatch, tmp_path):
+def test_owned_tab_lock_never_unlinks_the_lock_file(monkeypatch, tmp_path):
+    # Nothing deletes it, so no caller can remove a lock another one holds.
     monkeypatch.setattr(helpers, "_owned_tab_path", lambda: tmp_path / "agent-tab")
     lock = tmp_path / "agent-tab.lock"
-
-    cm = helpers._owned_tab_lock(wait=1.0)
-    cm.__enter__()
-    assert lock.read_text().startswith(f"{os.getpid()}:")
-    # Simulate the lock having been taken over despite everything.
-    lock.write_text("777:successor")
-    cm.__exit__(None, None, None)
-
-    assert lock.exists() and lock.read_text() == "777:successor"
-
-
-def test_holder_is_alive_says_no_for_a_pid_that_is_gone(monkeypatch):
-    def gone(pid, sig):
-        raise ProcessLookupError
-
-    monkeypatch.setattr(helpers.os, "kill", gone)
-    assert helpers._holder_is_alive(999999) is False
-
-
-def test_holder_is_alive_is_conservative_when_it_cannot_tell(monkeypatch):
-    # A pid owned by another user raises PermissionError: it exists, so the lock
-    # stays. Same for a platform without os.kill.
-    def not_ours(pid, sig):
-        raise PermissionError
-
-    monkeypatch.setattr(helpers.os, "kill", not_ours)
-    assert helpers._holder_is_alive(1) is True
+    with helpers._owned_tab_lock(wait=1.0):
+        assert lock.exists()
+    assert lock.exists()
 
 
 def test_concurrent_new_tab_calls_share_one_tab(monkeypatch, tmp_path):

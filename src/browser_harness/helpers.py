@@ -294,83 +294,89 @@ def _owned_tab_path():
     return config_dir() / f"agent-tab-{ipc._check(NAME)}"
 
 
-def _holder_is_alive(pid):
-    """Whether the process that stamped a lock is still running.
+def _try_lock_fd(fd):
+    """Take an exclusive advisory lock on an open fd, or raise if held.
 
-    Only a dead holder's lock is ever taken, which is what removes the release
-    race: nobody can replace a live holder's lock, so a holder always finds its
-    own stamp when it exits. POSIX only. Elsewhere the answer is a conservative
-    yes, so the lock is simply never reclaimed and callers fall through to
-    running unlocked.
+    The kernel drops it when the holder exits, however it exits, which is the
+    property the hand-rolled version could not have.
     """
-    if not hasattr(os, "kill"):
-        return True
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True  # exists but not ours to signal
+        import fcntl
+    except ImportError:
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        return
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_fd(fd):
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+    fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def _owned_tab_lock(wait=5.0):
     """Serialise select-or-create so two agents do not each open a tab.
 
-    O_CREAT|O_EXCL rather than fcntl because the daemon runs on Windows too.
+    This is an advisory lock held on an open descriptor, not a lock file whose
+    existence means something. Three earlier rounds of this were a file plus a
+    stamp plus a staleness rule, and each round closed one hole and left another:
+    a shared timeout let a waiter evict a live holder mid goto_url; splitting the
+    timeouts left the release racing a successor with no atomic
+    compare-and-unlink to fix it; and pinning ownership to a pid inherited both a
+    window where a crash leaves the record unwritten and the question of what a
+    reused pid means. The kernel answers all of that by releasing on exit, so the
+    machinery is gone rather than repaired.
 
-    Reclaiming by age was wrong twice over and both attempts are worth recording.
-    A shared timeout made a slow goto_url look like a crash, so a waiter evicted
-    a live holder. Splitting the timeouts narrowed that but left the release
-    unsafe: between a holder reading its own stamp and unlinking, a waiter could
-    reclaim and a successor could take the lock, and the departing holder then
-    deleted the successor's. There is no atomic compare-and-unlink to close that
-    window with.
+    The file is only a handle to lock. It is never unlinked, so no caller can
+    delete a lock another one is holding, and an empty or leftover file means
+    nothing to anybody.
 
-    So age does not reclaim anything here. A lock is taken only when the process
-    that stamped it is gone, which no living holder can be, and a lock that
-    cannot be taken is waited on and then run past unlocked. The worst case is
-    the duplicate tab this lock exists to avoid, never a wedged caller and never
-    a holder deleting someone else's lock.
+    A lock that cannot be taken within `wait` is run past unlocked rather than
+    raised on: the worst case is the duplicate tab this exists to avoid, and a
+    wedged neighbour should not take the harness down with it.
     """
     import contextlib
-    import secrets
 
     @contextlib.contextmanager
     def _cm():
         path = _owned_tab_path().with_name(_owned_tab_path().name + ".lock")
-        stamp = f"{os.getpid()}:{secrets.token_hex(8)}"
-        deadline = time.time() + wait
+        fd = None
         held = False
-        while True:
-            try:
-                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                try:
-                    os.write(fd, stamp.encode())
-                finally:
-                    os.close(fd)
-                held = True
-                break
-            except FileExistsError:
-                try:
-                    holder = path.read_text().split(":", 1)[0]
-                    if not _holder_is_alive(int(holder)):
-                        os.unlink(path)
-                        continue  # race for it again; the winner stamps its own
-                except (OSError, ValueError):
-                    pass
-                if time.time() >= deadline:
-                    break  # proceed unlocked rather than fail the call
-                time.sleep(0.05)
-            except OSError:
-                break
         try:
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
+            except OSError:
+                yield  # cannot even open a lock file; proceed unlocked
+                return
+            deadline = time.time() + wait
+            while True:
+                try:
+                    _try_lock_fd(fd)
+                    held = True
+                    break
+                except OSError:
+                    if time.time() >= deadline:
+                        break
+                    time.sleep(0.05)
             yield
         finally:
-            if held:
+            if fd is not None:
+                if held:
+                    try:
+                        _unlock_fd(fd)
+                    except OSError:
+                        pass
                 try:
-                    if path.read_text() == stamp:
-                        os.unlink(path)
+                    os.close(fd)
                 except OSError:
                     pass
 
