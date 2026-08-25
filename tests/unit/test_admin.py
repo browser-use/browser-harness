@@ -1,4 +1,5 @@
 import platform
+import shutil
 import subprocess
 import webbrowser
 
@@ -62,7 +63,7 @@ def test_windows_open_chrome_inspect_spawns_browser_instead_of_shell(monkeypatch
     spawned = []
 
     monkeypatch.setattr(platform, "system", lambda: "Windows")
-    monkeypatch.setattr(admin, "_windows_chrome_exe", lambda: r"C:\chrome.exe")
+    monkeypatch.setattr(admin, "_windows_chrome_exes", lambda: iter([r"C:\chrome.exe"]))
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: spawned.append(cmd))
     monkeypatch.setattr(
         webbrowser,
@@ -74,9 +75,28 @@ def test_windows_open_chrome_inspect_spawns_browser_instead_of_shell(monkeypatch
     assert spawned == [[r"C:\chrome.exe", "chrome://inspect/#remote-debugging"]]
 
 
+def test_windows_open_chrome_inspect_falls_through_to_next_candidate(monkeypatch):
+    """A path that exists but cannot execute must not abort discovery."""
+    spawned = []
+
+    def fake_popen(cmd, **kw):
+        if cmd[0] == r"C:roken.exe":
+            raise OSError(8, "Exec format error")
+        spawned.append(cmd)
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        admin, "_windows_chrome_exes", lambda: iter([r"C:roken.exe", r"C:\chrome.exe"])
+    )
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    assert admin._open_chrome_inspect()
+    assert spawned == [[r"C:\chrome.exe", "chrome://inspect/#remote-debugging"]]
+
+
 def test_windows_open_chrome_inspect_reports_failure_without_browser(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Windows")
-    monkeypatch.setattr(admin, "_windows_chrome_exe", lambda: None)
+    monkeypatch.setattr(admin, "_windows_chrome_exes", lambda: iter([]))
     monkeypatch.setattr(
         webbrowser,
         "open",
@@ -86,12 +106,28 @@ def test_windows_open_chrome_inspect_reports_failure_without_browser(monkeypatch
     assert not admin._open_chrome_inspect()
 
 
-def test_windows_chrome_exe_prefers_env_override(tmp_path, monkeypatch):
+def test_windows_chrome_exes_prefers_env_override(tmp_path, monkeypatch):
     exe = tmp_path / "chrome.exe"
     exe.touch()
     monkeypatch.setenv("BH_CHROME_PATH", str(exe))
 
-    assert admin._windows_chrome_exe() == str(exe)
+    assert next(admin._windows_chrome_exes()) == str(exe)
+
+
+def test_windows_chrome_exes_searches_programw6432_for_32bit_python(tmp_path, monkeypatch):
+    """A 32-bit Python sees ProgramFiles as "...(x86)"; only ProgramW6432 reaches
+    a system-wide 64-bit install."""
+    exe = tmp_path / "Google" / "Chrome" / "Application" / "chrome.exe"
+    exe.parent.mkdir(parents=True)
+    exe.touch()
+
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "missing-x86"))
+    monkeypatch.setenv("ProgramW6432", str(tmp_path))
+
+    assert str(exe) in list(admin._windows_chrome_exes())
 
 
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):

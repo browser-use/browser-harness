@@ -911,8 +911,8 @@ def _launch_browser():
         return False
 
 
-def _windows_chrome_exe():
-    """Path to a Chromium-family exe on Windows, or None.
+def _windows_chrome_exes():
+    """Yield Chromium-family binaries on Windows, best candidate first.
 
     `chrome:` is NOT a registered Windows protocol (AssocQueryStringW returns
     ERROR_NO_ASSOCIATION / 0x80070483) — it is an internal Chromium scheme.
@@ -920,19 +920,31 @@ def _windows_chrome_exe():
     to open this 'chrome' link" / Microsoft Store picker instead of opening a
     tab. Passing the same URL to chrome.exe as an ARGUMENT works fine, so we
     need the binary itself.
+
+    Yields every candidate rather than just the first so a path that exists
+    but cannot execute falls through to the remaining ones, matching
+    _launch_browser().
     """
     import os as _os, shutil
+    seen = set()
     for key in ("BH_CHROME_PATH", "CHROME_PATH"):
         raw = (_os.environ.get(key) or "").strip()
         if raw and Path(raw).expanduser().is_file():
-            return str(Path(raw).expanduser())
+            candidate = str(Path(raw).expanduser())
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
     for name in ("chrome.exe", "chromium.exe", "brave.exe", "msedge.exe"):
         found = shutil.which(name)
-        if found:
-            return found
+        if found and found not in seen:
+            seen.add(found)
+            yield found
     bases = (
         _os.environ.get("ProgramFiles"),
         _os.environ.get("ProgramFiles(x86)"),
+        # A 32-bit Python sees ProgramFiles as "...(x86)"; ProgramW6432 is the
+        # only way it can reach a system-wide 64-bit install.
+        _os.environ.get("ProgramW6432"),
         _os.environ.get("LOCALAPPDATA"),
     )
     parts = (
@@ -945,8 +957,10 @@ def _windows_chrome_exe():
         for tail in parts:
             candidate = Path(base, *tail)
             if candidate.is_file():
-                return str(candidate)
-    return None
+                resolved = str(candidate)
+                if resolved not in seen:
+                    seen.add(resolved)
+                    yield resolved
 
 
 def _open_chrome_inspect():
@@ -971,17 +985,17 @@ def _open_chrome_inspect():
         # registered handler, so the user gets the "Get an app to open this
         # 'chrome' link" Store dialog instead of the inspect page. Spawn the
         # browser binary with the URL as an argv instead.
-        exe = _windows_chrome_exe()
-        if not exe:
-            return False
-        try:
-            subprocess.Popen(
-                [exe, url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
-            )
-            return True
-        except (OSError, subprocess.SubprocessError):
-            return False
+        for exe in _windows_chrome_exes():
+            try:
+                subprocess.Popen(
+                    [exe, url],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
+                )
+                return True
+            except (OSError, subprocess.SubprocessError):
+                # Exists but won't execute (permissions, wrong arch): try the next.
+                continue
+        return False
     try:
         return bool(webbrowser.open(url, new=2))
     except Exception:
