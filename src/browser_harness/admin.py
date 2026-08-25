@@ -911,11 +911,64 @@ def _launch_browser():
         return False
 
 
+def _windows_chrome_exes():
+    """Yield Chromium-family binaries on Windows, best candidate first.
+
+    `chrome:` is NOT a registered Windows protocol (AssocQueryStringW returns
+    ERROR_NO_ASSOCIATION / 0x80070483) — it is an internal Chromium scheme.
+    Handing `chrome://inspect` to the shell therefore pops Windows' "Get an app
+    to open this 'chrome' link" / Microsoft Store picker instead of opening a
+    tab. Passing the same URL to chrome.exe as an ARGUMENT works fine, so we
+    need the binary itself.
+
+    Yields every candidate rather than just the first so a path that exists
+    but cannot execute falls through to the remaining ones, matching
+    _launch_browser().
+    """
+    import os as _os, shutil
+    seen = set()
+    for key in ("BH_CHROME_PATH", "CHROME_PATH"):
+        raw = (_os.environ.get(key) or "").strip()
+        if raw and Path(raw).expanduser().is_file():
+            candidate = str(Path(raw).expanduser())
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+    for name in ("chrome.exe", "chromium.exe", "brave.exe", "msedge.exe"):
+        found = shutil.which(name)
+        if found and found not in seen:
+            seen.add(found)
+            yield found
+    bases = (
+        _os.environ.get("ProgramFiles"),
+        _os.environ.get("ProgramFiles(x86)"),
+        # A 32-bit Python sees ProgramFiles as "...(x86)"; ProgramW6432 is the
+        # only way it can reach a system-wide 64-bit install.
+        _os.environ.get("ProgramW6432"),
+        _os.environ.get("LOCALAPPDATA"),
+    )
+    parts = (
+        ("Google", "Chrome", "Application", "chrome.exe"),
+        ("Chromium", "Application", "chrome.exe"),
+        ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        ("Microsoft", "Edge", "Application", "msedge.exe"),
+    )
+    for base in filter(None, bases):
+        for tail in parts:
+            candidate = Path(base, *tail)
+            if candidate.is_file():
+                resolved = str(candidate)
+                if resolved not in seen:
+                    seen.add(resolved)
+                    yield resolved
+
+
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
     url = "chrome://inspect/#remote-debugging"
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         try:
             r = subprocess.run([
                 "osascript",
@@ -926,6 +979,23 @@ def _open_chrome_inspect():
                 return True
         except Exception:
             pass
+    if system == "Windows":
+        # NEVER hand `chrome://` to the Windows shell (webbrowser.open ->
+        # WindowsDefault -> os.startfile -> ShellExecute): the scheme has no
+        # registered handler, so the user gets the "Get an app to open this
+        # 'chrome' link" Store dialog instead of the inspect page. Spawn the
+        # browser binary with the URL as an argv instead.
+        for exe in _windows_chrome_exes():
+            try:
+                subprocess.Popen(
+                    [exe, url],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
+                )
+                return True
+            except (OSError, subprocess.SubprocessError):
+                # Exists but won't execute (permissions, wrong arch): try the next.
+                continue
+        return False
     try:
         return bool(webbrowser.open(url, new=2))
     except Exception:
