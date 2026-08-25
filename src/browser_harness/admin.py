@@ -911,11 +911,50 @@ def _launch_browser():
         return False
 
 
+def _windows_chrome_exe():
+    """Path to a Chromium-family exe on Windows, or None.
+
+    `chrome:` is NOT a registered Windows protocol (AssocQueryStringW returns
+    ERROR_NO_ASSOCIATION / 0x80070483) — it is an internal Chromium scheme.
+    Handing `chrome://inspect` to the shell therefore pops Windows' "Get an app
+    to open this 'chrome' link" / Microsoft Store picker instead of opening a
+    tab. Passing the same URL to chrome.exe as an ARGUMENT works fine, so we
+    need the binary itself.
+    """
+    import os as _os, shutil
+    for key in ("BH_CHROME_PATH", "CHROME_PATH"):
+        raw = (_os.environ.get(key) or "").strip()
+        if raw and Path(raw).expanduser().is_file():
+            return str(Path(raw).expanduser())
+    for name in ("chrome.exe", "chromium.exe", "brave.exe", "msedge.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    bases = (
+        _os.environ.get("ProgramFiles"),
+        _os.environ.get("ProgramFiles(x86)"),
+        _os.environ.get("LOCALAPPDATA"),
+    )
+    parts = (
+        ("Google", "Chrome", "Application", "chrome.exe"),
+        ("Chromium", "Application", "chrome.exe"),
+        ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        ("Microsoft", "Edge", "Application", "msedge.exe"),
+    )
+    for base in filter(None, bases):
+        for tail in parts:
+            candidate = Path(base, *tail)
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
     import platform, subprocess, webbrowser
     url = "chrome://inspect/#remote-debugging"
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         try:
             r = subprocess.run([
                 "osascript",
@@ -926,6 +965,23 @@ def _open_chrome_inspect():
                 return True
         except Exception:
             pass
+    if system == "Windows":
+        # NEVER hand `chrome://` to the Windows shell (webbrowser.open ->
+        # WindowsDefault -> os.startfile -> ShellExecute): the scheme has no
+        # registered handler, so the user gets the "Get an app to open this
+        # 'chrome' link" Store dialog instead of the inspect page. Spawn the
+        # browser binary with the URL as an argv instead.
+        exe = _windows_chrome_exe()
+        if not exe:
+            return False
+        try:
+            subprocess.Popen(
+                [exe, url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
+            )
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
     try:
         return bool(webbrowser.open(url, new=2))
     except Exception:

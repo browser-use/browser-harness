@@ -1,3 +1,7 @@
+import platform
+import subprocess
+import webbrowser
+
 import pytest
 
 from browser_harness import admin
@@ -46,6 +50,48 @@ def test_stale_websocket_does_not_open_chrome_inspect():
     msg = "no close frame received or sent"
 
     assert not admin._needs_chrome_remote_debugging_prompt(msg)
+
+
+def test_windows_open_chrome_inspect_spawns_browser_instead_of_shell(monkeypatch):
+    """`chrome:` has no Windows protocol handler.
+
+    Dispatching it through the shell (webbrowser -> os.startfile -> ShellExecute)
+    raises the "Get an app to open this 'chrome' link" Store picker instead of
+    opening the page, so the URL must be passed to the browser as an argument.
+    """
+    spawned = []
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(admin, "_windows_chrome_exe", lambda: r"C:\chrome.exe")
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: spawned.append(cmd))
+    monkeypatch.setattr(
+        webbrowser,
+        "open",
+        lambda *a, **kw: pytest.fail("chrome:// must never reach the Windows shell"),
+    )
+
+    assert admin._open_chrome_inspect()
+    assert spawned == [[r"C:\chrome.exe", "chrome://inspect/#remote-debugging"]]
+
+
+def test_windows_open_chrome_inspect_reports_failure_without_browser(monkeypatch):
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(admin, "_windows_chrome_exe", lambda: None)
+    monkeypatch.setattr(
+        webbrowser,
+        "open",
+        lambda *a, **kw: pytest.fail("chrome:// must never reach the Windows shell"),
+    )
+
+    assert not admin._open_chrome_inspect()
+
+
+def test_windows_chrome_exe_prefers_env_override(tmp_path, monkeypatch):
+    exe = tmp_path / "chrome.exe"
+    exe.touch()
+    monkeypatch.setenv("BH_CHROME_PATH", str(exe))
+
+    assert admin._windows_chrome_exe() == str(exe)
 
 
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):
