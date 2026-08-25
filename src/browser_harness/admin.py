@@ -815,10 +815,20 @@ def _chrome_running():
     try:
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5)
-            names = ("chrome.exe", "msedge.exe", "helium.exe")
+            names = ("chrome.exe", "msedge.exe", "brave.exe", "helium.exe")
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
+            names = (
+                "Google Chrome",
+                "chrome",
+                "chromium",
+                "Microsoft Edge",
+                "msedge",
+                "Brave Browser",
+                "brave-browser",
+                "brave",
+                "helium",
+            )
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
@@ -837,7 +847,15 @@ _BROWSER_LAUNCH = (
 )
 _DEFAULT_LAUNCH = (
     "Google Chrome",
-    ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "microsoft-edge"),
+    (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+        "brave-browser",
+        "brave",
+        "microsoft-edge",
+    ),
     "chrome",
 )
 
