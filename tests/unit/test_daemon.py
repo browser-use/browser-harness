@@ -1,8 +1,18 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from browser_harness import daemon
+
+
+def test_linux_profile_dirs_include_native_brave_before_edge():
+    profiles = daemon.profile_dirs("Linux")
+    native_brave = Path.home() / ".config/BraveSoftware/Brave-Browser"
+    native_edge = Path.home() / ".config/microsoft-edge"
+
+    assert native_brave in profiles
+    assert profiles.index(native_brave) < profiles.index(native_edge)
 
 
 class _FakeCDP:

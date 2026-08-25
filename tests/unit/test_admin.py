@@ -160,6 +160,34 @@ def test_chrome_running_detects_helium_on_linux(monkeypatch):
     assert admin._chrome_running()
 
 
+@pytest.mark.parametrize("process_name", ["brave", "brave-browser", "Brave Browser"])
+def test_chrome_running_detects_brave_on_linux(monkeypatch, process_name):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: f"systemd\n{process_name}\nxdg-desktop-portal\n",
+    )
+
+    assert admin._chrome_running()
+
+
+def test_chrome_running_detects_brave_on_windows(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "Image Name\nbrave.exe\n",
+    )
+
+    assert admin._chrome_running()
+
+
+def test_default_linux_launch_prefers_brave_before_edge():
+    commands = admin._DEFAULT_LAUNCH[1]
+
+    assert commands.index("brave-browser") < commands.index("microsoft-edge")
+    assert commands.index("brave") < commands.index("microsoft-edge")
+
+
 @pytest.mark.parametrize(
     "path, expected",
     [

@@ -51,6 +51,7 @@ _LINUX_PROFILES = (
     ".config/google-chrome",
     ".config/chromium",
     ".config/chromium-browser",
+    ".config/BraveSoftware/Brave-Browser",
     ".config/microsoft-edge",
     ".config/microsoft-edge-beta",
     ".config/microsoft-edge-dev",
