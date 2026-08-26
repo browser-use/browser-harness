@@ -41,6 +41,26 @@ Go to `/wp-admin/media-new.php`, then CDP `DOM.setFileInputFiles` with multiple 
 
 The `wc-categories` widget renders product-category term thumbnails; empty gray circles mean the terms lack images. Set programmatically without the media modal: open `term.php?taxonomy=product_cat&tag_ID=<N>&post_type=product`, set hidden input `#product_cat_thumbnail_id` to the attachment ID, and `document.getElementById('edittag').submit()`.
 
+## Silent failure modes — the write succeeds, the render ignores it
+
+Never trust a settings write by reading it back; it echoes what you wrote while the page renders something else. **Verify with `getComputedStyle` on the rendered front end.** Four field-tested cases:
+
+1. **`typography_typography:'custom'` with `typography_font_family:''`** emits a typography rule with no `font-family`, so the element silently inherits the theme default while *looking* configured. Audits that hunt for "missing custom typography" skip these. Always set both keys together.
+2. **Responsive hide controls want the device-suffixed value.** `hide_mobile:'hidden'` produces class `elementor-hidden`, which matches no CSS rule anywhere; the correct value is `'hidden-mobile'`. Read the control first: `elementor.getContainer(id).settings.controls.hide_mobile` exposes `prefix_class` and `return_value`. The hiding rule also requires an `.elementor` ancestor.
+3. **`__globals__` outranks the literal value.** A widget carrying `__globals__: {primary_color: "globals/colors?id=accent"}` renders the global color no matter what you write to `primary_color`, and reading the setting back returns your value. Clear the binding alongside the literal: `{__globals__:{primary_color:''}, primary_color:'#...'}`. Applies to any global-bindable control.
+4. **Container responsive widths default to empty, not to the desktop value** — a 25% tile stays 25% on phones unless `width_mobile` is set. The tablet value sometimes stores correctly but emits no CSS; verify, and fall back to a media query in the element's `custom_css` (the `selector` prefix scopes it to the element).
+
+## Global fonts and colors (the kit)
+
+The kit is a document: id at `elementor.config.kit_id`, loaded via `$e.run('panel/global/open')`, then `elementor.documents.get(kitId)`. Edit `system_typography` / `system_colors` / site-wide `custom_css` with `document/elements/settings` on `kit.container` and save with `$e.run('document/save/default', {document: kit})`. For `system_colors`, pass the full array of plain attribute objects, not mutated models — model `.set()` calls don't register as document changes. Two traps:
+
+- **Themes can push Customizer values into the kit's `system_colors` on save**, silently reverting your edits (fonts and custom colors persist, system colors revert). The real lever is then **Customizer → General Colors**, which cascades into Elementor's globals.
+- Before assuming globals do anything, grep the page CSS for `var(--e-global-color-`: pages built with per-widget colors reference the globals zero times, and changing them is invisible there.
+
+## Column containers invert alignment
+
+With `flex-direction: column`, `flex_align_items` is the **horizontal** axis: `center` horizontally centers every child, which presents as "the text block won't left-align." Use `flex_align_items:'flex-start'` plus `flex_justify_content` for vertical placement. Two related traps: containers created via the API default to `row` (an eyebrow + heading + grid stack comes out side-by-side, headings squeezed to a sliver), and boxed containers wrap children in an `.e-con-inner` div, so inspect computed styles there rather than on the outer element.
+
 ## Theme parts and traps
 
 - A widget rendered outside the page content belongs to the document at `el.closest('[data-elementor-id]')` (`dataset.elementorId`/`elementorType`). Ideapark/Goldish themes inject a whole "Footer (pattern)" **page** above the real footer — edit that page, not the footer template.
