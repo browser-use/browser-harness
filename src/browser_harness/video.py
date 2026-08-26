@@ -725,6 +725,10 @@ def run_cli(args: list[str]) -> int:
     export.add_argument("recording", type=Path)
     export.add_argument("--output", default="video.mp4")
     export.add_argument("--reviewed", action="store_true")
+    export.add_argument(
+        "--dub", action="store_true",
+        help="dub the sticky narration text as pt-BR speech via ElevenLabs (needs ELEVENLABS_API_KEY)",
+    )
     parsed = parser.parse_args(args)
     recording = parsed.recording.expanduser().resolve()
     try:
@@ -734,7 +738,7 @@ def run_cli(args: list[str]) -> int:
 
         if parsed.command == "review":
             return video_render.review(recording)
-        return video_render.export(recording, parsed.output, parsed.reviewed)
+        return video_render.export(recording, parsed.output, parsed.reviewed, parsed.dub)
     except (OSError, ValueError, RuntimeError) as exc:
         parser.error(str(exc))
 
