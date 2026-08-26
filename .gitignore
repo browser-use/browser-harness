@@ -4,3 +4,14 @@ __pycache__/
 .env
 uv.lock
 *.egg-info/
+
+# --- harness runtime artifacts (organ 7 trace + gate markers) ---
+.pytest_cache/
+.claude/harness/trace.jsonl
+.claude/harness/.last-verify
+.claude/harness/.session-baseline
+.claude/harness/.stop-attempts
+.claude/harness/.budget
+.claude/harness/.compact-flush
+.claude/harness/backup/
+.claude/settings.local.json

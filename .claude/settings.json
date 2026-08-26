@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(node .claude/harness/verify.mjs:*)",
+      "Bash(node .claude/harness/guardrails.mjs:*)",
+      "Bash(node .claude/harness/validate-skills.mjs:*)",
+      "Bash(node .claude/harness/trace.mjs:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(python -m compileall:*)",
+      "Bash(python3 -m compileall:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python3 -m py_compile:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)"
+    ],
+    "ask": [
+      "Bash(browser-harness:*)",
+      "Bash(python run.py:*)",
+      "Bash(python3 run.py:*)",
+      "Bash(py run.py:*)",
+      "Bash(python daemon.py:*)",
+      "Bash(python3 daemon.py:*)",
+      "Bash(python admin.py:*)",
+      "Bash(python3 admin.py:*)",
+      "PowerShell(browser-harness:*)",
+      "PowerShell(python run.py:*)",
+      "PowerShell(python daemon.py:*)",
+      "PowerShell(python admin.py:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git merge:*)",
+      "Bash(git rebase:*)",
+      "Bash(git tag:*)",
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)",
+      "Bash(python -m pip:*)",
+      "Bash(python3 -m pip:*)",
+      "Bash(uv:*)",
+      "Bash(npm install:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Edit(/pyproject.toml)",
+      "Edit(/CLAUDE.md)",
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/hooks/**)",
+      "Edit(/.claude/harness/*.mjs)",
+      "Edit(/.claude/harness/contract.json)",
+      "Edit(/.claude/harness/contract.md)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Read(**/secrets/**)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Edit(.env)",
+      "Edit(**/secrets/**)",
+      "Edit(/.git/**)",
+      "Edit(**/__pycache__/**)",
+      "Edit(**/*.egg-info/**)",
+      "Bash(rm:*)",
+      "Bash(rmdir:*)",
+      "Bash(sudo:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "PowerShell(Remove-Item:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.mjs"],
+            "timeout": 60,
+            "statusMessage": "Loading harness state..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/pre-tool-use.mjs"],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post-tool-use.mjs"],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/stop.mjs"],
+            "timeout": 120,
+            "statusMessage": "Harness gate: checking verify status..."
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/pre-compact.mjs"],
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

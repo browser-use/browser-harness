@@ -1,0 +1,97 @@
+{
+  "_comment": "MACHINE SOURCE OF TRUTH for the harness. contract.md is the human-readable mirror. Editing this file requires human approval (see .claude/settings.json permissions.ask).",
+  "version": 1,
+  "verify_steps": [
+    "skills",
+    "compile",
+    "tests"
+  ],
+  "definition_of_done": "verify.mjs exits 0 against the current tree, the diff has been reviewed, and state.md is updated. state.md is excluded from the fingerprint, so these three are order-independent.",
+  "max_attempts": 3,
+  "max_tool_calls_per_objective": 25,
+  "forbidden_paths": [
+    "**/.env",
+    "**/.env.*",
+    "!**/.env.example",
+    "**/secrets/**",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.egg-info/**",
+    "**/__pycache__/**",
+    ".git/**",
+    "dist/**",
+    "build/**",
+    "node_modules/**"
+  ],
+  "forbidden_commands": [
+    {
+      "id": "rm-rf",
+      "pattern": "^rm\\s+(-[a-zA-Z]*\\s+)*-[a-zA-Z]*[rR][a-zA-Z]*\\b",
+      "why": "recursive delete",
+      "instead": "move the path into _to_delete/ and tell the human"
+    },
+    {
+      "id": "git-force-push",
+      "pattern": "^git\\s+push\\b.*(--force\\b|--force-with-lease\\b|\\s-f\\b)",
+      "why": "rewrites published history",
+      "instead": "push a new branch and open a PR"
+    },
+    {
+      "id": "git-hard-reset",
+      "pattern": "^git\\s+reset\\b.*--hard\\b",
+      "why": "discards uncommitted work irreversibly",
+      "instead": "git stash, or git restore a specific path"
+    },
+    {
+      "id": "git-clean",
+      "pattern": "^git\\s+clean\\b.*-[a-zA-Z]*[dfx]",
+      "why": "deletes untracked files irreversibly",
+      "instead": "list them with git clean -n and delete deliberately"
+    },
+    {
+      "id": "git-checkout-dot",
+      "pattern": "^git\\s+(checkout|restore)\\s+(--\\s+)?\\.\\s*$",
+      "why": "discards every uncommitted change in the tree",
+      "instead": "restore the specific file you meant"
+    },
+    {
+      "id": "pipe-to-shell",
+      "pattern": "\\b(curl|wget|iwr|Invoke-WebRequest)\\b[^|]*\\|\\s*(sudo\\s+)?(ba|z|d|)?sh\\b",
+      "why": "executes unreviewed remote code",
+      "instead": "download to a file, read it, then run it"
+    },
+    {
+      "id": "publish",
+      "pattern": "^(npm|pnpm|yarn)\\s+publish\\b|^twine\\s+upload\\b|^uv\\s+publish\\b|^python\\s+-m\\s+twine\\b",
+      "why": "irreversible public release",
+      "instead": "ask the human to publish"
+    },
+    {
+      "id": "history-rewrite",
+      "pattern": "^git\\s+(filter-branch|filter-repo)\\b|^git\\s+rebase\\b.*(-i|--interactive)\\b",
+      "why": "rewrites history; interactive rebase cannot run here anyway",
+      "instead": "ask the human"
+    },
+    {
+      "id": "chained-harness-edit",
+      "pattern": "(>|>>)\\s*[^|;&]*\\.claude/(hooks|harness)/",
+      "why": "shell redirection into the harness bypasses the Edit permission rules",
+      "instead": "ask the human to change the contract"
+    },
+    {
+      "id": "nested-shell",
+      "pattern": "^(bash|sh|zsh|dash|pwsh|powershell)\\s+(-[A-Za-z]+\\s+)*-c\\b",
+      "why": "inline shell code is opaque to the per-segment command checks, so a destructive command inside the quoted string is never seen",
+      "instead": "run the command directly, unquoted, so the guardrails can read it"
+    }
+  ],
+  "requires_human_approval": [
+    "any change to pyproject.toml (dependency additions)",
+    "any change to .claude/settings.json, .claude/hooks/**, or .claude/harness/*.mjs",
+    "any invocation that drives the real Chrome profile (run.py, daemon.py, admin.py, browser-harness)",
+    "git commit, git push, and any package install"
+  ],
+  "secrets_source": "environment variables and .env (never read into context; denied by permissions.deny)",
+  "escalation_channel": "stop in-session, write a blocker note into .claude/harness/state.md, hand control back to the human",
+  "_rule_note": "Command rules are anchored to the HEAD of a shell segment (after wrapper stripping), so they match the command being RUN, not the same text appearing as an argument. grep -r \"rm -rf\" docs/ is a search, not a delete, and passes. The two whole-string rules (pipe-to-shell, chained-harness-edit) are deliberately unanchored."
+}

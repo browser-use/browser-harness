@@ -18,3 +18,9 @@ browser-harness = "run:main"
 
 [tool.setuptools]
 py-modules = ["run", "helpers", "daemon", "admin"]
+
+[dependency-groups]
+# Used by the harness verify gate: node .claude/harness/verify.mjs
+dev = [
+    "pytest>=8",
+]
