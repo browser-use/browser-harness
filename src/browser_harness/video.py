@@ -29,17 +29,20 @@ OPAQUE_HEX = re.compile(r"^#[0-9a-f]{6}$", re.IGNORECASE)
 HOUSE_STYLE = {
     "version": 1,
     "frameStyle": "native",
-    "readingWpm": 380,
+    # Tuned down from the upstream 380 (fast-skim) default so cards and narrated beats
+    # play at a natural speaking/watching pace instead of a rushed slideshow — this
+    # fork's videos are meant to be watched with audio, not skimmed silently.
+    "readingWpm": 170,
     "background": ["#efece4", "#dce7e7"],
     "cursorStart": {"x": 700, "y": 280},
     "pacing": {
-        "captionBaseSeconds": 0.35,
-        "captionSecondsPerWord": 0.2,
-        "rawToCardHoldSeconds": 0.55,
-        "baseDurationBudget": 22,
+        "captionBaseSeconds": 0.6,
+        "captionSecondsPerWord": 0.45,
+        "rawToCardHoldSeconds": 0.8,
+        "baseDurationBudget": 40,
         "extraActionSeconds": 1.25,
         "extraExplanationSeconds": 3,
-        "maximumDurationBudget": 32,
+        "maximumDurationBudget": 90,
     },
     "motion": {
         "autoFollow": True,
@@ -259,11 +262,11 @@ def require_matching_viewport(event: dict[str, Any], viewport: dict[str, Any], w
 
 
 def default_action_duration(beat: dict[str, Any], pacing: dict[str, Any]) -> float:
-    base = 0.7
+    base = 1.1
     if beat.get("click"):
-        base = 1.15
+        base = 1.6
     if beat.get("after"):
-        base = max(base, 1.4)
+        base = max(base, 2.0)
     typing = beat.get("type")
     if typing:
         base = max(base, 0.6 + len(str(typing.get("text") or "")) * 0.035)
