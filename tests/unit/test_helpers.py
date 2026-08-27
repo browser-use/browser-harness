@@ -154,8 +154,10 @@ def test_fill_input_raises_when_element_not_found():
             helpers.fill_input("#missing", "hello")
 
 
-def test_fill_input_clear_first_sends_select_all_then_backspace():
-    import sys
+@pytest.mark.parametrize("browser_platform,expected_mod", [("MacIntel", 4), ("Linux x86_64", 2), ("Win32", 2)])
+def test_fill_input_clear_first_sends_select_all_then_backspace(browser_platform, expected_mod, monkeypatch):
+    # modifier follows navigator.platform, not sys.platform -- remote browsers run their own os
+    monkeypatch.setattr(helpers, "_select_all_mods", None)
 
     key_events = []
 
@@ -165,16 +167,15 @@ def test_fill_input_clear_first_sends_select_all_then_backspace():
         return {}
 
     def fake_js(expr, **kwargs):
+        if "navigator.platform" in expr:
+            return browser_platform
         return True  # element found
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):
         helpers.fill_input("#inp", "x", clear_first=True)
 
-    # The "a" must be dispatched with the platform-correct modifier (Meta=4 on
-    # macOS, Ctrl=2 elsewhere). Without the modifier, the field would never get
-    # selected — it would just receive a literal "a".
-    expected_mod = 4 if sys.platform == "darwin" else 2
+    # without the right modifier the field never gets selected -- it just receives a literal "a"
     a_events = [e for e in key_events if e.get("key") == "a"]
     assert a_events, "expected an 'a' key event for select-all"
     assert all(e.get("modifiers") == expected_mod for e in a_events), \

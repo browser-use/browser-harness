@@ -159,11 +159,25 @@ def page_info():
     dialog = _send({"meta": "pending_dialog"}).get("dialog")
     if dialog:
         return {"dialog": dialog}
-    expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
+    # documentElement is briefly null mid-navigation -- guard, don't crash
+    expression = "(()=>{const d=document.documentElement;return JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:d?d.scrollWidth:0,ph:d?d.scrollHeight:0})})()"
     return json.loads(_runtime_evaluate(expression))
 
 # --- input ---
 _debug_click_counter = 0
+_select_all_mods = None
+
+def _select_all_modifiers():
+    """Cmd (4) if the browser runs macOS else Ctrl (2) -- keyed off navigator.platform,
+    not sys.platform, since remote browsers run on their own OS."""
+    global _select_all_mods
+    if _select_all_mods is None:
+        try:
+            platform = str(js("navigator.platform") or "")
+        except Exception:
+            platform = "Mac" if sys.platform == "darwin" else ""
+        _select_all_mods = 4 if "Mac" in platform else 2
+    return _select_all_mods
 
 def click_at_xy(x, y, button="left", clicks=1):
     if os.environ.get("BH_DEBUG_CLICKS"):
@@ -214,10 +228,10 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
         # makes Chrome treat the input as a printable "a" instead of firing the
         # select-all shortcut, leaving the field uncleared.
-        mods = 4 if sys.platform == "darwin" else 2  # Cmd on macOS, Ctrl elsewhere
+        mods = _select_all_modifiers()
         select_all = {"key": "a", "code": "KeyA", "modifiers": mods,
                       "windowsVirtualKeyCode": 65, "nativeVirtualKeyCode": 65}
-        cdp("Input.dispatchKeyEvent", type="rawKeyDown", **select_all)
+        cdp("Input.dispatchKeyEvent", type="rawKeyDown", commands=["selectAll"], **select_all)
         cdp("Input.dispatchKeyEvent", type="keyUp", **select_all)
         press_key("Backspace")
     for ch in text:

@@ -28,6 +28,9 @@ dependencies = [
     "websockets==15.0.1",
 ]
 
+[project.optional-dependencies]
+sdk = ["pydantic>=2.10"]
+
 [project.scripts]
 browser-harness = "browser_harness.run:main"
 
@@ -43,7 +46,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-browser_harness = ["SKILL.md", "video-template.html"]
+browser_harness = ["SKILL.md", "video-template.html", "py.typed"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
