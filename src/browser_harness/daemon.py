@@ -89,8 +89,15 @@ BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 _REMOTE_STOPPED = False
 BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
-# Chrome 144+ shows a per-connection popup. Keep popup open enough to click.
-LOCAL_HANDSHAKE_TIMEOUT = 45
+# Chrome 144+ shows a per-connection popup. The daemon parks its single WS
+# handshake on that popup, so this is how long the popup stays clickable before
+# the daemon gives up. Generous by default — the user may not be looking at
+# Chrome — because every expiry costs a fresh popup on the next attempt.
+# Override with BH_ALLOW_TIMEOUT (seconds); admin.py reads the same variable.
+try:
+    LOCAL_HANDSHAKE_TIMEOUT = int(os.environ.get("BH_ALLOW_TIMEOUT", "600"))
+except ValueError:
+    LOCAL_HANDSHAKE_TIMEOUT = 600
 # How long get_ws_url() keeps waiting for DevToolsActivePort before giving up
 NO_TOGGLE_GRACE = 3
 TOGGLE_BOOT_GRACE = 12
@@ -831,12 +838,52 @@ def already_running():
     return ipc.ping(NAME, timeout=1.0)
 
 
+def _claim_startup_pid():
+    """Atomically claim this daemon name, returning another live owner's PID."""
+    from .admin import _parked_pid
+
+    for _ in range(3):
+        try:
+            fd = os.open(PID, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            owner = _parked_pid(NAME)
+            if owner is not None and owner != os.getpid():
+                return owner
+            try:
+                os.unlink(PID)
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+        return None
+    raise RuntimeError(f"could not claim daemon pid file {PID}")
+
+
+def _release_startup_pid():
+    """Remove only this process's claim, never a replacement daemon's."""
+    try:
+        if Path(PID).read_text(encoding="utf-8").strip() == str(os.getpid()):
+            os.unlink(PID)
+    except FileNotFoundError:
+        pass
+
+
 if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
+    if BROWSER_KIND == "local":
+        _owner = _claim_startup_pid()
+        if _owner is not None:
+            # A sibling daemon is mid-connect — it can't answer pings yet because
+            # it is parked on Chrome's Allow popup. The parent joins that pending
+            # local connection instead of spawning another popup.
+            print(f"daemon {_owner} is already connecting", file=sys.stderr)
+            sys.exit(0)
+    else:
+        open(PID, "w").write(str(os.getpid()))
     open(LOG, "w").close()
-    open(PID, "w").write(str(os.getpid()))
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -846,5 +893,8 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         stop_remote()
-        try: os.unlink(PID)
-        except FileNotFoundError: pass
+        if BROWSER_KIND == "local":
+            _release_startup_pid()
+        else:
+            try: os.unlink(PID)
+            except FileNotFoundError: pass

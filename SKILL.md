@@ -178,7 +178,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 ## Gotchas
 
 - `chrome://inspect/#remote-debugging` must be enabled for local Chrome control.
-- On macOS, if Chrome shows an "Allow remote debugging?" popup, run `browser-harness mac-approve`. Do not poll in a loop — the daemon holds one connection.
+- On macOS, if Chrome shows an "Allow remote debugging?" popup, run `browser-harness mac-approve`; elsewhere ask the user to click Allow. Chrome charges one popup per new CDP connection, and the daemon's single held connection is what makes approval one-time per Chrome run. A pending popup is held open for ~10 minutes (`BH_ALLOW_TIMEOUT`), and retries attach to that same pending connection — a `permission-blocked` error saying the popup is still on screen means exactly that: approve it, then retry the same command. Never call `restart_daemon()` while a popup is pending; that dismisses it and forces a fresh one. Reserve `restart_daemon()` for a genuinely dead connection (e.g. `no close frame received or sent`), and expect the reconnect to cost one approval.
 - Omnibox popups are not real work tabs.
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
