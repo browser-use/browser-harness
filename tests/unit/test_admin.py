@@ -781,6 +781,7 @@ def test_parked_pid_returns_live_pid_from_fresh_pid_file(monkeypatch, tmp_path):
     pid_path = tmp_path / "default.pid"
     pid_path.write_text(str(_os.getpid()))
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+    monkeypatch.setattr(admin, "_harness_daemon_cmdline", lambda pid: True)
 
     assert admin._parked_pid("default") == _os.getpid()
 
@@ -795,6 +796,7 @@ def test_parked_pid_ignores_stale_pid_file(monkeypatch, tmp_path):
     old = admin.time.time() - (admin._ALLOW_POPUP_TIMEOUT + 121)
     _os.utime(pid_path, (old, old))
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+    monkeypatch.setattr(admin, "_harness_daemon_cmdline", lambda pid: True)
 
     assert admin._parked_pid("default") is None
 
@@ -807,6 +809,30 @@ def test_parked_pid_returns_none_for_dead_process(monkeypatch, tmp_path):
     assert admin._parked_pid("default") is None
 
 
+def test_parked_pid_rejects_reused_pid_without_daemon_cmdline(monkeypatch, tmp_path):
+    import os as _os
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text(str(_os.getpid()))
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+    monkeypatch.setattr(admin, "_harness_daemon_cmdline", lambda pid: False)
+
+    assert admin._parked_pid("default") is None
+
+
+def test_harness_daemon_cmdline_checks_windows_process_command(monkeypatch):
+    calls = []
+    monkeypatch.setattr(admin.sys, "platform", "win32")
+    monkeypatch.setattr(
+        admin.subprocess,
+        "check_output",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or b"python.exe -m browser_harness.daemon",
+    )
+
+    assert admin._harness_daemon_cmdline(4242) is True
+    assert "ProcessId = 4242" in calls[0][0][-1]
+
+
 def test_join_parked_daemon_returns_false_when_nothing_parked(monkeypatch):
     monkeypatch.setattr(admin, "_parked_pid", lambda name: None)
 
@@ -814,16 +840,22 @@ def test_join_parked_daemon_returns_false_when_nothing_parked(monkeypatch):
 
 
 def test_join_parked_daemon_returns_true_once_daemon_comes_alive(monkeypatch):
+    now = [0.0]
     alive = iter([False, False, True])
     monkeypatch.setattr(admin, "_parked_pid", lambda name: 4242)
     monkeypatch.setattr(admin, "daemon_alive", lambda name: next(alive))
+    monkeypatch.setattr(admin.time, "time", lambda: now[0])
+    monkeypatch.setattr(admin.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
 
     assert admin._join_parked_daemon("default", wait=10.0) is True
 
 
 def test_join_parked_daemon_raises_permission_blocked_while_popup_pending(monkeypatch):
+    now = [0.0]
     monkeypatch.setattr(admin, "_parked_pid", lambda name: 4242)
     monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin.time, "time", lambda: now[0])
+    monkeypatch.setattr(admin.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
 
     with pytest.raises(RuntimeError) as exc:
         admin._join_parked_daemon("default", wait=0.4)
@@ -837,6 +869,7 @@ def test_join_parked_daemon_falls_through_when_parked_daemon_exits(monkeypatch):
     parked = iter([4242, None])
     monkeypatch.setattr(admin, "_parked_pid", lambda name: next(parked, None))
     monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin.time, "sleep", lambda seconds: None)
 
     assert admin._join_parked_daemon("default", wait=10.0) is False
 
@@ -852,6 +885,33 @@ def test_ensure_daemon_joins_parked_daemon_instead_of_spawning(monkeypatch):
     )
 
     admin.ensure_daemon(name="default")
+
+
+def test_ensure_daemon_restarts_immediately_on_dead_cdp_error(monkeypatch):
+    requests = []
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: (object(), None))
+    monkeypatch.setattr(
+        admin.ipc,
+        "request",
+        lambda sock, token, request: requests.append(request) or {"error": "dead CDP"},
+    )
+    monkeypatch.setattr(admin, "daemon_browser_kind", lambda name=None: "local")
+    monkeypatch.setattr(
+        admin,
+        "restart_daemon",
+        lambda name=None: (_ for _ in ()).throw(RuntimeError("restart reached")),
+    )
+    monkeypatch.setattr(
+        admin.time,
+        "sleep",
+        lambda seconds: (_ for _ in ()).throw(AssertionError("dead CDP probe slept")),
+    )
+
+    with pytest.raises(RuntimeError, match="restart reached"):
+        admin.ensure_daemon(name="default")
+
+    assert len(requests) == 1
 
 
 def test_restart_daemon_sigterms_parked_daemon_with_verified_cmdline(monkeypatch, tmp_path):

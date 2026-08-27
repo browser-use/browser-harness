@@ -361,7 +361,9 @@ def _parked_pid(name=None):
         return None
     if pid <= 0 or age > _ALLOW_POPUP_TIMEOUT + 120:
         return None
-    return pid if _process_start_time(pid) is not None else None
+    if _process_start_time(pid) is None or not _harness_daemon_cmdline(pid):
+        return None
+    return pid
 
 
 def _harness_daemon_cmdline(pid):
@@ -379,9 +381,21 @@ def _harness_daemon_cmdline(pid):
                 ["ps", "-o", "command=", "-p", str(pid)],
                 stderr=subprocess.DEVNULL, timeout=2,
             ).decode("utf-8", "replace")
+        elif sys.platform == "win32":
+            raw = subprocess.check_output(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+                ],
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+            ).decode("utf-8", "replace")
         else:
             return False
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
     return "browser_harness.daemon" in raw
 
@@ -440,13 +454,19 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         # pay a restart (= another popup) for what was just a busy browser.
         probe_timeouts = (3.0, 6.0, 10.0)
         for i, timeout in enumerate(probe_timeouts):
+            s = None
             try:
                 s, token = ipc.connect(name or NAME, timeout=timeout)
                 resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
                 if "result" in resp: return
                 if "error" in resp: break
-            except Exception:
+            except (OSError, ValueError):
                 pass
+            finally:
+                if s is not None:
+                    close = getattr(s, "close", None)
+                    if close:
+                        close()
             if i < len(probe_timeouts) - 1: time.sleep(0.5)
         browser_kind = daemon_browser_kind(name)
         if browser_kind in {"cloud", None}:

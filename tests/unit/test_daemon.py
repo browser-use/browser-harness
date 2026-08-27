@@ -5,6 +5,26 @@ import pytest
 from browser_harness import daemon
 
 
+def test_claim_startup_pid_is_single_flight(monkeypatch, tmp_path):
+    pid_path = tmp_path / "default.pid"
+    monkeypatch.setattr(daemon, "PID", str(pid_path))
+    monkeypatch.setattr(daemon, "NAME", "default")
+
+    assert daemon._claim_startup_pid() is None
+    monkeypatch.setattr("browser_harness.admin._parked_pid", lambda name: 4242)
+    assert daemon._claim_startup_pid() == 4242
+
+
+def test_release_startup_pid_preserves_replacement_claim(monkeypatch, tmp_path):
+    pid_path = tmp_path / "default.pid"
+    pid_path.write_text("4242")
+    monkeypatch.setattr(daemon, "PID", str(pid_path))
+
+    daemon._release_startup_pid()
+
+    assert pid_path.read_text() == "4242"
+
+
 @pytest.mark.parametrize(
     ("url", "label"),
     [
