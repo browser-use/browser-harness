@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+import asyncio, http.client, json, os, platform, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -210,20 +210,23 @@ def _local_page_target_status(ws_url):
         ):
             return None
         host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        port = parsed.port
     except (OSError, TypeError, ValueError):
         return None
-    endpoint = f"http://{host}:{parsed.port}/json/list"
+    endpoint = f"http://{host}:{port}/json/list"
     for attempt in range(3):
         try:
             targets = json.loads(urllib.request.urlopen(endpoint, timeout=1).read())
-        except (OSError, TypeError, ValueError):
+        except (http.client.HTTPException, OSError, TypeError, ValueError):
             return None
         if not isinstance(targets, list):
             return None
-        if any(
-            isinstance(target, dict) and target.get("type") == "page"
+        if not all(
+            isinstance(target, dict) and isinstance(target.get("type"), str)
             for target in targets
         ):
+            return None
+        if any(target["type"] == "page" for target in targets):
             return True
         if attempt < 2:
             time.sleep(0.2)

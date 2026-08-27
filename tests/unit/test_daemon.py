@@ -75,6 +75,7 @@ def test_local_page_target_status_allows_page_to_appear_during_startup(monkeypat
     [
         "wss://remote.example/devtools/browser/id",
         "not-a-websocket-url",
+        "ws://127.0.0.1:bad/devtools/browser/id",
     ],
 )
 def test_local_page_target_status_skips_non_loopback_or_invalid_urls(
@@ -94,6 +95,50 @@ def test_local_page_target_status_is_unknown_when_probe_fails(monkeypatch):
         daemon.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+    )
+
+    assert daemon._local_page_target_status(
+        "ws://127.0.0.1:9222/devtools/browser/browser-id"
+    ) is None
+
+
+def test_local_page_target_status_is_unknown_for_malformed_http(monkeypatch):
+    monkeypatch.setattr(
+        daemon.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            daemon.http.client.BadStatusLine("malformed")
+        ),
+    )
+
+    assert daemon._local_page_target_status(
+        "ws://127.0.0.1:9222/devtools/browser/browser-id"
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        [{}],
+        [{"type": 7}],
+        ["page"],
+        [{"type": "page"}, {}],
+    ],
+)
+def test_local_page_target_status_is_unknown_for_malformed_targets(
+    monkeypatch, targets
+):
+    class Response:
+        def read(self):
+            return daemon.json.dumps(targets).encode()
+
+    monkeypatch.setattr(
+        daemon.urllib.request, "urlopen", lambda *_args, **_kwargs: Response()
+    )
+    monkeypatch.setattr(
+        daemon.time,
+        "sleep",
+        lambda _seconds: pytest.fail("malformed targets must fail open immediately"),
     )
 
     assert daemon._local_page_target_status(
