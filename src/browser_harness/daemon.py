@@ -197,6 +197,39 @@ def _safe_connection_label(url):
         return "<redacted-cdp-endpoint>"
 
 
+def _local_page_target_status(ws_url):
+    """Return whether local Chrome exposes a page, or None if unknown.
+
+    Require consecutive empty results so a just-launched Chrome has time to
+    publish its first page target after the DevTools port becomes reachable.
+    """
+    try:
+        parsed = urlparse(ws_url)
+        if parsed.scheme != "ws" or parsed.hostname not in (
+            "127.0.0.1", "localhost", "::1"
+        ):
+            return None
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    except (OSError, TypeError, ValueError):
+        return None
+    endpoint = f"http://{host}:{parsed.port}/json/list"
+    for attempt in range(3):
+        try:
+            targets = json.loads(urllib.request.urlopen(endpoint, timeout=1).read())
+        except (OSError, TypeError, ValueError):
+            return None
+        if not isinstance(targets, list):
+            return None
+        if any(
+            isinstance(target, dict) and target.get("type") == "page"
+            for target in targets
+        ):
+            return True
+        if attempt < 2:
+            time.sleep(0.2)
+    return False
+
+
 async def _silent(coro):
     try:
         await coro
@@ -577,6 +610,11 @@ class Daemon:
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
+        if BROWSER_KIND == "local" and _local_page_target_status(url) is False:
+            raise RuntimeError(
+                "chrome-windowless: Chrome has no open window -- open a Chrome window "
+                "(or relaunch without --no-startup-window), then retry"
+            )
         log(f"connecting to {_safe_connection_label(url)}")
         self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
         if BROWSER_KIND == "local":
