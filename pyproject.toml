@@ -23,10 +23,12 @@ classifiers = [
 ]
 dependencies = [
     "cdp-use==1.4.5",
-    "fetch-use==0.4.0",
     "pillow==12.3.0",
     "websockets==15.0.1",
 ]
+
+[project.optional-dependencies]
+cloud = ["fetch-use==0.4.0"]
 
 [project.scripts]
 browser-harness = "browser_harness.run:main"
