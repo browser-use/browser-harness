@@ -967,6 +967,42 @@ def _profile_directory_args(base):
     return [f"--profile-directory={last}"]
 
 
+def _display_less_linux(system):
+    """True on a Linux host with no way to show a browser window."""
+    return system == "Linux" and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    )
+
+
+def _headless_server_launch(binary):
+    """Connectable launch command for a display-less Linux host.
+
+    A bare spawn on a server never opens a DevTools port or writes
+    ``DevToolsActivePort`` into a profile dir the daemon scans, so discovery
+    waits out its deadline and reports chrome-not-running even though a
+    working browser binary was configured. Launching headless with remote
+    debugging on the dedicated harness profile dir -- first entry in the
+    Linux ``PROFILES`` scan list -- lets the normal discovery loop attach
+    with no changes elsewhere, keeps harness launches out of real desktop
+    profiles, and sidesteps Chrome's refusal to open a DevTools port on a
+    browser's default data directory.
+    ``--remote-debugging-port=0`` avoids port collisions; the daemon reads
+    the ephemeral port back from ``DevToolsActivePort``.
+    """
+    profile = Path.home() / ".config" / "chrome-harness"
+    args = [
+        str(binary),
+        "--headless",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--remote-debugging-port=0",
+        f"--user-data-dir={profile}",
+        "about:blank",
+    ]
+    return args, profile
+
+
 def _launch_browser():
     """Prefers the browser whose profile already has perm box checked.
 
@@ -983,11 +1019,19 @@ def _launch_browser():
         base for base in PROFILES if base not in enabled and (base / "Local State").exists()
     ]
     system = platform.system()
+    headless_server = _display_less_linux(system)
     for key in ("BH_CHROME_PATH", "CHROME_PATH"):
         raw = (os.environ.get(key) or "").strip()
         if raw and Path(raw).expanduser().is_file():
             try:
                 binary = Path(raw).expanduser()
+                if headless_server:
+                    args, headless_profile = _headless_server_launch(binary)
+                    process = subprocess.Popen(
+                        args,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
+                    )
+                    return process, headless_profile
                 process = subprocess.Popen(
                     [str(binary)],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),

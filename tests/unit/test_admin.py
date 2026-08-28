@@ -77,6 +77,7 @@ def test_explicit_chrome_path_retains_matching_profile_on_linux(monkeypatch, tmp
     other_key = "CHROME_PATH" if env_key == "BH_CHROME_PATH" else "BH_CHROME_PATH"
     monkeypatch.setenv(env_key, str(binary))
     monkeypatch.delenv(other_key, raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
     monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
     monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: False)
@@ -127,11 +128,69 @@ def test_explicit_unknown_browser_path_remains_unowned(monkeypatch, tmp_path):
 
     monkeypatch.setenv("BH_CHROME_PATH", str(binary))
     monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
     monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
     monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: process)
 
     assert admin._launch_browser() == (process, None)
+
+
+def test_explicit_chrome_path_launches_connectable_on_displayless_linux(monkeypatch, tmp_path):
+    binary = tmp_path / "chrome-headless-shell"
+    binary.touch()
+    process = FakeProcess()
+    captured = []
+
+    def fake_popen(args, **_kwargs):
+        captured.append(args)
+        return process
+
+    monkeypatch.setenv("BH_CHROME_PATH", str(binary))
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [])
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    launch = admin._launch_browser()
+
+    expected_profile = Path.home() / ".config" / "chrome-harness"
+    assert launch == (process, expected_profile)
+    args = captured[0]
+    assert args[0] == str(binary)
+    assert "--headless" in args
+    assert "--remote-debugging-port=0" in args
+    assert f"--user-data-dir={expected_profile}" in args
+
+
+@pytest.mark.parametrize("env_key, env_value", [("DISPLAY", ":0"), ("WAYLAND_DISPLAY", "wayland-0")])
+def test_explicit_chrome_path_stays_bare_when_linux_has_a_display(monkeypatch, tmp_path, env_key, env_value):
+    binary = tmp_path / "custom-browser"
+    binary.touch()
+    process = FakeProcess()
+    captured = []
+
+    def fake_popen(args, **_kwargs):
+        captured.append(args)
+        return process
+
+    monkeypatch.setenv("BH_CHROME_PATH", str(binary))
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv(env_key, env_value)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [])
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    launch = admin._launch_browser()
+
+    assert launch == (process, None)
+    assert captured[0] == [str(binary)]
 
 
 @pytest.mark.parametrize("value", ["0", "false", "NO", " off "])
