@@ -83,18 +83,42 @@ def test_goto_url_omits_domain_skills_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("BH_DOMAIN_SKILLS", raising=False)
     monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
     _seed_skill(tmp_path)
-    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}):
+    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}), \
+         patch("browser_harness.helpers.js", return_value="https://www.example.com/"):
         result = helpers.goto_url("https://www.example.com/")
-    assert result == {"frameId": "f"}
+    assert result == {"frameId": "f", "requested": "https://www.example.com/", "landed": "https://www.example.com/"}
 
 
 def test_goto_url_includes_domain_skills_when_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_DOMAIN_SKILLS", "1")
     monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
     _seed_skill(tmp_path)
-    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}):
+    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}), \
+         patch("browser_harness.helpers.js", return_value="https://www.example.com/"):
         result = helpers.goto_url("https://www.example.com/")
-    assert result == {"frameId": "f", "domain_skills": ["scraping.md"]}
+    assert result == {"frameId": "f", "requested": "https://www.example.com/", "landed": "https://www.example.com/",
+                      "domain_skills": ["scraping.md"]}
+
+
+def test_goto_url_raises_when_chrome_reports_navigation_failed():
+    with patch("browser_harness.helpers.cdp", return_value={"errorText": "net::ERR_NAME_NOT_RESOLVED"}):
+        with pytest.raises(RuntimeError, match="net::ERR_NAME_NOT_RESOLVED"):
+            helpers.goto_url("https://nope.invalid/")
+
+
+def test_goto_url_raises_when_landing_on_error_page():
+    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}), \
+         patch("browser_harness.helpers.js", return_value="chrome-error://chromewebdata/"):
+        with pytest.raises(RuntimeError, match="error page"):
+            helpers.goto_url("https://www.example.com/")
+
+
+def test_goto_url_reports_where_a_redirect_landed():
+    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}), \
+         patch("browser_harness.helpers.js", return_value="https://www.example.com/login"):
+        result = helpers.goto_url("https://www.example.com/account")
+    assert result["requested"] == "https://www.example.com/account"
+    assert result["landed"] == "https://www.example.com/login"
 
 
 def test_page_info_raises_clear_error_on_js_exception():

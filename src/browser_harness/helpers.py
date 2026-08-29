@@ -144,7 +144,14 @@ def _is_illegal_return_error(exc):
 
 # --- navigation / page ---
 def goto_url(url):
+    """Navigate the attached tab; returns {requested, landed, frameId, loaderId}.
+    Raises when Chrome reports the navigation failed — a download URL fails with
+    net::ERR_ABORTED, as in Puppeteer — or when it lands on an error page."""
     r = cdp("Page.navigate", url=url)
+    if err := r.get("errorText"): raise RuntimeError(f"goto_url: navigation to {url} failed: {err}")
+    landed = js("location.href")
+    if landed.startswith("chrome-error://"): raise RuntimeError(f"goto_url: navigation to {url} landed on an error page: {landed}")
+    r = {**r, "requested": url, "landed": landed}
     if os.environ.get("BH_DOMAIN_SKILLS") != "1":
         return r
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
