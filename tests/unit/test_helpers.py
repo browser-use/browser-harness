@@ -225,7 +225,7 @@ def test_set_value_sets_and_fires_events_in_one_call():
     expr = js_exprs[0]
     assert '"#i"' in expr and '"hello"' in expr
     assert "input" in expr and "change" in expr
-    assert expr.index("e.focus()") < expr.index("s.call(e,v)")
+    assert expr.index("s.call(e,v)") < expr.index("e.focus()") < expr.index("dispatchEvent")
 
 
 def test_set_value_raises_when_element_not_found():

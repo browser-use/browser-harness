@@ -237,11 +237,12 @@ def set_value(selector, value):
     # e.focus() matters for the recorder, which masks password text by the active element's type.
     result = js(
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
-        f"if(!e)return null;e.focus();const v={json.dumps(value)};"
+        f"if(!e)return null;const v={json.dumps(value)};"
         f"const p=e instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype"
         f":e instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLInputElement.prototype;"
         f"const s=Object.getOwnPropertyDescriptor(p,'value')?.set;"
         f"if(s)s.call(e,v);else e.value=v;"
+        f"e.focus();"
         f"e.dispatchEvent(new Event('input',{{bubbles:true}}));"
         f"e.dispatchEvent(new Event('change',{{bubbles:true}}));"
         f"return e.value;}})()"
