@@ -364,18 +364,19 @@ def new_tab(url="about:blank"):
     # polls and wait_for_load() returns before navigation actually starts.
     if url != "about:blank":
         try:
-            cur = current_tab()
-            cur_url = cur.get("url") or ""
-            # Reuse attached tab when it's blank
-            if (
-                cur_url in ("", "about:blank", "data:text/html,")
-                or cur_url.startswith("about:blank#")
-                or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
-            ):
-                goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
+            cur = current_tab() or {}
         except Exception:
-            pass
+            cur = {}
+        cur_url = cur.get("url") or ""
+        # Reuse attached tab when it's blank. A failed navigation must propagate;
+        # retrying in a new target would leak the first tab and repeat the request.
+        if (
+            cur_url in ("", "about:blank", "data:text/html,")
+            or cur_url.startswith("about:blank#")
+            or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
+        ):
+            goto_url(url)
+            return cur.get("targetId") or cur.get("target_id")
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":

@@ -490,3 +490,28 @@ def test_new_tab_reuses_an_empty_data_document(monkeypatch):
 
     assert helpers.new_tab("https://example.com") == "target-placeholder"
     assert calls == [("goto_url", "https://example.com")]
+
+
+def test_new_tab_does_not_retry_failed_navigation_in_a_second_tab(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        helpers,
+        "current_tab",
+        lambda: {"targetId": "target-placeholder", "url": "about:blank"},
+    )
+
+    def fail_navigation(url):
+        calls.append(("goto_url", url))
+        raise RuntimeError("navigation failed")
+
+    monkeypatch.setattr(helpers, "goto_url", fail_navigation)
+    monkeypatch.setattr(
+        helpers,
+        "cdp",
+        lambda method, **kwargs: calls.append((method, kwargs)) or {},
+    )
+
+    with pytest.raises(RuntimeError, match="navigation failed"):
+        helpers.new_tab("https://nope.invalid")
+
+    assert calls == [("goto_url", "https://nope.invalid")]
