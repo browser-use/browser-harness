@@ -886,3 +886,95 @@ def test_process_start_time_returns_none_for_invalid_pid():
         )
     # 2**31 - 1 is the largest pid_t; in practice no live process at that PID.
     assert admin._process_start_time((1 << 31) - 1) is None
+
+
+# --- run_update: PyPI installs are not always uv installs (#688) ---
+
+
+def _stub_update_preamble(monkeypatch, mode="pypi"):
+    """Get run_update() to the install-mode branch and stop before the daemon."""
+    monkeypatch.setattr(admin, "check_for_update", lambda: ("0.1.9", "0.1.10", True))
+    monkeypatch.setattr(admin, "_install_mode", lambda: mode)
+    monkeypatch.setattr(admin, "_cache_read", lambda: {})
+    monkeypatch.setattr(admin, "_cache_write", lambda _data: None)
+    monkeypatch.setattr(admin, "daemon_alive", lambda: False)
+
+
+def test_pypi_upgrade_prefers_uv_when_present(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
+    assert admin._pypi_upgrade_command() == ["uv", "tool", "upgrade", "browser-harness"]
+
+
+def test_pypi_upgrade_falls_back_to_pip_without_uv(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(admin, "_pip_available", lambda: True)
+    command = admin._pypi_upgrade_command()
+    assert command[1:] == ["-m", "pip", "install", "--upgrade", "browser-harness"]
+    assert command[0] == admin.sys.executable
+
+
+def test_pypi_upgrade_is_none_without_uv_or_pip(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(admin, "_pip_available", lambda: False)
+    assert admin._pypi_upgrade_command() is None
+
+
+def test_run_update_uses_pip_when_uv_is_missing(monkeypatch, capsys):
+    """The reported crash: `uv` absent made subprocess.run raise FileNotFoundError."""
+    _stub_update_preamble(monkeypatch)
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(admin, "_pip_available", lambda: True)
+    ran = []
+
+    def fake_run(command, *_args, **_kwargs):
+        ran.append(command)
+        if command[:2] == ["uv", "tool"]:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(admin.subprocess, "run", fake_run)
+
+    assert admin.run_update(yes=True) == 0
+    assert ran == [
+        [admin.sys.executable, "-m", "pip", "install", "--upgrade", "browser-harness"]
+    ]
+    assert "update complete." in capsys.readouterr().out
+
+
+def test_run_update_reports_missing_upgrader_instead_of_crashing(monkeypatch, capsys):
+    _stub_update_preamble(monkeypatch)
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(admin, "_pip_available", lambda: False)
+
+    assert admin.run_update(yes=True) == 1
+    assert "neither uv nor pip is available" in capsys.readouterr().err
+
+
+def test_run_update_survives_a_stale_path_entry(monkeypatch, capsys):
+    """which() can resolve a binary that is gone or unexecutable by the time we run it."""
+    _stub_update_preamble(monkeypatch)
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
+
+    def fake_run(_command, *_args, **_kwargs):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(admin.subprocess, "run", fake_run)
+
+    assert admin.run_update(yes=True) == 1
+    err = capsys.readouterr().err
+    assert "could not run `uv tool upgrade browser-harness`" in err
+    assert "Permission denied" in err
+
+
+def test_run_update_points_pip_users_at_pip_when_uv_upgrade_fails(monkeypatch, capsys):
+    """`uv tool upgrade` cannot upgrade a pip install, so say so."""
+    _stub_update_preamble(monkeypatch)
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
+    monkeypatch.setattr(
+        admin.subprocess, "run", lambda *_a, **_k: type("R", (), {"returncode": 2})()
+    )
+
+    assert admin.run_update(yes=True) == 2
+    err = capsys.readouterr().err
+    assert "upgrade failed" in err
+    assert "-m pip install --upgrade browser-harness" in err

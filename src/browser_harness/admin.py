@@ -1194,6 +1194,29 @@ def _prompt_yes(question, default_yes=True, yes=False):
     return ans.startswith("y")
 
 
+def _pip_available():
+    import importlib.util
+
+    return importlib.util.find_spec("pip") is not None
+
+
+def _pypi_upgrade_command():
+    """Command that can upgrade a wheel install, or None when nothing can.
+
+    install.md documents `uv tool install`, so uv stays the first choice when it
+    is on PATH. It is not always there — browser-harness is a normal PyPI
+    package and pip and pipx install it just as well — so fall back to pip
+    against the interpreter that is actually running us.
+    """
+    import shutil
+
+    if shutil.which("uv"):
+        return ["uv", "tool", "upgrade", "browser-harness"]
+    if _pip_available():
+        return [sys.executable, "-m", "pip", "install", "--upgrade", "browser-harness"]
+    return None
+
+
 def run_update(yes=False):
     """Pull the latest version and (after prompt) restart the daemon so it picks up changed code.
 
@@ -1227,8 +1250,33 @@ def run_update(yes=False):
         if r.returncode != 0:
             return r.returncode
     elif mode == "pypi":
-        tool_upgrade = subprocess.run(["uv", "tool", "upgrade", "browser-harness"])
+        command = _pypi_upgrade_command()
+        if command is None:
+            print(
+                "can't auto-update: neither uv nor pip is available. Install uv "
+                "(https://docs.astral.sh/uv/) or reinstall browser-harness with pip.",
+                file=sys.stderr,
+            )
+            return 1
+        printable = " ".join(command)
+        try:
+            tool_upgrade = subprocess.run(command)
+        except OSError as e:
+            # shutil.which() said the binary was there; PATH can still be stale,
+            # or the file can be unexecutable. Never surface this as a traceback.
+            print(f"could not run `{printable}`: {e}", file=sys.stderr)
+            return 1
         if tool_upgrade.returncode != 0:
+            print(f"upgrade failed: `{printable}`", file=sys.stderr)
+            if command[0] == "uv":
+                # uv tool upgrade only manages packages from `uv tool install`,
+                # so this is the expected failure for a pip install on a box
+                # that happens to have uv.
+                print(
+                    "if you installed browser-harness with pip, upgrade with:\n"
+                    f"  {sys.executable} -m pip install --upgrade browser-harness",
+                    file=sys.stderr,
+                )
             return tool_upgrade.returncode
     else:
         print("unknown install mode; can't auto-update.", file=sys.stderr)
