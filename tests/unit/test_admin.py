@@ -1,3 +1,4 @@
+import json
 import signal
 from pathlib import Path
 
@@ -970,3 +971,74 @@ def test_doctor_still_fails_with_no_browser_and_no_connection(monkeypatch, capsy
 
     assert admin.run_doctor() == 1
     assert "[FAIL] chrome running" in capsys.readouterr().out
+
+
+def _doctor_json_env(monkeypatch, chrome_running, browser_ready):
+    monkeypatch.setattr(admin, "_chrome_running", lambda: chrome_running)
+    monkeypatch.setattr(admin, "daemon_browser_ready", lambda _name: browser_ready)
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: True)
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.10")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "pypi")
+
+
+def test_doctor_json_counts_a_live_connection_as_chrome_running(monkeypatch, capsys):
+    """Both doctor surfaces must mean the same thing by "chrome running".
+
+    run_doctor() treats a live CDP connection as proof; without the same rule
+    here, the same machine reported `[ok  ] chrome running` in text and
+    `"chrome_running": false` in JSON.
+    """
+    _doctor_json_env(monkeypatch, chrome_running=False, browser_ready=True)
+
+    assert admin.run_doctor_json() == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["chrome_running"] is True
+    assert report["healthy"] is True
+
+
+def test_doctor_json_reports_no_browser_without_a_connection(monkeypatch, capsys):
+    _doctor_json_env(monkeypatch, chrome_running=False, browser_ready=False)
+
+    assert admin.run_doctor_json() == 1
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["chrome_running"] is False
+    assert report["healthy"] is False
+
+
+def test_doctor_json_strict_still_reports_no_browser_probe(monkeypatch, capsys):
+    """Strict mode probes only the named daemon, so chrome_running stays null."""
+    _doctor_json_env(monkeypatch, chrome_running=False, browser_ready=True)
+    monkeypatch.setattr(
+        admin, "_chrome_running", lambda: pytest.fail("strict mode must not probe processes")
+    )
+
+    assert admin.run_doctor_json(require_existing_daemon=True) == 0
+
+    assert json.loads(capsys.readouterr().out)["chrome_running"] is None
+
+
+def test_both_doctor_surfaces_agree_on_the_same_machine(monkeypatch, capsys):
+    """The contradiction this guards: text says ok, JSON says false."""
+    monkeypatch.setattr(admin, "_chrome_running", lambda: False)
+    monkeypatch.setattr(admin, "daemon_alive", lambda *_a: True)
+    monkeypatch.setattr(admin, "daemon_browser_ready", lambda _name: True)
+    monkeypatch.setattr(
+        admin, "browser_connections",
+        lambda: [{"name": "default", "page": {"title": "T", "url": "https://example.com"}}],
+    )
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.10")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "pypi")
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: "0.1.10")
+    monkeypatch.setattr(admin, "_doctor_probe_chrome_binary_for_snap", lambda: (None, None))
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+
+    admin.run_doctor()
+    text_ok = "[ok  ] chrome running" in capsys.readouterr().out
+
+    admin.run_doctor_json()
+    json_ok = json.loads(capsys.readouterr().out)["chrome_running"]
+
+    assert text_ok is json_ok is True

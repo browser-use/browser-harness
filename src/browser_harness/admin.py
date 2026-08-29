@@ -1105,6 +1105,21 @@ def _open_chrome_inspect_once():
         pass
 
 
+def _browser_running(live_connection):
+    """Is a browser running? A live CDP connection settles it on its own.
+
+    Better evidence than a process-name match: it covers the browsers the name
+    probe cannot safely spot (Arc, Dia and Comet have profile dirs but names too
+    common to substring-match — "arc" matches "searchd") and a Chrome launched
+    from an unusual path. Without it, `--doctor` could print a FAIL directly
+    above the attached page it had just listed.
+
+    Shared by both doctor surfaces so `--doctor` and `doctor --json` cannot
+    disagree about what "chrome running" means on the same machine.
+    """
+    return _chrome_running() or bool(live_connection)
+
+
 def run_doctor():
     """Read-only diagnostics. Exit 0 iff everything looks healthy."""
     import platform, sys
@@ -1112,12 +1127,7 @@ def run_doctor():
     mode = _install_mode()
     daemon = daemon_alive()
     connections = browser_connections()
-    # A live CDP connection proves a browser is running, and proves it better
-    # than a process-name match: it covers the browsers the name probe cannot
-    # safely spot (Arc, Dia, Comet) and a Chrome launched from an unusual path.
-    # Without this, doctor could print a FAIL directly above the attached page
-    # it had just listed. run_doctor_json() already scores browser_ready first.
-    chrome = _chrome_running() or bool(connections)
+    chrome = _browser_running(connections)
     try:
         auth_state = auth.auth_status()
     except (auth.AuthError, OSError) as e:
@@ -1173,9 +1183,12 @@ def run_doctor_json(require_existing_daemon=False):
     connection; it never starts, repairs, or discovers another daemon.
     """
     strict = bool(require_existing_daemon)
-    chrome = None if strict else _chrome_running()
     browser_ready = daemon_browser_ready(NAME)
     daemon = browser_ready or daemon_alive(NAME)
+    # Same rule the text doctor uses; browser_ready is this surface's live
+    # connection. Strict mode still reports None — it deliberately probes
+    # nothing but the named daemon.
+    chrome = None if strict else _browser_running(browser_ready)
     healthy = (daemon and browser_ready) if strict else (browser_ready or (chrome and daemon))
     report = {
         "schema_version": 1,
