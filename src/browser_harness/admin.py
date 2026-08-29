@@ -1117,7 +1117,7 @@ def _browser_running(live_connection):
     Shared by both doctor surfaces so `--doctor` and `doctor --json` cannot
     disagree about what "chrome running" means on the same machine.
     """
-    return _chrome_running() or bool(live_connection)
+    return bool(live_connection) or _chrome_running()
 
 
 def run_doctor():
