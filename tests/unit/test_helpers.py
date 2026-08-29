@@ -209,6 +209,33 @@ def test_fill_input_no_clear_skips_ctrl_a():
     assert "Backspace" not in keys_seen
 
 
+# --- set_value ---
+
+def test_set_value_sets_and_fires_events_in_one_call():
+    js_exprs = []
+
+    def fake_js(expr, **kwargs):
+        js_exprs.append(expr)
+        return "hello"
+
+    with patch("browser_harness.helpers.js", side_effect=fake_js):
+        assert helpers.set_value("#i", "hello") == "hello"
+
+    assert len(js_exprs) == 1
+    expr = js_exprs[0]
+    assert '"#i"' in expr and '"hello"' in expr
+    assert "input" in expr and "change" in expr
+
+
+def test_set_value_raises_when_element_not_found():
+    def fake_js(expr, **kwargs):
+        return None  # element not found
+
+    with patch("browser_harness.helpers.js", side_effect=fake_js):
+        with pytest.raises(RuntimeError, match="element not found"):
+            helpers.set_value("#missing", "hello")
+
+
 # --- wait_for_element ---
 
 def test_wait_for_element_returns_true_when_found_immediately():

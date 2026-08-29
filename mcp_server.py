@@ -41,6 +41,7 @@ from browser_harness.helpers import (
     page_info,
     press_key,
     scroll,
+    set_value,
     start_recording,
     stop_recording,
     switch_tab,
@@ -171,6 +172,12 @@ def browser_fill(selector: str, text: str, clear_first: bool = True):
     """Fill an input matched by `selector` with `text`."""
     fill_input(selector, text, clear_first=clear_first)
     return {"ok": True}
+
+
+@_tool
+def browser_set_value(selector: str, value: str):
+    """Set a field matched by `selector` to `value` in one round trip; returns the value read back."""
+    return {"value": set_value(selector, value)}
 
 
 @_tool

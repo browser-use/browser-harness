@@ -27,6 +27,7 @@ tools with a `browser_` prefix:
 - `browser_click`
 - `browser_type`
 - `browser_fill`
+- `browser_set_value`
 - `browser_press`
 - `browser_scroll`
 - `browser_screenshot`

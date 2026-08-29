@@ -87,7 +87,7 @@ EXPLANATION_KEYS = {
     "mistake",
     "correction",
 }
-TYPE_HELPERS = {"type_text", "fill", "fill_input"}
+TYPE_HELPERS = {"type_text", "fill", "fill_input", "set_value"}
 CLICK_HELPERS = {"click_at_xy"}
 REDACTION_KEYS = {"x", "y", "w", "h", "fill", "stroke", "radius", "pad"}
 VIEWPORT_TOLERANCE = 2
