@@ -391,9 +391,12 @@ def error_class(exc):
 
     Closed set of reply classes: session_stale, cdp_disconnected, cdp_error
     (CDP failures); unauthorized, not_attached, shutting_down, internal (daemon-side)."""
-    # cdp_use raises a CDP error response as RuntimeError({"code": .., "message": ..})
-    msg = str(exc.args[0].get("message", "")) if exc.args and isinstance(exc.args[0], dict) else str(exc)
-    if "Session with given id not found" in msg:
+    # cdp_use raises a CDP error response as RuntimeError({"code": .., "message": ..}).
+    # Chrome's stable session-not-found code is primary; keep the message match
+    # only for older/alternate clients that discard the structured payload.
+    payload = exc.args[0] if exc.args and isinstance(exc.args[0], dict) else {}
+    msg = str(payload.get("message", "")) if payload else str(exc)
+    if payload.get("code") == -32001 or "Session with given id not found" in msg:
         return "session_stale"
     # in-flight calls get ConnectionError when the socket closes; later sends raise websockets' ConnectionClosed
     if isinstance(exc, (ConnectionError, ConnectionClosed)) or "connection closed" in msg or "Client is not started" in msg:

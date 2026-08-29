@@ -780,7 +780,8 @@ def test_explicit_stale_session_is_not_redirected():
 @pytest.mark.parametrize(
     ("exc", "cls"),
     [
-        (RuntimeError({"code": -32001, "message": "Session with given id not found."}), "session_stale"),
+        (RuntimeError({"code": -32001, "message": "Target session expired"}), "session_stale"),
+        (RuntimeError("Session with given id not found."), "session_stale"),
         (ConnectionError("WebSocket connection closed"), "cdp_disconnected"),
         (ConnectionClosedError(None, None), "cdp_disconnected"),
         (RuntimeError("Client is not started. Call start() first"), "cdp_disconnected"),
