@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, sys, time, urllib.request
+import base64, codecs, importlib.util, json, math, os, re, sys, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -521,8 +521,48 @@ def upload_file(selector, path):
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
 
+# Charset from an HTML <meta> tag, in either of the two spellings the HTML spec
+# allows. Only the head of the document is scanned, which is where both must appear.
+_META_CHARSET = re.compile(
+    rb"""<meta[^>]+?charset\s*=\s*["']?\s*([a-zA-Z0-9_\-:.]+)""",
+    re.IGNORECASE,
+)
+_META_PRESCAN_BYTES = 2048
+
+
+def _response_encoding(data, response_headers):
+    """Encoding a response's bytes are actually in.
+
+    Resolution order follows the HTML spec: a BOM wins outright, then the
+    Content-Type charset, then a <meta charset> in the head, then UTF-8. Skipping
+    the last two would leave the common case — a legacy page that declares gbk or
+    shift_jis in markup and says nothing in its headers — silently mojibaked.
+    """
+    if data.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig"
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16"
+    declared = response_headers.get_content_charset() if response_headers else None
+    if not declared:
+        match = _META_CHARSET.search(data[:_META_PRESCAN_BYTES])
+        if match:
+            declared = match.group(1).decode("ascii", errors="replace")
+    if not declared:
+        return "utf-8"
+    try:  # a bogus or misspelled charset must not take the whole fetch down
+        codecs.lookup(declared)
+    except LookupError:
+        return "utf-8"
+    return declared
+
+
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.
+
+    Decoded using the encoding the response declares (BOM, Content-Type charset,
+    then <meta charset>), falling back to UTF-8. Undecodable bytes become U+FFFD
+    rather than raising — a page with a few replacement characters is more useful
+    than a traceback.
 
     When BROWSER_USE_API_KEY is set, routes through the fetch-use proxy (handles bot
     detection, residential proxies, retries). Falls back to local urllib otherwise."""
@@ -538,7 +578,7 @@ def http_get(url, headers=None, timeout=20.0):
     with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
-        return data.decode()
+        return data.decode(_response_encoding(data, r.headers), errors="replace")
 
 
 # Imported at the bottom so recorder's own `from . import helpers` sees a
