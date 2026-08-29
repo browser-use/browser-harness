@@ -104,7 +104,7 @@ def _harness_command() -> list[str]:
 
 
 def run_harness(code: str, timeout: float = 60) -> dict:
-    env = {**os.environ, "BH_RECORD": "0"}
+    env = {**os.environ, "BH_RECORD": "0", "BH_MAX_OUTPUT": "0"}
     proc = subprocess.run(
         _harness_command(),
         input=code,
