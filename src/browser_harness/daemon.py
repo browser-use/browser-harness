@@ -167,6 +167,20 @@ def browser_running_for_profile(base):
         return True  # pid exists but belongs to another user
 
 
+# Process names for the Chromium-family browsers whose profiles PROFILES scans.
+# Matched as case-insensitive substrings, so "chrome" also covers "Google Chrome"
+# and "chromium" covers "chromium-browser".
+#
+# Arc, Dia and Comet have entries in _MAC_PROFILES but are deliberately absent
+# here: their names are too short or too common to substring-match safely — "dia"
+# alone matches any process with "media" in its name. On macOS they are detected
+# via SingletonLock below, and run_doctor() falls back to a live CDP connection.
+BROWSER_PROCESSES_WINDOWS = ("chrome.exe", "msedge.exe", "chromium.exe", "brave.exe", "helium.exe")
+BROWSER_PROCESSES_POSIX = (
+    "Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "brave", "helium",
+)
+
+
 def supported_browser_running():
     """Is any browser whose profile we scan actually running?"""
     if platform.system() == "Windows":
@@ -176,7 +190,7 @@ def supported_browser_running():
             out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5).lower()
         except Exception:
             return True  # can't tell — assume running so recovery stays on the popup/toggle path
-        return any(n in out for n in ("chrome.exe", "msedge.exe", "chromium.exe", "brave.exe", "helium.exe"))
+        return any(n in out for n in BROWSER_PROCESSES_WINDOWS)
     return any(browser_running_for_profile(base) for base in PROFILES)
 
 

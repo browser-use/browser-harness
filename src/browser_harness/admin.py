@@ -898,16 +898,24 @@ def print_update_banner(out=None):
 
 
 def _chrome_running():
-    """Cross-platform best-effort check for a running Chromium-based browser."""
+    """Cross-platform best-effort check for a running Chromium-based browser.
+
+    Shares its process names with daemon.supported_browser_running(). They used
+    to be two hand-maintained lists, and doctor's had drifted: it was missing
+    Brave on both platforms and Chromium on Windows, so users of browsers the
+    harness happily drives were told to "start chrome/edge".
+    """
     import platform, subprocess
+    from .daemon import BROWSER_PROCESSES_POSIX, BROWSER_PROCESSES_WINDOWS
+
     system = platform.system()
     try:
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5)
-            names = ("chrome.exe", "msedge.exe", "helium.exe")
+            names = BROWSER_PROCESSES_WINDOWS
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
+            names = BROWSER_PROCESSES_POSIX
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
@@ -1102,9 +1110,14 @@ def run_doctor():
     import platform, sys
     cur = _version()
     mode = _install_mode()
-    chrome = _chrome_running()
     daemon = daemon_alive()
     connections = browser_connections()
+    # A live CDP connection proves a browser is running, and proves it better
+    # than a process-name match: it covers the browsers the name probe cannot
+    # safely spot (Arc, Dia, Comet) and a Chrome launched from an unusual path.
+    # Without this, doctor could print a FAIL directly above the attached page
+    # it had just listed. run_doctor_json() already scores browser_ready first.
+    chrome = _chrome_running() or bool(connections)
     try:
         auth_state = auth.auth_status()
     except (auth.AuthError, OSError) as e:
