@@ -543,7 +543,12 @@ def _response_encoding(data, response_headers):
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return "utf-16"
     declared = response_headers.get_content_charset() if response_headers else None
-    if not declared:
+    media_type = response_headers.get_content_type() if response_headers else None
+    if not declared and (
+        not response_headers
+        or response_headers.get("Content-Type") is None
+        or media_type in ("text/html", "application/xhtml+xml")
+    ):
         match = _META_CHARSET.search(data[:_META_PRESCAN_BYTES])
         if match:
             declared = match.group(1).decode("ascii", errors="replace")
