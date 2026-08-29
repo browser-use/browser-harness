@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, sys, time, urllib.request
+import base64, importlib.util, json, logging, math, os, sys, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,6 +14,7 @@ from . import paths
 CORE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CORE_DIR.parent.parent
 AGENT_WORKSPACE = paths.workspace_dir()
+_LOG = logging.getLogger(__name__)
 
 
 def _load_env():
@@ -501,7 +502,7 @@ def js(expression, target_id=None):
     finally:
         if sid:
             try: cdp("Target.detachFromTarget", sessionId=sid)
-            except Exception: pass
+            except Exception as e: _LOG.warning("js: failed to detach target session %s: %s", sid, e)
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}

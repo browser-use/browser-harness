@@ -506,6 +506,20 @@ def test_js_detaches_iframe_session_on_js_exception():
     assert ("Target.detachFromTarget", {"sessionId": "S"}) in calls
 
 
+def test_js_reports_detach_failure_without_masking_result(caplog):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        if method == "Target.detachFromTarget":
+            raise RuntimeError("detach failed")
+        return _js_cdp(calls, {"result": {"value": 1}})(method, **kwargs)
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        assert helpers.js("1", target_id="T") == 1
+
+    assert "failed to detach target session S: detach failed" in caplog.text
+
+
 def test_js_without_target_id_neither_attaches_nor_detaches():
     calls = []
     with patch("browser_harness.helpers.cdp", side_effect=_js_cdp(calls, {"result": {"value": 1}})):
