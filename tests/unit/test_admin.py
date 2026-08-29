@@ -958,7 +958,10 @@ def test_run_update_retries_with_pip_when_uv_does_not_manage_this_install(monkey
     assert ran == [UV, [admin.sys.executable, *PIP]]
 
     err = capsys.readouterr().err
-    assert "upgrade failed: `uv tool upgrade browser-harness`" in err
+    # The run succeeded, so nothing here may read as a failure: uv declining a
+    # pip install is the expected route to the pip candidate.
+    assert "upgrade failed" not in err
+    assert "`uv tool upgrade browser-harness` could not upgrade this install" in err
     assert "retrying with" in err
 
 
@@ -970,7 +973,10 @@ def test_run_update_retries_with_pip_when_the_uv_path_entry_is_stale(monkeypatch
 
     assert admin.run_update(yes=True) == 0
     assert ran == [UV, [admin.sys.executable, *PIP]]
-    assert "could not run `uv tool upgrade browser-harness`" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "could not run `uv tool upgrade browser-harness`" in err
+    assert "retrying with" in err
+    assert "upgrade failed" not in err
 
 
 def test_run_update_stops_at_uv_when_it_succeeds(monkeypatch):
@@ -993,22 +999,28 @@ def test_run_update_uses_pip_when_uv_is_missing(monkeypatch, capsys):
     assert "update complete." in capsys.readouterr().out
 
 
-def test_run_update_returns_the_last_failure_when_every_candidate_fails(monkeypatch):
+def test_run_update_returns_the_last_failure_when_every_candidate_fails(monkeypatch, capsys):
     _stub_update_preamble(monkeypatch)
     _available(monkeypatch, uv=True, pip=True)
     ran = _record_runs(monkeypatch, {"uv": 2, "pip": 3})
 
     assert admin.run_update(yes=True) == 3
     assert len(ran) == 2
+    # Only the final candidate gets to call itself an error.
+    err = capsys.readouterr().err
+    assert err.count("upgrade failed") == 1
+    assert "upgrade failed: `uv" not in err
 
 
-def test_run_update_keeps_uv_failure_when_there_is_no_pip_to_retry(monkeypatch):
+def test_run_update_keeps_uv_failure_when_there_is_no_pip_to_retry(monkeypatch, capsys):
     _stub_update_preamble(monkeypatch)
     _available(monkeypatch, uv=True, pip=False)
     ran = _record_runs(monkeypatch, {"uv": 2})
 
     assert admin.run_update(yes=True) == 2
     assert ran == [UV]
+    # Last candidate, nothing left to try: this one really is a failure.
+    assert "upgrade failed" in capsys.readouterr().err
 
 
 def test_run_update_reports_missing_upgrader_instead_of_crashing(monkeypatch, capsys):

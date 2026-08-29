@@ -1225,7 +1225,14 @@ def _pypi_upgrade_commands():
 
 
 def _run_upgrade(commands):
-    """Run upgrade candidates until one succeeds. 0 on success, else the last failure."""
+    """Run upgrade candidates until one succeeds. 0 on success, else the last failure.
+
+    A candidate falling over while others remain is not the upgrade failing, so
+    it reads as a retry note. uv declining a pip install is the expected route
+    to the pip candidate, and calling that "upgrade failed" on a run that then
+    succeeds and exits 0 just teaches readers to distrust the output. Only the
+    last candidate gets to call itself an error.
+    """
     last = 1
     for index, command in enumerate(commands):
         printable = " ".join(command)
@@ -1233,17 +1240,17 @@ def _run_upgrade(commands):
             last = subprocess.run(command).returncode
         except OSError as e:
             # shutil.which() said the binary was there; PATH can still be stale,
-            # or the file can be unexecutable. Treat it like any other failure:
-            # report it, then try the next candidate. Never let it surface as a
-            # traceback.
-            print(f"could not run `{printable}`: {e}", file=sys.stderr)
-            last = 1
+            # or the file can be unexecutable. Never let it surface as a traceback.
+            problem, last = f"could not run `{printable}` ({e})", 1
         else:
             if last == 0:
                 return 0
-            print(f"upgrade failed: `{printable}`", file=sys.stderr)
-        if index + 1 < len(commands):
-            print(f"retrying with `{' '.join(commands[index + 1])}`", file=sys.stderr)
+            problem = f"`{printable}` could not upgrade this install"
+        remaining = commands[index + 1:]
+        if remaining:
+            print(f"{problem}; retrying with `{' '.join(remaining[0])}`", file=sys.stderr)
+        else:
+            print(f"upgrade failed: {problem}", file=sys.stderr)
     return last
 
 
