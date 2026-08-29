@@ -25,8 +25,8 @@ def test_stream_tail_cap_spills_overflow(monkeypatch, tmp_path):
     monkeypatch.setattr(run.ipc, "_TMP", tmp_path)
     out = StringIO()
     tail = run._StreamTail(out, cap=5)
-    tail.write("abc")
-    tail.write("defgh")
+    assert tail.write("abc") == 3
+    assert tail.write("defgh") == 5
     tail.finish()
 
     spill, = tmp_path.glob("output-*.txt")
@@ -77,6 +77,7 @@ def test_bh_max_output_zero_disables_cap(monkeypatch):
 
 def test_cap_applies_only_to_scripts(monkeypatch, tmp_path):
     monkeypatch.setattr(run.ipc, "_TMP", tmp_path)
+    monkeypatch.setenv("BH_MAX_OUTPUT", "not-an-integer")
     stdout = StringIO()
     with patch.object(sys, "argv", ["browser-harness", "--version"]), \
          patch("browser_harness.run._version", return_value="v" * 30000), \
@@ -85,6 +86,15 @@ def test_cap_applies_only_to_scripts(monkeypatch, tmp_path):
 
     assert stdout.getvalue() == "v" * 30000 + "\n"
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("value", ["not-an-integer", "-1"])
+def test_invalid_bh_max_output_is_rejected_for_scripts(monkeypatch, value):
+    monkeypatch.setenv("BH_MAX_OUTPUT", value)
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("print('unreachable')")), \
+         pytest.raises(SystemExit, match="BH_MAX_OUTPUT must be a non-negative integer"):
+        run.main()
 
 
 def test_require_existing_daemon_never_auto_starts(monkeypatch):

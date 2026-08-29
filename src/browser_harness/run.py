@@ -205,6 +205,7 @@ class _StreamTail:
 
     def write(self, text):
         text = str(text)
+        accepted = len(text)
         room = max(self._cap - self.length, 0) if self._cap is not None else len(text)
         self.length += len(text)
         self.tail = (self.tail + text)[-self._limit :]
@@ -213,7 +214,8 @@ class _StreamTail:
                 self._spill = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", errors="replace", prefix="output-", suffix=".txt", dir=ipc._TMP, delete=False)
             self._spill.write(text[room:])
             text = text[:room]
-        return self._wrapped.write(text)
+        written = self._wrapped.write(text)
+        return None if written is None else written + accepted - len(text)
 
     def finish(self):
         if self._spill is None:
@@ -233,6 +235,21 @@ def _read_task(args):
     code = sys.stdin.read()
     sys.stdin = StringIO(code)
     return code
+
+
+def _stdout_cap(task):
+    if not task:
+        return None
+    value = os.environ.get("BH_MAX_OUTPUT")
+    if not value:
+        return _MAX_OUTPUT_LENGTH
+    try:
+        cap = int(value)
+    except ValueError:
+        raise SystemExit("BH_MAX_OUTPUT must be a non-negative integer") from None
+    if cap < 0:
+        raise SystemExit("BH_MAX_OUTPUT must be a non-negative integer")
+    return cap or None
 
 
 def _traced_steps():
@@ -261,8 +278,7 @@ def main():
     command = _telemetry_command(args)
     task = _read_task(args)
     stderr_tail = _StreamTail(sys.stderr)
-    cap = int(os.environ.get("BH_MAX_OUTPUT") or _MAX_OUTPUT_LENGTH) or None
-    stdout_tail = _StreamTail(sys.stdout, limit=_MAX_OUTPUT_LENGTH, cap=cap if task else None)
+    stdout_tail = _StreamTail(sys.stdout, limit=_MAX_OUTPUT_LENGTH, cap=_stdout_cap(task))
     sys.stderr = stderr_tail
     sys.stdout = stdout_tail
     try:
