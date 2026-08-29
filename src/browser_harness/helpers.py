@@ -498,6 +498,10 @@ def js(expression, target_id=None):
         if _is_illegal_return_error(e):
             return _runtime_evaluate(_wrap_js_function(expression), session_id=sid, await_promise=True)
         raise
+    finally:
+        if sid:
+            try: cdp("Target.detachFromTarget", sessionId=sid)
+            except Exception: pass
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}

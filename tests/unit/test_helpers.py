@@ -466,3 +466,49 @@ def test_new_tab_reuses_an_empty_data_document(monkeypatch):
 
     assert helpers.new_tab("https://example.com") == "target-placeholder"
     assert calls == [("goto_url", "https://example.com")]
+
+
+# --- js ---
+
+def _js_cdp(calls, evaluate):
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "S"}
+        if method == "Runtime.evaluate":
+            return evaluate
+        return {}
+    return fake_cdp
+
+
+def test_js_detaches_iframe_session_after_evaluate():
+    calls = []
+    with patch("browser_harness.helpers.cdp", side_effect=_js_cdp(calls, {"result": {"value": 1}})):
+        assert helpers.js("1", target_id="T") == 1
+
+    methods = [m for m, _ in calls]
+    assert ("Target.attachToTarget", {"targetId": "T", "flatten": True}) in calls
+    assert ("Target.detachFromTarget", {"sessionId": "S"}) in calls
+    assert calls[methods.index("Runtime.evaluate")][1]["session_id"] == "S"
+    assert methods.index("Target.detachFromTarget") > methods.index("Runtime.evaluate")
+
+
+def test_js_detaches_iframe_session_on_js_exception():
+    calls = []
+    failed = {
+        "result": {"type": "object", "subtype": "error", "description": "ReferenceError: x is not defined"},
+        "exceptionDetails": {"text": "Uncaught", "lineNumber": 0, "columnNumber": 0},
+    }
+    with patch("browser_harness.helpers.cdp", side_effect=_js_cdp(calls, failed)):
+        with pytest.raises(RuntimeError, match="ReferenceError"):
+            helpers.js("x", target_id="T")
+
+    assert ("Target.detachFromTarget", {"sessionId": "S"}) in calls
+
+
+def test_js_without_target_id_neither_attaches_nor_detaches():
+    calls = []
+    with patch("browser_harness.helpers.cdp", side_effect=_js_cdp(calls, {"result": {"value": 1}})):
+        assert helpers.js("1") == 1
+
+    assert [m for m, _ in calls] == ["Runtime.evaluate"]
