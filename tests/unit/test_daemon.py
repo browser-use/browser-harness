@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from websockets.exceptions import ConnectionClosedError
 
 from browser_harness import daemon
 
@@ -52,7 +53,7 @@ def test_shutdown_keeps_daemon_alive_when_cloud_stop_fails(monkeypatch):
 
     response = asyncio.run(d.handle({"meta": "shutdown"}))
 
-    assert response == {"error": "billing stop failed"}
+    assert response == {"error": "billing stop failed", "class": "internal"}
     assert d.stop.is_set() is False
 
 
@@ -343,7 +344,7 @@ def test_current_tab_meta_returns_not_attached_when_no_target_id():
 
     result = asyncio.run(d.handle({"meta": "current_tab"}))
 
-    assert result == {"error": "not_attached"}
+    assert result == {"error": "not_attached", "class": "not_attached"}
     # No CDP call should have been issued.
     assert d.cdp.calls == []
 
@@ -770,7 +771,22 @@ def test_explicit_stale_session_is_not_redirected():
         "session_id": "explicit-stale-session",
     }))
 
-    assert result == {"error": "Session with given id not found"}
+    assert result == {"error": "Session with given id not found", "class": "session_stale"}
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+@pytest.mark.parametrize(
+    ("exc", "cls"),
+    [
+        (RuntimeError({"code": -32001, "message": "Session with given id not found."}), "session_stale"),
+        (ConnectionError("WebSocket connection closed"), "cdp_disconnected"),
+        (ConnectionClosedError(None, None), "cdp_disconnected"),
+        (RuntimeError("Client is not started. Call start() first"), "cdp_disconnected"),
+        (RuntimeError({"code": -32000, "message": "No node with given id found"}), "cdp_error"),
+        (RuntimeError({"code": -32000, "message": "Tracing is not started"}), "cdp_error"),
+    ],
+)
+def test_error_class_types_cdp_client_failures(exc, cls):
+    assert daemon.error_class(exc) == cls
