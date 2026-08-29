@@ -540,6 +540,8 @@ def _response_encoding(data, response_headers):
     """
     if data.startswith(codecs.BOM_UTF8):
         return "utf-8-sig"
+    if data.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return "utf-32"
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return "utf-16"
     declared = response_headers.get_content_charset() if response_headers else None
