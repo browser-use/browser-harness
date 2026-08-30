@@ -1,10 +1,17 @@
 import json
 import os
+import shutil
 import subprocess
 
 import pytest
 
 from browser_harness import _tab_marker
+
+
+requires_bun = pytest.mark.skipif(
+    shutil.which("bun") is None,
+    reason="Bun is required to execute marker JavaScript",
+)
 
 
 def _evaluate(expression, title, applications=1):
@@ -38,6 +45,7 @@ def test_marker_uses_exact_daemon_name():
     assert _tab_marker.marker_suffix("research-7f3a") == " | 🐴 [research-7f3a]"
 
 
+@requires_bun
 @pytest.mark.parametrize(
     ("title", "expected"),
     [
@@ -54,6 +62,7 @@ def test_marker_expression_is_suffix_idempotent(title, expected):
     ]
 
 
+@requires_bun
 @pytest.mark.parametrize(
     ("title", "expected"),
     [
