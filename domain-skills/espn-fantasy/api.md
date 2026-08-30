@@ -189,6 +189,94 @@ No auth, so run it as plain parallel HTTP rather than through the browser —
 ~570 players in about 5 seconds with a `ThreadPoolExecutor`. Skip negative ids
 (team defenses have no athlete record).
 
+## Driving the draft room UI
+
+The room is at `/football/draft?leagueId=...&teamId=...`. It only exists from
+roughly an hour before the draft; before that the URL redirects to the fantasy
+home page. To develop against it earlier, use the **league-specific practice
+draft** in `/football/mockdraftlobby` — same settings, auto opponents, and it is
+listed as "Practice Draft" next to your league name.
+
+**Practice and mock drafts do NOT report to the API.** `mDraftDetail` shows
+`made: 0` while the practice room is visibly in round 9. So a practice room can
+only validate UI mechanics; anything that polls the API has to be tested against
+a real draft.
+
+### The player pool is a virtualized FixedDataTable
+
+Every cell is an independently positioned `<div>`; **there is no row element
+containing both the player name and the action button**, so `closest('tr')` and
+any DOM-climbing approach returns nothing. Associate a button with its player by
+**vertical position** instead:
+
+```python
+# cells in the same visual row share a Y centre
+same_row = abs(name_cell.y_center - button.y_center) < 14
+```
+
+Two refinements that matter:
+- Take the name from `[class*="player-column"]` specifically. The news and
+  injury-status icons sit between the name and the button, so "nearest cell to
+  the left" picks up a tooltip instead of a player.
+- Scope candidates to the **same FixedDataTable root** (`fixedDataTableLayout_main`).
+  The pick-queue and roster panels share vertical positions with pool rows, and
+  without scoping you will match a name from a different panel — which means
+  clicking DRAFT on the wrong player.
+
+### Buttons
+
+Each pool row has a `QUEUE` button. When you are on the clock those become
+`DRAFT` buttons (plus one extra `DRAFT` in the "You are on the clock!" banner —
+exclude it, it has no player name).
+
+Filter the list first with `input[placeholder="Player Name"]`, setting the value
+through the native setter so React notices:
+
+```python
+set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set
+set.call(input, name); input.dispatchEvent(new Event('input',{bubbles:true}))
+```
+
+**The pool re-renders a beat AFTER your turn starts.** Checking once at the
+moment the clock flips finds only the banner button and no identifiable rows.
+Retry for a couple of seconds before concluding the pick cannot be made.
+
+### Autopick
+
+`.on-autopick` present means autopick is on, and **autopick hides the queue and
+draft controls entirely** — if the buttons are missing, this is why. There is a
+"Disable Autopick" button.
+
+**ESPN silently re-enables autopick after you miss a pick.** Re-check it every
+poll, not just at startup, or the rest of the draft quietly goes to ESPN's own
+rankings.
+
+### Budget the clock
+
+The pick clock is short (90s in a normal league) and every probe costs a search
+plus a re-render wait. Probing 25 players at ~3s each spends 65s and the turn is
+gone before anything is clicked.
+
+Only the **first** probe of a turn needs to be patient — that is the one racing
+the post-turn re-render. Every probe after it can be a single check at ~0.7s.
+Give the whole walk a hard budget (30s works) and spend what is left on reading
+the board directly.
+
+### Last resort: read the board, do not trust your state
+
+Rather than failing when your idea of who is available disagrees with the room,
+enumerate the rows that actually have DRAFT buttons, match them against your own
+rankings, and take the best one. Measured at **under one second**, and it cannot
+fail while the page renders. With the API deliberately stale for an entire
+rehearsal draft this produced a sensible pick every single time.
+
+### The pick queue is the safety net
+
+ESPN drafts from your pick queue when the clock expires. Keeping the queue
+loaded with your ranked choices means a hung script, a dead browser, or an
+absent user still produces your pick rather than ESPN's default. Queue state is
+readable from `.pick-queue`.
+
 ## Traps
 
 - **`SWID` without `espn_s2` means logged out.** Anonymous visitors get a SWID.
