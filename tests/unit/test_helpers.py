@@ -515,3 +515,26 @@ def test_new_tab_does_not_retry_failed_navigation_in_a_second_tab(monkeypatch):
         helpers.new_tab("https://nope.invalid")
 
     assert calls == [("goto_url", "https://nope.invalid")]
+
+
+def test_new_tab_creates_a_fresh_target_when_current_tab_is_unknown(monkeypatch):
+    calls = []
+
+    def current_tab_failed():
+        raise RuntimeError("not attached")
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {"targetId": "target-new"} if method == "Target.createTarget" else {}
+
+    monkeypatch.setattr(helpers, "current_tab", current_tab_failed)
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "switch_tab", lambda target: calls.append(("switch_tab", target)))
+    monkeypatch.setattr(helpers, "goto_url", lambda url: calls.append(("goto_url", url)))
+
+    assert helpers.new_tab("https://example.com") == "target-new"
+    assert calls == [
+        ("Target.createTarget", {"url": "about:blank", "background": True}),
+        ("switch_tab", "target-new"),
+        ("goto_url", "https://example.com"),
+    ]

@@ -363,14 +363,15 @@ def new_tab(url="about:blank"):
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
     if url != "about:blank":
+        cur = None
         try:
-            cur = current_tab() or {}
+            cur = current_tab()
         except Exception:
-            cur = {}
-        cur_url = cur.get("url") or ""
+            pass
+        cur_url = (cur.get("url") or "") if isinstance(cur, dict) else None
         # Reuse attached tab when it's blank. A failed navigation must propagate;
         # retrying in a new target would leak the first tab and repeat the request.
-        if (
+        if cur_url is not None and (
             cur_url in ("", "about:blank", "data:text/html,")
             or cur_url.startswith("about:blank#")
             or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
