@@ -29,6 +29,50 @@ def test_max_dim_default_is_no_resize(fake_png):
     assert _run(fake_png, 4592, 2286) == (4592, 2286)
 
 
+def test_send_keeps_connect_timeout_short_and_sets_response_budget():
+    class FakeSocket:
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+        def close(self):
+            pass
+
+    socket = FakeSocket()
+    with patch("browser_harness.helpers.ipc.connect", return_value=(socket, None)) as connect, \
+         patch("browser_harness.helpers.ipc.request", return_value={}):
+        helpers._send({"meta": "ping"}, response_timeout=60.0)
+
+    connect.assert_called_once_with(helpers.NAME, timeout=helpers.IPC_CONNECT_TIMEOUT_SECONDS)
+    assert socket.timeouts == [60.0]
+
+
+def test_screenshot_uses_long_response_timeout_without_forwarding_it_to_cdp(fake_png, tmp_path):
+    with patch(
+        "browser_harness.helpers._send",
+        return_value={"result": {"data": fake_png(800, 400)}},
+    ) as send:
+        helpers.capture_screenshot(str(tmp_path / "shot.png"))
+
+    request = send.call_args.args[0]
+    assert request == {
+        "method": "Page.captureScreenshot",
+        "params": {"format": "png", "captureBeyondViewport": False},
+        "session_id": None,
+    }
+    assert send.call_args.kwargs == {
+        "response_timeout": helpers.SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS
+    }
+
+
+def test_screenshot_timeout_has_context(tmp_path):
+    with patch("browser_harness.helpers._send", side_effect=helpers._IPCResponseTimeout):
+        with pytest.raises(RuntimeError, match="Page.captureScreenshot timed out after 60s"):
+            helpers.capture_screenshot(str(tmp_path / "shot.png"))
+
+
 def _seed_skill(tmp_path):
     site = tmp_path / "domain-skills" / "example"
     site.mkdir(parents=True)
@@ -377,3 +421,75 @@ def test_wait_for_network_idle_filters_events_to_active_session():
         "session filter, the background rWS/lF pair would have updated "
         "last_activity and prevented the idle window from elapsing."
     )
+
+
+def test_switch_tab_keeps_visible_tab_unchanged_by_default(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    assert helpers.switch_tab({"target_id": "target-new"}) == "session-new"
+    assert not any(method == "Target.activateTarget" for method, _ in calls)
+
+
+def test_switch_tab_can_explicitly_activate_visible_tab(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    assert helpers.switch_tab("target-new", activate=True) == "session-new"
+    assert ("Target.activateTarget", {"targetId": "target-new"}) in calls
+
+
+def test_new_tab_creates_and_attaches_in_background(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            return {"targetId": "target-new"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    assert helpers.new_tab() == "target-new"
+    assert ("Target.createTarget", {"url": "about:blank", "background": True}) in calls
+    assert not any(method == "Target.activateTarget" for method, _ in calls)
+
+
+def test_new_tab_reuses_an_empty_data_document(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        helpers,
+        "current_tab",
+        lambda: {"targetId": "target-placeholder", "url": "data:text/html,"},
+    )
+    monkeypatch.setattr(helpers, "goto_url", lambda url: calls.append(("goto_url", url)))
+    monkeypatch.setattr(
+        helpers,
+        "cdp",
+        lambda method, **kwargs: calls.append((method, kwargs)) or {},
+    )
+
+    assert helpers.new_tab("https://example.com") == "target-placeholder"
+    assert calls == [("goto_url", "https://example.com")]

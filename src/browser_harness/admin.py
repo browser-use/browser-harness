@@ -241,6 +241,11 @@ def _daemon_browser_connection(name):
             c.close()
 
 
+def daemon_browser_ready(name=None):
+    """Whether the selected daemon has a healthy attached browser connection."""
+    return _daemon_browser_connection(name or NAME) is not None
+
+
 def browser_connections():
     """Live browser-harness daemons with healthy CDP browser connections and their attached page."""
     out = []
@@ -348,11 +353,21 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             except Exception:
                 pass
             if not last: time.sleep(0.5)
-        restart_daemon(name)
+        browser_kind = daemon_browser_kind(name)
+        if browser_kind in {"cloud", None}:
+            # A stale Cloud daemon still owns a billable browser. Its shutdown
+            # handler stops that browser before acknowledging, and stays alive
+            # when the Cloud stop fails so a later call can retry cleanup. Treat
+            # an unknown kind the same way: the health failure that made the
+            # daemon stale may also prevent classification, and replacing an
+            # unclassified daemon best-effort could orphan a Cloud browser.
+            stop_remote_daemon(name or NAME)
+        else:
+            restart_daemon(name)
 
     import subprocess, sys
     local = _is_local_chrome_mode(env)
-    launched_browser = False
+    launched_browser = None
     opened_inspect = False
     for _ in range(3):
         e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
@@ -370,10 +385,20 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         deadline = spawned + wait
         hinted = not local
         while time.time() < deadline:
-            if daemon_alive(name): return
+            if daemon_alive(name):
+                _cleanup_unattached_browser_launch(launched_browser)
+                return
             if p.poll() is not None: break
             if not hinted and time.time() - spawned > 2 and (_log_tail(name) or "").startswith("handshake-wait"):
-                print('browser-harness: Chrome is asking "Allow remote debugging?" — click Allow to continue.', file=sys.stderr)
+                action = (
+                    "run `browser-harness mac-approve` in another shell or click Allow"
+                    if sys.platform == "darwin"
+                    else "click Allow"
+                )
+                print(
+                    f'browser-harness: Chrome is asking "Allow remote debugging?" — {action} to continue.',
+                    file=sys.stderr,
+                )
                 hinted = True
             time.sleep(0.2)
         msg = _log_tail(name) or ""
@@ -388,11 +413,11 @@ def ensure_daemon(wait=60.0, name=None, env=None):
             raise RuntimeError(
                 "permission-blocked: wait for the user to click Allow in the Chrome permission popup before retrying."
             )
-        if local and not launched_browser and _chrome_not_running(msg):
+        if local and launched_browser is None and _chrome_not_running(msg):
             # Chrome is closed — launch the browser and retry
-            launched_browser = True
             restart_daemon(name)
-            if not _launch_browser():
+            launched_browser = _launch_browser()
+            if launched_browser is None:
                 raise RuntimeError(
                     "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
                 )
@@ -428,6 +453,28 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check {ipc.log_path(name or NAME)}")
 
 
+def require_existing_daemon(name=None):
+    """Require a healthy existing daemon without spawning or reconnecting.
+
+    Trusted orchestrators use this after they provision a scoped CDP transport.
+    Failing closed prevents a later CLI call from silently discovering a
+    different local Chrome when that orchestrator-owned daemon dies.
+    """
+    daemon_name = name or NAME
+    if not daemon_alive(daemon_name):
+        raise RuntimeError(f"required daemon {daemon_name!r} is not running")
+    try:
+        s, token = ipc.connect(daemon_name, timeout=3.0)
+        try:
+            resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+        finally:
+            s.close()
+    except Exception as exc:
+        raise RuntimeError(f"required daemon {daemon_name!r} is unhealthy: {exc}") from exc
+    if not isinstance(resp, dict) or "result" not in resp:
+        raise RuntimeError(f"required daemon {daemon_name!r} failed its CDP health check")
+
+
 def stop_remote_daemon(name="remote"):
     """Stop a remote daemon and its backing Browser Use cloud browser.
 
@@ -439,15 +486,18 @@ def stop_remote_daemon(name="remote"):
     # restarts anything on its own; a follow-up `browser-harness`
     # call would auto-spawn a fresh one via ensure_daemon(). That
     # "run-it-again-to-restart" workflow is why it was named that way.
-    restart_daemon(name)
+    restart_daemon(name, require_clean=True)
 
 
-def restart_daemon(name=None):
+def restart_daemon(name=None, require_clean=False):
     """Best-effort daemon shutdown + socket/pid cleanup.
 
     Name is historical: callers typically follow this with another
     `browser-harness` invocation, which auto-spawns a fresh daemon via
     ensure_daemon(). The function itself only stops.
+
+    With require_clean=True, an unavailable daemon or any response other than
+    {"ok": true} raises before endpoint cleanup or process termination.
 
     Identity is verified via ipc.identify() before any process signal, so
     a stale pid file whose number has been reused by an unrelated process
@@ -469,6 +519,8 @@ def restart_daemon(name=None):
     #     while the process stayed alive.
     daemon_pid = ipc.identify(name, timeout=5.0)
     daemon_alive = daemon_pid is not None or ipc.ping(name, timeout=1.0)
+    if require_clean and not daemon_alive:
+        raise RuntimeError(f"daemon {name!r} is unavailable for required clean shutdown")
     # Snapshot the daemon's process start-time as a secondary identity check.
     # The IPC socket can disappear before the process exits (e.g. the shutdown
     # path tears down the socket and then waits on a slow remote `stop` PATCH),
@@ -479,12 +531,29 @@ def restart_daemon(name=None):
     daemon_start = _process_start_time(daemon_pid)
 
     if daemon_alive:
+        c = None
         try:
-            c, token = ipc.connect(name, timeout=5.0)
-            ipc.request(c, token, {"meta": "shutdown"})
-            c.close()
-        except Exception:
-            pass
+            c, token = ipc.connect(name, timeout=50.0 if require_clean else 5.0)
+            response = ipc.request(c, token, {"meta": "shutdown"})
+            if require_clean and (
+                not isinstance(response, dict)
+                or response.get("ok") is not True
+                or bool(response.get("error"))
+            ):
+                error = response.get("error") if isinstance(response, dict) else None
+                raise RuntimeError(error or f"daemon {name!r} did not confirm clean shutdown")
+        except Exception as exc:
+            if require_clean:
+                if isinstance(exc, RuntimeError):
+                    raise
+                raise RuntimeError(
+                    f"daemon {name!r} did not confirm clean shutdown: {exc}"
+                ) from exc
+        finally:
+            if c is not None:
+                close = getattr(c, "close", None)
+                if close:
+                    close()
 
     if daemon_pid is not None:
         for _ in range(75):
@@ -531,13 +600,21 @@ def _browser_use(path, method, body=None):
     return json.loads(urllib.request.urlopen(req, timeout=60).read() or b"{}")
 
 
-def _stop_cloud_browser(browser_id):
+def _stop_cloud_browser(browser_id, strict=False):
     if not browser_id:
-        return
-    try:
-        _browser_use(f"/browsers/{browser_id}", "PATCH", {"action": "stop"})
-    except BaseException:
-        pass
+        return True
+    last_error = None
+    for attempt in range(3):
+        try:
+            _browser_use(f"/browsers/{browser_id}", "PATCH", {"action": "stop"})
+            return True
+        except BaseException as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+    if strict:
+        raise RuntimeError(f"failed to stop remote browser {browser_id}: {last_error}")
+    return False
 
 
 def _cdp_ws_from_url(cdp_url):
@@ -568,6 +645,19 @@ def _show_live_url(url):
         print("(opened liveUrl in your default browser)", file=sys.stderr)
     except Exception as e:
         print(f"(couldn't auto-open: {e} — share the liveUrl with the user)", file=sys.stderr)
+
+
+def _should_show_remote_live_view():
+    """Whether Cloud provisioning should print and open its interactive live view."""
+    raw = os.environ.get("BH_OPEN_LIVE_URL")
+    if raw is None:
+        return True
+    value = raw.strip().lower()
+    if value in {"0", "false", "no", "off"}:
+        return False
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    raise ValueError("BH_OPEN_LIVE_URL must be one of: 1, true, yes, on, 0, false, no, off")
 
 
 def list_cloud_profiles():
@@ -621,8 +711,11 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
       customProxy      — {host, port, username, password, ignoreCertErrors}.
       browserScreenWidth / browserScreenHeight, allowResizing, enableRecording.
 
-    Returns the full browser dict including `liveUrl`. Prints the liveUrl and
-    auto-opens it locally when a GUI is detected, so the user can watch along."""
+    Returns the full browser dict including `liveUrl`. By default, prints that
+    URL and opens it locally when a GUI is detected. Set BH_OPEN_LIVE_URL to
+    0, false, no, or off (case-insensitive) to suppress only those display side
+    effects; the returned URL remains present."""
+    show_live_view = _should_show_remote_live_view()
     if daemon_alive(name):
         raise RuntimeError(f"daemon {name!r} already alive -- restart_daemon({name!r}) first")
     if profileName:
@@ -635,10 +728,17 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
             name=name,
             env={"BU_CDP_WS": _cdp_ws_from_url(browser["cdpUrl"]), "BU_BROWSER_ID": browser["id"]},
         )
-    except BaseException:
-        _stop_cloud_browser(browser.get("id"))
+    except BaseException as start_error:
+        try:
+            _stop_cloud_browser(browser.get("id"), strict=True)
+        except BaseException as cleanup_error:
+            raise BaseExceptionGroup(
+                "remote daemon startup and cloud browser cleanup both failed",
+                [start_error, cleanup_error],
+            )
         raise
-    _show_live_url(browser.get("liveUrl"))
+    if show_live_view:
+        _show_live_url(browser.get("liveUrl"))
     return browser
 
 
@@ -782,6 +882,8 @@ def check_for_update():
 def print_update_banner(out=None):
     """Print the update banner to stderr once per day. Silent when up-to-date or offline."""
     import sys
+    if os.environ.get("BH_UPDATE_CHECK", "").strip().lower() in {"0", "false", "no", "off"}:
+        return
     out = out or sys.stderr
     cache = _cache_read()
     today = time.strftime("%Y-%m-%d")
@@ -838,6 +940,19 @@ def _browser_launch_spec(base):
     return _DEFAULT_LAUNCH
 
 
+def _browser_binary_matches_profile(binary, base):
+    """True when an explicit browser binary belongs to ``base``."""
+    name = Path(binary).name.lower().removesuffix(".exe")
+    mac_app, posix_cmds, win_target = _browser_launch_spec(base)
+    candidates = (mac_app, *posix_cmds, win_target)
+
+    def normalize(value):
+        return "".join(char for char in (value or "").lower() if char.isalnum())
+
+    normalized_name = normalize(name)
+    return any(normalized_name == normalize(candidate) for candidate in candidates)
+
+
 def _profile_directory_args(base):
     """Relaunch skips Chrome's profile picker"""
     if not base:
@@ -853,49 +968,92 @@ def _profile_directory_args(base):
 
 
 def _launch_browser():
-    """Prefers the browser whose profile already has perm box checked"""
+    """Prefers the browser whose profile already has perm box checked.
+
+    Returns ``(process, profile)`` on success. ``process`` is available only
+    when we launched the browser directly; ``profile`` is the user-data dir we
+    expect that browser to use. The caller uses both to clean up a direct
+    launch that never becomes reachable over CDP.
+    """
     import platform, shutil, subprocess
     from .daemon import PROFILES, remote_debugging_toggle_profiles
 
+    enabled = remote_debugging_toggle_profiles()
+    known_profiles = enabled + [
+        base for base in PROFILES if base not in enabled and (base / "Local State").exists()
+    ]
+    system = platform.system()
     for key in ("BH_CHROME_PATH", "CHROME_PATH"):
         raw = (os.environ.get(key) or "").strip()
         if raw and Path(raw).expanduser().is_file():
             try:
-                subprocess.Popen(
-                    [str(Path(raw).expanduser())],
+                binary = Path(raw).expanduser()
+                process = subprocess.Popen(
+                    [str(binary)],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
                 )
-                return True
+                profile = next(
+                    (base for base in known_profiles if _browser_binary_matches_profile(binary, base)),
+                    None,
+                ) if system not in ("Darwin", "Windows") else None
+                return process, profile
             except (OSError, subprocess.SubprocessError):
                 # A path that exists but can't execute (permissions, wrong arch)
                 # must fall through to normal discovery, not abort
                 continue
 
-    enabled = remote_debugging_toggle_profiles()
     base = enabled[0] if enabled else next((b for b in PROFILES if (b / "Local State").exists()), None)
     mac_app, posix_cmds, win_target = _browser_launch_spec(base) if base else _DEFAULT_LAUNCH
     profile_args = _profile_directory_args(base)
     try:
-        system = platform.system()
         if system == "Darwin":
             cmd = ["open", "-a", mac_app] + (["--args"] + profile_args if profile_args else [])
             r = subprocess.run(cmd, timeout=10, check=False, capture_output=True)
             if r.returncode != 0 and mac_app != "Google Chrome":
                 # Different app → its profile dir may not match; launch plain
                 r = subprocess.run(["open", "-a", "Google Chrome"], timeout=10, check=False, capture_output=True)
-            return r.returncode == 0
+            return (None, base) if r.returncode == 0 else None
         if system == "Windows":
             # `start <name>` resolves browsers via App Paths without knowing the install dir
             subprocess.Popen(["cmd", "/c", "start", "", win_target or "chrome"] + profile_args, **ipc.spawn_kwargs())
-            return True
+            return None, base
         for cmd in posix_cmds or _DEFAULT_LAUNCH[1]:
             w = shutil.which(cmd)
             if w:
-                subprocess.Popen([w] + profile_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs())
-                return True
-        return False
+                process = subprocess.Popen(
+                    [w] + profile_args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **ipc.spawn_kwargs(),
+                )
+                return process, base
+        return None
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
+
+
+def _cleanup_unattached_browser_launch(launch):
+    """Stop a browser we launched when the daemon attached somewhere else."""
+    if not launch:
+        return
+    process, profile = launch
+    if process is None or profile is None or process.poll() is not None:
+        return
+
+    from .daemon import _devtools_port_live
+
+    if _devtools_port_live(profile):
+        return
+
+    import signal
+
+    try:
+        if ipc.IS_WINDOWS:
+            process.terminate()
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _open_chrome_inspect():
@@ -992,6 +1150,35 @@ def run_doctor():
     row("Browser Use cloud auth", cloud_auth, auth_state.get("source") or auth_state.get("reason") or "optional: browser-harness auth login")
     # Core health = chrome + daemon. Cloud auth is optional.
     return 0 if (chrome and daemon) else 1
+
+
+def run_doctor_json(require_existing_daemon=False):
+    """Print a stable, non-networked runtime health report as JSON.
+
+    The strict mode is intended for trusted orchestrators that provision an
+    exact named daemon. It checks only that selected daemon and its live CDP
+    connection; it never starts, repairs, or discovers another daemon.
+    """
+    strict = bool(require_existing_daemon)
+    chrome = None if strict else _chrome_running()
+    browser_ready = daemon_browser_ready(NAME)
+    daemon = browser_ready or daemon_alive(NAME)
+    healthy = (daemon and browser_ready) if strict else (browser_ready or (chrome and daemon))
+    report = {
+        "schema_version": 1,
+        "healthy": healthy,
+        "require_existing_daemon": strict,
+        "version": _version() or None,
+        "install_mode": _install_mode(),
+        "chrome_running": chrome,
+        "daemon": {
+            "name": NAME,
+            "alive": daemon,
+            "browser_ready": browser_ready,
+        },
+    }
+    print(json.dumps(report, sort_keys=True))
+    return 0 if healthy else 1
 
 
 def _prompt_yes(question, default_yes=True, yes=False):

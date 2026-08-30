@@ -59,21 +59,37 @@ def _tab_unmarker_expression():
     return r'''document.title = document.title
         .replace(/\s*\|\s*🐴\s*\[[^\]]+\]\s*$/, "")
         .replace(/^🐴\s*/, "")'''
+IPC_CONNECT_TIMEOUT_SECONDS = 5.0
+DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
+# Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
+# their IPC socket alive within the caller's existing 90-second process budget.
+SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
 
 
-def _send(req):
-    c, token = ipc.connect(NAME, timeout=5.0)
+class _IPCResponseTimeout(TimeoutError):
+    pass
+
+
+def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
+    c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
     try:
-        r = ipc.request(c, token, req)
+        c.settimeout(response_timeout)
+        try:
+            r = ipc.request(c, token, req)
+        except TimeoutError as e:
+            raise _IPCResponseTimeout from e
     finally:
         c.close()
     if "error" in r: raise RuntimeError(r["error"])
     return r
 
 
-def cdp(method, session_id=None, **params):
+def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
-    return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
+    return _send(
+        {"method": method, "params": params, "session_id": session_id},
+        response_timeout=_response_timeout,
+    ).get("result", {})
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
@@ -264,7 +280,17 @@ def capture_screenshot(path=None, full=False, max_dim=None):
     """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
     keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
     path = path or str(ipc._TMP / "shot.png")
-    r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
+    try:
+        r = cdp(
+            "Page.captureScreenshot",
+            _response_timeout=SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS,
+            format="png",
+            captureBeyondViewport=full,
+        )
+    except _IPCResponseTimeout as e:
+        raise RuntimeError(
+            f"Page.captureScreenshot timed out after {SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS:g}s"
+        ) from e
     open(path, "wb").write(base64.b64decode(r["data"]))
     if max_dim:
         from PIL import Image
@@ -312,14 +338,34 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression=_tab_marker_expression())
     except Exception: pass
 
-def switch_tab(target):
+def _target_id(target):
+    """Accept a raw target id or a tab dict returned by the helpers."""
+    return (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
+
+def activate_tab(target):
+    """Make a target the visible Chrome tab.
+
+    This is intentionally separate from switch_tab(): attaching the agent to a
+    target does not require taking over the user's visible Chrome tab.
+    """
+    target_id = _target_id(target)
+    cdp("Target.activateTarget", targetId=target_id)
+    return target_id
+
+def switch_tab(target, activate=False):
+    """Attach the agent without changing Chrome's visible tab by default.
+
+    Pass activate=True only when Chrome must visibly show the target. The horse
+    marker still moves to the attached target so the user can find it.
+    """
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
-    target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
+    target_id = _target_id(target)
     # Unmark the old tab before attaching to the new target.
     try: cdp("Runtime.evaluate", expression=_tab_unmarker_expression())
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    if activate:
+        activate_tab(target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
@@ -335,7 +381,7 @@ def new_tab(url="about:blank"):
             cur_url = cur.get("url") or ""
             # Reuse attached tab when it's blank
             if (
-                cur_url in ("", "about:blank")
+                cur_url in ("", "about:blank", "data:text/html,")
                 or cur_url.startswith("about:blank#")
                 or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
             ):
@@ -343,7 +389,7 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
@@ -352,7 +398,7 @@ def new_tab(url="about:blank"):
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
     Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
-    target_id = (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
+    target_id = _target_id(target)
     if target_id is None:
         target_id = current_tab()["targetId"]
     cdp("Target.closeTarget", targetId=target_id)

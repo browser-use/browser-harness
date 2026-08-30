@@ -1,3 +1,6 @@
+import signal
+from pathlib import Path
+
 import pytest
 
 from browser_harness import admin
@@ -20,8 +23,205 @@ class FakeSocket:
         self.closed = True
 
 
+class FakeProcess:
+    def __init__(self, pid=123, returncode=None):
+        self.pid = pid
+        self.returncode = returncode
+        self.terminated = False
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+
+
+def test_cleanup_unattached_browser_launch_stops_posix_process_group(monkeypatch):
+    process = FakeProcess()
+    killed = []
+    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: False)
+    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    admin._cleanup_unattached_browser_launch((process, Path("/profile")))
+
+    assert killed == [(123, signal.SIGTERM)]
+
+
+def test_cleanup_unattached_browser_launch_keeps_cdp_browser(monkeypatch):
+    process = FakeProcess()
+    monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: True)
+    monkeypatch.setattr(admin.os, "killpg", lambda _pid, _sig: pytest.fail("must keep the attached browser"))
+
+    admin._cleanup_unattached_browser_launch((process, Path("/profile")))
+
+
+def test_cleanup_unattached_browser_launch_ignores_unowned_launch(monkeypatch):
+    monkeypatch.setattr(
+        "browser_harness.daemon._devtools_port_live",
+        lambda _profile: pytest.fail("must not probe an unowned launch"),
+    )
+
+    admin._cleanup_unattached_browser_launch((None, Path("/profile")))
+
+
+@pytest.mark.parametrize("env_key", ["BH_CHROME_PATH", "CHROME_PATH"])
+def test_explicit_chrome_path_retains_matching_profile_on_linux(monkeypatch, tmp_path, env_key):
+    binary = tmp_path / "google-chrome-stable"
+    binary.touch()
+    profile = tmp_path / ".config" / "google-chrome"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Local State").write_text('{}')
+    process = FakeProcess()
+
+    other_key = "CHROME_PATH" if env_key == "BH_CHROME_PATH" else "BH_CHROME_PATH"
+    monkeypatch.setenv(env_key, str(binary))
+    monkeypatch.delenv(other_key, raising=False)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
+    monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: process)
+    killed = []
+    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    launch = admin._launch_browser()
+    assert launch == (process, profile)
+
+    admin._cleanup_unattached_browser_launch(launch)
+    assert killed == [(process.pid, signal.SIGTERM)]
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Windows"])
+def test_explicit_chrome_path_remains_unowned_without_platform_cleanup(monkeypatch, tmp_path, system):
+    binary = tmp_path / ("chrome.exe" if system == "Windows" else "Google Chrome")
+    binary.touch()
+    profile = tmp_path / ".config" / "google-chrome"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Local State").write_text('{}')
+    process = FakeProcess()
+
+    monkeypatch.setenv("BH_CHROME_PATH", str(binary))
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(admin.os, "killpg", lambda *_args: pytest.fail("must not terminate an unowned browser"))
+
+    launch = admin._launch_browser()
+    assert launch == (process, None)
+
+    admin._cleanup_unattached_browser_launch(launch)
+    assert process.terminated is False
+
+
+def test_explicit_unknown_browser_path_remains_unowned(monkeypatch, tmp_path):
+    binary = tmp_path / "custom-browser"
+    binary.touch()
+    profile = tmp_path / ".config" / "google-chrome"
+    profile.mkdir(parents=True)
+    (profile / "Local State").write_text('{}')
+    process = FakeProcess()
+
+    monkeypatch.setenv("BH_CHROME_PATH", str(binary))
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
+    monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: process)
+
+    assert admin._launch_browser() == (process, None)
+
+
+@pytest.mark.parametrize("value", ["0", "false", "NO", " off "])
+def test_update_banner_can_be_disabled_without_network_or_cache_access(monkeypatch, value):
+    monkeypatch.setenv("BH_UPDATE_CHECK", value)
+    monkeypatch.setattr(admin, "_cache_read", lambda: pytest.fail("cache should not be read"))
+    monkeypatch.setattr(admin, "check_for_update", lambda: pytest.fail("network should not run"))
+
+    admin.print_update_banner()
+
+
+def test_update_banner_remains_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("BH_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(admin, "_cache_read", lambda: {"banner_shown_on": "1970-01-01"})
+    called = []
+
+    def fake_check_for_update():
+        called.append(True)
+        return "0.1.0", "0.1.0", False
+
+    monkeypatch.setattr(admin, "check_for_update", fake_check_for_update)
+
+    admin.print_update_banner()
+
+    assert called == [True]
+
+
 def test_local_chrome_mode_is_false_when_env_provides_remote_cdp():
     assert not admin._is_local_chrome_mode({"BU_CDP_WS": "ws://example.test/devtools/browser/1"})
+
+
+def test_require_existing_daemon_fails_without_spawning(monkeypatch):
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: False)
+
+    with pytest.raises(RuntimeError, match="required daemon 'scoped' is not running"):
+        admin.require_existing_daemon("scoped")
+
+
+def test_require_existing_daemon_probes_cdp(monkeypatch):
+    sock = FakeSocket(response=b'{"result":{"targetInfos":[]}}\n')
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (sock, None))
+
+    admin.require_existing_daemon("scoped")
+
+    assert b'"method": "Target.getTargets"' in sock.sent
+    assert sock.closed is True
+
+
+def test_strict_remote_stop_propagates_daemon_error(monkeypatch):
+    sock = FakeSocket(response=b'{"error":"billing stop failed"}\n')
+    monkeypatch.setattr(admin.ipc, "identify", lambda _name, timeout: 123)
+    monkeypatch.setattr(admin, "_process_start_time", lambda _pid: 1)
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (sock, None))
+
+    with pytest.raises(RuntimeError, match="billing stop failed"):
+        admin.stop_remote_daemon("scoped")
+
+    assert sock.closed is True
+
+
+def test_remote_start_retries_cleanup_and_preserves_both_failures(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: False)
+    monkeypatch.setattr(
+        admin,
+        "_browser_use",
+        lambda path, method, body=None: (
+            {"id": "browser-1", "cdpUrl": "https://cdp.example.test"}
+            if method == "POST"
+            else attempts.append((path, method, body))
+            or (_ for _ in ()).throw(OSError("billing stop failed"))
+        ),
+    )
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda _url: "wss://cdp.example.test/ws")
+    monkeypatch.setattr(
+        admin,
+        "ensure_daemon",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("daemon start failed")),
+    )
+    monkeypatch.setattr(admin.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        admin.start_remote_daemon("scoped")
+
+    assert [str(error) for error in exc_info.value.exceptions] == [
+        "daemon start failed",
+        "failed to stop remote browser browser-1: billing stop failed",
+    ]
+    assert len(attempts) == 3
 
 
 def test_local_chrome_mode_is_false_when_process_env_provides_remote_cdp(monkeypatch):
@@ -107,6 +307,18 @@ def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
     monkeypatch.setattr(admin.ipc, "connect", fake_connect)
 
     assert admin.active_browser_connections() == 1
+
+
+def test_daemon_browser_ready_checks_the_selected_daemon(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        admin,
+        "_daemon_browser_connection",
+        lambda name: calls.append(name) or {"name": name, "page": None},
+    )
+
+    assert admin.daemon_browser_ready("work")
+    assert calls == ["work"]
 
 
 def test_active_browser_connections_skips_daemons_reporting_cdp_disconnected(monkeypatch):

@@ -1,4 +1,4 @@
-import os, sys, time, urllib.request
+import json, os, sys, time, urllib.request
 from io import StringIO
 
 # Windows default stdout/stderr encoding is cp1252
@@ -19,9 +19,11 @@ from .admin import (
     list_cloud_profiles,
     list_local_profiles,
     print_update_banner,
+    require_existing_daemon,
     restart_daemon,
     run_doctor,
     run_doctor_fix_snap,
+    run_doctor_json,
     run_update,
     start_remote_daemon,
     stop_remote_daemon,
@@ -46,7 +48,10 @@ Commands:
   browser-harness --version        print the installed version
   browser-harness --doctor         diagnose install, daemon, and browser state
   browser-harness doctor           same as --doctor
+  browser-harness doctor --json [--require-existing-daemon]
+                                    print machine-readable runtime health
   browser-harness doctor --fix-snap   print how to fix Snap Chromium blocking CDP (Linux)
+  browser-harness mac-approve         approve Chrome's macOS remote debugging sheet
   browser-harness auth login          sign in to Browser Use Cloud for cloud browsers
   browser-harness auth login --device-code   sign in from SSH/headless environments
   browser-harness auth status         show Browser Use Cloud auth state
@@ -77,9 +82,12 @@ USAGE = """Usage:
 def _local_chrome_listening():
     for port in (9222, 9223):
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3).close()
-            return True
-        except OSError: pass
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3) as response:
+                version = json.loads(response.read())
+            if isinstance(version, dict) and isinstance(version.get("webSocketDebuggerUrl"), str) and version["webSocketDebuggerUrl"]:
+                return True
+        except (OSError, TypeError, ValueError):
+            pass
     return False
 
 
@@ -122,7 +130,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "skill", "recordings", "telemetry", "video"}:
+    if first in {"auth", "skill", "mac-approve", "recordings", "telemetry", "video"}:
         return first
     return "usage"
 
@@ -306,12 +314,19 @@ def _run(args):
         rest = args[1:]
         if rest == ["--fix-snap"]:
             sys.exit(run_doctor_fix_snap())
+        if rest and set(rest).issubset({"--json", "--require-existing-daemon"}) \
+                and "--json" in rest and len(rest) == len(set(rest)):
+            sys.exit(run_doctor_json(require_existing_daemon="--require-existing-daemon" in rest))
         if rest:
-            print("usage: browser-harness doctor [--fix-snap]", file=sys.stderr)
+            print("usage: browser-harness doctor [--fix-snap|--json [--require-existing-daemon]]", file=sys.stderr)
             sys.exit(2)
         sys.exit(run_doctor())
     if args and args[0] == "auth":
         sys.exit(auth.run_auth_cli(args[1:]))
+    if args and args[0] == "mac-approve":
+        from . import macos
+
+        sys.exit(macos.run_cli(args[1:]))
     if args and args[0] == "skill":
         if len(args) != 1:
             print("usage: browser-harness skill", file=sys.stderr)
@@ -369,16 +384,20 @@ def _run(args):
     # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
     cloud_admin = code.lstrip().startswith(("start_remote_daemon(", "stop_remote_daemon("))
     if not cloud_admin:
-        if (
-            not daemon_alive()
-            and not _local_chrome_listening()
-            and not _explicit_cdp_configured()
-            and _cloud_auth_configured()
-            and os.environ.get("BU_AUTOSPAWN")
-        ):
-            start_remote_daemon(NAME)
+        require_existing = os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
         try:
-            ensure_daemon()
+            if require_existing:
+                require_existing_daemon()
+            else:
+                if (
+                    not daemon_alive()
+                    and not _local_chrome_listening()
+                    and not _explicit_cdp_configured()
+                    and _cloud_auth_configured()
+                    and os.environ.get("BU_AUTOSPAWN")
+                ):
+                    start_remote_daemon(NAME)
+                ensure_daemon()
         except RuntimeError as e:
             # Setup/permission errors are instructions for calling agent
             print(f"browser-harness: {e}", file=sys.stderr)
