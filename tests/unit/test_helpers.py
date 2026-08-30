@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
-from browser_harness import _tab_marker, helpers
+from browser_harness import helpers
 
 
 def _run(fake_png, width, height, **kwargs):
@@ -121,7 +121,12 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
-def test_tab_marker_appends_dynamic_daemon_identity():
+def test_tab_marker_uses_shared_expression(monkeypatch):
+    monkeypatch.setattr(
+        helpers,
+        "TAB_MARKER_EXPRESSION",
+        "shared-marker-expression",
+    )
     calls = []
 
     def fake_cdp(method, **kwargs):
@@ -133,12 +138,34 @@ def test_tab_marker_appends_dynamic_daemon_identity():
 
     assert calls == [(
         "Runtime.evaluate",
-        {"expression": _tab_marker.expression(helpers.NAME)},
+        {"expression": "shared-marker-expression"},
     )]
 
 
-def test_tab_unmarker_expression_removes_identity_suffix():
-    assert helpers.TAB_UNMARKER_EXPRESSION == _tab_marker.unmarker_expression()
+def test_switch_tab_uses_shared_unmarker_expression(monkeypatch):
+    monkeypatch.setattr(
+        helpers,
+        "TAB_UNMARKER_EXPRESSION",
+        "shared-unmarker-expression",
+    )
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    helpers.switch_tab("target-new")
+
+    assert calls[0] == (
+        "Runtime.evaluate",
+        {"expression": "shared-unmarker-expression"},
+    )
 
 
 # --- fill_input ---

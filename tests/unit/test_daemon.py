@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from browser_harness import _tab_marker, daemon
+from browser_harness import daemon
 
 
 @pytest.mark.parametrize(
@@ -74,11 +74,9 @@ def _fresh_daemon():
     return d
 
 
-def test_daemon_tab_marker_appends_dynamic_name():
-    assert daemon.TAB_MARKER_EXPRESSION == _tab_marker.expression(daemon.NAME)
+def test_set_session_uses_shared_suffix_marker(monkeypatch):
+    monkeypatch.setattr(daemon, "TAB_MARKER_EXPRESSION", "shared-marker-expression")
 
-
-def test_set_session_uses_shared_suffix_marker():
     async def run():
         d = _fresh_daemon()
         await d.handle({
@@ -98,7 +96,7 @@ def test_set_session_uses_shared_suffix_marker():
     ]
     assert marker_calls == [(
         "Runtime.evaluate",
-        {"expression": _tab_marker.expression(daemon.NAME)},
+        {"expression": "shared-marker-expression"},
         "session-new",
     )]
 
