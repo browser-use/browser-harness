@@ -1,4 +1,4 @@
-import os, sys, time, urllib.request
+import os, sys, tempfile, time, urllib.request
 from io import StringIO
 
 # Windows default stdout/stderr encoding is cp1252
@@ -29,6 +29,7 @@ from .admin import (
     stop_remote_daemon,
     sync_local_profile,
 )
+from . import _ipc as ipc
 from . import auth, recorder, telemetry
 from .helpers import *
 
@@ -191,19 +192,39 @@ _MAX_OUTPUT_LENGTH = 20_000
 
 
 class _StreamTail:
-    """Pass-through stream wrapper that remembers the tail and total length."""
+    """Pass-through stream wrapper that remembers the tail and total length.
+    With `cap`, only that many chars reach the stream; the rest spills to a file."""
 
-    def __init__(self, wrapped, limit=500):
+    def __init__(self, wrapped, limit=500, cap=None):
         self._wrapped = wrapped
         self._limit = limit
+        self._cap = cap
+        self._spill = None
         self.tail = ""
         self.length = 0
 
     def write(self, text):
         text = str(text)
+        accepted = len(text)
+        room = max(self._cap - self.length, 0) if self._cap is not None else len(text)
         self.length += len(text)
         self.tail = (self.tail + text)[-self._limit :]
-        return self._wrapped.write(text)
+        visible, overflow = text[:room], text[room:]
+        written = self._wrapped.write(visible)
+        if overflow:
+            # Announce the spill now and flush every write: a script that dies hard
+            # (os._exit, SIGKILL) never reaches finish().
+            if self._spill is None:
+                self._spill = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", errors="replace", prefix="output-", suffix=".txt", dir=ipc._TMP, delete=False)
+                self._wrapped.write(f"\n[browser-harness] stdout truncated after {self._cap} chars; overflow is being saved to {self._spill.name}\n")
+                self._wrapped.flush()
+            self._spill.write(overflow)
+            self._spill.flush()
+        return None if written is None else written + accepted - len(visible)
+
+    def finish(self):
+        if self._spill is not None:
+            self._spill.close()
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
@@ -217,6 +238,21 @@ def _read_task(args):
     code = sys.stdin.read()
     sys.stdin = StringIO(code)
     return code
+
+
+def _stdout_cap(task):
+    if not task:
+        return None
+    value = os.environ.get("BH_MAX_OUTPUT")
+    if not value:
+        return _MAX_OUTPUT_LENGTH
+    try:
+        cap = int(value)
+    except ValueError:
+        raise SystemExit("BH_MAX_OUTPUT must be a non-negative integer") from None
+    if cap < 0:
+        raise SystemExit("BH_MAX_OUTPUT must be a non-negative integer")
+    return cap or None
 
 
 def _traced_steps():
@@ -245,7 +281,7 @@ def main():
     command = _telemetry_command(args)
     task = _read_task(args)
     stderr_tail = _StreamTail(sys.stderr)
-    stdout_tail = _StreamTail(sys.stdout, limit=_MAX_OUTPUT_LENGTH)
+    stdout_tail = _StreamTail(sys.stdout, limit=_MAX_OUTPUT_LENGTH, cap=_stdout_cap(task))
     sys.stderr = stderr_tail
     sys.stdout = stdout_tail
     try:
@@ -284,6 +320,7 @@ def main():
     finally:
         sys.stderr = stderr_tail._wrapped
         sys.stdout = stdout_tail._wrapped
+        stdout_tail.finish()
     telemetry.capture_cli_event(
         action="completed",
         command=command,

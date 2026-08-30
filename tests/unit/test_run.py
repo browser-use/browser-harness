@@ -21,6 +21,82 @@ def test_stdin_executes_code():
     assert stdout.getvalue().strip() == "hello from stdin"
 
 
+def test_stream_tail_cap_spills_overflow(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.ipc, "_TMP", tmp_path)
+    out = StringIO()
+    tail = run._StreamTail(out, cap=5)
+    assert tail.write("abc") == 3
+    assert tail.write("defgh") == 5
+    tail.finish()
+
+    spill, = tmp_path.glob("output-*.txt")
+    assert out.getvalue() == f"abcde\n[browser-harness] stdout truncated after 5 chars; overflow is being saved to {spill}\n"
+    assert spill.read_text() == "fgh"
+    assert tail.length == 8 and tail.tail == "abcdefgh"
+
+
+def test_stream_tail_below_cap_passes_through(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.ipc, "_TMP", tmp_path)
+    out = StringIO()
+    tail = run._StreamTail(out, cap=5)
+    tail.write("abcde")
+    tail.finish()
+
+    assert out.getvalue() == "abcde"
+    assert not list(tmp_path.iterdir())
+
+
+def test_main_caps_stdout_and_spills_on_exit(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.ipc, "_TMP", tmp_path)
+    stdout = StringIO()
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"), \
+         patch("sys.stdin", StringIO("print('x' * 30000); raise SystemExit(3)")), \
+         patch("sys.stdout", stdout), \
+         pytest.raises(SystemExit):
+        run.main()
+
+    spill, = tmp_path.glob("output-*.txt")
+    assert stdout.getvalue() == "x" * 20000 + f"\n[browser-harness] stdout truncated after 20000 chars; overflow is being saved to {spill}\n"
+    assert spill.read_text() == "x" * 10000 + "\n"
+
+
+def test_bh_max_output_zero_disables_cap(monkeypatch):
+    monkeypatch.setenv("BH_MAX_OUTPUT", "0")
+    stdout = StringIO()
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"), \
+         patch("sys.stdin", StringIO("print('x' * 30000)")), \
+         patch("sys.stdout", stdout):
+        run.main()
+
+    assert stdout.getvalue() == "x" * 30000 + "\n"
+
+
+def test_cap_applies_only_to_scripts(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.ipc, "_TMP", tmp_path)
+    monkeypatch.setenv("BH_MAX_OUTPUT", "not-an-integer")
+    stdout = StringIO()
+    with patch.object(sys, "argv", ["browser-harness", "--version"]), \
+         patch("browser_harness.run._version", return_value="v" * 30000), \
+         patch("sys.stdout", stdout):
+        run.main()
+
+    assert stdout.getvalue() == "v" * 30000 + "\n"
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("value", ["not-an-integer", "-1"])
+def test_invalid_bh_max_output_is_rejected_for_scripts(monkeypatch, value):
+    monkeypatch.setenv("BH_MAX_OUTPUT", value)
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("print('unreachable')")), \
+         pytest.raises(SystemExit, match="BH_MAX_OUTPUT must be a non-negative integer"):
+        run.main()
+
+
 def test_require_existing_daemon_never_auto_starts(monkeypatch):
     monkeypatch.setenv("BH_REQUIRE_EXISTING_DAEMON", "1")
     with patch.object(sys, "argv", ["browser-harness"]), \

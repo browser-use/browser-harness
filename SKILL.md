@@ -25,6 +25,9 @@ PY
 
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
+- Script stdout is capped at 20,000 chars; the overflow goes to a file whose
+  path is printed when the cap is hit. Write large results to a file from the
+  script, or set `BH_MAX_OUTPUT=0` to disable the cap.
 - First navigation for a task is `new_tab(url)`, not `goto_url(url)`. The daemon
   preserves the attached tab across separate CLI invocations, so do not call
   `new_tab()` again in every script.
