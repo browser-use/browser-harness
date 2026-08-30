@@ -5,6 +5,7 @@ from collections import deque
 from pathlib import Path
 
 from . import _ipc as ipc
+from . import _tab_marker
 from . import auth
 from . import paths
 from cdp_use.client import CDPClient
@@ -35,21 +36,9 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
-TAB_MARKER = f"\U0001F434 [{NAME}]"
-TAB_MARKER_SUFFIX = f" | {TAB_MARKER}"
+TAB_MARKER_EXPRESSION = _tab_marker.expression(NAME)
 
 
-def _tab_marker_expression():
-    marker = json.dumps(TAB_MARKER)
-    suffix = json.dumps(TAB_MARKER_SUFFIX)
-    return f"""(()=>{{
-        const marker = {marker};
-        const suffix = {suffix};
-        const clean = document.title
-            .replace(/\\s*\\|\\s*🐴\\s*\\[[^\\]]+\\]\\s*$/, \"\")
-            .replace(/^🐴\\s*/, \"\");
-        document.title = clean ? clean + suffix : marker;
-    }})()"""
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -614,7 +603,7 @@ class Daemon:
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
-        mark_js = _tab_marker_expression()
+        mark_js = TAB_MARKER_EXPRESSION
         async def tap(method, params, session_id=None):
             self.events.append({"method": method, "params": params, "session_id": session_id})
             if method == "Page.javascriptDialogOpening":
@@ -696,12 +685,12 @@ class Daemon:
                 tasks.append(disable_old())
             tasks.append(self._enable_default_domains(new_session))
             await asyncio.gather(*tasks)
-            # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
-            # it doesn't add to the synchronous IPC budget.
+            # The tab-marker suffix is cosmetic. Keep it fire-and-forget so it
+            # does not add to the synchronous IPC budget.
             asyncio.create_task(_silent(asyncio.wait_for(
                 self.cdp.send_raw(
                     "Runtime.evaluate",
-                    {"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"},
+                    {"expression": TAB_MARKER_EXPRESSION},
                     session_id=new_session,
                 ),
                 timeout=2,

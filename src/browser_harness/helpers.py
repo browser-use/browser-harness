@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import _ipc as ipc
+from . import _tab_marker
 from . import paths
 
 
@@ -38,27 +39,10 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
-TAB_MARKER = f"\U0001F434 [{NAME}]"
-TAB_MARKER_SUFFIX = f" | {TAB_MARKER}"
+TAB_MARKER_EXPRESSION = _tab_marker.expression(NAME)
+TAB_UNMARKER_EXPRESSION = _tab_marker.unmarker_expression()
 
 
-def _tab_marker_expression():
-    marker = json.dumps(TAB_MARKER)
-    suffix = json.dumps(TAB_MARKER_SUFFIX)
-    return f"""(()=>{{
-        const marker = {marker};
-        const suffix = {suffix};
-        const clean = document.title
-            .replace(/\\s*\\|\\s*🐴\\s*\\[[^\\]]+\\]\\s*$/, \"\")
-            .replace(/^🐴\\s*/, \"\");
-        document.title = clean ? clean + suffix : marker;
-    }})()"""
-
-
-def _tab_unmarker_expression():
-    return r'''document.title = document.title
-        .replace(/\s*\|\s*🐴\s*\[[^\]]+\]\s*$/, "")
-        .replace(/^🐴\s*/, "")'''
 IPC_CONNECT_TIMEOUT_SECONDS = 5.0
 DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
 # Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
@@ -335,7 +319,7 @@ def current_tab():
 
 def _mark_tab():
     """Append the daemon identity to the title of the controlled tab."""
-    try: cdp("Runtime.evaluate", expression=_tab_marker_expression())
+    try: cdp("Runtime.evaluate", expression=TAB_MARKER_EXPRESSION)
     except Exception: pass
 
 def _target_id(target):
@@ -362,7 +346,7 @@ def switch_tab(target, activate=False):
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = _target_id(target)
     # Unmark the old tab before attaching to the new target.
-    try: cdp("Runtime.evaluate", expression=_tab_unmarker_expression())
+    try: cdp("Runtime.evaluate", expression=TAB_UNMARKER_EXPRESSION)
     except Exception: pass
     if activate:
         activate_tab(target_id)

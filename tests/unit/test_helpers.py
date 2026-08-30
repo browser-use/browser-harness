@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
-from browser_harness import helpers
+from browser_harness import _tab_marker, helpers
 
 
 def _run(fake_png, width, height, **kwargs):
@@ -121,9 +121,7 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
-def test_tab_marker_appends_dynamic_daemon_identity(monkeypatch):
-    monkeypatch.setattr(helpers, "TAB_MARKER", "🐴 [research-7f3a]")
-    monkeypatch.setattr(helpers, "TAB_MARKER_SUFFIX", " | 🐴 [research-7f3a]")
+def test_tab_marker_appends_dynamic_daemon_identity():
     calls = []
 
     def fake_cdp(method, **kwargs):
@@ -133,19 +131,14 @@ def test_tab_marker_appends_dynamic_daemon_identity(monkeypatch):
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         helpers._mark_tab()
 
-    assert calls == [("Runtime.evaluate", {"expression": helpers._tab_marker_expression()})]
-    expression = calls[0][1]["expression"]
-    assert "research-7f3a" in expression
-    assert "document.title" in expression
-    assert "clean + suffix" in expression
+    assert calls == [(
+        "Runtime.evaluate",
+        {"expression": _tab_marker.expression(helpers.NAME)},
+    )]
 
 
 def test_tab_unmarker_expression_removes_identity_suffix():
-    expression = helpers._tab_unmarker_expression()
-
-    assert "document.title" in expression
-    assert "\\s*\\|\\s*🐴" in expression
-    assert "replace" in expression
+    assert helpers.TAB_UNMARKER_EXPRESSION == _tab_marker.unmarker_expression()
 
 
 # --- fill_input ---
