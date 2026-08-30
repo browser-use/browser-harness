@@ -150,7 +150,14 @@ def _is_illegal_return_error(exc):
 
 # --- navigation / page ---
 def goto_url(url):
+    """Navigate the attached tab; returns {requested, landed, frameId, loaderId}.
+    Raises when Chrome reports the navigation failed — a download URL fails with
+    net::ERR_ABORTED, as in Puppeteer — or when it lands on an error page."""
     r = cdp("Page.navigate", url=url)
+    if err := r.get("errorText"): raise RuntimeError(f"goto_url: navigation to {url} failed: {err}")
+    landed = js("location.href")
+    if landed.startswith("chrome-error://"): raise RuntimeError(f"goto_url: navigation to {url} landed on an error page: {landed}")
+    r = {**r, "requested": url, "landed": landed}
     if os.environ.get("BH_DOMAIN_SKILLS") != "1":
         return r
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
@@ -362,19 +369,21 @@ def new_tab(url="about:blank"):
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
     if url != "about:blank":
+        cur = None
         try:
             cur = current_tab()
-            cur_url = cur.get("url") or ""
-            # Reuse attached tab when it's blank
-            if (
-                cur_url in ("", "about:blank", "data:text/html,")
-                or cur_url.startswith("about:blank#")
-                or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
-            ):
-                goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
+        cur_url = (cur.get("url") or "") if isinstance(cur, dict) else None
+        # Reuse attached tab when it's blank. A failed navigation must propagate;
+        # retrying in a new target would leak the first tab and repeat the request.
+        if cur_url is not None and (
+            cur_url in ("", "about:blank", "data:text/html,")
+            or cur_url.startswith("about:blank#")
+            or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
+        ):
+            goto_url(url)
+            return cur.get("targetId") or cur.get("target_id")
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":

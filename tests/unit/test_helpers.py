@@ -83,18 +83,42 @@ def test_goto_url_omits_domain_skills_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("BH_DOMAIN_SKILLS", raising=False)
     monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
     _seed_skill(tmp_path)
-    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}):
+    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}), \
+         patch("browser_harness.helpers.js", return_value="https://www.example.com/"):
         result = helpers.goto_url("https://www.example.com/")
-    assert result == {"frameId": "f"}
+    assert result == {"frameId": "f", "requested": "https://www.example.com/", "landed": "https://www.example.com/"}
 
 
 def test_goto_url_includes_domain_skills_when_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_DOMAIN_SKILLS", "1")
     monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
     _seed_skill(tmp_path)
-    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}):
+    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}), \
+         patch("browser_harness.helpers.js", return_value="https://www.example.com/"):
         result = helpers.goto_url("https://www.example.com/")
-    assert result == {"frameId": "f", "domain_skills": ["scraping.md"]}
+    assert result == {"frameId": "f", "requested": "https://www.example.com/", "landed": "https://www.example.com/",
+                      "domain_skills": ["scraping.md"]}
+
+
+def test_goto_url_raises_when_chrome_reports_navigation_failed():
+    with patch("browser_harness.helpers.cdp", return_value={"errorText": "net::ERR_NAME_NOT_RESOLVED"}):
+        with pytest.raises(RuntimeError, match="net::ERR_NAME_NOT_RESOLVED"):
+            helpers.goto_url("https://nope.invalid/")
+
+
+def test_goto_url_raises_when_landing_on_error_page():
+    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}), \
+         patch("browser_harness.helpers.js", return_value="chrome-error://chromewebdata/"):
+        with pytest.raises(RuntimeError, match="error page"):
+            helpers.goto_url("https://www.example.com/")
+
+
+def test_goto_url_reports_where_a_redirect_landed():
+    with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}), \
+         patch("browser_harness.helpers.js", return_value="https://www.example.com/login"):
+        result = helpers.goto_url("https://www.example.com/account")
+    assert result["requested"] == "https://www.example.com/account"
+    assert result["landed"] == "https://www.example.com/login"
 
 
 def test_page_info_raises_clear_error_on_js_exception():
@@ -466,3 +490,51 @@ def test_new_tab_reuses_an_empty_data_document(monkeypatch):
 
     assert helpers.new_tab("https://example.com") == "target-placeholder"
     assert calls == [("goto_url", "https://example.com")]
+
+
+def test_new_tab_does_not_retry_failed_navigation_in_a_second_tab(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        helpers,
+        "current_tab",
+        lambda: {"targetId": "target-placeholder", "url": "about:blank"},
+    )
+
+    def fail_navigation(url):
+        calls.append(("goto_url", url))
+        raise RuntimeError("navigation failed")
+
+    monkeypatch.setattr(helpers, "goto_url", fail_navigation)
+    monkeypatch.setattr(
+        helpers,
+        "cdp",
+        lambda method, **kwargs: calls.append((method, kwargs)) or {},
+    )
+
+    with pytest.raises(RuntimeError, match="navigation failed"):
+        helpers.new_tab("https://nope.invalid")
+
+    assert calls == [("goto_url", "https://nope.invalid")]
+
+
+def test_new_tab_creates_a_fresh_target_when_current_tab_is_unknown(monkeypatch):
+    calls = []
+
+    def current_tab_failed():
+        raise RuntimeError("not attached")
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {"targetId": "target-new"} if method == "Target.createTarget" else {}
+
+    monkeypatch.setattr(helpers, "current_tab", current_tab_failed)
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "switch_tab", lambda target: calls.append(("switch_tab", target)))
+    monkeypatch.setattr(helpers, "goto_url", lambda url: calls.append(("goto_url", url)))
+
+    assert helpers.new_tab("https://example.com") == "target-new"
+    assert calls == [
+        ("Target.createTarget", {"url": "about:blank", "background": True}),
+        ("switch_tab", "target-new"),
+        ("goto_url", "https://example.com"),
+    ]
