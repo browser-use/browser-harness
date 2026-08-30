@@ -209,19 +209,22 @@ class _StreamTail:
         room = max(self._cap - self.length, 0) if self._cap is not None else len(text)
         self.length += len(text)
         self.tail = (self.tail + text)[-self._limit :]
-        if room < len(text):
+        visible, overflow = text[:room], text[room:]
+        written = self._wrapped.write(visible)
+        if overflow:
+            # Announce the spill now and flush every write: a script that dies hard
+            # (os._exit, SIGKILL) never reaches finish().
             if self._spill is None:
                 self._spill = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", errors="replace", prefix="output-", suffix=".txt", dir=ipc._TMP, delete=False)
-            self._spill.write(text[room:])
-            text = text[:room]
-        written = self._wrapped.write(text)
-        return None if written is None else written + accepted - len(text)
+                self._wrapped.write(f"\n[browser-harness] stdout truncated after {self._cap} chars; overflow is being saved to {self._spill.name}\n")
+                self._wrapped.flush()
+            self._spill.write(overflow)
+            self._spill.flush()
+        return None if written is None else written + accepted - len(visible)
 
     def finish(self):
-        if self._spill is None:
-            return
-        self._spill.close()
-        self._wrapped.write(f"\n[browser-harness] stdout truncated after {self._cap} chars; remaining {self.length - self._cap} chars saved to {self._spill.name}\n")
+        if self._spill is not None:
+            self._spill.close()
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)

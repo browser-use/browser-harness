@@ -30,7 +30,7 @@ def test_stream_tail_cap_spills_overflow(monkeypatch, tmp_path):
     tail.finish()
 
     spill, = tmp_path.glob("output-*.txt")
-    assert out.getvalue() == f"abcde\n[browser-harness] stdout truncated after 5 chars; remaining 3 chars saved to {spill}\n"
+    assert out.getvalue() == f"abcde\n[browser-harness] stdout truncated after 5 chars; overflow is being saved to {spill}\n"
     assert spill.read_text() == "fgh"
     assert tail.length == 8 and tail.tail == "abcdefgh"
 
@@ -58,7 +58,7 @@ def test_main_caps_stdout_and_spills_on_exit(monkeypatch, tmp_path):
         run.main()
 
     spill, = tmp_path.glob("output-*.txt")
-    assert stdout.getvalue() == "x" * 20000 + f"\n[browser-harness] stdout truncated after 20000 chars; remaining 10001 chars saved to {spill}\n"
+    assert stdout.getvalue() == "x" * 20000 + f"\n[browser-harness] stdout truncated after 20000 chars; overflow is being saved to {spill}\n"
     assert spill.read_text() == "x" * 10000 + "\n"
 
 
