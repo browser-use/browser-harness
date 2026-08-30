@@ -1,0 +1,23 @@
+SKILL.md
+  s_bea25444757db5::t_ab25e54332c9fb 63,190-191
+interaction-skills/macos-remote-debugging.md
+  s_bea25444757db5::t_e82ad6338f704f 51-64
+skills/macos-remote-debugging/SKILL.md
+  s_bea25444757db5::t_ab25e54332c9fb 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b377b72898acfb313f9414f758051b9403b87e17",
+  "prompts": {},
+  "sessions": {
+    "s_bea25444757db5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a045a9-16d5-7191-b8e5-33f8c9b3edcd",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}

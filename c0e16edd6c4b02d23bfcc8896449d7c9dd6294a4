@@ -1,0 +1,43 @@
+SKILL.md
+  s_4a40fabbba0ba5::t_e49296a6c726a4 66,84
+install.md
+  s_bea25444757db5::t_a83eaae11321e2 57,74
+src/browser_harness/admin.py
+  s_bea25444757db5::t_6ceb15d7bd365c 450,478
+  s_eb3320863de11b::t_b05b223f609a13 1272,1090,1189,1224,1242,1250,1306,1312,1376,1393
+  s_4a40fabbba0ba5::t_fdced27949d1f9 455
+  s_4a40fabbba0ba5::t_8ef02b0b20dd20 483
+  s_bea25444757db5::t_3683c47e2e01f3 1091-1095
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c0e16edd6c4b02d23bfcc8896449d7c9dd6294a4",
+  "prompts": {},
+  "sessions": {
+    "s_4a40fabbba0ba5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47d01427-f6d6-46fb-9b50-e8313c68969f",
+        "model": "unknown"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    },
+    "s_bea25444757db5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a045a9-16d5-7191-b8e5-33f8c9b3edcd",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    },
+    "s_eb3320863de11b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eac55c07-1a7c-43ca-9b73-404efcc46ac2",
+        "model": "unknown"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}
