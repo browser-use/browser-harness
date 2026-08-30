@@ -1,3 +1,6 @@
+import codecs
+import email.message
+import gzip
 import os
 import tempfile
 import time
@@ -466,3 +469,121 @@ def test_new_tab_reuses_an_empty_data_document(monkeypatch):
 
     assert helpers.new_tab("https://example.com") == "target-placeholder"
     assert calls == [("goto_url", "https://example.com")]
+
+
+# --- http_get charset handling ---
+
+
+class _FakeResponse:
+    """Minimal stand-in for the object urlopen() yields as a context manager."""
+
+    def __init__(self, body, content_type=None, content_encoding=None):
+        self._body = body
+        self.headers = email.message.Message()
+        if content_type:
+            self.headers["Content-Type"] = content_type
+        if content_encoding:
+            self.headers["Content-Encoding"] = content_encoding
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def _headers(content_type=None):
+    headers = email.message.Message()
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def _fetch(body, content_type=None, content_encoding=None):
+    response = _FakeResponse(body, content_type, content_encoding)
+    with patch.dict(os.environ, {}, clear=False), \
+         patch("browser_harness.helpers.urllib.request.urlopen", return_value=response):
+        os.environ.pop("BROWSER_USE_API_KEY", None)
+        return helpers.http_get("https://example.test/")
+
+
+def test_http_get_honours_the_content_type_charset():
+    body = "café".encode("windows-1252")
+    assert _fetch(body, content_type="text/html; charset=windows-1252") == "café"
+
+
+def test_http_get_falls_back_to_the_meta_charset():
+    """The header-less legacy page is the case that actually breaks in the wild."""
+    body = "<html><head><meta charset=\"gbk\"></head><body>中文</body></html>".encode("gbk")
+    assert "中文" in _fetch(body, content_type="text/html")
+
+
+def test_http_get_strips_a_utf8_bom():
+    body = codecs.BOM_UTF8 + "hello".encode("utf-8")
+    assert _fetch(body) == "hello"
+
+
+_BOM_TEXT = "héllo 中文"
+
+
+@pytest.mark.parametrize(
+    "bom, encoding",
+    [
+        (codecs.BOM_UTF16_LE, "utf-16-le"),
+        (codecs.BOM_UTF16_BE, "utf-16-be"),
+        (codecs.BOM_UTF32_LE, "utf-32-le"),
+        (codecs.BOM_UTF32_BE, "utf-32-be"),
+    ],
+    ids=["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"],
+)
+def test_http_get_decodes_every_utf_bom(bom, encoding):
+    """A BOM wins outright, so these decode with no charset declared anywhere."""
+    assert _fetch(bom + _BOM_TEXT.encode(encoding)) == _BOM_TEXT
+
+
+def test_utf32_bom_is_checked_before_utf16():
+    """Pins the branch order in _response_encoding().
+
+    BOM_UTF32_LE (\xff\xfe\x00\x00) starts with BOM_UTF16_LE (\xff\xfe), so a
+    UTF-16 check placed first swallows every UTF-32LE document and decodes it
+    as UTF-16 -- no exception, just silently wrong text. The big-endian BOMs do
+    not overlap, so LE is the only ordering that matters.
+    """
+    assert codecs.BOM_UTF32_LE.startswith(codecs.BOM_UTF16_LE)
+    assert not codecs.BOM_UTF32_BE.startswith(codecs.BOM_UTF16_BE)
+
+    body = codecs.BOM_UTF32_LE + _BOM_TEXT.encode("utf-32-le")
+    assert helpers._response_encoding(body, _headers()) == "utf-32"
+    # What the reordered version would have produced, spelled out.
+    assert body.decode("utf-16", errors="replace") != _BOM_TEXT
+
+
+def test_utf16_document_is_not_mistaken_for_utf32():
+    """The reverse direction: a UTF-16LE body must not trip the UTF-32 branch."""
+    body = codecs.BOM_UTF16_LE + _BOM_TEXT.encode("utf-16-le")
+    assert not body.startswith(codecs.BOM_UTF32_LE)
+    assert helpers._response_encoding(body, _headers()) == "utf-16"
+
+
+def test_http_get_defaults_to_utf8_without_any_declaration():
+    assert _fetch("héllo".encode("utf-8")) == "héllo"
+
+
+def test_http_get_ignores_an_unknown_charset():
+    body = "plain".encode("utf-8")
+    assert _fetch(body, content_type="text/html; charset=totally-not-a-codec") == "plain"
+
+
+def test_http_get_replaces_undecodable_bytes_instead_of_raising():
+    """A mislabelled page must not take the whole fetch down."""
+    body = b"ok \xe9\xff nope"
+    assert _fetch(body, content_type="text/html; charset=utf-8") == "ok \ufffd\ufffd nope"
+
+
+def test_http_get_decodes_after_gunzip():
+    body = gzip.compress("café".encode("windows-1252"))
+    result = _fetch(body, content_type="text/html; charset=windows-1252", content_encoding="gzip")
+    assert result == "café"
