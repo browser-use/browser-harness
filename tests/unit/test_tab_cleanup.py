@@ -9,10 +9,12 @@ from browser_harness import helpers
 def reset_tab_ownership():
     helpers._OPENED_TABS.clear()
     helpers._REUSED_BLANK_TABS.clear()
+    helpers._RETURN_TAB_ID = None
     helpers.keep_opened_tabs(False)
     yield
     helpers._OPENED_TABS.clear()
     helpers._REUSED_BLANK_TABS.clear()
+    helpers._RETURN_TAB_ID = None
     helpers.keep_opened_tabs(False)
 
 
@@ -29,6 +31,22 @@ def test_new_tab_tracks_only_targets_it_creates():
         assert helpers.new_tab("https://example.com") == "created"
 
     assert helpers.opened_tabs() == ["created"]
+
+
+def test_new_tab_remembers_preexisting_return_tab():
+    def fake_cdp(method, **kwargs):
+        if method == "Target.createTarget":
+            return {"targetId": "created"}
+        return {}
+
+    with patch("browser_harness.helpers.current_tab", return_value={
+        "targetId": "baseline", "target_id": "baseline", "url": "https://example.test", "title": "baseline"
+    }), patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.switch_tab"), \
+         patch("browser_harness.helpers.goto_url"):
+        assert helpers.new_tab("https://example.com") == "created"
+
+    assert helpers._RETURN_TAB_ID == "baseline"
 
 
 def test_reused_blank_tab_is_restored_instead_of_closed():
@@ -77,6 +95,33 @@ def test_cleanup_closes_only_owned_tabs_and_uses_fresh_keeper():
     }
     assert close_ids == {"owned-a", "owned-b"}
     assert helpers.opened_tabs() == []
+
+
+def test_cleanup_returns_to_preexisting_tab_instead_of_creating_keeper():
+    helpers._OPENED_TABS.add("owned")
+    helpers._RETURN_TAB_ID = "baseline"
+    events = []
+
+    def fake_cdp(method, **kwargs):
+        events.append((method, kwargs))
+        if method == "Target.createTarget":
+            raise AssertionError("must reuse the pre-existing return tab")
+        return {"success": True}
+
+    def fake_switch(target):
+        events.append(("switch", {"targetId": target}))
+
+    with patch("browser_harness.helpers.current_tab", return_value={"targetId": "owned"}), \
+         patch("browser_harness.helpers.switch_tab", side_effect=fake_switch), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.list_tabs", return_value=[]):
+        assert helpers.close_opened_tabs() == ["owned"]
+
+    assert events == [
+        ("switch", {"targetId": "baseline"}),
+        ("Target.closeTarget", {"targetId": "owned"}),
+    ]
+    assert helpers._RETURN_TAB_ID is None
 
 
 def test_cleanup_creates_keeper_before_closing_only_remaining_tab():

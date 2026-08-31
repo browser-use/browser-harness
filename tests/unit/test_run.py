@@ -11,10 +11,12 @@ from browser_harness import run
 def reset_tab_ownership():
     run.helper_module._OPENED_TABS.clear()
     run.helper_module._REUSED_BLANK_TABS.clear()
+    run.helper_module._RETURN_TAB_ID = None
     run.helper_module.keep_opened_tabs(False)
     yield
     run.helper_module._OPENED_TABS.clear()
     run.helper_module._REUSED_BLANK_TABS.clear()
+    run.helper_module._RETURN_TAB_ID = None
     run.helper_module.keep_opened_tabs(False)
 
 

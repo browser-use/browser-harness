@@ -357,6 +357,7 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 _OPENED_TABS = set()
 _REUSED_BLANK_TABS = {}
 _KEEP_OPENED_TABS = False
+_RETURN_TAB_ID = None
 
 
 def _is_agent_startup_placeholder(title, url):
@@ -430,13 +431,15 @@ def switch_tab(target, activate=False):
     return sid
 
 def new_tab(url="about:blank"):
+    global _RETURN_TAB_ID
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
-        try:
-            cur = current_tab()
-            cur_url = cur.get("url") or ""
+    cur = None
+    try:
+        cur = current_tab()
+        cur_url = cur.get("url") or ""
+        if url != "about:blank":
             # Reuse attached tab when it's blank
             if (
                 cur_url in ("", "about:blank", "data:text/html,")
@@ -447,8 +450,12 @@ def new_tab(url="about:blank"):
                 _REUSED_BLANK_TABS.setdefault(target_id, cur_url or "about:blank")
                 goto_url(url)
                 return target_id
-        except Exception:
-            pass
+    except Exception:
+        pass
+    if cur:
+        current_id = cur.get("targetId") or cur.get("target_id")
+        if current_id and current_id not in _OPENED_TABS and _RETURN_TAB_ID is None:
+            _RETURN_TAB_ID = current_id
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     _OPENED_TABS.add(tid)
     switch_tab(tid)
@@ -493,6 +500,15 @@ def _move_to_keeper(target_ids):
     if current_id not in target_ids:
         return set(), []
 
+    if _RETURN_TAB_ID and _RETURN_TAB_ID not in target_ids:
+        try:
+            switch_tab(_RETURN_TAB_ID)
+            return set(), []
+        except Exception:
+            # The original tab may have been closed while the task was running.
+            # Fall back to a fresh neutral target before closing the owned one.
+            pass
+
     keeper_id = None
     try:
         keeper_id = cdp("Target.createTarget", url="about:blank")["targetId"]
@@ -523,6 +539,7 @@ def _cleanup_error_message(failures):
 
 def close_opened_tabs(force=False):
     """Close created tabs and restore blank tabs reused by this CLI process."""
+    global _RETURN_TAB_ID
     if _KEEP_OPENED_TABS and not force:
         # Keeping means hands off every tab this invocation touched, not just
         # ones it created via Target.createTarget. new_tab() usually reuses
@@ -533,6 +550,7 @@ def close_opened_tabs(force=False):
         # common case a caller relies on it for.
         _OPENED_TABS.clear()
         _REUSED_BLANK_TABS.clear()
+        _RETURN_TAB_ID = None
         return []
 
     _, failures = _restore_reused_blank_tabs()
@@ -541,6 +559,7 @@ def close_opened_tabs(force=False):
     if not target_ids:
         if failures:
             raise RuntimeError(_cleanup_error_message(failures))
+        _RETURN_TAB_ID = None
         return []
 
     protected_ids, handoff_failures = _move_to_keeper(target_ids)
@@ -577,6 +596,7 @@ def close_opened_tabs(force=False):
             time.sleep(0.05)
     if failures:
         raise RuntimeError(_cleanup_error_message(failures))
+    _RETURN_TAB_ID = None
     return closed
 
 def close_tab(target=None):
