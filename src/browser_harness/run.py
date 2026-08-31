@@ -404,21 +404,27 @@ def _run(args):
             print(f"browser-harness: {e}", file=sys.stderr)
             sys.exit(1)
     _install_helper_trace()
+    helper_module._reset_tab_ownership()
+    task_failed = False
     try:
         exec(code, globals())
+    except BaseException:
+        task_failed = True
+        raise
     finally:
         keep_tabs = os.environ.get("BH_KEEP_TABS", "").lower()
         try:
             if keep_tabs in {"1", "true", "yes"}:
                 helper_module.keep_opened_tabs()
             helper_module.close_opened_tabs()
-        except Exception as exc:
-            # Cleanup must never replace the browser task's result or exception.
-            print(f"Warning: automatic tab cleanup failed: {exc}", file=sys.stderr)
+        except BaseException as exc:
+            if task_failed:
+                # Preserve the task's original error when cleanup also fails.
+                print(f"Warning: automatic tab cleanup failed: {exc}", file=sys.stderr)
+            else:
+                raise
         finally:
-            # main() can be exercised repeatedly in one Python process by tests
-            # and embedders, so keep the opt-out scoped to one invocation.
-            helper_module.keep_opened_tabs(False)
+            helper_module._reset_tab_ownership()
 
 
 if __name__ == "__main__":

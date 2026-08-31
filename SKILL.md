@@ -25,9 +25,9 @@ PY
 
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
-- First navigation for a task is `new_tab(url)`, not `goto_url(url)`. The daemon
-  preserves the attached tab across separate CLI invocations, so do not call
-  `new_tab()` again in every script.
+- First navigation for an invocation is `new_tab(url)`, not `goto_url(url)`.
+  Tabs created or borrowed by that invocation are cleaned up when it exits;
+  call `keep_opened_tabs()` only when a later invocation must reuse them.
 - Keep one working tab per task/site. Before opening another, inspect
   `current_tab()` and `list_tabs()` and use `switch_tab()` to reuse a matching
   tab. Do not leave duplicate tabs on the same URL or close tabs you did not
@@ -154,8 +154,7 @@ recording path while the main agent returns the task result.
 
 - Tabs created by `new_tab()` are closed automatically when the CLI invocation ends, including after an error.
 - If `new_tab()` reuses an existing blank page, that page is restored to `about:blank` instead of being closed.
-- To keep new tabs for a later invocation, call `keep_opened_tabs()` or set `BH_KEEP_TABS=1`. The later workflow is responsible for closing them explicitly.
-- Preservation applies to tabs created by the invocation. A pre-existing blank tab borrowed by `new_tab()` is still restored to `about:blank`.
+- To keep new or borrowed tabs for a later invocation, call `keep_opened_tabs()` or set `BH_KEEP_TABS=1`. The later workflow is responsible for closing them explicitly.
 - Existing tabs and tabs opened by another process are never automatically closed.
 - Popups and pages opened indirectly with `window.open()` or `target=_blank` are not process-owned and are left open.
 

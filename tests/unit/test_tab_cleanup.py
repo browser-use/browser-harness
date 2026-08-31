@@ -67,6 +67,25 @@ def test_reused_blank_tab_is_restored_instead_of_closed():
     assert not any(call.args[0] == "Target.closeTarget" for call in cdp.call_args_list)
 
 
+@pytest.mark.parametrize(
+    "internal_url",
+    ["chrome://newtab/", "chrome://new-tab-page/", "edge://newtab/", "about:newtab"],
+)
+def test_reused_internal_new_tab_restores_to_about_blank(internal_url):
+    with patch("browser_harness.helpers.current_tab", return_value={
+        "targetId": "blank", "target_id": "blank", "url": internal_url, "title": "New Tab"
+    }), patch("browser_harness.helpers.goto_url"):
+        assert helpers.new_tab("https://example.com") == "blank"
+
+    assert helpers._REUSED_BLANK_TABS == {"blank": "about:blank"}
+
+    with patch("browser_harness.helpers.switch_tab"), \
+         patch("browser_harness.helpers.goto_url") as restore:
+        helpers.close_opened_tabs()
+
+    restore.assert_called_once_with("about:blank")
+
+
 def test_cleanup_closes_only_owned_tabs_and_uses_fresh_keeper():
     helpers._OPENED_TABS.update({"owned-a", "owned-b"})
     events = []
@@ -167,8 +186,21 @@ def test_cleanup_keeps_current_tab_if_safe_session_handoff_fails():
         call.kwargs["targetId"] for call in cdp.call_args_list
         if call.args[0] == "Target.closeTarget"
     ]
-    assert closed == ["keeper", "other"]
+    assert closed == ["other"]
     assert "current" in helpers.opened_tabs()
+
+
+def test_close_tab_releases_explicitly_closed_owned_target():
+    helpers._OPENED_TABS.add("owned")
+    helpers._REUSED_BLANK_TABS["owned"] = "about:blank"
+    helpers._RETURN_TAB_ID = "owned"
+
+    with patch("browser_harness.helpers.cdp", return_value={"success": True}):
+        helpers.close_tab("owned")
+
+    assert helpers.opened_tabs() == []
+    assert helpers._REUSED_BLANK_TABS == {}
+    assert helpers._RETURN_TAB_ID is None
 
 
 def test_keep_opened_tabs_requires_force_to_clean_up():
@@ -262,20 +294,23 @@ def test_failed_close_is_retried_and_retained():
     assert helpers.opened_tabs() == []
 
 
-def test_failed_keeper_cleanup_is_retained_for_retry():
+def test_failed_keeper_handoff_never_closes_ambiguous_keeper():
     helpers._OPENED_TABS.update({"current", "other"})
 
     def fake_cdp(method, **kwargs):
         if method == "Target.createTarget":
             return {"targetId": "keeper"}
-        if method == "Target.closeTarget" and kwargs["targetId"] == "keeper":
-            raise RuntimeError("keeper close failed")
         return {"success": True}
 
     with patch("browser_harness.helpers.current_tab", return_value={"targetId": "current"}), \
          patch("browser_harness.helpers.switch_tab", side_effect=RuntimeError("attach failed")), \
-         patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
-         pytest.raises(RuntimeError, match="keeper: keeper close failed"):
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp) as cdp, \
+         pytest.raises(RuntimeError, match="keeper handoff"):
         helpers.close_opened_tabs()
 
-    assert set(helpers.opened_tabs()) == {"current", "keeper"}
+    closed = [
+        call.kwargs["targetId"] for call in cdp.call_args_list
+        if call.args[0] == "Target.closeTarget"
+    ]
+    assert closed == ["other"]
+    assert helpers.opened_tabs() == ["current"]

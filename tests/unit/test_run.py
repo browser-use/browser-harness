@@ -34,6 +34,20 @@ def test_stdin_executes_code():
     assert stdout.getvalue().strip() == "hello from stdin"
 
 
+def test_stdin_resets_stale_tab_ownership_before_exec():
+    run.helper_module._OPENED_TABS.add("stale")
+    stdout = StringIO()
+
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"), \
+         patch("sys.stdin", StringIO("print(opened_tabs())")), \
+         patch("sys.stdout", stdout):
+        run.main()
+
+    assert stdout.getvalue().strip() == "[]"
+
+
 def test_require_existing_daemon_never_auto_starts(monkeypatch):
     monkeypatch.setenv("BH_REQUIRE_EXISTING_DAEMON", "1")
     with patch.object(sys, "argv", ["browser-harness"]), \
@@ -87,6 +101,42 @@ def test_cleanup_failure_does_not_mask_task_error():
     assert "automatic tab cleanup failed: cleanup failed" in stderr.getvalue()
 
 
+def test_cleanup_baseexception_does_not_mask_task_error():
+    class CleanupAbort(BaseException):
+        pass
+
+    stderr = StringIO()
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"), \
+         patch(
+             "browser_harness.run.helper_module.close_opened_tabs",
+             side_effect=CleanupAbort("cleanup aborted"),
+         ), \
+         patch("sys.stdin", StringIO("raise RuntimeError('task failed')")), \
+         patch("sys.stderr", stderr), \
+         pytest.raises(RuntimeError, match="task failed"):
+        run.main()
+
+    assert "automatic tab cleanup failed: cleanup aborted" in stderr.getvalue()
+
+
+def test_cleanup_baseexception_propagates_after_success():
+    class CleanupAbort(BaseException):
+        pass
+
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"), \
+         patch(
+             "browser_harness.run.helper_module.close_opened_tabs",
+             side_effect=CleanupAbort("cleanup aborted"),
+         ), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         pytest.raises(CleanupAbort, match="cleanup aborted"):
+        run.main()
+
+
 def test_real_cleanup_runs_after_task_error():
     closed = []
 
@@ -98,13 +148,10 @@ def test_real_cleanup_runs_after_task_error():
     with patch.object(sys, "argv", ["browser-harness"]), \
          patch("browser_harness.run.ensure_daemon"), \
          patch("browser_harness.run.print_update_banner"), \
-         patch.object(run.helper_module, "_OPENED_TABS", {"owned"}), \
-         patch.object(run.helper_module, "_REUSED_BLANK_TABS", {}), \
-         patch.object(run.helper_module, "_KEEP_OPENED_TABS", False), \
          patch("browser_harness.helpers.current_tab", return_value={"targetId": "survivor"}), \
          patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.list_tabs", return_value=[]), \
-         patch("sys.stdin", StringIO("raise RuntimeError('task failed')")), \
+         patch("sys.stdin", StringIO("helper_module._OPENED_TABS.add('owned'); raise RuntimeError('task failed')")), \
          pytest.raises(RuntimeError, match="task failed"):
         run.main()
 
@@ -132,8 +179,7 @@ def test_bh_keep_tabs_skips_automatic_cleanup(monkeypatch, value):
          patch("sys.stdin", StringIO("x = 1")):
         run.main()
 
-    keep.assert_any_call()
-    keep.assert_called_with(False)
+    keep.assert_called_once_with()
     cleanup.assert_called_once_with()
 
 
@@ -153,15 +199,16 @@ def test_bh_keep_tabs_releases_owned_and_borrowed_blank_tabs_untouched(monkeypat
     # new_tab() usually reuses the current blank tab instead of creating a
     # new one, so most "kept" tabs in practice go through that path.
     monkeypatch.setenv("BH_KEEP_TABS", "1")
-    run.helper_module._OPENED_TABS.add("created")
-    run.helper_module._REUSED_BLANK_TABS["blank"] = "about:blank"
 
     with patch.object(sys, "argv", ["browser-harness"]), \
          patch("browser_harness.run.ensure_daemon"), \
          patch("browser_harness.run.print_update_banner"), \
          patch("browser_harness.helpers.switch_tab") as switch, \
          patch("browser_harness.helpers.goto_url") as restore, \
-         patch("sys.stdin", StringIO("x = 1")):
+         patch("sys.stdin", StringIO(
+             "helper_module._OPENED_TABS.add('created'); "
+             "helper_module._REUSED_BLANK_TABS['blank'] = 'about:blank'"
+         )):
         run.main()
 
     switch.assert_not_called()

@@ -360,6 +360,22 @@ _KEEP_OPENED_TABS = False
 _RETURN_TAB_ID = None
 
 
+def _reset_tab_ownership():
+    """Reset process-local ownership before and after one CLI invocation."""
+    global _KEEP_OPENED_TABS, _RETURN_TAB_ID
+    _OPENED_TABS.clear()
+    _REUSED_BLANK_TABS.clear()
+    _KEEP_OPENED_TABS = False
+    _RETURN_TAB_ID = None
+
+
+def _blank_restore_url(url):
+    url = str(url or "")
+    if url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")):
+        return "about:blank"
+    return url or "about:blank"
+
+
 def _is_agent_startup_placeholder(title, url):
     url = str(url or "")
     return str(title or "").startswith("Starting agent ") and (
@@ -447,7 +463,7 @@ def new_tab(url="about:blank"):
                 or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
             ):
                 target_id = cur.get("targetId") or cur.get("target_id")
-                _REUSED_BLANK_TABS.setdefault(target_id, cur_url or "about:blank")
+                _REUSED_BLANK_TABS.setdefault(target_id, _blank_restore_url(cur_url))
                 goto_url(url)
                 return target_id
     except Exception:
@@ -516,19 +532,11 @@ def _move_to_keeper(target_ids):
         # The keeper becomes the daemon's neutral anchor. It is intentionally
         # not owned by this invocation and can be reused by the next new_tab().
     except Exception as exc:
-        failures = [("keeper handoff", exc)]
-        if keeper_id:
-            try:
-                result = cdp("Target.closeTarget", targetId=keeper_id)
-                if not result.get("success", True):
-                    raise RuntimeError("Target.closeTarget returned false")
-            except Exception as close_exc:
-                # Retain ownership so a later invocation can retry cleanup.
-                _OPENED_TABS.add(keeper_id)
-                failures.append((keeper_id, close_exc))
-        # Keeping one page is better than leaving the daemon attached to a dead
-        # target. Other owned tabs can still be cleaned up safely.
-        return {current_id}, failures
+        # switch_tab() can fail after the daemon accepted set_session. Closing
+        # the keeper here could therefore strand it on a dead target. Leave the
+        # neutral page open and keep the current owned target as a second safe
+        # anchor; unrelated owned targets can still be cleaned up.
+        return {current_id}, [("keeper handoff", exc)]
     return set(), []
 
 
@@ -602,10 +610,17 @@ def close_opened_tabs(force=False):
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
     Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
+    global _RETURN_TAB_ID
     target_id = _target_id(target)
     if target_id is None:
         target_id = current_tab()["targetId"]
-    cdp("Target.closeTarget", targetId=target_id)
+    result = cdp("Target.closeTarget", targetId=target_id)
+    if not result.get("success", True):
+        raise RuntimeError("Target.closeTarget returned false")
+    _OPENED_TABS.discard(target_id)
+    _REUSED_BLANK_TABS.pop(target_id, None)
+    if _RETURN_TAB_ID == target_id:
+        _RETURN_TAB_ID = None
 
 
 def ensure_real_tab():
