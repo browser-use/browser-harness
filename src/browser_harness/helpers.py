@@ -543,12 +543,9 @@ def _move_to_keeper(target_ids):
             except Exception:
                 pass
         if keeper_id and keeper_attached is False:
-            try:
-                result = cdp("Target.closeTarget", targetId=keeper_id)
-                if not result.get("success", True):
-                    raise RuntimeError("Target.closeTarget returned false")
-            except Exception as close_exc:
-                failures.append((keeper_id, close_exc))
+            close_error = _close_target_with_retry(keeper_id)
+            if close_error is not None:
+                failures.append((keeper_id, close_error))
         return {current_id}, failures
     return set(), []
 
@@ -556,6 +553,19 @@ def _move_to_keeper(target_ids):
 def _cleanup_error_message(failures):
     details = ", ".join(f"{target}: {error}" for target, error in failures)
     return f"tab cleanup incomplete ({details})"
+
+
+def _close_target_with_retry(target_id):
+    last_error = None
+    for _ in range(2):
+        try:
+            result = cdp("Target.closeTarget", targetId=target_id)
+            if result.get("success", True):
+                return None
+            last_error = RuntimeError("Target.closeTarget returned false")
+        except Exception as exc:
+            last_error = exc
+    return last_error
 
 
 def close_opened_tabs(force=False):
@@ -589,18 +599,9 @@ def close_opened_tabs(force=False):
 
     closed = []
     for target_id in list(target_ids):
-        last_error = None
-        for _ in range(2):
-            try:
-                result = cdp("Target.closeTarget", targetId=target_id)
-                if result.get("success", True):
-                    closed.append(target_id)
-                    last_error = None
-                    break
-                last_error = RuntimeError("Target.closeTarget returned false")
-            except Exception as exc:
-                last_error = exc
+        last_error = _close_target_with_retry(target_id)
         if last_error is None:
+            closed.append(target_id)
             _OPENED_TABS.discard(target_id)
         else:
             failures.append((target_id, last_error))

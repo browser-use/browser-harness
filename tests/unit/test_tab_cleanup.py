@@ -170,10 +170,15 @@ def test_cleanup_creates_keeper_before_closing_only_remaining_tab():
 
 def test_cleanup_keeps_current_tab_if_safe_session_handoff_fails():
     helpers._OPENED_TABS.update({"current", "other"})
+    attempts = {"keeper": 0}
 
     def fake_cdp(method, **kwargs):
         if method == "Target.createTarget":
             return {"targetId": "keeper"}
+        if method == "Target.closeTarget" and kwargs["targetId"] == "keeper":
+            attempts["keeper"] += 1
+            if attempts["keeper"] == 1:
+                raise RuntimeError("transient close failure")
         return {"success": True}
 
     with patch("browser_harness.helpers.current_tab", return_value={"targetId": "current"}), \
@@ -186,7 +191,7 @@ def test_cleanup_keeps_current_tab_if_safe_session_handoff_fails():
         call.kwargs["targetId"] for call in cdp.call_args_list
         if call.args[0] == "Target.closeTarget"
     ]
-    assert closed == ["keeper", "other"]
+    assert closed == ["keeper", "keeper", "other"]
     assert helpers.opened_tabs() == ["current"]
 
 
