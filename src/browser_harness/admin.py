@@ -1194,6 +1194,66 @@ def _prompt_yes(question, default_yes=True, yes=False):
     return ans.startswith("y")
 
 
+def _pip_available():
+    import importlib.util
+
+    return importlib.util.find_spec("pip") is not None
+
+
+def _pypi_upgrade_commands():
+    """Upgrade candidates for a wheel install, best first. Empty when none apply.
+
+    uv leads whenever it is on PATH, because install.md documents
+    `uv tool install`. pip follows rather than replacing it: `uv tool upgrade`
+    only manages what `uv tool install` put there, so on a pip or pipx install
+    it fails with "`browser-harness` is not installed" — having uv on PATH must
+    not be the end of the road for those users.
+
+    pip is only offered when this interpreter actually has it, which is what
+    keeps the retry away from a uv-managed install: uv builds its tool venvs
+    without pip, so inside one there is nothing to retry with and uv's own
+    failure stands.
+    """
+    import shutil
+
+    commands = []
+    if shutil.which("uv"):
+        commands.append(["uv", "tool", "upgrade", "browser-harness"])
+    if _pip_available():
+        commands.append([sys.executable, "-m", "pip", "install", "--upgrade", "browser-harness"])
+    return commands
+
+
+def _run_upgrade(commands):
+    """Run upgrade candidates until one succeeds. 0 on success, else the last failure.
+
+    A candidate falling over while others remain is not the upgrade failing, so
+    it reads as a retry note. uv declining a pip install is the expected route
+    to the pip candidate, and calling that "upgrade failed" on a run that then
+    succeeds and exits 0 just teaches readers to distrust the output. Only the
+    last candidate gets to call itself an error.
+    """
+    last = 1
+    for index, command in enumerate(commands):
+        printable = " ".join(command)
+        try:
+            last = subprocess.run(command).returncode
+        except OSError as e:
+            # shutil.which() said the binary was there; PATH can still be stale,
+            # or the file can be unexecutable. Never let it surface as a traceback.
+            problem, last = f"could not run `{printable}` ({e})", 1
+        else:
+            if last == 0:
+                return 0
+            problem = f"`{printable}` could not upgrade this install"
+        remaining = commands[index + 1:]
+        if remaining:
+            print(f"{problem}; retrying with `{' '.join(remaining[0])}`", file=sys.stderr)
+        else:
+            print(f"upgrade failed: {problem}", file=sys.stderr)
+    return last
+
+
 def run_update(yes=False):
     """Pull the latest version and (after prompt) restart the daemon so it picks up changed code.
 
@@ -1227,9 +1287,17 @@ def run_update(yes=False):
         if r.returncode != 0:
             return r.returncode
     elif mode == "pypi":
-        tool_upgrade = subprocess.run(["uv", "tool", "upgrade", "browser-harness"])
-        if tool_upgrade.returncode != 0:
-            return tool_upgrade.returncode
+        commands = _pypi_upgrade_commands()
+        if not commands:
+            print(
+                "can't auto-update: neither uv nor pip is available. Install uv "
+                "(https://docs.astral.sh/uv/) or reinstall browser-harness with pip.",
+                file=sys.stderr,
+            )
+            return 1
+        failure = _run_upgrade(commands)
+        if failure != 0:
+            return failure
     else:
         print("unknown install mode; can't auto-update.", file=sys.stderr)
         return 1

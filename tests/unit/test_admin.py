@@ -886,3 +886,146 @@ def test_process_start_time_returns_none_for_invalid_pid():
         )
     # 2**31 - 1 is the largest pid_t; in practice no live process at that PID.
     assert admin._process_start_time((1 << 31) - 1) is None
+
+
+# --- run_update: PyPI installs are not always uv installs (#688) ---
+
+
+UV = ["uv", "tool", "upgrade", "browser-harness"]
+PIP = ["-m", "pip", "install", "--upgrade", "browser-harness"]
+
+
+def _available(monkeypatch, *, uv, pip):
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/uv" if (uv and cmd == "uv") else None)
+    monkeypatch.setattr(admin, "_pip_available", lambda: pip)
+
+
+def _stub_update_preamble(monkeypatch, mode="pypi"):
+    """Get run_update() to the install-mode branch and stop before the daemon."""
+    monkeypatch.setattr(admin, "check_for_update", lambda: ("0.1.9", "0.1.10", True))
+    monkeypatch.setattr(admin, "_install_mode", lambda: mode)
+    monkeypatch.setattr(admin, "_cache_read", lambda: {})
+    monkeypatch.setattr(admin, "_cache_write", lambda _data: None)
+    monkeypatch.setattr(admin, "daemon_alive", lambda: False)
+
+
+def _record_runs(monkeypatch, outcomes):
+    """Stub subprocess.run; `outcomes` maps command[0]-ish to a code or an exception."""
+    ran = []
+
+    def fake_run(command, *_args, **_kwargs):
+        ran.append(command)
+        key = "uv" if command[:2] == ["uv", "tool"] else "pip"
+        outcome = outcomes[key]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return type("R", (), {"returncode": outcome})()
+
+    monkeypatch.setattr(admin.subprocess, "run", fake_run)
+    return ran
+
+
+def test_upgrade_candidates_put_uv_first_then_pip(monkeypatch):
+    _available(monkeypatch, uv=True, pip=True)
+    commands = admin._pypi_upgrade_commands()
+    assert commands[0] == UV
+    assert commands[1] == [admin.sys.executable, *PIP]
+
+
+def test_upgrade_candidates_are_pip_only_without_uv(monkeypatch):
+    _available(monkeypatch, uv=False, pip=True)
+    assert admin._pypi_upgrade_commands() == [[admin.sys.executable, *PIP]]
+
+
+def test_upgrade_candidates_are_uv_only_without_pip(monkeypatch):
+    """Inside a uv tool venv there is no pip, so uv's failure has to stand."""
+    _available(monkeypatch, uv=True, pip=False)
+    assert admin._pypi_upgrade_commands() == [UV]
+
+
+def test_upgrade_candidates_empty_without_uv_or_pip(monkeypatch):
+    _available(monkeypatch, uv=False, pip=False)
+    assert admin._pypi_upgrade_commands() == []
+
+
+def test_run_update_retries_with_pip_when_uv_does_not_manage_this_install(monkeypatch, capsys):
+    """`uv tool upgrade` cannot upgrade a pip install, so pip has to actually run."""
+    _stub_update_preamble(monkeypatch)
+    _available(monkeypatch, uv=True, pip=True)
+    ran = _record_runs(monkeypatch, {"uv": 2, "pip": 0})
+
+    assert admin.run_update(yes=True) == 0
+    assert ran == [UV, [admin.sys.executable, *PIP]]
+
+    err = capsys.readouterr().err
+    # The run succeeded, so nothing here may read as a failure: uv declining a
+    # pip install is the expected route to the pip candidate.
+    assert "upgrade failed" not in err
+    assert "`uv tool upgrade browser-harness` could not upgrade this install" in err
+    assert "retrying with" in err
+
+
+def test_run_update_retries_with_pip_when_the_uv_path_entry_is_stale(monkeypatch, capsys):
+    """which() can resolve a binary that is gone or unexecutable by spawn time."""
+    _stub_update_preamble(monkeypatch)
+    _available(monkeypatch, uv=True, pip=True)
+    ran = _record_runs(monkeypatch, {"uv": OSError(13, "Permission denied"), "pip": 0})
+
+    assert admin.run_update(yes=True) == 0
+    assert ran == [UV, [admin.sys.executable, *PIP]]
+    err = capsys.readouterr().err
+    assert "could not run `uv tool upgrade browser-harness`" in err
+    assert "retrying with" in err
+    assert "upgrade failed" not in err
+
+
+def test_run_update_stops_at_uv_when_it_succeeds(monkeypatch):
+    _stub_update_preamble(monkeypatch)
+    _available(monkeypatch, uv=True, pip=True)
+    ran = _record_runs(monkeypatch, {"uv": 0, "pip": 0})
+
+    assert admin.run_update(yes=True) == 0
+    assert ran == [UV], "pip must not run after uv succeeds"
+
+
+def test_run_update_uses_pip_when_uv_is_missing(monkeypatch, capsys):
+    """The originally reported crash: uv absent made subprocess.run raise."""
+    _stub_update_preamble(monkeypatch)
+    _available(monkeypatch, uv=False, pip=True)
+    ran = _record_runs(monkeypatch, {"pip": 0})
+
+    assert admin.run_update(yes=True) == 0
+    assert ran == [[admin.sys.executable, *PIP]]
+    assert "update complete." in capsys.readouterr().out
+
+
+def test_run_update_returns_the_last_failure_when_every_candidate_fails(monkeypatch, capsys):
+    _stub_update_preamble(monkeypatch)
+    _available(monkeypatch, uv=True, pip=True)
+    ran = _record_runs(monkeypatch, {"uv": 2, "pip": 3})
+
+    assert admin.run_update(yes=True) == 3
+    assert len(ran) == 2
+    # Only the final candidate gets to call itself an error.
+    err = capsys.readouterr().err
+    assert err.count("upgrade failed") == 1
+    assert "upgrade failed: `uv" not in err
+
+
+def test_run_update_keeps_uv_failure_when_there_is_no_pip_to_retry(monkeypatch, capsys):
+    _stub_update_preamble(monkeypatch)
+    _available(monkeypatch, uv=True, pip=False)
+    ran = _record_runs(monkeypatch, {"uv": 2})
+
+    assert admin.run_update(yes=True) == 2
+    assert ran == [UV]
+    # Last candidate, nothing left to try: this one really is a failure.
+    assert "upgrade failed" in capsys.readouterr().err
+
+
+def test_run_update_reports_missing_upgrader_instead_of_crashing(monkeypatch, capsys):
+    _stub_update_preamble(monkeypatch)
+    _available(monkeypatch, uv=False, pip=False)
+
+    assert admin.run_update(yes=True) == 1
+    assert "neither uv nor pip is available" in capsys.readouterr().err
