@@ -137,6 +137,19 @@ def test_cleanup_baseexception_propagates_after_success():
         run.main()
 
 
+def test_cleanup_failure_overrides_successful_system_exit():
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"), \
+         patch(
+             "browser_harness.run.helper_module.close_opened_tabs",
+             side_effect=RuntimeError("cleanup failed"),
+         ), \
+         patch("sys.stdin", StringIO("raise SystemExit(0)")), \
+         pytest.raises(RuntimeError, match="cleanup failed"):
+        run.main()
+
+
 def test_real_cleanup_runs_after_task_error():
     closed = []
 

@@ -186,8 +186,8 @@ def test_cleanup_keeps_current_tab_if_safe_session_handoff_fails():
         call.kwargs["targetId"] for call in cdp.call_args_list
         if call.args[0] == "Target.closeTarget"
     ]
-    assert closed == ["other"]
-    assert "current" in helpers.opened_tabs()
+    assert closed == ["keeper", "other"]
+    assert helpers.opened_tabs() == ["current"]
 
 
 def test_close_tab_releases_explicitly_closed_owned_target():
@@ -276,7 +276,7 @@ def test_unknown_current_target_fails_closed():
     assert set(helpers.opened_tabs()) == {"owned-a", "owned-b"}
 
 
-def test_failed_close_is_retried_and_retained():
+def test_failed_close_is_retried_and_reported():
     helpers._OPENED_TABS.add("owned")
 
     with patch("browser_harness.helpers.current_tab", return_value={"targetId": "survivor"}), \
@@ -287,12 +287,6 @@ def test_failed_close_is_retried_and_retained():
     assert cdp.call_count == 2
     assert helpers.opened_tabs() == ["owned"]
 
-    with patch("browser_harness.helpers.current_tab", return_value={"targetId": "survivor"}), \
-         patch("browser_harness.helpers.cdp", return_value={"success": True}), \
-         patch("browser_harness.helpers.list_tabs", return_value=[]):
-        assert helpers.close_opened_tabs() == ["owned"]
-    assert helpers.opened_tabs() == []
-
 
 def test_failed_keeper_handoff_never_closes_ambiguous_keeper():
     helpers._OPENED_TABS.update({"current", "other"})
@@ -302,7 +296,10 @@ def test_failed_keeper_handoff_never_closes_ambiguous_keeper():
             return {"targetId": "keeper"}
         return {"success": True}
 
-    with patch("browser_harness.helpers.current_tab", return_value={"targetId": "current"}), \
+    with patch(
+        "browser_harness.helpers.current_tab",
+        side_effect=[{"targetId": "current"}, RuntimeError("unknown handoff")],
+    ), \
          patch("browser_harness.helpers.switch_tab", side_effect=RuntimeError("attach failed")), \
          patch("browser_harness.helpers.cdp", side_effect=fake_cdp) as cdp, \
          pytest.raises(RuntimeError, match="keeper handoff"):

@@ -532,11 +532,24 @@ def _move_to_keeper(target_ids):
         # The keeper becomes the daemon's neutral anchor. It is intentionally
         # not owned by this invocation and can be reused by the next new_tab().
     except Exception as exc:
-        # switch_tab() can fail after the daemon accepted set_session. Closing
-        # the keeper here could therefore strand it on a dead target. Leave the
-        # neutral page open and keep the current owned target as a second safe
-        # anchor; unrelated owned targets can still be cleaned up.
-        return {current_id}, [("keeper handoff", exc)]
+        failures = [("keeper handoff", exc)]
+        # switch_tab() can fail after the daemon accepted set_session. Read the
+        # daemon's acknowledged target before deciding whether the keeper is
+        # safe to close; ambiguity fails closed and leaves the neutral page.
+        keeper_attached = None
+        if keeper_id:
+            try:
+                keeper_attached = current_tab()["targetId"] == keeper_id
+            except Exception:
+                pass
+        if keeper_id and keeper_attached is False:
+            try:
+                result = cdp("Target.closeTarget", targetId=keeper_id)
+                if not result.get("success", True):
+                    raise RuntimeError("Target.closeTarget returned false")
+            except Exception as close_exc:
+                failures.append((keeper_id, close_exc))
+        return {current_id}, failures
     return set(), []
 
 

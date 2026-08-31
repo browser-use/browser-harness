@@ -408,8 +408,10 @@ def _run(args):
     task_failed = False
     try:
         exec(code, globals())
-    except BaseException:
-        task_failed = True
+    except BaseException as exc:
+        task_failed = not (
+            isinstance(exc, SystemExit) and exc.code in (None, 0)
+        )
         raise
     finally:
         keep_tabs = os.environ.get("BH_KEEP_TABS", "").lower()
