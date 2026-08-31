@@ -898,16 +898,24 @@ def print_update_banner(out=None):
 
 
 def _chrome_running():
-    """Cross-platform best-effort check for a running Chromium-based browser."""
+    """Cross-platform best-effort check for a running Chromium-based browser.
+
+    Shares its process names with daemon.supported_browser_running(). They used
+    to be two hand-maintained lists, and doctor's had drifted: it was missing
+    Brave on both platforms and Chromium on Windows, so users of browsers the
+    harness happily drives were told to "start chrome/edge".
+    """
     import platform, subprocess
+    from .daemon import BROWSER_PROCESSES_POSIX, BROWSER_PROCESSES_WINDOWS
+
     system = platform.system()
     try:
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5)
-            names = ("chrome.exe", "msedge.exe", "helium.exe")
+            names = BROWSER_PROCESSES_WINDOWS
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
+            names = BROWSER_PROCESSES_POSIX
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
@@ -1097,14 +1105,29 @@ def _open_chrome_inspect_once():
         pass
 
 
+def _browser_running(live_connection):
+    """Is a browser running? A live CDP connection settles it on its own.
+
+    Better evidence than a process-name match: it covers the browsers the name
+    probe cannot safely spot (Arc, Dia and Comet have profile dirs but names too
+    common to substring-match — "arc" matches "searchd") and a Chrome launched
+    from an unusual path. Without it, `--doctor` could print a FAIL directly
+    above the attached page it had just listed.
+
+    Shared by both doctor surfaces so `--doctor` and `doctor --json` cannot
+    disagree about what "chrome running" means on the same machine.
+    """
+    return bool(live_connection) or _chrome_running()
+
+
 def run_doctor():
     """Read-only diagnostics. Exit 0 iff everything looks healthy."""
     import platform, sys
     cur = _version()
     mode = _install_mode()
-    chrome = _chrome_running()
     daemon = daemon_alive()
     connections = browser_connections()
+    chrome = _browser_running(connections)
     try:
         auth_state = auth.auth_status()
     except (auth.AuthError, OSError) as e:
@@ -1160,9 +1183,12 @@ def run_doctor_json(require_existing_daemon=False):
     connection; it never starts, repairs, or discovers another daemon.
     """
     strict = bool(require_existing_daemon)
-    chrome = None if strict else _chrome_running()
     browser_ready = daemon_browser_ready(NAME)
     daemon = browser_ready or daemon_alive(NAME)
+    # Same rule the text doctor uses; browser_ready is this surface's live
+    # connection. Strict mode still reports None — it deliberately probes
+    # nothing but the named daemon.
+    chrome = None if strict else _browser_running(browser_ready)
     healthy = (daemon and browser_ready) if strict else (browser_ready or (chrome and daemon))
     report = {
         "schema_version": 1,
