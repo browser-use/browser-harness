@@ -225,6 +225,19 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     return None
 
 
+def http_endpoint_from_ws(ws_url):
+    """Return the DevTools HTTP base for the local browser connection."""
+    if REMOTE_ID or not ws_url:
+        return None
+    parsed = urlparse(ws_url)
+    if not parsed.hostname:
+        return None
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{scheme}://{host}{port}"
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -388,6 +401,7 @@ class _PatientCDPClient(CDPClient):
 class Daemon:
     def __init__(self):
         self.cdp = None
+        self.ws_url = None
         self.session = None
         self.target_id = None
         self.dedicated_target_id = None
@@ -577,6 +591,7 @@ class Daemon:
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
+        self.ws_url = url
         log(f"connecting to {_safe_connection_label(url)}")
         self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
         if BROWSER_KIND == "local":
@@ -628,6 +643,8 @@ class Daemon:
             out = list(self.events); self.events.clear()
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
+        if meta == "http_endpoint":
+            return {"endpoint": http_endpoint_from_ws(self.ws_url)}
         if meta == "current_tab":
             # Resolve the attached page's target info server-side. Helpers can't
             # send Target.getTargetInfo themselves: daemon strips session_id for

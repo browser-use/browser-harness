@@ -1,4 +1,5 @@
-from unittest.mock import patch
+import json
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -31,6 +32,50 @@ def test_new_tab_tracks_only_targets_it_creates():
         assert helpers.new_tab("https://example.com") == "created"
 
     assert helpers.opened_tabs() == ["created"]
+
+
+def test_tab_cap_defaults_to_fifteen_and_closes_oldest_while_preserving_current(monkeypatch):
+    monkeypatch.delenv("BH_MAX_TABS", raising=False)
+    helpers._OPENED_TABS.add("tab-1")
+    helpers._REUSED_BLANK_TABS["tab-2"] = "about:blank"
+    helpers._RETURN_TAB_ID = "tab-1"
+    pages = [
+        {"id": f"tab-{index}", "type": "page", "url": f"https://example.com/{index}"}
+        for index in reversed(range(17))
+    ]
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps(pages).encode()
+
+    with patch("browser_harness.helpers._send", return_value={"endpoint": "http://127.0.0.1:9222"}), \
+         patch("browser_harness.helpers.urllib.request.urlopen", return_value=response), \
+         patch("browser_harness.helpers.cdp", return_value={"success": True}) as cdp:
+        helpers._reap_tabs("tab-0")
+
+    closed = [
+        call.kwargs["targetId"] for call in cdp.call_args_list
+        if call.args[0] == "Target.closeTarget"
+    ]
+    assert closed == ["tab-1", "tab-2"]
+    assert helpers.opened_tabs() == []
+    assert helpers._REUSED_BLANK_TABS == {}
+    assert helpers._RETURN_TAB_ID is None
+
+
+def test_zero_tab_cap_disables_reaping(monkeypatch):
+    monkeypatch.setenv("BH_MAX_TABS", "0")
+    with patch("browser_harness.helpers._send") as send:
+        helpers._reap_tabs("current")
+    send.assert_not_called()
+
+
+def test_reused_blank_tab_still_enforces_global_tab_cap():
+    with patch("browser_harness.helpers.current_tab", return_value={
+        "targetId": "blank", "target_id": "blank", "url": "about:blank", "title": ""
+    }), patch("browser_harness.helpers.goto_url"), \
+         patch("browser_harness.helpers._reap_tabs") as reap:
+        assert helpers.new_tab("https://example.com") == "blank"
+
+    reap.assert_called_once_with("blank")
 
 
 def test_new_tab_remembers_preexisting_return_tab():

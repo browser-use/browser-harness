@@ -155,8 +155,9 @@ recording path while the main agent returns the task result.
 - Tabs created by `new_tab()` are closed automatically when the CLI invocation ends, including after an error.
 - If `new_tab()` reuses an existing blank page, that page is restored to `about:blank` instead of being closed.
 - To keep new or borrowed tabs for a later invocation, call `keep_opened_tabs()` or set `BH_KEEP_TABS=1`. The later workflow is responsible for closing them explicitly.
-- Existing tabs and tabs opened by another process are never automatically closed.
-- Popups and pages opened indirectly with `window.open()` or `target=_blank` are not process-owned and are left open.
+- `new_tab()` also enforces a browser-wide 15-tab ceiling by closing the oldest work tabs. Set `BH_MAX_TABS` to another positive limit or `0` to disable this backstop.
+- Existing tabs and tabs opened by another process are not touched by ownership cleanup, but the browser-wide ceiling can evict them once they are among the oldest work tabs.
+- Popups and pages opened indirectly with `window.open()` or `target=_blank` are not process-owned and are left open unless the browser-wide ceiling evicts them.
 
 ## Interaction Skills
 

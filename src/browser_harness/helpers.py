@@ -446,6 +446,59 @@ def switch_tab(target, activate=False):
     _mark_tab()
     return sid
 
+
+DEFAULT_MAX_TABS = 15
+_TAB_CAP_SKIP = (
+    "chrome://",
+    "chrome-untrusted://",
+    "edge://",
+    "devtools://",
+    "chrome-extension://",
+)
+
+
+def _reap_tabs(keep_id):
+    """Keep automation browsers bounded by closing their oldest work tabs."""
+    global _RETURN_TAB_ID
+    try:
+        max_tabs = int(os.environ.get("BH_MAX_TABS", str(DEFAULT_MAX_TABS)))
+    except ValueError:
+        max_tabs = DEFAULT_MAX_TABS
+    if max_tabs <= 0:
+        return
+
+    try:
+        endpoint = _send({"meta": "http_endpoint"}).get("endpoint")
+        if not endpoint:
+            return
+        with urllib.request.urlopen(f"{endpoint.rstrip('/')}/json/list", timeout=2) as response:
+            pages = [
+                target
+                for target in json.loads(response.read())
+                if target.get("type") == "page"
+                and not target.get("url", "").startswith(_TAB_CAP_SKIP)
+            ]
+    except Exception:
+        return
+
+    excess = len(pages) - max_tabs
+    if excess <= 0:
+        return
+    for target in reversed(pages):
+        target_id = target.get("id")
+        if excess <= 0:
+            break
+        if not target_id or target_id == keep_id:
+            continue
+        if _close_target_with_retry(target_id) is not None:
+            continue
+        _OPENED_TABS.discard(target_id)
+        _REUSED_BLANK_TABS.pop(target_id, None)
+        if _RETURN_TAB_ID == target_id:
+            _RETURN_TAB_ID = None
+        excess -= 1
+
+
 def new_tab(url="about:blank"):
     global _RETURN_TAB_ID
     # Always create blank, then goto: passing url to createTarget races with
@@ -464,6 +517,7 @@ def new_tab(url="about:blank"):
             ):
                 target_id = cur.get("targetId") or cur.get("target_id")
                 _REUSED_BLANK_TABS.setdefault(target_id, _blank_restore_url(cur_url))
+                _reap_tabs(target_id)
                 goto_url(url)
                 return target_id
     except Exception:
@@ -475,6 +529,7 @@ def new_tab(url="about:blank"):
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     _OPENED_TABS.add(tid)
     switch_tab(tid)
+    _reap_tabs(tid)
     if url != "about:blank":
         goto_url(url)
     return tid
