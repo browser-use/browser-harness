@@ -246,6 +246,28 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         f"e.dispatchEvent(new Event('change',{{bubbles:true}}));}})();"
     )
 
+def set_value(selector, value):
+    """Set an input/textarea/select value in one round trip via the native value setter
+    (so React/Vue see it) and fire input+change. Returns the value read back — a page may
+    normalise it (phone masks). Raises RuntimeError if the element is missing. Use
+    fill_input() for widgets that need real keystrokes (typeaheads, incremental masks)."""
+    # e.focus() matters for the recorder, which masks password text by the active element's type.
+    result = js(
+        f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+        f"if(!e)return null;const v={json.dumps(value)};"
+        f"const p=e instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype"
+        f":e instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLInputElement.prototype;"
+        f"const s=Object.getOwnPropertyDescriptor(p,'value')?.set;"
+        f"if(s)s.call(e,v);else e.value=v;"
+        f"e.focus();"
+        f"e.dispatchEvent(new Event('input',{{bubbles:true}}));"
+        f"e.dispatchEvent(new Event('change',{{bubbles:true}}));"
+        f"return e.value;}})()"
+    )
+    if result is None:
+        raise RuntimeError(f"set_value: element not found: {selector!r}")
+    return result
+
 _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "Enter": (13, "Enter", "\r"), "Tab": (9, "Tab", "\t"), "Backspace": (8, "Backspace", ""),
     "Escape": (27, "Escape", ""), "Delete": (46, "Delete", ""), " ": (32, "Space", " "),

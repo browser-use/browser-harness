@@ -29,7 +29,7 @@ from . import paths
 # capture_screenshot, ...) don't get frames — they'd bloat recordings of
 # inspection-heavy sessions without adding visual beats.
 ACTIONS = {
-    "goto_url", "click_at_xy", "type_text", "fill_input", "press_key",
+    "goto_url", "click_at_xy", "type_text", "fill_input", "set_value", "press_key",
     "scroll", "dispatch_key", "upload_file", "new_tab", "switch_tab",
     "close_tab", "ensure_real_tab",
     "wait", "wait_for_load", "wait_for_element", "wait_for_network_idle",
@@ -323,6 +323,9 @@ def _details(helper, args, kwargs, ctx):
     elif helper == "fill_input":
         d["selector"] = arg(0, "selector")
         d["text"] = _mask(arg(1, "text", ""), ctx)
+    elif helper == "set_value":
+        d["selector"] = arg(0, "selector")
+        d["text"] = _mask(arg(1, "value", ""), ctx)
     elif helper == "press_key":
         d["key"] = arg(0, "key")
     elif helper == "dispatch_key":
