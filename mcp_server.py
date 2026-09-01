@@ -213,7 +213,7 @@ def browser_current_tab():
 
 @_tool
 def browser_switch_tab(target: str):
-    """Switch to tab by `targetId` or URL substring. Returns the sessionId."""
+    """Switch to a tab by its `targetId`. Returns the sessionId."""
     return {"sessionId": switch_tab(target)}
 
 
@@ -259,7 +259,7 @@ def browser_js(expression: str, target_id: str | None = None):
 
 
 @_tool
-def browser_cdp(method: str, params: dict = {}):
+def browser_cdp(method: str, params: dict | None = None):
     """Call a raw Chrome DevTools Protocol method. `params` are passed as kwargs."""
     return cdp(method, **(params or {}))
 
