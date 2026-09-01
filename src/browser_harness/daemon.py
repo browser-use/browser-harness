@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+import asyncio, json, os, platform, signal, socket, subprocess, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -451,17 +451,45 @@ async def serve(d):
 
     serve_task = asyncio.create_task(ipc.serve(NAME, handler))
     stop_task = asyncio.create_task(d.stop.wait())
+    live_task = asyncio.create_task(_cdp_liveness(
+        d,
+        interval=int(os.environ.get("BH_LIVENESS_INTERVAL", "60")),
+        max_fails=int(os.environ.get("BH_LIVENESS_MAX_FAILS", "3")),
+    ))
     await asyncio.sleep(0.05)  # let serve() bind so sock_addr() resolves to the live endpoint
     log(f"listening on {ipc.sock_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
     try:
         await asyncio.wait({serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
         if serve_task.done(): await serve_task  # surfaces a serve crash
     finally:
-        for t in (serve_task, stop_task):
+        for t in (serve_task, stop_task, live_task):
             t.cancel()
             try: await t
             except (asyncio.CancelledError, Exception): pass
         ipc.cleanup_endpoint(NAME)
+
+
+async def _cdp_liveness(d, interval=60, max_fails=3):
+    """A wedged CDP websocket leaves the daemon alive-but-useless: it stops
+    answering ping, so every new caller spawns another daemon on top of it,
+    while this one lingers forever holding a dead connection. Probe the browser
+    and shut down cleanly after `max_fails` consecutive failures so the next
+    call starts fresh."""
+    fails = 0
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await asyncio.wait_for(d.cdp.send_raw("Browser.getVersion"), timeout=10)
+            fails = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            fails += 1
+            log(f"liveness probe failed ({fails}/{max_fails}): {e}")
+            if fails >= max_fails:
+                log("liveness: CDP unresponsive, shutting down so the next call respawns fresh")
+                d.stop.set()
+                return
 
 
 async def main():
@@ -476,10 +504,40 @@ def already_running():
     return ipc.ping(NAME, timeout=1.0)
 
 
+def reap_stale_daemon():
+    """already_running() said no, but the pid file may still point at a wedged
+    daemon (dead CDP ws, blocked loop) that can't answer ping. Binding over its
+    endpoint would leave it running forever; kill it before taking over."""
+    if platform.system() == "Windows":
+        return
+    try:
+        pid = int(Path(PID).read_text().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return
+    if pid == os.getpid():
+        return
+    try:
+        cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True).stdout
+    except Exception:
+        return
+    if "browser_harness.daemon" not in cmd:
+        return  # pid was recycled by an unrelated process
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            time.sleep(0.1)
+            os.kill(pid, 0)  # raises ProcessLookupError once it's gone
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
+    reap_stale_daemon()
     open(LOG, "w").close()
     open(PID, "w").write(str(os.getpid()))
     try:

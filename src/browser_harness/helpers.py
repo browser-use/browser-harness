@@ -358,11 +358,33 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
+        # Adopt an orphaned about:blank (left behind when a previous caller died
+        # between createTarget and goto) instead of minting yet another tab.
+        # list_tabs must include internal URLs here: about: is in INTERNAL.
+        try:
+            for t in list_tabs(include_chrome=True):
+                turl = t.get("url") or ""
+                if turl == "about:blank" or turl.startswith("about:blank#"):
+                    tid = t["targetId"]
+                    switch_tab(tid)
+                    goto_url(url)
+                    return tid
+        except Exception:
+            pass
     # background=True keeps the new tab from raising the Chrome window.
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
-    switch_tab(tid)
-    if url != "about:blank":
-        goto_url(url)
+    try:
+        switch_tab(tid)
+        if url != "about:blank":
+            goto_url(url)
+    except BaseException:
+        # The caller never saw this targetId, so nobody else can close it:
+        # reap it here or it leaks as a permanent about:blank.
+        try:
+            cdp("Target.closeTarget", targetId=tid)
+        except Exception:
+            pass
+        raise
     return tid
 
 def close_tab(target=None):
