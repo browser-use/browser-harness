@@ -2,10 +2,14 @@
 
 Importing mcp_server requires the optional `mcp` extra; run the unit suite
 with `uv run --extra mcp --with pytest python -m pytest tests/unit -q`.
+Without the extra, these tests are skipped (importorskip below) so the rest
+of the suite still collects.
 """
 import inspect
 
-import mcp_server
+import pytest
+
+mcp_server = pytest.importorskip("mcp_server")
 
 
 def test_browser_switch_tab_docstring_does_not_advertise_url_substring():
@@ -26,9 +30,21 @@ def test_browser_cdp_params_none_matches_omitted(monkeypatch):
     """browser_cdp(method, params=None) must behave identically to
     browser_cdp(method) — both unpack to an empty kwargs dict."""
     captured = []
+    monkeypatch.setattr(mcp_server, "ensure_daemon", lambda: None)
     monkeypatch.setattr(mcp_server, "cdp", lambda method, **kwargs: captured.append((method, kwargs)) or {})
 
     mcp_server.browser_cdp("Page.navigate")
     mcp_server.browser_cdp("Page.navigate", params=None)
 
     assert captured == [("Page.navigate", {}), ("Page.navigate", {})]
+
+
+def test_browser_cdp_params_dict_is_forwarded(monkeypatch):
+    """browser_cdp(method, params={...}) must forward the params as kwargs."""
+    captured = []
+    monkeypatch.setattr(mcp_server, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(mcp_server, "cdp", lambda method, **kwargs: captured.append((method, kwargs)) or {})
+
+    mcp_server.browser_cdp("Page.navigate", params={"url": "https://example.test"})
+
+    assert captured == [("Page.navigate", {"url": "https://example.test"})]
