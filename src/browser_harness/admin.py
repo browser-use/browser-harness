@@ -1227,6 +1227,16 @@ def run_update(yes=False):
         if r.returncode != 0:
             return r.returncode
     elif mode == "pypi":
+        import shutil
+        if not shutil.which("uv"):
+            print(
+                "browser-harness --update needs uv, which is not on PATH. "
+                "Upgrade manually with the tool you installed it with "
+                "(pip install --upgrade browser-harness, pipx upgrade browser-harness, "
+                "or your system package manager).",
+                file=sys.stderr,
+            )
+            return 1
         tool_upgrade = subprocess.run(["uv", "tool", "upgrade", "browser-harness"])
         if tool_upgrade.returncode != 0:
             return tool_upgrade.returncode
