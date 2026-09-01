@@ -889,12 +889,15 @@ def test_process_start_time_returns_none_for_invalid_pid():
 
 
 def _run_update_hermetic(monkeypatch, *, install_mode, which_result, subprocess_result):
-    """Drive run_update with network and daemon-restart surfaces mocked out."""
+    """Drive run_update with network, cache, and daemon-restart surfaces mocked out."""
     called = []
 
     monkeypatch.setattr(admin, "check_for_update", lambda: ("0.1.0", "0.2.0", True))
     monkeypatch.setattr(admin, "_install_mode", lambda: install_mode)
     monkeypatch.setattr("shutil.which", lambda _cmd: which_result)
+    # The success tail clears the version-cache banner; keep it off the real config dir.
+    monkeypatch.setattr(admin, "_cache_read", lambda: {})
+    monkeypatch.setattr(admin, "_cache_write", lambda _data: None)
 
     def fake_subprocess_run(argv, *args, **kwargs):
         called.append(argv)
@@ -948,7 +951,7 @@ def test_run_update_git_mode_skips_uv_guard(monkeypatch):
         subprocess_result=None,
     )
 
-    # git mode runs `git status --porcelain` then `git pull --ff-only`.
+    # git mode shells out only to git, never to uv.
     assert admin.run_update() == 0
     assert called and called[0] == ["git", "-C", str(admin._repo_dir()), "status", "--porcelain"]
     assert all(argv[0] == "git" for argv in called)
