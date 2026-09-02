@@ -132,6 +132,13 @@ class Daemon:
         self.stop = asyncio.Event()
         url = get_ws_url()
         log(f"connecting to {url}")
+        # keepalive: Chrome can stall pongs for >20s under load; don't let websockets drop the link
+        import cdp_use.client as _cc
+        _orig_connect = _cc.websockets.connect
+        def _connect(u, **kw):
+            kw.setdefault("ping_interval", 30); kw.setdefault("ping_timeout", None)
+            return _orig_connect(u, **kw)
+        _cc.websockets.connect = _connect
         self.cdp = CDPClient(url)
         try:
             await self.cdp.start()
