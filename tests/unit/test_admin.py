@@ -886,3 +886,87 @@ def test_process_start_time_returns_none_for_invalid_pid():
         )
     # 2**31 - 1 is the largest pid_t; in practice no live process at that PID.
     assert admin._process_start_time((1 << 31) - 1) is None
+
+
+def _run_update_hermetic(monkeypatch, *, install_mode, which_result, subprocess_result):
+    """Drive run_update with network, cache, and daemon-restart surfaces mocked out."""
+    called = []
+
+    monkeypatch.setattr(admin, "check_for_update", lambda: ("0.1.0", "0.2.0", True))
+    monkeypatch.setattr(admin, "_install_mode", lambda: install_mode)
+    monkeypatch.setattr("shutil.which", lambda _cmd: which_result)
+    # The success tail clears the version-cache banner; keep it off the real config dir.
+    monkeypatch.setattr(admin, "_cache_read", lambda: {})
+    monkeypatch.setattr(admin, "_cache_write", lambda _data: None)
+
+    def fake_subprocess_run(argv, *args, **kwargs):
+        called.append(argv)
+        # Git-mode calls (status preflight and pull) read .returncode; the
+        # status preflight also reads captured .stdout/.stderr.
+        if "capture_output" in kwargs or argv[0] == "git":
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return subprocess_result
+
+    monkeypatch.setattr("subprocess.run", fake_subprocess_run)
+    monkeypatch.setattr(admin, "daemon_alive", lambda: False)
+    return called
+
+
+def test_run_update_pypi_missing_uv_prints_error_and_exits_nonzero(monkeypatch, capsys):
+    """A PyPI install with no `uv` on PATH must fail cleanly instead of a
+    FileNotFoundError traceback, and must never invoke subprocess.run."""
+    called = _run_update_hermetic(
+        monkeypatch,
+        install_mode="pypi",
+        which_result=None,
+        subprocess_result=None,
+    )
+
+    assert admin.run_update() == 1
+    assert called == [], "must not shell out to uv when uv is missing"
+    err = capsys.readouterr().err
+    assert "uv" in err
+    assert "pip" in err or "pipx" in err or "package manager" in err
+
+
+def test_run_update_pypi_with_uv_runs_uv_tool_upgrade(monkeypatch):
+    """A PyPI install with `uv` on PATH keeps the existing upgrade behavior."""
+    called = _run_update_hermetic(
+        monkeypatch,
+        install_mode="pypi",
+        which_result="/usr/local/bin/uv",
+        subprocess_result=type("R", (), {"returncode": 0})(),
+    )
+
+    assert admin.run_update() == 0
+    assert called == [["uv", "tool", "upgrade", "browser-harness"]]
+
+
+def test_run_update_git_mode_skips_uv_guard(monkeypatch):
+    """The git install-mode path is untouched by the uv guard."""
+    called = _run_update_hermetic(
+        monkeypatch,
+        install_mode="git",
+        which_result=None,
+        subprocess_result=None,
+    )
+
+    # git mode shells out only to git, never to uv.
+    assert admin.run_update() == 0
+    assert called and called[0] == ["git", "-C", str(admin._repo_dir()), "status", "--porcelain"]
+    assert all(argv[0] == "git" for argv in called)
+
+
+def test_run_update_unknown_mode_keeps_error_branch(monkeypatch, capsys):
+    """The unknown install-mode error branch is preserved."""
+    called = _run_update_hermetic(
+        monkeypatch,
+        install_mode="unknown",
+        which_result=None,
+        subprocess_result=None,
+    )
+
+    assert admin.run_update() == 1
+    assert called == [], "unknown mode must not shell out"
+    assert "unknown install mode" in capsys.readouterr().err
+
