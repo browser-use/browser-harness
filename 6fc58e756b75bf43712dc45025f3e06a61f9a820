@@ -1,0 +1,22 @@
+tests/unit/test_helpers.py
+  s_86d24eaeebcb12::t_908c40f8ade6fa 212-248
+src/browser_harness/helpers.py
+  s_86d24eaeebcb12::t_908c40f8ade6fa 254-268,273-282
+  s_86d24eaeebcb12::t_da8521dc74e099 269-272
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6fc58e756b75bf43712dc45025f3e06a61f9a820",
+  "prompts": {},
+  "sessions": {
+    "s_86d24eaeebcb12": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a005bc-1d17-73c3-b1f5-38259988bc61",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "MagMueller <mamagnus00@gmail.com>"
+    }
+  }
+}
