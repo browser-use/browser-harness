@@ -136,7 +136,7 @@ class Daemon:
         import cdp_use.client as _cc
         _orig_connect = _cc.websockets.connect
         def _connect(u, **kw):
-            kw.setdefault("ping_interval", 30); kw.setdefault("ping_timeout", None)
+            kw.setdefault("ping_interval", 30); kw.setdefault("ping_timeout", 120)
             return _orig_connect(u, **kw)
         _cc.websockets.connect = _connect
         self.cdp = CDPClient(url)
