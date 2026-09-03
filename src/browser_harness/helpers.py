@@ -345,6 +345,16 @@ def switch_tab(target, activate=False):
     _mark_tab()
     return sid
 
+_NEW_TAB_PAGES = ("chrome://new-tab-page/", "chrome://new-tab-page",
+                  "chrome://newtab/", "chrome://newtab")
+
+
+def _is_adoptable_blank(turl):
+    """True for tabs nobody owns: about:blank and Chrome's startup New Tab Page."""
+    return (turl == "about:blank" or turl.startswith("about:blank#")
+            or turl in _NEW_TAB_PAGES)
+
+
 def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
@@ -360,11 +370,13 @@ def new_tab(url="about:blank"):
             pass
         # Adopt an orphaned about:blank (left behind when a previous caller died
         # between createTarget and goto) instead of minting yet another tab.
-        # list_tabs must include internal URLs here: about: is in INTERNAL.
+        # Chrome's startup New Tab Page counts too: a browser launched without
+        # a URL opens exactly one chrome://new-tab-page/ and nothing else would
+        # ever reuse it. list_tabs must include internal URLs here.
         try:
             for t in list_tabs(include_chrome=True):
                 turl = t.get("url") or ""
-                if turl == "about:blank" or turl.startswith("about:blank#"):
+                if _is_adoptable_blank(turl):
                     tid = t["targetId"]
                     switch_tab(tid)
                     goto_url(url)
