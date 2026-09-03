@@ -1,0 +1,19 @@
+pyproject.toml
+  s_af43b1887b0331::t_d80b992772a198 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "19b843c2297c39dae4e68e4a3f27d549e3d0c2e8",
+  "prompts": {},
+  "sessions": {
+    "s_af43b1887b0331": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1bbd8eb5-b664-40d0-8b2d-59358273cc9f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}
