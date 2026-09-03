@@ -1,0 +1,24 @@
+src/browser_harness/admin.py
+  s_86d24eaeebcb12::t_dcfb362f9b4744 931
+tests/unit/test_brave_origin.py
+  s_86d24eaeebcb12::t_d4105f417a2a46 4,29-47
+  s_86d24eaeebcb12::t_edfd36642b1a9c 1-3,5-28,48-67
+src/browser_harness/daemon.py
+  s_86d24eaeebcb12::t_dcfb362f9b4744 49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c2f5f3cc4820fa279bd81e1774f93b995366f325",
+  "prompts": {},
+  "sessions": {
+    "s_86d24eaeebcb12": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a005bc-1d17-73c3-b1f5-38259988bc61",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "MagMueller <mamagnus00@gmail.com>"
+    }
+  }
+}

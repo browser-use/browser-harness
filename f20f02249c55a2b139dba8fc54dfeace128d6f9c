@@ -1,0 +1,32 @@
+.claude-plugin/plugin.json
+  s_86d24eaeebcb12::t_ece4e08a12993d 12
+install.md
+  s_86d24eaeebcb12::t_ece4e08a12993d 8
+tests/unit/test_skill.py
+  s_86d24eaeebcb12::t_cae42a83c0bc04 51-54
+  s_86d24eaeebcb12::t_941c8db89217f9 1,42-50,55
+AGENTS.md
+  s_86d24eaeebcb12::t_ece4e08a12993d 16,21
+interaction-skills/make-video.md
+  s_86d24eaeebcb12::t_ece4e08a12993d 8
+README.md
+  s_86d24eaeebcb12::t_ece4e08a12993d 43
+SKILL.md
+  s_86d24eaeebcb12::t_cae42a83c0bc04 1,3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f20f02249c55a2b139dba8fc54dfeace128d6f9c",
+  "prompts": {},
+  "sessions": {
+    "s_86d24eaeebcb12": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a005bc-1d17-73c3-b1f5-38259988bc61",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
