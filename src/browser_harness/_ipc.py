@@ -162,31 +162,74 @@ def identify(name, timeout=1.0):
         except OSError: pass
 
 
+def _lock_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.lock"
+
+
+def _acquire_startup_lock(name):
+    """Claim exclusive ownership of `name`'s endpoint for the life of this server.
+
+    Without this, two invocations racing for the same name could both pass a
+    prior ping-based "not already running" check -- that check-then-act gap
+    can be tens of seconds wide (CDP handshake, an unclicked Allow popup) --
+    and the second would silently unlink + rebind over a still-live first
+    daemon's socket, orphaning it with no error raised anywhere.
+    O_CREAT|O_EXCL is atomic at the filesystem level, unlike the bare
+    `if os.path.exists(...): os.unlink(...)` it guards here.
+
+    Raises RuntimeError if a live daemon already holds the lock. Reclaims a
+    stale lock (previous holder crashed/was killed without cleanup) once
+    ping() confirms nothing currently answers for `name`."""
+    path = _lock_path(name)
+    for _attempt in range(2):
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return path
+        except FileExistsError:
+            if ping(name, timeout=1.0):
+                raise RuntimeError(
+                    f"a browser-harness daemon is already running for BU_NAME={name!r}"
+                ) from None
+            try: path.unlink()  # stale lock, no live owner -- reclaim it
+            except FileNotFoundError: pass
+    raise RuntimeError(f"failed to acquire startup lock for BU_NAME={name!r}")
+
+
 async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
     global _server_token
-    if not IS_WINDOWS:
-        path = str(_sock_path(name))
-        if os.path.exists(path): os.unlink(path)
-        # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
-        old_umask = os.umask(0o077)
-        try: server = await asyncio.start_unix_server(handler, path=path)
-        finally: os.umask(old_umask)
-        _server_token = None
-        async with server: await asyncio.Event().wait()
-        return
-    server = await asyncio.start_server(handler, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    _server_token = secrets.token_hex(32)
-    pf = port_path(name)
-    # Atomic write so a concurrent reader never sees a half-written file.
-    tmp = pf.with_name(pf.name + ".tmp")
-    tmp.write_text(json.dumps({"port": port, "token": _server_token}), encoding="utf-8")
-    os.replace(tmp, pf)
+    # Off-thread: _acquire_startup_lock() does blocking socket I/O (ping()) to
+    # check a stale lock's liveness; running it inline would block this same
+    # event loop that a *different* daemon's handler (in-process, e.g. tests)
+    # needs to answer that very ping on.
+    lock_path = await asyncio.to_thread(_acquire_startup_lock, name)
     try:
-        async with server: await asyncio.Event().wait()
+        if not IS_WINDOWS:
+            path = str(_sock_path(name))
+            if os.path.exists(path): os.unlink(path)
+            # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
+            old_umask = os.umask(0o077)
+            try: server = await asyncio.start_unix_server(handler, path=path)
+            finally: os.umask(old_umask)
+            _server_token = None
+            async with server: await asyncio.Event().wait()
+            return
+        server = await asyncio.start_server(handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        _server_token = secrets.token_hex(32)
+        pf = port_path(name)
+        # Atomic write so a concurrent reader never sees a half-written file.
+        tmp = pf.with_name(pf.name + ".tmp")
+        tmp.write_text(json.dumps({"port": port, "token": _server_token}), encoding="utf-8")
+        os.replace(tmp, pf)
+        try:
+            async with server: await asyncio.Event().wait()
+        finally:
+            try: pf.unlink()
+            except FileNotFoundError: pass
     finally:
-        try: pf.unlink()
+        try: lock_path.unlink()
         except FileNotFoundError: pass
 
 
