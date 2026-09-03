@@ -390,11 +390,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
                 return
             if p.poll() is not None: break
             if not hinted and time.time() - spawned > 2 and (_log_tail(name) or "").startswith("handshake-wait"):
-                action = (
-                    "run `browser-harness mac-approve` in another shell or click Allow"
-                    if sys.platform == "darwin"
-                    else "click Allow"
-                )
+                action = "use macOS UI automation to press Allow" if sys.platform == "darwin" else "click Allow"
                 print(
                     f'browser-harness: Chrome is asking "Allow remote debugging?" — {action} to continue.',
                     file=sys.stderr,

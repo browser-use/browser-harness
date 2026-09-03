@@ -51,7 +51,6 @@ Commands:
   browser-harness doctor --json [--require-existing-daemon]
                                     print machine-readable runtime health
   browser-harness doctor --fix-snap   print how to fix Snap Chromium blocking CDP (Linux)
-  browser-harness mac-approve         approve Chrome's macOS remote debugging sheet
   browser-harness auth login          sign in to Browser Use Cloud for cloud browsers
   browser-harness auth login --device-code   sign in from SSH/headless environments
   browser-harness auth status         show Browser Use Cloud auth state
@@ -130,7 +129,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "skill", "mac-approve", "recordings", "telemetry", "video"}:
+    if first in {"auth", "skill", "recordings", "telemetry", "video"}:
         return first
     return "usage"
 
@@ -323,10 +322,6 @@ def _run(args):
         sys.exit(run_doctor())
     if args and args[0] == "auth":
         sys.exit(auth.run_auth_cli(args[1:]))
-    if args and args[0] == "mac-approve":
-        from . import macos
-
-        sys.exit(macos.run_cli(args[1:]))
     if args and args[0] == "skill":
         if len(args) != 1:
             print("usage: browser-harness skill", file=sys.stderr)

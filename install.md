@@ -51,19 +51,15 @@ In Chrome:
 2. Tick "Allow remote debugging for this browser instance".
 3. Retry `page_info()`.
 
-If that reports `permission-blocked` on macOS, handle the per-connection Allow
-sheet without bringing Chrome to the foreground:
+On macOS, Chrome may next show a per-connection "Allow remote debugging?"
+sheet. Humans can click Allow. Agents should follow
+[interaction-skills/macos-remote-debugging.md](interaction-skills/macos-remote-debugging.md)
+to press the exact button with native macOS UI automation while the browser
+command is still waiting. This requires Accessibility permission for the app
+launching the CLI (for example Terminal, Codex, or an IDE).
 
-```bash
-browser-harness mac-approve
-```
-
-Continue browser work when the helper returns `ready`; otherwise follow its
-printed instruction. The first checkbox is intentionally a one-time manual
-Chrome setup step; it is not exposed to the harness until CDP is available.
-
-The helper requires Accessibility permission for the app launching the CLI
-(for example Terminal, iTerm, Codex, or an IDE) in System Settings.
+The first checkbox is intentionally a one-time manual Chrome setup step; it is
+not exposed to the harness until CDP is available.
 
 ## Cloud Browsers
 

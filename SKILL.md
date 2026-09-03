@@ -61,14 +61,11 @@ If Chrome is running but remote debugging is not enabled, the harness opens:
 chrome://inspect/#remote-debugging
 ```
 
-On macOS, when Chrome asks for remote-debugging permission, run:
-
-```text
-browser-harness mac-approve
-```
-
-Continue browser work when it returns `ready`; otherwise follow its printed
-instruction.
+On macOS, Chrome may show a per-connection "Allow remote debugging?" sheet.
+That sheet is outside CDP. Load the `macos-remote-debugging` skill, or follow
+[macos-remote-debugging.md](https://github.com/browser-use/browser-harness/blob/main/interaction-skills/macos-remote-debugging.md)
+to approve it with native macOS UI automation, then continue the waiting
+browser command.
 
 ## Remote Browsers
 
@@ -166,6 +163,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - dropdowns.md
 - iframes.md
 - make-video.md
+- macos-remote-debugging.md
 - network-requests.md
 - print-as-pdf.md
 - profile-sync.md
@@ -192,7 +190,8 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 ## Gotchas
 
 - `chrome://inspect/#remote-debugging` must be enabled for local Chrome control.
-- On macOS, if Chrome shows an "Allow remote debugging?" popup, run `browser-harness mac-approve`. Do not poll in a loop — the daemon holds one connection.
+- On macOS, if Chrome shows "Allow remote debugging?", load the
+  `macos-remote-debugging` skill. Do not poll the daemon.
 - Omnibox popups are not real work tabs.
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
