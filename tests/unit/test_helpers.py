@@ -121,6 +121,53 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
+def test_tab_marker_uses_shared_expression(monkeypatch):
+    monkeypatch.setattr(
+        helpers,
+        "TAB_MARKER_EXPRESSION",
+        "shared-marker-expression",
+    )
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers._mark_tab()
+
+    assert calls == [(
+        "Runtime.evaluate",
+        {"expression": "shared-marker-expression"},
+    )]
+
+
+def test_switch_tab_uses_shared_unmarker_expression(monkeypatch):
+    monkeypatch.setattr(
+        helpers,
+        "TAB_UNMARKER_EXPRESSION",
+        "shared-unmarker-expression",
+    )
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    helpers.switch_tab("target-new")
+
+    assert calls[0] == (
+        "Runtime.evaluate",
+        {"expression": "shared-unmarker-expression"},
+    )
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():

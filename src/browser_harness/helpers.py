@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import _ipc as ipc
+from . import _tab_marker
 from . import paths
 
 
@@ -38,6 +39,10 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+TAB_MARKER_EXPRESSION = _tab_marker.expression(NAME)
+TAB_UNMARKER_EXPRESSION = _tab_marker.unmarker_expression()
+
+
 IPC_CONNECT_TIMEOUT_SECONDS = 5.0
 DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
 # Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
@@ -386,8 +391,8 @@ def current_tab():
     }
 
 def _mark_tab():
-    """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
-    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
+    """Append the daemon identity to the title of the controlled tab."""
+    try: cdp("Runtime.evaluate", expression=TAB_MARKER_EXPRESSION)
     except Exception: pass
 
 def _target_id(target):
@@ -413,9 +418,8 @@ def switch_tab(target, activate=False):
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
     target_id = _target_id(target)
-    # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
-    # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
+    # Unmark the old tab before attaching to the new target.
+    try: cdp("Runtime.evaluate", expression=TAB_UNMARKER_EXPRESSION)
     except Exception: pass
     if activate:
         activate_tab(target_id)

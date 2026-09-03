@@ -74,6 +74,33 @@ def _fresh_daemon():
     return d
 
 
+def test_set_session_uses_shared_suffix_marker(monkeypatch):
+    monkeypatch.setattr(daemon, "TAB_MARKER_EXPRESSION", "shared-marker-expression")
+
+    async def run():
+        d = _fresh_daemon()
+        await d.handle({
+            "meta": "set_session",
+            "session_id": "session-new",
+            "target_id": "target-new",
+        })
+        await asyncio.sleep(0)
+        return d
+
+    d = asyncio.run(run())
+
+    marker_calls = [
+        (method, params, session_id)
+        for method, params, session_id in d.cdp.calls
+        if method == "Runtime.evaluate"
+    ]
+    assert marker_calls == [(
+        "Runtime.evaluate",
+        {"expression": "shared-marker-expression"},
+        "session-new",
+    )]
+
+
 def test_set_session_enables_all_four_default_domains_on_new_session():
     """Regression: switch_tab() / new_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new
