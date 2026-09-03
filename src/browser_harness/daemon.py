@@ -385,6 +385,17 @@ class _PatientCDPClient(CDPClient):
         self._message_handler_task = asyncio.create_task(self._handle_messages())
 
 
+def default_cdp_domains():
+    """CDP domains enabled on every session the daemon attaches to.
+
+    Runtime is opt-in via BH_ENABLE_RUNTIME=1; see _enable_default_domains.
+    """
+    domains = ["Page", "DOM", "Network"]
+    if os.environ.get("BH_ENABLE_RUNTIME") == "1":
+        domains.insert(2, "Runtime")
+    return tuple(domains)
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -503,7 +514,7 @@ class Daemon:
             pass
 
     async def _enable_default_domains(self, session_id):
-        """Enable Page/DOM/Runtime/Network on a CDP session.
+        """Enable Page/DOM/Network (and optionally Runtime) on a CDP session.
 
         Used by both initial attach and set_session (called after switch_tab/
         new_tab). Without this, helpers that depend on Network.* events —
@@ -511,8 +522,16 @@ class Daemon:
         after a tab switch, because each fresh CDP session starts with all
         domains disabled.
 
-        Runs the four enables in parallel via gather so the worst-case time is
-        bounded by a single CDP round trip rather than four sequential ones —
+        Runtime is NOT enabled by default. Nothing in the harness consumes
+        Runtime events (Runtime.evaluate works without Runtime.enable), and
+        bot-management services fingerprint an enabled Runtime domain as an
+        attached debugger: sites behind them (GoDaddy sign-in, for one) refuse
+        to log in a tab where it is on while accepting the same input on a tab
+        where it is off. Set BH_ENABLE_RUNTIME=1 to opt back in, e.g. to
+        receive consoleAPICalled / exceptionThrown events via drain_events().
+
+        Runs the enables in parallel via gather so the worst-case time is
+        bounded by a single CDP round trip rather than several sequential ones —
         important on the set_session path, where the helper's IPC socket has
         a 5s read timeout.
         """
@@ -524,7 +543,7 @@ class Daemon:
                 )
             except Exception as e:
                 log(f"enable {d} on {session_id}: {e}")
-        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+        await asyncio.gather(*(enable_one(d) for d in default_cdp_domains()))
 
     def _record_session_replacement(self, stale_session, replacement_session):
         """Remember which recovered session still controls the same tab."""

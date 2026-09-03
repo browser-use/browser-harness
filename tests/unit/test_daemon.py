@@ -74,12 +74,12 @@ def _fresh_daemon():
     return d
 
 
-def test_set_session_enables_all_four_default_domains_on_new_session():
+def test_set_session_enables_all_default_domains_on_new_session():
     """Regression: switch_tab() / new_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new
     session. With Network disabled, wait_for_network_idle() silently stops
     receiving events after a tab switch. Initial attach enables all four
-    (Page, DOM, Runtime, Network); set_session must enable the same set."""
+    (Page, DOM, Network); set_session must enable the same set."""
     d = _fresh_daemon()
     new_session = "session-AFTER-switch"
 
@@ -93,8 +93,8 @@ def test_set_session_enables_all_four_default_domains_on_new_session():
         method for (method, _params, sid) in d.cdp.calls
         if sid == new_session and method.endswith(".enable")
     ]
-    assert set(enabled_on_new) == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}, (
-        f"set_session must enable Page/DOM/Runtime/Network on the new session "
+    assert set(enabled_on_new) == {"Page.enable", "DOM.enable", "Network.enable"}, (
+        f"set_session must enable Page/DOM/Network on the new session "
         f"(parity with initial attach). Got: {enabled_on_new}"
     )
     assert d.session == new_session
@@ -137,8 +137,26 @@ def test_enable_default_domains_swallows_errors_per_domain():
     attempted = [m for (m, _p, _s) in d.cdp.calls]
     assert "Page.enable" in attempted
     assert "DOM.enable" in attempted  # attempted, but raised
-    assert "Runtime.enable" in attempted
     assert "Network.enable" in attempted
+
+
+def test_runtime_domain_is_opt_in(monkeypatch):
+    """Runtime.enable is a well-known automation fingerprint (bot-management
+    services block sign-in on tabs where it is on) and nothing in the harness
+    consumes Runtime events, so it stays off unless BH_ENABLE_RUNTIME=1."""
+    monkeypatch.delenv("BH_ENABLE_RUNTIME", raising=False)
+    d = daemon.Daemon()
+    d.cdp = _FakeCDP()
+    asyncio.run(d._enable_default_domains("session-X"))
+    assert "Runtime.enable" not in [m for (m, _p, _s) in d.cdp.calls]
+
+    monkeypatch.setenv("BH_ENABLE_RUNTIME", "1")
+    d = daemon.Daemon()
+    d.cdp = _FakeCDP()
+    asyncio.run(d._enable_default_domains("session-Y"))
+    attempted = [m for (m, _p, _s) in d.cdp.calls]
+    assert attempted.count("Runtime.enable") == 1
+    assert {"Page.enable", "DOM.enable", "Network.enable"}.issubset(attempted)
 
 
 def test_set_session_disables_network_on_old_session_before_enabling_new():
@@ -240,18 +258,18 @@ def test_set_session_runs_disable_and_enables_in_parallel():
         return peak, d.cdp.calls
 
     peak, calls = asyncio.run(run())
-    assert peak == 5, (
-        f"set_session must run disable + 4 enables concurrently via gather "
-        f"(observed peak in-flight = {peak}; expected 5 = 1 disable on OLD + "
-        f"4 enables on NEW). Sequential await would peak at 1."
+    assert peak == 4, (
+        f"set_session must run disable + 3 enables concurrently via gather "
+        f"(observed peak in-flight = {peak}; expected 4 = 1 disable on OLD + "
+        f"3 enables on NEW). Sequential await would peak at 1."
     )
     # Sanity: the right calls were made.
     methods = sorted({m for (m, _p, _s) in calls})
     assert "Network.disable" in methods
-    assert {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}.issubset(methods)
+    assert {"Page.enable", "DOM.enable", "Network.enable"}.issubset(methods)
 
 
-def test_set_session_first_attach_runs_four_enables_in_parallel():
+def test_set_session_first_attach_runs_all_enables_in_parallel():
     """When there's no previous session, the disable path is skipped — only
     the four enables run, still in parallel."""
     class _ConcurrencyProbeCDP:
@@ -292,8 +310,8 @@ def test_set_session_first_attach_runs_four_enables_in_parallel():
         return peak
 
     peak = asyncio.run(run())
-    assert peak == 4, (
-        f"first set_session must run 4 enables concurrently "
+    assert peak == 3, (
+        f"first set_session must run 3 enables concurrently "
         f"(observed peak = {peak}). No Network.disable should fire."
     )
 
@@ -396,7 +414,7 @@ def test_named_daemon_creates_dedicated_tab(monkeypatch):
     create_calls = [p for (m, p, _s) in d.cdp.calls if m == "Target.createTarget"]
     assert create_calls == [{"url": "about:blank", "background": True}]
     enabled = {m for (m, _p, s) in d.cdp.calls if s == d.session and m.endswith(".enable")}
-    assert enabled == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}
+    assert enabled == {"Page.enable", "DOM.enable", "Network.enable"}
 
 
 def test_default_daemon_still_attaches_first_page(monkeypatch):

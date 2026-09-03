@@ -195,6 +195,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
+- The daemon does not enable the CDP `Runtime` domain. `js()` works without it, and bot-management services treat an enabled Runtime domain as an attached debugger (sign-in pages behind them refuse the login). If you need `Runtime.*` events from `drain_events()` (console output, exceptions), set `BH_ENABLE_RUNTIME=1`.
 
 ## Domain Skills
 
