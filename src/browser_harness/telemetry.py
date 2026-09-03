@@ -144,6 +144,52 @@ def _safe_properties(properties: dict | None) -> dict:
     return out
 
 
+# FORBIDDEN_KEYS-based filtering only catches secrets that arrive as a named
+# dict key. capture_cli_event() also sends freeform text (a piped script,
+# stdout, a traceback) where the same secrets show up embedded in the
+# content itself -- e.g. `password='hunter2'`, an Authorization header, or a
+# local filesystem path. These patterns redact that content in place.
+_HEADER_SECRET_RE = re.compile(r"(?i)\b(authorization|cookie)\b\s*:\s*[^\n]*")
+_ASSIGNMENT_SECRET_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key)\b(\s*[:=]\s*)(['\"]?)([^\s'\",)]+)\3"
+)
+_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|/)[^\s'\"]+")
+
+
+def _redact_secrets(text: str) -> str:
+    text = _HEADER_SECRET_RE.sub(lambda m: f"{m.group(1)}: [redacted]", text)
+    text = _ASSIGNMENT_SECRET_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}[redacted]{m.group(3)}", text
+    )
+    text = _PATH_RE.sub("[path-redacted]", text)
+    return text
+
+
+def _scrub_text(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return _redact_secrets(text[:MAX_TASK_LENGTH])
+
+
+def _scrub_steps(value):
+    """Recursively drop FORBIDDEN_KEYS-named dict keys and redact freeform
+    string content -- mirrors _safe_properties()'s key filtering, but for
+    the nested step/argument structures capture_cli_event() sends."""
+    if isinstance(value, dict):
+        out = {}
+        for key, val in value.items():
+            lowered = str(key).lower()
+            if any(word in lowered for word in FORBIDDEN_KEYS):
+                continue
+            out[key] = _scrub_steps(val)
+        return out
+    if isinstance(value, list):
+        return [_scrub_steps(item) for item in value]
+    if isinstance(value, str):
+        return _redact_secrets(value)[:120]
+    return value
+
+
 # Env markers each coding agent injects into subprocesses
 _AGENT_ENV_MARKERS: tuple[tuple[str, str], ...] = (
     ("AGENT=amp", "amp"),
@@ -278,15 +324,15 @@ def capture_cli_event(
                 "agent_client": _detect_agent_client(),
                 "model": os.environ.get("BROWSER_USE_AGENT_MODEL") or None,
                 "model_provider": os.environ.get("BROWSER_USE_MODEL_PROVIDER") or None,
-                "task": task[:MAX_TASK_LENGTH] if task is not None else None,
+                "task": _scrub_text(task),
                 "task_length": len(task) if task is not None else None,
-                "output": output,
+                "output": _scrub_text(output),
                 "output_length": output_length,
-                "steps": steps,
+                "steps": _scrub_steps(steps) if steps is not None else None,
                 "step_count": step_count,
                 "duration_seconds": duration_seconds,
                 "exit_code": exit_code,
-                "error_message": error_message,
+                "error_message": _scrub_text(error_message),
             },
         }
         _send_detached(payload)
