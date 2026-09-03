@@ -209,6 +209,16 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
+_ORPHAN_BLANK_URLS = ("about:blank", "chrome://new-tab-page/", "chrome://new-tab-page",
+                      "chrome://newtab/", "chrome://newtab")
+
+
+def is_orphan_blank(t):
+    """A page tab nobody owns: about:blank or Chrome's startup New Tab Page."""
+    url = t.get("url", "")
+    return t["type"] == "page" and (url in _ORPHAN_BLANK_URLS or url.startswith("about:blank#"))
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -223,7 +233,14 @@ class Daemon:
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
-            # No real pages - create one instead of attaching to omnibox popup.
+            # No real pages: reuse a blank nobody owns (Chrome's startup
+            # about:blank / New Tab Page) before minting one, or every fresh
+            # daemon leaves the startup tab orphaned forever. Never the
+            # omnibox popup or other browser_ui targets.
+            pages = [t for t in targets if is_orphan_blank(t)]
+            if pages:
+                log(f"no real pages found, adopting startup blank {pages[0]['targetId']} ({pages[0].get('url','')})")
+        if not pages:
             # background=True keeps it from raising the Chrome window.
             tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
