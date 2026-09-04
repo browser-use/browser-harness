@@ -1,0 +1,22 @@
+src/browser_harness/admin.py
+  s_5d40ae83f8d939::t_368dfebcaac432 191-194,196,198,200-204,752-756,761-762,776-778,840-847
+  s_5d40ae83f8d939::t_ac024fbe217609 195,197,199
+tests/unit/test_admin.py
+  s_5d40ae83f8d939::t_368dfebcaac432 1290-1333
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1aec12322c9f7527652e1311ae09e4a6af8e8db5",
+  "prompts": {},
+  "sessions": {
+    "s_5d40ae83f8d939": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0694d-b970-7ad2-864c-a19af40d1523",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "MagMueller <mamagnus00@gmail.com>"
+    }
+  }
+}
