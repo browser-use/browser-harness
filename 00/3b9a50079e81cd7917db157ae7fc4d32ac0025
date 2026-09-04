@@ -1,0 +1,39 @@
+src/browser_harness/run.py
+  s_5d40ae83f8d939::t_2730157e9ffb9b 32,406-409
+src/browser_harness/daemon.py
+  s_5d40ae83f8d939::t_3b2ab02ecfad6e 438,442,482,516,636,638-640,643-645,647-649,751-752,781-783,786,791,807-808
+  s_5d40ae83f8d939::t_55f75191e169b7 440,632-635,699,706,721,726-729,792
+  s_5d40ae83f8d939::t_2730157e9ffb9b 641,646,651,697-698,700-705,708,714-715,718,722-725,777-780,784-785,787-790,793-806
+SKILL.md
+  s_5d40ae83f8d939::t_24c2948477ae68 28-30,62-79,146-149
+src/browser_harness/helpers.py
+  s_5d40ae83f8d939::t_3b2ab02ecfad6e 200-204
+  s_5d40ae83f8d939::t_55f75191e169b7 464-465
+  s_5d40ae83f8d939::t_2730157e9ffb9b 47-54,82-83,90-115,419-421,461-463,469-470,478,586
+interaction-skills/tabs.md
+  s_5d40ae83f8d939::t_24c2948477ae68 65-70
+tests/unit/test_daemon.py
+  s_5d40ae83f8d939::t_700aa5b747954c 258-277
+  s_5d40ae83f8d939::t_3b2ab02ecfad6e 247,281,289-290
+  s_5d40ae83f8d939::t_ed598f04ecdbe7 175-199,233-246,248-257,278-280,282-288,291-293
+  s_5d40ae83f8d939::t_cf3a5b03dbd86f 200-232
+tests/unit/test_helpers.py
+  s_5d40ae83f8d939::t_057c1231db990e 614
+  s_5d40ae83f8d939::t_ed598f04ecdbe7 12-18,449-467,483-490,530-609
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "003b9a50079e81cd7917db157ae7fc4d32ac0025",
+  "prompts": {},
+  "sessions": {
+    "s_5d40ae83f8d939": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0694d-b970-7ad2-864c-a19af40d1523",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "MagMueller <mamagnus00@gmail.com>"
+    }
+  }
+}
