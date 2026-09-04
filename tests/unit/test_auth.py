@@ -171,3 +171,57 @@ def test_complete_browser_auth_raises_on_missing_code():
 
     with pytest.raises(AuthError, match="auth callback did not include a code"):
         complete_browser_auth(start)
+
+
+def test_callback_server_missing_code_renders_failure():
+    cb = PendingCallback(state="secret-state")
+    server = _callback_server(cb)
+    host, port = server.server_address
+    t = threading.Thread(target=server.handle_request, daemon=True)
+    t.start()
+
+    url = f"http://{host}:{port}/browser-use-cloud/callback?state=secret-state"
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        body = resp.read().decode("utf-8")
+        assert resp.status == 200
+
+    t.join(timeout=2)
+    server.server_close()
+
+    assert cb.complete is True
+    assert cb.error == "missing_code"
+    assert "Browser Use Cloud login failed" in body
+    assert "missing_code" in body
+
+
+def test_callback_server_duplicate_requests_preserves_first():
+    cb = PendingCallback(state="secret-state")
+    server = _callback_server(cb)
+    host, port = server.server_address
+
+    t1 = threading.Thread(target=server.handle_request, daemon=True)
+    t1.start()
+
+    url1 = f"http://{host}:{port}/browser-use-cloud/callback?state=secret-state&code=first-valid-code"
+    with urllib.request.urlopen(url1, timeout=5) as resp:
+        body1 = resp.read().decode("utf-8")
+        assert resp.status == 200
+
+    t1.join(timeout=2)
+
+    t2 = threading.Thread(target=server.handle_request, daemon=True)
+    t2.start()
+
+    url2 = f"http://{host}:{port}/browser-use-cloud/callback?state=wrong-state&error=second_error"
+    with urllib.request.urlopen(url2, timeout=5) as resp:
+        body2 = resp.read().decode("utf-8")
+        assert resp.status == 200
+
+    t2.join(timeout=2)
+    server.server_close()
+
+    assert cb.complete is True
+    assert cb.code == "first-valid-code"
+    assert cb.error is None
+    assert "Browser Use Cloud login complete" in body1
+    assert "Browser Use Cloud login complete" in body2
