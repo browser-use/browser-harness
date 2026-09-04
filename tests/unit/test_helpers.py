@@ -777,12 +777,15 @@ def test_wait_for_download_ignores_crdownload_until_finished(tmp_path, monkeypat
 
     cr = tmp_path / "data.zip.crdownload"
 
-    def start_and_finish():
+    def start_and_finish_async():
         cr.write_bytes(b"partial")
-        helpers.time.sleep(0.05)
-        cr.rename(tmp_path / "data.zip")
+        def delayed_finish():
+            helpers.time.sleep(0.25)
+            cr.rename(tmp_path / "data.zip")
+        import threading
+        threading.Thread(target=delayed_finish, daemon=True).start()
 
-    result = helpers.wait_for_download(action_fn=start_and_finish, download_dir=tmp_path, timeout=2.0)
+    result = helpers.wait_for_download(action_fn=start_and_finish_async, download_dir=tmp_path, timeout=2.0)
     assert result == tmp_path / "data.zip"
 
 
@@ -791,11 +794,69 @@ def test_wait_for_download_canceled_raises(tmp_path, monkeypatch):
         {"method": "Browser.downloadWillBegin", "params": {"guid": "g1", "suggestedFilename": "file.zip"}},
         {"method": "Browser.downloadProgress", "params": {"guid": "g1", "state": "canceled"}},
     ]
+    call_count = 0
+    def fake_drain():
+        nonlocal call_count
+        call_count += 1
+        return [] if call_count == 1 else events
+
     monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: {})
-    monkeypatch.setattr(helpers, "drain_events", lambda: events)
+    monkeypatch.setattr(helpers, "drain_events", fake_drain)
 
     with pytest.raises(RuntimeError, match="download was canceled: file.zip"):
         helpers.wait_for_download(download_dir=tmp_path, timeout=2.0)
+
+
+def test_wait_for_download_empty_file_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: {})
+    monkeypatch.setattr(helpers, "drain_events", lambda: [])
+
+    def create_empty_file():
+        (tmp_path / "empty.txt").write_bytes(b"")
+
+    result = helpers.wait_for_download(action_fn=create_empty_file, download_dir=tmp_path, timeout=2.0)
+    assert result == tmp_path / "empty.txt"
+
+
+def test_wait_for_download_uses_filepath_from_event(tmp_path, monkeypatch):
+    custom_file = tmp_path / "custom_downloaded.bin"
+    custom_file.write_bytes(b"hello")
+
+    events = [
+        {"method": "Browser.downloadWillBegin", "params": {"guid": "g1", "suggestedFilename": "file.bin"}},
+        {"method": "Browser.downloadProgress", "params": {"guid": "g1", "state": "completed", "filePath": str(custom_file)}},
+    ]
+    call_count = 0
+    def fake_drain():
+        nonlocal call_count
+        call_count += 1
+        return [] if call_count == 1 else events
+
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: {})
+    monkeypatch.setattr(helpers, "drain_events", fake_drain)
+
+    result = helpers.wait_for_download(download_dir=tmp_path, timeout=2.0)
+    assert result == custom_file
+
+
+def test_wait_for_download_ignores_untracked_guid_cancellation(tmp_path, monkeypatch):
+    events = [
+        {"method": "Browser.downloadProgress", "params": {"guid": "untracked-guid", "state": "canceled"}},
+    ]
+    call_count = 0
+    def fake_drain():
+        nonlocal call_count
+        call_count += 1
+        return [] if call_count == 1 else events
+
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: {})
+    monkeypatch.setattr(helpers, "drain_events", fake_drain)
+
+    def create_file():
+        (tmp_path / "done.txt").write_text("ok")
+
+    result = helpers.wait_for_download(action_fn=create_file, download_dir=tmp_path, timeout=2.0)
+    assert result == tmp_path / "done.txt"
 
 
 def test_wait_for_download_timeout_raises(tmp_path, monkeypatch):

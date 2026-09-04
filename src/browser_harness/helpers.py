@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, time, urllib.request
+import base64, importlib.util, json, math, os, secrets, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -632,33 +632,57 @@ def wait_for_download(action_fn=None, download_dir=None, timeout=30.0):
     and waits for the downloaded file to finish writing to disk. Returns the Path
     to the completed file.
     """
-    path = Path(download_dir) if download_dir else (ipc._TMP / "downloads")
+    path = Path(download_dir) if download_dir else (ipc._TMP / "downloads" / f"dl_{secrets.token_hex(8)}")
     path.mkdir(parents=True, exist_ok=True)
     before_files = {p.resolve() for p in path.iterdir()}
+    before_mtimes = {p.resolve(): p.stat().st_mtime for p in path.iterdir() if p.is_file()}
 
     cdp("Browser.setDownloadBehavior", behavior="allow", downloadPath=str(path.resolve()), eventsEnabled=True)
+    drain_events()
+
     if action_fn:
         action_fn()
 
     deadline = time.time() + timeout
     guid_filename = {}
     completed_guid = None
+    completed_filepath = {}
 
     while time.time() < deadline:
         for e in drain_events():
             method = e.get("method", "")
             params = e.get("params", {})
             if method == "Browser.downloadWillBegin":
-                guid_filename[params.get("guid")] = params.get("suggestedFilename")
+                guid = params.get("guid")
+                if guid:
+                    guid_filename[guid] = params.get("suggestedFilename")
             elif method == "Browser.downloadProgress":
-                if params.get("state") == "completed":
-                    completed_guid = params.get("guid")
-                elif params.get("state") == "canceled":
-                    name = guid_filename.get(params.get("guid")) or params.get("guid")
-                    raise RuntimeError(f"download was canceled: {name}")
+                guid = params.get("guid")
+                if guid and guid in guid_filename:
+                    if params.get("state") == "completed":
+                        completed_guid = guid
+                        if params.get("filePath"):
+                            completed_filepath[guid] = params.get("filePath")
+                    elif params.get("state") == "canceled":
+                        name = guid_filename.get(guid) or guid
+                        raise RuntimeError(f"download was canceled: {name}")
 
         if completed_guid and completed_guid in guid_filename:
-            target_file = path / guid_filename[completed_guid]
+            if completed_guid in completed_filepath:
+                target_file = Path(completed_filepath[completed_guid])
+            else:
+                suggested = guid_filename[completed_guid]
+                target_file = path / suggested
+                if target_file.resolve() in before_files:
+                    current_candidates = [
+                        p for p in path.iterdir()
+                        if p.is_file() and not p.name.endswith((".crdownload", ".tmp"))
+                    ]
+                    new_candidates = [p for p in current_candidates if p.resolve() not in before_files]
+                    if new_candidates:
+                        target_file = sorted(new_candidates, key=lambda f: f.stat().st_mtime, reverse=True)[0]
+                    elif target_file.exists() and target_file.stat().st_mtime > before_mtimes.get(target_file.resolve(), 0):
+                        pass
             if target_file.exists() and not target_file.name.endswith(".crdownload"):
                 return target_file
 
@@ -666,12 +690,12 @@ def wait_for_download(action_fn=None, download_dir=None, timeout=30.0):
         new_files = current_files - before_files
         finished = [
             f for f in new_files
-            if not f.name.endswith((".crdownload", ".tmp")) and f.is_file() and f.stat().st_size > 0
+            if not f.name.endswith((".crdownload", ".tmp")) and f.is_file()
         ]
         if finished:
             return sorted(finished, key=lambda f: f.stat().st_mtime, reverse=True)[0]
 
-        time.sleep(0.2)
+        time.sleep(0.1)
 
     raise TimeoutError(f"wait_for_download timed out after {timeout:g}s waiting in {path}")
 
