@@ -1,0 +1,31 @@
+SKILL.md
+  s_5d40ae83f8d939::t_6a51768bfa908b 28-30,64-85,155-158
+  s_5d40ae83f8d939::t_7dd8941f8d35ea 142-144,149-151
+tests/unit/test_daemon.py
+  s_5d40ae83f8d939::t_c8d18ec554e1b8 202-226
+  s_5d40ae83f8d939::t_6a51768bfa908b 149,171-201,227-341,929-955
+  s_5d40ae83f8d939::t_7dd8941f8d35ea 382-383,387,395-396,401,404-405,437,445-447
+src/browser_harness/helpers.py
+  s_5d40ae83f8d939::t_6a51768bfa908b 47-50,79-84,89-96,181-184,399-408,448-450,453-454,456,462,570-571,574-576
+src/browser_harness/daemon.py
+  s_5d40ae83f8d939::t_6a51768bfa908b 438-440,442,444,484,518,551-554,571-610,673-682,684-687,689-702,704,750-759,794-795,804-815,841-852,862-879
+  s_5d40ae83f8d939::t_7dd8941f8d35ea 796-799
+tests/unit/test_helpers.py
+  s_5d40ae83f8d939::t_6a51768bfa908b 12-16,69,448-476,485-489,494-498,509-513,530-534,542-577,580
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cbe5bc7d410c80e58be4c8b9d1f0a6353f84e80d",
+  "prompts": {},
+  "sessions": {
+    "s_5d40ae83f8d939": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0694d-b970-7ad2-864c-a19af40d1523",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
