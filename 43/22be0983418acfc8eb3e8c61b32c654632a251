@@ -1,0 +1,19 @@
+pyproject.toml
+  s_5d40ae83f8d939::t_6291303b506773 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4322be0983418acfc8eb3e8c61b32c654632a251",
+  "prompts": {},
+  "sessions": {
+    "s_5d40ae83f8d939": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0694d-b970-7ad2-864c-a19af40d1523",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "MagMueller <mamagnus00@gmail.com>"
+    }
+  }
+}
