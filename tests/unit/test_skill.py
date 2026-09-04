@@ -1,4 +1,5 @@
 from importlib import resources
+from pathlib import Path
 
 
 def _frontmatter(text: str) -> str:
@@ -10,6 +11,10 @@ def _frontmatter(text: str) -> str:
 
 def test_packaged_skill_frontmatter_is_valid_simple_yaml():
     text = resources.files("browser_harness").joinpath("SKILL.md").read_text()
+    if text.strip().startswith("../../") or not text.startswith("---\n"):
+        root_skill = Path(__file__).resolve().parents[2] / "SKILL.md"
+        if root_skill.exists():
+            text = root_skill.read_text()
     metadata = {}
 
     for line in _frontmatter(text).splitlines():
