@@ -450,13 +450,52 @@ def new_tab(url="about:blank"):
         goto_url(url)
     return tid
 
+def _close_target(target_id):
+    result = cdp("Target.closeTarget", targetId=target_id)
+    if result.get("success") is False:
+        raise RuntimeError(f"failed to close target: {target_id}")
+    return result
+
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
-    Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
+    Accepts a raw targetId string or a dict from list_tabs()/current_tab().
+    Closing the attached tab first switches the harness to another real tab, or
+    a fresh about:blank tab if there is no other real tab."""
     target_id = _target_id(target)
     if target_id is None:
-        target_id = current_tab()["targetId"]
-    cdp("Target.closeTarget", targetId=target_id)
+        cur = current_tab()
+        target_id = cur["targetId"]
+    else:
+        try:
+            cur = current_tab()
+        except Exception:
+            cur = None
+    if cur is None:
+        _close_target(target_id)
+        return
+    if target_id != cur["targetId"]:
+        _close_target(target_id)
+        return
+
+    other_tabs = [t for t in list_tabs(include_chrome=False) if t["targetId"] != target_id]
+    fallback_id = None
+    if other_tabs:
+        switch_tab(other_tabs[0])
+    else:
+        fallback_id = new_tab()
+    try:
+        _close_target(target_id)
+    except Exception as close_error:
+        try:
+            switch_tab(cur)
+        except Exception:
+            pass
+        if fallback_id is not None:
+            try:
+                _close_target(fallback_id)
+            except Exception:
+                pass
+        raise close_error
 
 
 def ensure_real_tab():
