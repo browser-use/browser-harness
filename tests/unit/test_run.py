@@ -276,3 +276,26 @@ def test_cli_doctor_rejects_unknown_flags():
             run.main()
     assert ei.value.code == 2
     assert "usage" in err.getvalue().lower()
+
+
+def test_cli_update_rejects_unknown_flags():
+    err = StringIO()
+    with patch.object(sys, "argv", ["browser-harness", "--update", "--bogus"]), \
+         patch("sys.stderr", err), \
+         patch("browser_harness.run.run_update") as m:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+    assert ei.value.code == 2
+    assert "usage" in err.getvalue().lower()
+    m.assert_not_called()
+
+
+@pytest.mark.parametrize("flag,expected_yes", [(None, False), ("-y", True), ("--yes", True)])
+def test_cli_update_forwards_yes_flag(flag, expected_yes):
+    argv = ["browser-harness", "--update"] + ([flag] if flag else [])
+    with patch.object(sys, "argv", argv), \
+         patch("browser_harness.run.run_update", return_value=0) as m:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+    assert ei.value.code == 0
+    m.assert_called_once_with(yes=expected_yes)
