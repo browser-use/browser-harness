@@ -6,11 +6,12 @@ or tells the agent to run `browser-harness auth login`. OAuth details live here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 import argparse
 import base64
 import getpass
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -393,6 +394,8 @@ def _exchange_authorization_code(code: str, redirect_uri: str, verifier: str) ->
 
 def _callback_server(callback: PendingCallback) -> HTTPServer:
     class Handler(BaseHTTPRequestHandler):
+        timeout = 10
+
         def do_GET(self):  # noqa: N802 - stdlib handler API
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path != CALLBACK_PATH:
@@ -407,18 +410,27 @@ def _callback_server(callback: PendingCallback) -> HTTPServer:
                 callback.code = _one(qs, "code")
                 callback.error = _one(qs, "error")
                 callback.error_description = _one(qs, "error_description")
-            callback.complete = True
-            body = b"<html><body><h1>Browser Use Cloud login complete</h1><p>You can close this tab.</p></body></html>"
+            if callback.error:
+                detail = f": {callback.error_description}" if callback.error_description else ""
+                body = (
+                    f"<html><body><h1>Browser Use Cloud login failed</h1>"
+                    f"<p>{html.escape(callback.error)}{html.escape(detail)}</p></body></html>"
+                ).encode("utf-8")
+            else:
+                body = b"<html><body><h1>Browser Use Cloud login complete</h1><p>You can close this tab.</p></body></html>"
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            callback.complete = True
 
         def log_message(self, fmt, *args):
             return
 
-    return HTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    return server
 
 
 def _post_json(url: str, payload: dict) -> dict:
