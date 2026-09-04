@@ -1,0 +1,36 @@
+interaction-skills/parallel-tabs.md
+  s_5d40ae83f8d939::t_c73ebc6825c1e8 1-16,21-29,32-34,36-40,43-49,51-79
+  s_5d40ae83f8d939::t_b8cabc13023a7e 17-20,30-31,35,41-42,50
+tests/unit/test_helpers.py
+  s_5d40ae83f8d939::t_18b9ad4cef5312 12-13,15-18,466-469,471-496,498-516
+  s_5d40ae83f8d939::t_75ae798a56746d 542-559
+  s_5d40ae83f8d939::t_3d98e0a2651981 14,464-465,470,497,517-539
+SKILL.md
+  s_5d40ae83f8d939::t_c2a14e60b86ed9 246
+  s_5d40ae83f8d939::t_b8cabc13023a7e 70-72
+  s_5d40ae83f8d939::t_4b276ae668affb 64-67,139-141,152-155
+  s_5d40ae83f8d939::t_e8f35398c4b2ff 68-69,76-82
+  s_5d40ae83f8d939::t_a5310863485389 73-75
+  s_5d40ae83f8d939::t_a99d007631fd83 147-148
+src/browser_harness/helpers.py
+  s_5d40ae83f8d939::t_20979e2c9308dc 6,50-52,83-88,449,454-456,465-478
+  s_5d40ae83f8d939::t_3d98e0a2651981 47-49,396,431-433,441,444-446,451-453,460-461,592-596
+  s_5d40ae83f8d939::t_18b9ad4cef5312 53-54,89,397-399,429,435,442-443
+  s_5d40ae83f8d939::t_e6c5063ff34e28 457-459
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "eefde9f8b3454d45f651d5fd40e1dbe4120a2ecb",
+  "prompts": {},
+  "sessions": {
+    "s_5d40ae83f8d939": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0694d-b970-7ad2-864c-a19af40d1523",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
