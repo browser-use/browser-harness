@@ -106,7 +106,10 @@ BU_NAME=r7k2 browser-harness mac-approve
 ```
 
 For the default daemon, omit the `BU_NAME` prefix. The original command resumes
-when the helper returns `ready`; do not rerun it. If the helper reports
+when the helper returns `ready`; do not rerun it. The helper matches Chrome's
+own localized sheet strings, so it works in any Chrome UI language; for one it
+does not know, set `BH_ALLOW_SHEET_TITLES` and `BH_ALLOW_LABELS` (comma-separated)
+to the sheet title and the Allow button text. If the helper reports
 `accessibility-required`, ask the user once to grant the app launching
 browser-harness (for example Terminal, iTerm, or Codex) access in System
 Settings > Privacy & Security > Accessibility, then call `mac-approve` once
