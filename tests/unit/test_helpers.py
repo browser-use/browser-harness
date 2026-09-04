@@ -542,6 +542,52 @@ def test_switch_tab_matches_by_dict_query(monkeypatch):
     assert ("Target.attachToTarget", {"targetId": "tab-2", "flatten": True}) in calls
 
 
+def test_switch_tab_raw_target_id_avoids_list_tabs(monkeypatch):
+    calls = []
+    raw_id = "A" * 32
+
+    def forbidden_list_tabs(*args, **kwargs):
+        raise AssertionError("list_tabs should not be called for raw target IDs")
+
+    monkeypatch.setattr(helpers, "list_tabs", forbidden_list_tabs)
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-{kwargs['targetId']}"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    sid = helpers.switch_tab(raw_id)
+    assert sid == f"session-{raw_id}"
+    assert ("Target.attachToTarget", {"targetId": raw_id, "flatten": True}) in calls
+
+
+def test_switch_tab_empty_query_does_not_match_tabs(monkeypatch):
+    calls = []
+    sample_tabs = [
+        {"targetId": "tab-1", "url": "https://example.com", "title": "Example Domain"},
+    ]
+    monkeypatch.setattr(helpers, "list_tabs", lambda include_chrome=True: sample_tabs)
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-{kwargs['targetId']}"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    sid = helpers.switch_tab("")
+    assert sid == "session-"
+    assert ("Target.attachToTarget", {"targetId": "", "flatten": True}) in calls
+
+
 def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     calls = []
 

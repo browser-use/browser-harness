@@ -392,6 +392,14 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
+def _is_target_id(val: str) -> bool:
+    if len(val) == 32 and all(c in "0123456789abcdefABCDEF" for c in val):
+        return True
+    if len(val) == 36 and val.count("-") == 4:
+        return all(c in "0123456789abcdefABCDEF-" for c in val)
+    return False
+
+
 def _target_id(target):
     """Accept a raw target id, a tab dict, or a URL/title substring."""
     if isinstance(target, dict):
@@ -403,6 +411,12 @@ def _target_id(target):
         query = target
 
     if not isinstance(query, str):
+        return query
+
+    if _is_target_id(query):
+        return query
+
+    if not query or not query.strip():
         return query
 
     try:
