@@ -443,13 +443,14 @@ def _callback_server(callback: PendingCallback) -> HTTPServer:
                 else:
                     body = b"<html><body><h1>Browser Use Cloud login complete</h1><p>You can close this tab.</p></body></html>"
 
-                callback.complete = True
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                self.wfile.flush()
 
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+                callback.complete = True
 
         def log_message(self, fmt, *args):
             return
