@@ -751,7 +751,7 @@ class Daemon:
                 if target_to_close == self.target_id:
                     old_session = self.session
                     await self.attach_first_page(
-                        replaces_session=old_session,
+                        replaces_session=None,
                         enable_domains=False,
                         exclude_target_id=target_to_close,
                     )
@@ -759,7 +759,9 @@ class Daemon:
                 elif target_to_close == self.dedicated_target_id:
                     self.dedicated_target_id = None
                 try:
-                    await self.cdp.send_raw("Target.closeTarget", {"targetId": target_to_close})
+                    res = await self.cdp.send_raw("Target.closeTarget", {"targetId": target_to_close})
+                    if isinstance(res, dict) and res.get("success") is False:
+                        close_error = RuntimeError("Target.closeTarget failed")
                 except Exception as e:
                     close_error = e
 
