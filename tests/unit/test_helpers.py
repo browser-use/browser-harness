@@ -473,6 +473,75 @@ def test_switch_tab_can_explicitly_activate_visible_tab(monkeypatch):
     assert ("Target.activateTarget", {"targetId": "target-new"}) in calls
 
 
+def test_switch_tab_matches_by_url_substring(monkeypatch):
+    calls = []
+    sample_tabs = [
+        {"targetId": "tab-1", "url": "https://example.com", "title": "Example Domain"},
+        {"targetId": "tab-2", "url": "https://github.com/browser-use/browser-harness", "title": "GitHub"},
+    ]
+    monkeypatch.setattr(helpers, "list_tabs", lambda include_chrome=True: sample_tabs)
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-{kwargs['targetId']}"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    sid = helpers.switch_tab("github.com")
+    assert sid == "session-tab-2"
+    assert ("Target.attachToTarget", {"targetId": "tab-2", "flatten": True}) in calls
+
+
+def test_switch_tab_matches_by_title_substring(monkeypatch):
+    calls = []
+    sample_tabs = [
+        {"targetId": "tab-1", "url": "https://example.com", "title": "Example Domain"},
+        {"targetId": "tab-2", "url": "https://github.com", "title": "Pull Requests - Repo"},
+    ]
+    monkeypatch.setattr(helpers, "list_tabs", lambda include_chrome=True: sample_tabs)
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-{kwargs['targetId']}"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    sid = helpers.switch_tab("pull requests")
+    assert sid == "session-tab-2"
+    assert ("Target.attachToTarget", {"targetId": "tab-2", "flatten": True}) in calls
+
+
+def test_switch_tab_matches_by_dict_query(monkeypatch):
+    calls = []
+    sample_tabs = [
+        {"targetId": "tab-1", "url": "https://example.com", "title": "Example Domain"},
+        {"targetId": "tab-2", "url": "https://docs.python.org", "title": "Python Docs"},
+    ]
+    monkeypatch.setattr(helpers, "list_tabs", lambda include_chrome=True: sample_tabs)
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-{kwargs['targetId']}"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    sid = helpers.switch_tab({"url": "docs.python.org"})
+    assert sid == "session-tab-2"
+    assert ("Target.attachToTarget", {"targetId": "tab-2", "flatten": True}) in calls
+
+
 def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     calls = []
 
