@@ -30,7 +30,12 @@ def _illegal_return_then_success():
         captured.append((method, kwargs))
         if method == "Runtime.evaluate" and len(_evaluated_expressions(captured)) == 1:
             return {
-                "result": {"type": "object", "subtype": "error", "description": "SyntaxError: Illegal return statement"},
+                "result": {
+                    "type": "object",
+                    "subtype": "error",
+                    "className": "SyntaxError",
+                    "description": "SyntaxError: Illegal return statement",
+                },
                 "exceptionDetails": {"text": "Uncaught SyntaxError: Illegal return statement"},
             }
         return {"result": {"value": None}}
@@ -115,6 +120,30 @@ def test_js_raises_on_error_result_without_exception_details():
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         with pytest.raises(RuntimeError, match="evaluation failed"):
             helpers.js("throw new Error('evaluation failed')")
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"className": "Error", "description": "Error: Illegal return statement\n    at <anonymous>:1:7"},
+        {"className": "SyntaxError", "description": "SyntaxError: Illegal return statement\n    at <anonymous>:1:7"},
+    ],
+)
+def test_js_does_not_retry_user_errors_that_mention_illegal_return(result):
+    captured = []
+
+    def fake_cdp(method, **kwargs):
+        captured.append((method, kwargs))
+        return {
+            "result": {"type": "object", "subtype": "error", **result},
+            "exceptionDetails": {"text": "Uncaught"},
+        }
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        with pytest.raises(RuntimeError):
+            helpers.js("window.count = (window.count || 0) + 1; throw new Error('Illegal return statement')")
+
+    assert len(_evaluated_expressions(captured)) == 1
 
 
 def test_return_word_inside_string_does_not_trigger_wrapping():
