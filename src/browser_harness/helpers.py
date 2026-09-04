@@ -625,6 +625,56 @@ def upload_file(selector, path):
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
 
+def wait_for_download(action_fn=None, download_dir=None, timeout=30.0):
+    """Trigger a download and wait for it to complete.
+
+    Configures Browser.setDownloadBehavior, executes `action_fn()` if provided,
+    and waits for the downloaded file to finish writing to disk. Returns the Path
+    to the completed file.
+    """
+    path = Path(download_dir) if download_dir else (ipc._TMP / "downloads")
+    path.mkdir(parents=True, exist_ok=True)
+    before_files = {p.resolve() for p in path.iterdir()}
+
+    cdp("Browser.setDownloadBehavior", behavior="allow", downloadPath=str(path.resolve()), eventsEnabled=True)
+    if action_fn:
+        action_fn()
+
+    deadline = time.time() + timeout
+    guid_filename = {}
+    completed_guid = None
+
+    while time.time() < deadline:
+        for e in drain_events():
+            method = e.get("method", "")
+            params = e.get("params", {})
+            if method == "Browser.downloadWillBegin":
+                guid_filename[params.get("guid")] = params.get("suggestedFilename")
+            elif method == "Browser.downloadProgress":
+                if params.get("state") == "completed":
+                    completed_guid = params.get("guid")
+                elif params.get("state") == "canceled":
+                    name = guid_filename.get(params.get("guid")) or params.get("guid")
+                    raise RuntimeError(f"download was canceled: {name}")
+
+        if completed_guid and completed_guid in guid_filename:
+            target_file = path / guid_filename[completed_guid]
+            if target_file.exists() and not target_file.name.endswith(".crdownload"):
+                return target_file
+
+        current_files = {p.resolve() for p in path.iterdir()}
+        new_files = current_files - before_files
+        finished = [
+            f for f in new_files
+            if not f.name.endswith((".crdownload", ".tmp")) and f.is_file() and f.stat().st_size > 0
+        ]
+        if finished:
+            return sorted(finished, key=lambda f: f.stat().st_mtime, reverse=True)[0]
+
+        time.sleep(0.2)
+
+    raise TimeoutError(f"wait_for_download timed out after {timeout:g}s waiting in {path}")
+
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.
 
