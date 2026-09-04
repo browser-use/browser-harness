@@ -511,6 +511,119 @@ def test_new_tab_reuses_an_empty_data_document(monkeypatch):
     assert calls == [("goto_url", "https://example.com")]
 
 
+def test_close_tab_closes_non_current_tab_without_switching(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "current_tab", lambda: {"targetId": "tab-current", "url": "https://current.com"})
+    monkeypatch.setattr(helpers, "switch_tab", lambda target, **kwargs: calls.append(("switch_tab", target)))
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: calls.append((method, kwargs)) or {})
+
+    helpers.close_tab("tab-other")
+    assert calls == [("Target.closeTarget", {"targetId": "tab-other"})]
+
+
+def test_close_tab_current_switches_to_surviving_real_tab(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "current_tab", lambda: {"targetId": "tab-current", "url": "https://current.com"})
+    monkeypatch.setattr(
+        helpers,
+        "list_tabs",
+        lambda include_chrome=True: [
+            {"targetId": "tab-current", "url": "https://current.com", "title": "Current"},
+            {"targetId": "tab-survivor", "url": "https://survivor.com", "title": "Survivor"},
+        ],
+    )
+    monkeypatch.setattr(helpers, "switch_tab", lambda target, **kwargs: calls.append(("switch_tab", target)))
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: calls.append((method, kwargs)) or {})
+
+    helpers.close_tab()
+    assert calls == [
+        ("switch_tab", "tab-survivor"),
+        ("Target.closeTarget", {"targetId": "tab-current"}),
+    ]
+
+
+def test_close_tab_current_switches_to_chrome_tab_when_no_real_tabs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "current_tab", lambda: {"targetId": "tab-current", "url": "https://current.com"})
+
+    def fake_list_tabs(include_chrome=True):
+        if not include_chrome:
+            return [{"targetId": "tab-current", "url": "https://current.com", "title": "Current"}]
+        return [
+            {"targetId": "tab-current", "url": "https://current.com", "title": "Current"},
+            {"targetId": "tab-inspect", "url": "chrome://inspect/#remote-debugging", "title": "Inspect"},
+        ]
+
+    monkeypatch.setattr(helpers, "list_tabs", fake_list_tabs)
+    monkeypatch.setattr(helpers, "switch_tab", lambda target, **kwargs: calls.append(("switch_tab", target)))
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: calls.append((method, kwargs)) or {})
+
+    helpers.close_tab()
+    assert calls == [
+        ("switch_tab", "tab-inspect"),
+        ("Target.closeTarget", {"targetId": "tab-current"}),
+    ]
+
+
+def test_close_tab_current_opens_blank_when_no_other_tabs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "current_tab", lambda: {"targetId": "tab-current", "url": "https://current.com"})
+    monkeypatch.setattr(
+        helpers,
+        "list_tabs",
+        lambda include_chrome=True: [
+            {"targetId": "tab-current", "url": "https://current.com", "title": "Current"},
+        ],
+    )
+    monkeypatch.setattr(helpers, "switch_tab", lambda target, **kwargs: calls.append(("switch_tab", target)))
+    monkeypatch.setattr(
+        helpers,
+        "new_tab",
+        lambda *args, **kwargs: calls.append(("new_tab", args, kwargs)) or "tab-blank",
+    )
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: calls.append((method, kwargs)) or {})
+
+    helpers.close_tab()
+    assert calls == [
+        ("new_tab", ("about:blank",), {}),
+        ("Target.closeTarget", {"targetId": "tab-current"}),
+    ]
+
+
+def test_close_tab_accepts_dict_target_closing_current(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "current_tab", lambda: {"targetId": "tab-current", "url": "https://current.com"})
+    monkeypatch.setattr(
+        helpers,
+        "list_tabs",
+        lambda include_chrome=True: [
+            {"targetId": "tab-current", "url": "https://current.com", "title": "Current"},
+            {"targetId": "tab-survivor", "url": "https://survivor.com", "title": "Survivor"},
+        ],
+    )
+    monkeypatch.setattr(helpers, "switch_tab", lambda target, **kwargs: calls.append(("switch_tab", target)))
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: calls.append((method, kwargs)) or {})
+
+    helpers.close_tab({"targetId": "tab-current"})
+    assert calls == [
+        ("switch_tab", "tab-survivor"),
+        ("Target.closeTarget", {"targetId": "tab-current"}),
+    ]
+
+
+def test_close_tab_noop_when_not_attached(monkeypatch):
+    calls = []
+
+    def fake_current_tab():
+        raise RuntimeError("not attached")
+
+    monkeypatch.setattr(helpers, "current_tab", fake_current_tab)
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: calls.append((method, kwargs)) or {})
+
+    helpers.close_tab()
+    assert calls == []
+
+
 # --- press_key physical key identity (#685) ---
 
 
