@@ -362,8 +362,11 @@ def _run(args):
 
         sys.exit(video.run_cli(args[1:]))
     if args and args[0] == "--update":
-        yes = any(a in {"-y", "--yes"} for a in args[1:])
-        sys.exit(run_update(yes=yes))
+        rest = args[1:]
+        if not set(rest).issubset({"-y", "--yes"}):
+            print("usage: browser-harness --update [-y|--yes]", file=sys.stderr)
+            sys.exit(2)
+        sys.exit(run_update(yes=bool(rest)))
     if args and args[0] == "--reload":
         restart_daemon()
         print("daemon stopped — will restart fresh on next call")
