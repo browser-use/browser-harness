@@ -146,11 +146,7 @@ def test_tab_marker_disabled_on_page_load_events(monkeypatch, value):
 
 
 def test_set_session_enables_all_four_default_domains_on_new_session():
-    """Regression: switch_tab() / new_tab() in helpers.py route through the
-    `set_session` IPC, which previously only enabled Page on the new
-    session. With Network disabled, wait_for_network_idle() silently stops
-    receiving events after a tab switch. Initial attach enables all four
-    (Page, DOM, Runtime, Network); set_session must enable the same set."""
+    """Legacy set_session must retain domain parity with initial attach."""
     d = _fresh_daemon()
     new_session = "session-AFTER-switch"
 
@@ -170,6 +166,152 @@ def test_set_session_enables_all_four_default_domains_on_new_session():
     )
     assert d.session == new_session
     assert d.target_id == "target-2"
+
+
+def test_prepare_target_attaches_once_without_changing_daemon_default():
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP()
+    d.session = "daemon-default-session"
+    d.target_id = "daemon-default-target"
+
+    result = asyncio.run(d.handle({
+        "meta": "prepare_target",
+        "target_id": "agent-target",
+    }))
+    again = asyncio.run(d.handle({
+        "meta": "prepare_target",
+        "target_id": "agent-target",
+    }))
+
+    assert result == {"session_id": "session-for-agent-target", "target_id": "agent-target"}
+    assert again == result
+    assert d.session == "daemon-default-session"
+    assert d.target_id == "daemon-default-target"
+    enabled = {
+        method for method, _params, session_id in d.cdp.calls
+        if session_id == "session-for-agent-target" and method.endswith(".enable")
+    }
+    assert enabled == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}
+    assert [method for method, _params, _session in d.cdp.calls].count("Target.attachToTarget") == 1
+    assert not [
+        call for call in d.cdp.calls
+        if call[0] == "Network.disable" and call[2] == "daemon-default-session"
+    ]
+
+
+def test_concurrent_clients_keep_commands_on_their_target_sessions():
+    class _ConcurrentCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            await asyncio.sleep(0)
+            return {"value": f"{session_id}:{params['expression']}"}
+
+    async def run():
+        d = daemon.Daemon()
+        d.cdp = _ConcurrentCDP()
+        d.session = "daemon-default-session"
+        d.target_sessions = {"target-a": "session-a", "target-b": "session-b"}
+        d.session_targets = {"session-a": "target-a", "session-b": "target-b"}
+        return d, await asyncio.gather(
+            d.handle({
+                "method": "Runtime.evaluate",
+                "params": {"expression": "agent-a"},
+                "target_id": "target-a",
+            }),
+            d.handle({
+                "method": "Runtime.evaluate",
+                "params": {"expression": "agent-b"},
+                "target_id": "target-b",
+            }),
+        )
+
+    d, results = asyncio.run(run())
+
+    assert results == [
+        {"result": {"value": "session-a:agent-a"}},
+        {"result": {"value": "session-b:agent-b"}},
+    ]
+    assert d.session == "daemon-default-session"
+
+
+def test_browser_domain_commands_bypass_the_selected_target_session():
+    d = _fresh_daemon()
+    d._remember_target_session("agent-target", "agent-session")
+
+    asyncio.run(d.handle({
+        "method": "Browser.getVersion",
+        "params": {},
+        "target_id": "agent-target",
+    }))
+
+    assert d.cdp.calls == [("Browser.getVersion", {}, None)]
+
+
+def test_target_scoped_event_drain_does_not_consume_another_agents_events():
+    d = _fresh_daemon()
+    d.session_targets = {"session-a": "target-a", "session-b": "target-b"}
+    d._record_event("Network.requestWillBeSent", {"requestId": "a"}, "session-a")
+    d._record_event("Network.requestWillBeSent", {"requestId": "b"}, "session-b")
+
+    first = asyncio.run(d.handle({"meta": "drain_events", "target_id": "target-a"}))
+    second = asyncio.run(d.handle({"meta": "drain_events", "target_id": "target-b"}))
+
+    assert [event["params"]["requestId"] for event in first["events"]] == ["a"]
+    assert [event["params"]["requestId"] for event in second["events"]] == ["b"]
+
+
+def test_default_event_drain_does_not_consume_another_targets_events():
+    d = _fresh_daemon()
+    d.target_id = "default-target"
+    d.session_targets = {"default-session": "default-target", "other-session": "other-target"}
+    d._record_event("Network.requestWillBeSent", {"requestId": "default"}, "default-session")
+    d._record_event("Network.requestWillBeSent", {"requestId": "other"}, "other-session")
+
+    default = asyncio.run(d.handle({"meta": "drain_events"}))
+    other = asyncio.run(d.handle({"meta": "drain_events", "target_id": "other-target"}))
+
+    assert [event["params"]["requestId"] for event in default["events"]] == ["default"]
+    assert [event["params"]["requestId"] for event in other["events"]] == ["other"]
+
+
+def test_pending_dialog_is_scoped_to_the_requesting_target():
+    d = _fresh_daemon()
+    d.session_targets = {"session-a": "target-a", "session-b": "target-b"}
+    d._record_event("Page.javascriptDialogOpening", {"message": "A"}, "session-a")
+    d._record_event("Page.javascriptDialogOpening", {"message": "B"}, "session-b")
+
+    a = asyncio.run(d.handle({"meta": "pending_dialog", "target_id": "target-a"}))
+    b = asyncio.run(d.handle({"meta": "pending_dialog", "target_id": "target-b"}))
+
+    assert a == {"dialog": {"message": "A"}}
+    assert b == {"dialog": {"message": "B"}}
+
+
+def test_pending_dialog_survives_a_later_command_for_the_same_target():
+    d = _fresh_daemon()
+    d.session_targets["old-session"] = "same-target"
+    d._record_event("Page.javascriptDialogOpening", {"message": "Still open"}, "old-session")
+
+    result = asyncio.run(d.handle({
+        "meta": "pending_dialog",
+        "target_id": "same-target",
+    }))
+
+    assert result == {"dialog": {"message": "Still open"}}
+
+
+def test_target_destroyed_cleans_cached_target_state():
+    d = _fresh_daemon()
+    d._remember_target_session("agent-target", "agent-session")
+    d._record_event("Network.requestWillBeSent", {"requestId": "a"}, "agent-session")
+    d._record_event("Page.javascriptDialogOpening", {"message": "A"}, "agent-session")
+
+    d._record_event("Target.targetDestroyed", {"targetId": "agent-target"})
+
+    assert "agent-session" not in d.session_targets
+    assert "agent-target" not in d.target_sessions
+    assert "agent-target" not in d.events_by_target
+    assert "agent-target" not in d.dialogs_by_target
 
 
 def test_set_session_falls_back_to_existing_target_id_when_not_provided():
@@ -845,3 +987,30 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_stale_target_session_reattaches_to_the_same_target():
+    class _StaleTargetCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Runtime.evaluate" and session_id == "stale-session":
+                raise RuntimeError("Session with given id not found")
+            if method == "Target.attachToTarget":
+                return {"sessionId": "replacement-session"}
+            if method == "Runtime.evaluate" and session_id == "replacement-session":
+                return {"value": "same-target"}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _StaleTargetCDP()
+    d._remember_target_session("agent-target", "stale-session")
+
+    result = asyncio.run(d.handle({
+        "method": "Runtime.evaluate",
+        "params": {"expression": "1"},
+        "target_id": "agent-target",
+    }))
+
+    assert result == {"result": {"value": "same-target"}}
+    assert d.target_sessions["agent-target"] == "replacement-session"
+    assert d.session_targets["replacement-session"] == "agent-target"
