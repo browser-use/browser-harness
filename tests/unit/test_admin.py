@@ -1383,3 +1383,24 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+def test_ensure_daemon_closes_health_check_socket_on_success_and_retry(monkeypatch):
+    from unittest.mock import MagicMock
+    from browser_harness import admin as admin_mod
+
+    sock1 = MagicMock()
+    sock2 = MagicMock()
+    sockets = [sock1, sock2]
+
+    monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: True)
+    monkeypatch.setattr(admin_mod.ipc, "connect", lambda name, timeout=3.0: (sockets.pop(0), "tok"))
+    responses = iter([{"error": "probe failed"}, {"result": {}}])
+    monkeypatch.setattr(admin_mod.ipc, "request", lambda s, tok, req: next(responses))
+    monkeypatch.setattr(admin_mod.time, "sleep", lambda s: None)
+
+    admin_mod.ensure_daemon()
+
+    assert sock1.close.call_count == 1
+    assert sock2.close.call_count == 1
+
