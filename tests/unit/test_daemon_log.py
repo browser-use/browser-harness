@@ -1,4 +1,5 @@
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -21,6 +22,8 @@ def test_restart_retains_error_and_stderr_sink_when_history_is_trimmed(tmp_path,
     assert "stderr: reconnect failed" in data
     assert data.count("daemon starting pid=") == 2
     assert len(path.read_bytes()) < 1_050_000
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_real_entrypoint_preserves_failure_across_repeated_failed_starts(tmp_path):

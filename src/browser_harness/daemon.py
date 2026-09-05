@@ -225,6 +225,7 @@ def _start_log():
     # Keep the most recent MiB across restarts, including the original failure.
     # Truncate in place: admin already opened this inode as the child's stderr.
     with open(LOG, "a+b") as stream:
+        os.chmod(LOG, 0o600)
         if stream.tell() > 1024 * 1024:
             stream.seek(-1024 * 1024, os.SEEK_END)
             tail = stream.read()
