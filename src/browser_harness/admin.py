@@ -105,25 +105,7 @@ def _process_start_time(pid):
     return None
 
 
-def _load_env():
-    repo_root = Path(__file__).resolve().parents[2]
-    workspace = paths.workspace_dir()
-    for p in (repo_root / ".env", workspace / ".env"):
-        if not p.exists():
-            continue
-        _load_env_file(p)
-
-
-def _load_env_file(p):
-    for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
-_load_env()
+paths.load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
 BU_API = "https://api.browser-use.com/api/v3"

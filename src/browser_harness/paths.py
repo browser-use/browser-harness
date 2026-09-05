@@ -47,3 +47,16 @@ def tmp_dir() -> Path:
 def workspace_dir() -> Path:
     raw = os.environ.get("BH_AGENT_WORKSPACE")
     return ensure_private_dir(Path(raw).expanduser().resolve() if raw else home_dir() / "agent-workspace")
+
+
+def load_env(*files: Path) -> None:
+    """Seed os.environ from the repo's .env, then the workspace's .env; set variables win."""
+    for p in files or (Path(__file__).resolve().parents[2] / ".env", workspace_dir() / ".env"):
+        if not p.exists():
+            continue
+        for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
