@@ -38,8 +38,7 @@ Read SKILL.md for the default workflow and examples.
 
 Typical usage:
   browser-harness <<'PY'
-  ensure_real_tab()
-  print(page_info())
+  print(list_tabs())  # select an exact target with switch_tab(id), or use new_tab(url)
   PY
 
 Helpers are pre-imported. The daemon auto-starts and connects to the running browser.
@@ -71,7 +70,7 @@ Commands:
 
 USAGE = """Usage:
   browser-harness <<'PY'
-  print(page_info())
+  print(list_tabs())
   PY
 """
 

@@ -176,19 +176,52 @@ def test_default_screenshots_are_unique_and_preserved(monkeypatch, fake_png, tmp
     assert first.read_bytes() == original == second.read_bytes()
 
 
-def test_implicit_target_is_pinned_once_not_daemon_global(monkeypatch):
-    requests = []
+@pytest.mark.parametrize("operation", [helpers.current_tab, helpers.page_info, helpers.drain_events,
+    lambda: helpers.cdp("Runtime.evaluate", expression="1"),
+    lambda: helpers.click_at_xy(10, 10), lambda: helpers.close_tab()])
+def test_missing_target_fails_before_any_ipc(monkeypatch, operation):
     monkeypatch.setattr(helpers, "_TARGET_ID", None)
+    monkeypatch.setattr(helpers, "_send", lambda *a, **kw: pytest.fail("must not inherit the daemon default"))
+    with pytest.raises(RuntimeError, match="no tab selected.*switch_tab"):
+        operation()
 
-    def send(req, **kwargs):
-        requests.append(req)
-        if req.get("meta") == "current_tab":
-            return {"targetId": "initial", "url": "about:blank", "title": ""}
-        return {"result": {}}
 
+def test_raw_and_browser_access_needs_no_page_selection(monkeypatch):
+    monkeypatch.setattr(helpers, "_TARGET_ID", None)
+    send = Mock(return_value={"result": {}, "events": []})
     monkeypatch.setattr(helpers, "_send", send)
-    helpers.cdp("Runtime.evaluate", expression="1")
-    helpers.cdp("Page.captureScreenshot")
-    assert requests[0] == {"meta": "current_tab"}
-    assert len(requests) == 3
-    assert [r["target_id"] for r in requests[1:]] == ["initial", "initial"]
+    helpers.cdp("Browser.getVersion")
+    helpers.cdp("Runtime.evaluate", session_id="raw", expression="1")
+    assert helpers.drain_events(all_targets=True) == []
+    assert send.call_args.args[0] == {"meta": "drain_events", "target_id": None}
+    with pytest.raises(TypeError, match="parameters as keywords"):
+        helpers.cdp("DOM.getDocument", {"depth": -1})
+
+
+def test_target_recovery_cannot_overwrite_newer_legacy_selection():
+    async def run():
+        d = daemon.Daemon()
+        d.target_id, d.session = "page", "old"
+        d._remember_target_session("page", "old")
+        initializing, finish = asyncio.Event(), asyncio.Event()
+        async def send(method, params=None, session_id=None):
+            if method == "Target.attachToTarget":
+                return {"sessionId": "recovery"}
+            if session_id == "old":
+                raise RuntimeError("Session with given id not found.")
+            return {}
+        async def enable(session):
+            if session == "recovery":
+                initializing.set()
+                await finish.wait()
+        d.cdp = Mock(send_raw=send)
+        d._enable_default_domains = enable
+        d._schedule_tab_marker = Mock()
+        request = asyncio.create_task(d.handle({"method":"Runtime.evaluate", "target_id":"page"}))
+        await asyncio.wait_for(initializing.wait(), 1)
+        await d.handle({"meta":"set_session", "target_id":"page", "session_id":"newer"})
+        finish.set()
+        assert "result" in await asyncio.wait_for(request, 1)
+        assert d.session == d.target_sessions["page"] == "newer"
+        assert d.session_targets[d.session] == "page"
+    asyncio.run(run())

@@ -19,7 +19,7 @@ Domain skills are off by default. Set `BH_DOMAIN_SKILLS=1` to enable them; see t
 
 ```bash
 browser-harness <<'PY'
-print(page_info())
+print(list_tabs())  # inspect, then select an exact target or create a task tab
 PY
 ```
 
@@ -28,6 +28,10 @@ PY
 - First navigation for a task is `target_id = new_tab(url)`, not
   `goto_url(url)`. Print and remember that target ID. At the start of each later
   CLI invocation, call `switch_tab(target_id)`; do not call `new_tab()` again.
+- Page helpers require a selection in each CLI process. They never inherit
+  another agent's tab. For an existing tab, inspect `list_tabs()` and select its
+  exact ID. Older scripts must add this selection; a missing-target error is
+  not a connection failure and does not require a new daemon.
 - Reuse this task's working tabs with `switch_tab()`. Separate concurrent tasks
   may need separate tabs on the same URL; a matching URL alone is not proof
   that a tab is yours. Do not close tabs you did not create.
@@ -47,13 +51,12 @@ PY
   another Allow prompt.
 - Set `BH_TAB_MARKER=0` before starting the daemon to leave page titles unchanged.
   The horse marker remains enabled by default.
-- A timeout or page that pauses while hidden is not permission to foreground
-  Chrome. Keep using background CDP operations. For a focus-gated page,
-  temporarily call `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`,
-  perform and verify the operation, then disable it in a `finally` block. If
-  background control still cannot work, report that limitation instead of
-  activating the tab. Do not invent a `Runtime.evaluate` scroll replacement or
-  a cross-frame JS walker.
+- Attached sessions enable `Emulation.setFocusEmulationEnabled` so background
+  tabs can render and receive input without foregrounding Chrome. You can
+  override it with raw CDP (`enabled=False`) when testing visibility/focus;
+  later selections reuse the session and preserve that override. Some remote
+  providers may not support emulation. A timeout is not permission to foreground
+  Chrome or replay a click: inspect the page first, since the action may finish late.
 - The normal local flow attaches to the running Chrome/Chromium CDP endpoint. No browser ids or local profile selection.
 
 ## Local Chrome
@@ -222,7 +225,12 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
-- Raw CDP is available with `cdp("Domain.method", ...)`.
+- Raw CDP is available with `cdp("Domain.method", parameter=value)`; its second
+  positional argument is a session ID, not a parameter dictionary.
+- `drain_events()` reads your selected tab's queue. `drain_events(all_targets=True)`
+  reads the separate connection-wide queue, including browser and raw-session
+  events, without consuming other tabs' queues. Both are bounded recent-event
+  buffers, not a lossless event subscription.
 
 ## Recordings and Videos
 
@@ -238,8 +246,11 @@ browser-harness recordings
 natural nudge to “record,” “show,” “demo,” or “make a video” opts in that task;
 significant work alone does not.
 
-Before browser work, call `start_recording(name, title=...)`, retain its exact
-returned directory, and call `stop_recording()` after verifying the result.
+For a requested recording, select your task's tab first, then call
+`start_recording(name, title=...)`, retain its exact returned directory, and
+call `stop_recording()` after verifying the result. Ordinary browser work does
+not require starting a recording. Tab selection alone does not capture a frame;
+use `capture_screenshot()` whenever you need to inspect or show the current page.
 Never replace that path with `recordings --latest`. For a request made after
 the task, use:
 

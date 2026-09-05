@@ -82,6 +82,8 @@ def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
 
 def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
+    if session_id is not None and not isinstance(session_id, str):
+        raise TypeError("session_id must be a string; pass CDP parameters as keywords, e.g. cdp('DOM.getDocument', depth=-1)")
     if not session_id and not method.startswith(("Target.", "Browser.")):
         _selected_target()
     return _send(
@@ -95,17 +97,14 @@ def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_
     ).get("result", {})
 
 
-def drain_events():
-    """Drain events for this CLI process's selected tab only."""
-    return _send({"meta": "drain_events", "target_id": _selected_target()})["events"]
+def drain_events(all_targets=False):
+    """Drain this tab's events, or the separate browser/raw-session queue."""
+    return _send({"meta": "drain_events", "target_id": None if all_targets else _selected_target()})["events"]
 
 
 def _selected_target():
-    # Legacy scripts inherit the default once; another client cannot move it
-    # between two calls in this process. Concurrent tasks should select their
-    # own tab explicitly with new_tab()/switch_tab().
     if _TARGET_ID is None:
-        current_tab()
+        raise RuntimeError("no tab selected in this process; call switch_tab(target_id) or new_tab(url) first. Use list_tabs() to inspect existing tabs.")
     return _TARGET_ID
 
 
@@ -422,21 +421,12 @@ def list_tabs(include_chrome=True):
     return out
 
 def current_tab():
-    if _TARGET_ID is None:
-        r = _send({"meta": "current_tab"})
-        _set_client_tab(r["targetId"])
-    else:
-        info = cdp("Target.getTargetInfo", targetId=_TARGET_ID)["targetInfo"]
-        r = {
-            "targetId": info["targetId"],
-            "url": info.get("url", ""),
-            "title": info.get("title", ""),
-        }
+    info = cdp("Target.getTargetInfo", targetId=_selected_target())["targetInfo"]
     return {
-        "targetId": r["targetId"],
-        "target_id": r["targetId"],
-        "url": r["url"],
-        "title": r["title"],
+        "targetId": info["targetId"],
+        "target_id": info["targetId"],
+        "url": info.get("url", ""),
+        "title": info.get("title", ""),
     }
 
 def _mark_tab():

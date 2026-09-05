@@ -32,7 +32,7 @@ def test_independent_processes_share_one_browser_connection():
             ], stdout=subprocess.DEVNULL, stderr=log)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("BU_", "BH_"))}
         env.update(BH_HOME=str(root / "home"), BH_RUNTIME_DIR=str(root / "run"),
-                   BH_TMP_DIR=str(root / "shots"), BH_RECORD="0", BH_TAB_MARKER="0",
+                   BH_TMP_DIR=str(root / "shots"), BH_RECORD="0", BH_TAB_MARKER=os.environ.get("BH_TEST_TAB_MARKER", "1"),
                    BH_TELEMETRY="0", BH_DOMAIN_SKILLS="0")
         try:
             deadline = time.monotonic() + 20
@@ -64,11 +64,13 @@ def test_independent_processes_share_one_browser_connection():
                 started = time.monotonic()
 
                 async def create(i):
-                    html = (f'<body style="margin:0;background:rgb({i % 256},100,150)">'
+                    html = (f'<body style="margin:0;height:2000px;background:rgb({i % 256},100,150)">'
                             '<button style="position:absolute;left:0;top:0;width:100px;height:40px" '
                             f'onclick="window.clicks++">agent-{i}</button>'
                             '<input style="position:absolute;left:0;top:50px;width:200px;height:40px">'
-                            f'<script>window.owner={i};window.clicks=0</script>')
+                            f'<script>window.owner={i};window.clicks=0;window.framesSeen=0;'
+                            'function tick(){window.framesSeen++;requestAnimationFrame(tick)};'
+                            'requestAnimationFrame(tick)</script>')
                     return await cli(f'''
 import json
 from browser_harness.helpers import _send
@@ -83,6 +85,17 @@ print(json.dumps({{"target":tid,"pid":_send({{"meta":"ping"}})["pid"]}}))
                 assert len({t["target"] for t in tabs}) == count
                 pids = {t["pid"] for t in tabs}
                 assert len(pids) == 1, f"multiple daemons: {pids}"
+                # A later CLI must not silently inherit any other task's tab.
+                await cli('''
+import json
+try:
+    click_at_xy(40, 20)
+except RuntimeError as error:
+    assert "no tab selected" in str(error)
+else:
+    raise AssertionError("unselected action must fail")
+print(json.dumps(True))
+''')
 
                 async def act(i, tab):
                     return await cli(f'''
@@ -94,6 +107,11 @@ click_at_xy(50, 70)
 type_text("agent-{i}")
 state = js("({{owner:window.owner, clicks:window.clicks, text:document.querySelector('input').value}})")
 assert state == {{"owner":{i},"clicks":1,"text":"agent-{i}"}}, state
+frames = js("window.framesSeen")
+scroll(150, 150, dy=300)
+wait(0.1)
+assert js("scrollY") > 0, "background wheel input stalled"
+assert js("window.framesSeen") > frames, "background animation frames stalled"
 shot = capture_screenshot()
 assert current_tab()["targetId"] == {tab["target"]!r}
 print(json.dumps({{"shot":shot,"pid":_send({{"meta":"ping"}})["pid"]}}))
@@ -108,9 +126,7 @@ print(json.dumps({{"shot":shot,"pid":_send({{"meta":"ping"}})["pid"]}}))
                     await cli(f'''
 import json, time
 switch_tab({tabs[0]["target"]!r})
-# Chrome suppresses background alerts. This is the disposable HEADLESS browser,
-# not the user's visible Chrome; activate only to exercise a real modal dialog.
-activate_tab({tabs[0]["target"]!r})
+# Focus emulation permits this background dialog without visible activation.
 cdp("Runtime.evaluate", expression="setTimeout(() => alert('only-tab-zero'), 10)", userGesture=True)
 time.sleep(0.2)
 print(json.dumps(page_info()))
@@ -144,12 +160,14 @@ print(json.dumps(_send({"meta":"ping"})["pid"]))
             asyncio.run(run())
         finally:
             # Only the owned test daemon in this isolated runtime directory.
-            subprocess.run([sys.executable, "-c",
-                            "from browser_harness.admin import restart_daemon; restart_daemon()"],
-                           env=env, capture_output=True, timeout=20)
-            chrome.terminate()
             try:
-                chrome.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                chrome.kill()
-                chrome.wait(timeout=5)
+                subprocess.run([sys.executable, "-c",
+                                "from browser_harness.admin import restart_daemon; restart_daemon()"],
+                               env=env, capture_output=True, timeout=20)
+            finally:
+                chrome.terminate()
+                try:
+                    chrome.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    chrome.kill()
+                    chrome.wait(timeout=5)

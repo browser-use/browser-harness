@@ -193,6 +193,14 @@ def test_prepare_target_attaches_once_without_changing_daemon_default():
     }
     assert enabled == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}
     assert [method for method, _params, _session in d.cdp.calls].count("Target.attachToTarget") == 1
+    assert [call for call in d.cdp.calls if call[0] == "Emulation.setFocusEmulationEnabled"] == [
+        ("Emulation.setFocusEmulationEnabled", {"enabled": True}, "session-for-agent-target")
+    ]
+    asyncio.run(d.handle({"method":"Emulation.setFocusEmulationEnabled", "target_id":"agent-target", "params":{"enabled":False}}))
+    asyncio.run(d.handle({"meta":"prepare_target", "target_id":"agent-target"}))
+    assert [call[1] for call in d.cdp.calls if call[0] == "Emulation.setFocusEmulationEnabled"] == [
+        {"enabled":True}, {"enabled":False}
+    ], "reselecting a cached target must preserve the agent's override"
     assert not [
         call for call in d.cdp.calls
         if call[0] == "Network.disable" and call[2] == "daemon-default-session"
@@ -285,18 +293,26 @@ def test_target_scoped_event_drain_does_not_consume_another_agents_events():
     assert [event["params"]["requestId"] for event in second["events"]] == ["b"]
 
 
-def test_default_event_drain_does_not_consume_another_targets_events():
+def test_global_event_drain_preserves_raw_events_and_independent_tab_queues():
     d = _fresh_daemon()
     d.target_id = "default-target"
     d.session_targets = {"default-session": "default-target", "other-session": "other-target"}
     d._record_event("Network.requestWillBeSent", {"requestId": "default"}, "default-session")
     d._record_event("Network.requestWillBeSent", {"requestId": "other"}, "other-session")
+    d._record_event("Browser.downloadWillBegin", {})
+    d._record_event("Target.attachedToTarget", {})
+    d._record_event("Network.requestWillBeSent", {}, "raw-iframe")
 
     default = asyncio.run(d.handle({"meta": "drain_events"}))
     other = asyncio.run(d.handle({"meta": "drain_events", "target_id": "other-target"}))
 
-    assert [event["params"]["requestId"] for event in default["events"]] == ["default"]
+    assert len(default["events"]) == 5
+    assert default["events"][-1]["session_id"] == "raw-iframe"
     assert [event["params"]["requestId"] for event in other["events"]] == ["other"]
+    assert asyncio.run(d.handle({"meta":"drain_events"}))["events"] == []
+    d._record_event("Network.responseReceived", {}, "other-session")
+    asyncio.run(d.handle({"meta":"drain_events", "target_id":"other-target"}))
+    assert len(asyncio.run(d.handle({"meta":"drain_events"}))["events"]) == 1
 
 
 def test_pending_dialog_is_scoped_to_the_requesting_target():
@@ -363,7 +379,7 @@ def test_enable_default_domains_swallows_errors_per_domain():
     class _PartialFailureCDP(_FakeCDP):
         async def send_raw(self, method, params=None, session_id=None):
             self.calls.append((method, params, session_id))
-            if method == "DOM.enable":
+            if method in ("DOM.enable", "Emulation.setFocusEmulationEnabled"):
                 raise RuntimeError("simulated DOM failure")
             return {}
 
@@ -377,6 +393,7 @@ def test_enable_default_domains_swallows_errors_per_domain():
     assert "DOM.enable" in attempted  # attempted, but raised
     assert "Runtime.enable" in attempted
     assert "Network.enable" in attempted
+    assert "Emulation.setFocusEmulationEnabled" in attempted
 
 
 def test_set_session_keeps_old_target_domains_enabled():
@@ -434,7 +451,7 @@ def test_set_session_runs_enables_in_parallel():
         # in-flight. Cap iterations to avoid hanging if parallelization breaks.
         for _ in range(50):
             await asyncio.sleep(0)
-            if d.cdp.in_flight >= 4:
+            if d.cdp.in_flight >= 5:
                 break
         peak = d.cdp.max_concurrent
         d.cdp.release.set()
@@ -442,8 +459,8 @@ def test_set_session_runs_enables_in_parallel():
         return peak, d.cdp.calls
 
     peak, calls = asyncio.run(run())
-    assert peak == 4, (
-        f"set_session must run four enables concurrently "
+    assert peak == 5, (
+        f"set_session must run domain and focus enables concurrently "
         f"(observed peak in-flight = {peak}). Sequential await would peak at 1."
     )
     methods = sorted({m for (m, _p, _s) in calls})

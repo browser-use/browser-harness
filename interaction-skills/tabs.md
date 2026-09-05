@@ -65,10 +65,12 @@ Typical tools:
 ## Rules that held up in practice
 
 - `switch_tab()` intentionally does **not** change Chrome's visible tab.
-- Static screenshots and normal CDP input work on the attached background tab.
+- Attach enables focus emulation so background rendering and wheel input work.
+  Raw CDP can override it for visibility/focus tests; reselecting the same
+  session does not reset the override.
 - `activate_tab()` is only for a user-requested visible switch. Rendering or
-  input trouble is not permission to foreground Chrome; use background CDP and
-  temporary focus emulation first.
+  input trouble is not permission to foreground Chrome. Inspect before retrying
+  an input that timed out: it may still execute after the page resumes.
 - `Target.activateTarget` is the CDP-side "show this tab".
 - `list_tabs()` includes `chrome://newtab/` by default; ask for `include_chrome=False` when you want only real pages.
 - `chrome://omnibox-popup.top-chrome/` can appear as a fake page target; ignore it for user-facing tab lists.

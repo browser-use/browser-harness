@@ -557,20 +557,25 @@ class Daemon:
         wait_for_network_idle() — silently stop receiving events after a tab
         switch, because each fresh CDP session starts with all domains disabled.
 
-        Runs the four enables in parallel via gather so the worst-case time is
+        Runs domain and focus initialization in parallel so the worst-case time is
         bounded by a single CDP round trip rather than four sequential ones —
         important on the set_session path, where the helper's IPC socket has
         a 5s read timeout.
         """
-        async def enable_one(d):
+        async def enable_one(method, params=None):
             try:
                 await asyncio.wait_for(
-                    self.cdp.send_raw(f"{d}.enable", session_id=session_id),
+                    self.cdp.send_raw(method, params, session_id=session_id),
                     timeout=4,
                 )
             except Exception as e:
-                log(f"enable {d} on {session_id}: {e}")
-        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+                log(f"{method} on {session_id}: {e}")
+        await asyncio.gather(
+            *(enable_one(f"{d}.enable") for d in ("Page", "DOM", "Runtime", "Network")),
+            # Hidden tabs otherwise pause animation frames and even wheel input.
+            # This does not activate Chrome; agents can override it through CDP.
+            enable_one("Emulation.setFocusEmulationEnabled", {"enabled": True}),
+        )
 
     def _remember_target_session(self, target_id, session_id):
         previous = self.target_sessions.get(target_id)
@@ -764,16 +769,13 @@ class Daemon:
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
         if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
         if meta == "drain_events":
-            target_id = req.get("target_id") or self.target_id
+            target_id = req.get("target_id")
             if target_id:
                 out = list(self.events_by_target.pop(target_id, ()))
-                self.events = deque(
-                    (event for event in self.events if event.get("target_id") != target_id),
-                    maxlen=BUF,
-                )
             else:
+                # Independent queue for browser events, raw sessions and legacy
+                # clients. Reading it must not consume another agent's tab queue.
                 out = list(self.events); self.events.clear()
-                self.events_by_target.clear()
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
         if meta == "current_tab":
@@ -883,7 +885,9 @@ class Daemon:
                     try:
                         self._forget_target_session(target_id, sid)
                         replacement_session = await self._ensure_target_session(target_id)
-                        if self.target_id == target_id:
+                        # No await between comparison and publication: a legacy
+                        # selection made during domain initialization must win.
+                        if self.target_id == target_id and self.session == sid and self.target_sessions.get(target_id) == replacement_session:
                             self._record_session_replacement(self.session, replacement_session)
                             self.session = replacement_session
                         try:

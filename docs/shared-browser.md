@@ -41,6 +41,18 @@ tab. Screenshots get unique default filenames. Only an explicit user request
 should invoke `activate_tab()`. Agents retain full raw CDP access, including
 explicit session IDs for advanced iframe/Target-domain operations.
 
+Page helpers fail with an actionable error until the process selects a target;
+they do not inherit the daemon's startup tab. Existing multi-invocation scripts
+must retain a target ID and select it in each invocation. `list_tabs()` and
+browser-wide CDP commands remain usable without a page selection.
+
+Attached sessions enable CDP focus emulation once so hidden pages can render
+and process wheel input. This does not activate Chrome's visible tab. Agents
+can disable it through raw CDP; selecting a cached session preserves their
+override. Unsupported providers are logged, not replaced with another browser.
+`switch_tab()` does not take an implicit recording screenshot. Explicit
+screenshots and requested recordings remain available.
+
 The same helpers module is not a per-thread context: independent CLI processes
 are the supported concurrent-agent boundary. An orchestrator using one Python
 process can use explicit CDP session IDs or separate worker processes.
@@ -68,6 +80,11 @@ Remote CDP endpoints use the same routing and single-flight startup per name.
 Browser Use Cloud provisioning needs stored authentication or an API key;
 arbitrary `BU_CDP_WS`/`BU_CDP_URL` endpoints have their own authentication rules.
 Separate remote browsers remain opt-in for independent identities/lifetimes.
+
+`drain_events(all_targets=True)` reads the separate connection-wide buffer,
+including browser-level and independently attached raw-session events. Draining
+either queue does not consume the other. These bounded buffers are not a
+lossless event bus; advanced agents can filter the raw events themselves.
 
 ## Approval and connection lifetime
 
