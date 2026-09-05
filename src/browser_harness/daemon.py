@@ -728,6 +728,8 @@ class Daemon:
             return self.network.snapshot()
         if meta == "session":     return {"session_id": self.session}
         if meta == "current_tab":
+            if self._binding_error:
+                return {"error": self._binding_error}
             # Resolve the attached page's target info server-side. Helpers can't
             # send Target.getTargetInfo themselves: daemon strips session_id for
             # any Target.* method (browser-level call), and without a targetId
