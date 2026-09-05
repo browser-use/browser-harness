@@ -430,6 +430,7 @@ class Daemon:
         self.dedicated_target_id = None
         self._binding = None
         self._binding_error = None
+        self._detached_sessions = deque(maxlen=32)
         self._dedicated_target_lock = asyncio.Lock()
         self._session_state_lock = asyncio.Lock()
         self._active_recoveries = 0
@@ -637,6 +638,8 @@ class Daemon:
         )))
 
     def _record_event(self, method, params, session_id=None):
+        if method == "Target.detachedFromTarget" and params.get("sessionId"):
+            self._detached_sessions.append(params["sessionId"])
         self.events.append({"method": method, "params": params, "session_id": session_id})
         if method == "Page.javascriptDialogOpening":
             self.dialog = params
@@ -796,7 +799,14 @@ class Daemon:
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            if sid in self._detached_sessions:
+                raise RuntimeError("Session with given id not found")
+            result = await self.cdp.send_raw(method, params, session_id=sid)
+            if method == "Target.closeTarget" and params.get("targetId") == self.target_id and result.get("success"):
+                # Chrome may acknowledge close before emitting the detach event.
+                # Never send the next page command into that closing session.
+                self._binding_error = str(TabLost(f"selected target {self.target_id} was closed"))
+            return {"result": result}
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid:
