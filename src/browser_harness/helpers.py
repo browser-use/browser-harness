@@ -49,12 +49,17 @@ class _IPCResponseTimeout(TimeoutError):
     pass
 
 
-def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
-    c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
+def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, *, deadline=None):
+    def remaining(limit):
+        budget = limit if deadline is None else min(limit, deadline - time.monotonic())
+        if budget <= 0:
+            raise _IPCResponseTimeout("request deadline exceeded")
+        return budget
+    c, token = ipc.connect(NAME, timeout=remaining(IPC_CONNECT_TIMEOUT_SECONDS))
     try:
-        c.settimeout(response_timeout)
+        c.settimeout(remaining(response_timeout))
         try:
-            r = ipc.request(c, token, req)
+            r = ipc.request(c, token, req, **({"deadline": deadline} if deadline is not None else {}))
         except TimeoutError as e:
             # Carry the detail on the exception itself. Raising the bare class
             # left str(exc) empty, so every caller that reported the error had
@@ -546,6 +551,38 @@ def wait_for_element(selector, timeout=10.0, visible=False):
         if js(check): return True
         time.sleep(0.3)
     return False
+
+def wait_until(js_condition, timeout=10.0):
+    """Wait for a read-only JS expression to become truthy on this exact session.
+
+    Returns True; raises TimeoutError on expiry and surfaces JS/session errors.
+    Use an expression, not a statement block. Existing Boolean waits are unchanged.
+    """
+    if not isinstance(js_condition, str) or not js_condition.strip():
+        raise ValueError("js_condition must be a non-empty JavaScript expression")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be a finite positive number of seconds")
+    deadline = time.monotonic() + timeout
+    expression = f"(async () => Boolean(await ({js_condition})))()"
+    try:
+        session = _send({"meta": "session"}, response_timeout=timeout, deadline=deadline).get("session_id")
+        if not session:
+            raise RuntimeError("wait_until requires an attached tab")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            result = _send({
+                "method": "Runtime.evaluate", "session_id": session,
+                "params": {"expression": expression, "returnByValue": True,
+                           "awaitPromise": True, "timeout": remaining * 1000},
+            }, response_timeout=remaining, deadline=deadline)["result"]
+            if _runtime_value(result, js_condition):
+                return True
+            time.sleep(max(0, min(0.1, deadline - time.monotonic())))
+    except TimeoutError as exc:
+        raise TimeoutError(f"wait_until timed out after {timeout:g}s; condition: {_js_snippet(js_condition)}") from exc
+
 
 def wait_for_network_idle(timeout=10.0, idle_ms=500):
     """Wait for tracked requests to finish and Network events to stay quiet.

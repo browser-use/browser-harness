@@ -196,6 +196,11 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
   `isDownload` in the result; it does not mean the file has finished downloading.
 - For an internal page, explicitly choose a working tab with `ensure_real_tab()`.
   For `TabLost`, inspect and select the intended target explicitly before acting.
+- For an async UI change, wait for the actual condition: `wait_until("location.pathname === '/done'")`,
+  `wait_until("document.body.innerText.includes('Saved')")`, or
+  `wait_until("!document.querySelector('[role=progressbar]')", timeout=10)`.
+  It returns `True` or raises on timeout/JS/session error. It stays on the original
+  session; use read-only expressions. Existing `wait_for_*` Boolean results stay unchanged.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.

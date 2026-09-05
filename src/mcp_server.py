@@ -51,6 +51,7 @@ from browser_harness.helpers import (
     wait,
     wait_for_element,
     wait_for_load,
+    wait_until,
 )
 
 SERVER = MCPServer("browser-harness")
@@ -258,6 +259,12 @@ def browser_wait_for_element(
 def browser_read_events(cursor: dict | None = None, session_id: str | None = None):
     """Read bounded event history without consuming it. Retain cursor; check dropped/truncated."""
     return read_events(cursor=cursor, session_id=session_id)
+
+
+@_tool
+def browser_wait_until(js_condition: str, timeout: float = 10.0):
+    """Wait for a read-only JavaScript expression on the original tab. Timeout and JS errors raise."""
+    return {"ok": wait_until(js_condition, timeout=timeout)}
 
 
 @_tool
