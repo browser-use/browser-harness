@@ -200,6 +200,8 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
 - Raw CDP is available with `cdp("Domain.method", ...)`.
+- For network diagnostics, `read_events(cursor)` gives each reader independent
+  bounded history. Check `dropped`/`truncated`; see `interaction-skills/network-requests.md`.
 
 ## Recordings and Videos
 

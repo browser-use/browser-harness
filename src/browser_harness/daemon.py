@@ -1,13 +1,13 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
 import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
-from collections import deque
 from pathlib import Path
 
 from . import _ipc as ipc
 from . import auth
 from . import paths
 from ._tab_binding import TabBinding, TabLost, browser_key
+from ._events import EventHistory, RequestState
 from cdp_use.client import CDPClient
 
 
@@ -438,7 +438,8 @@ class Daemon:
         self._recoveries_idle.set()
         self._shutting_down = False
         self._session_replacements = {}
-        self.events = deque(maxlen=BUF)
+        self.events = EventHistory(BUF)
+        self.network = RequestState()
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
@@ -565,13 +566,19 @@ class Daemon:
         important on the set_session path, where the helper's IPC socket has
         a 5s read timeout.
         """
+        if session_id == self.session and self.network.session_id != session_id:
+            self.network = RequestState(session_id)
         async def enable_one(d):
             try:
                 await asyncio.wait_for(
                     self.cdp.send_raw(f"{d}.enable", session_id=session_id),
                     timeout=4,
                 )
+                if d == "Network" and self.network.session_id == session_id:
+                    self.network.enabled = True
             except Exception as e:
+                if d == "Network" and self.network.session_id == session_id:
+                    self.network.error = "Network.enable failed"
                 log(f"enable {d} on {session_id}: {e}")
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
 
@@ -637,6 +644,11 @@ class Daemon:
         )))
 
     def _record_event(self, method, params, session_id=None):
+        self.network.record(method, params, session_id)
+        if method == "Target.detachedFromTarget" and params.get("sessionId") == self.network.session_id:
+            self.network.error = "session detached"
+        if method == "Target.targetDestroyed" and params.get("targetId") == self.target_id:
+            self.network.error = "tab closed"
         self.events.append({"method": method, "params": params, "session_id": session_id})
         if method == "Page.javascriptDialogOpening":
             self.dialog = params
@@ -668,6 +680,11 @@ class Daemon:
                     "browser-harness did not retry or create another connection"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
+        orig = self.cdp._event_registry.handle_event
+        async def tap(method, params, session_id=None):
+            self._record_event(method, params, session_id)
+            return await orig(method, params, session_id)
+        self.cdp._event_registry.handle_event = tap
         self._binding = TabBinding(ipc.pid_path(NAME).with_suffix(".tab.json"), browser_key(url, REMOTE_ID))
         try:
             saved = self._binding.load()
@@ -678,11 +695,6 @@ class Daemon:
             # Keep the control plane available for explicit tab selection.
             self._binding_error = str(e)
             log(self._binding_error)
-        orig = self.cdp._event_registry.handle_event
-        async def tap(method, params, session_id=None):
-            self._record_event(method, params, session_id)
-            return await orig(method, params, session_id)
-        self.cdp._event_registry.handle_event = tap
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -698,8 +710,16 @@ class Daemon:
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
         if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
         if meta == "drain_events":
-            out = list(self.events); self.events.clear()
-            return {"events": out}
+            return {"events": self.events.drain()}
+        if meta == "read_events":
+            return self.events.read(req.get("cursor"), req.get("session_id"))
+        if meta == "network_status":
+            if req.get("session_id") != self.session:
+                return {"error": "network wait session changed; start a new wait explicitly"}
+            ws = getattr(self.cdp, "ws", None)
+            if ws is None or ws.state != 1:  # websockets.protocol.State.OPEN
+                self.network.error = "browser connection lost"
+            return self.network.snapshot()
         if meta == "session":     return {"session_id": self.session}
         if meta == "current_tab":
             # Resolve the attached page's target info server-side. Helpers can't
@@ -740,6 +760,8 @@ class Daemon:
                 self.target_id = target_id
                 self._binding_error = None
                 new_session = self.session
+                if self.network.session_id != new_session:
+                    self.network = RequestState(new_session)
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
             # consumer-side filter in wait_for_network_idle is the actual
@@ -795,11 +817,15 @@ class Daemon:
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        if method in ("Network.disable", "Network.enable") and sid == self.network.session_id:
+            self.network.error = "network subscription changed; reattach and navigate before waiting for idle"
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid:
+                if sid == self.network.session_id:
+                    self.network.error = "session lost"
                 # Explicit session callers asked for that exact session; do not
                 # silently redirect them to the daemon's current tab.
                 if req.get("session_id"):
