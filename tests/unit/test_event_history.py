@@ -131,6 +131,13 @@ def test_closed_websocket_cannot_report_idle():
     assert state["reason"] == "browser connection lost"
 
 
+def test_stopped_reader_on_open_websocket_cannot_report_idle():
+    d = ready_daemon()
+    d.cdp._message_handler_task = SimpleNamespace(done=lambda: True)
+    state = asyncio.run(d.handle({"meta": "network_status", "session_id": "active"}))
+    assert state["known"] is False
+
+
 def test_wait_unknown_status_and_stale_daemon_raise(monkeypatch):
     monkeypatch.setattr(helpers, "_send", lambda req: {"session_id": "s"} if req.get("meta") == "session" else {})
     with pytest.raises(RuntimeError, match="Network idle unknown"):

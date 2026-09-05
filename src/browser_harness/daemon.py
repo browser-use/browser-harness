@@ -695,7 +695,9 @@ class Daemon:
             if req.get("session_id") != self.session:
                 return {"error": "network wait session changed; start a new wait explicitly"}
             ws = getattr(self.cdp, "ws", None)
-            if ws is None or ws.state != 1:  # websockets.protocol.State.OPEN
+            reader = getattr(self.cdp, "_message_handler_task", None)
+            if ws is None or ws.state != 1 or (reader is not None and reader.done()):
+                # State.OPEN == 1; an open socket with a stopped reader is not coverage.
                 self.network.error = "browser connection lost"
             return self.network.snapshot()
         if meta == "session":     return {"session_id": self.session}
