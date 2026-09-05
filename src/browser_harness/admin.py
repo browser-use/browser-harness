@@ -530,14 +530,20 @@ def ensure_daemon(wait=None, name=None, env=None):
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         # Must go through ipc.connect so this works on Windows (TCP loopback) too;
         # raw AF_UNIX here would fail on every warm call and churn the daemon.
-        for last in (False, True):
+        try:
+            s, token = ipc.connect(name or NAME, timeout=3.0)
             try:
-                s, token = ipc.connect(name or NAME, timeout=3.0)
                 resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
                 if "result" in resp: return
-            except Exception:
-                pass
-            if not last: time.sleep(0.5)
+            finally:
+                s.close()
+        except TimeoutError as e:
+            # A busy browser is not evidence its transport is dead. Restarting
+            # here would interrupt every agent and raise another Allow prompt.
+            raise RuntimeError("browser health check timed out; the shared daemon was left running") from e
+        except OSError:
+            # A closed IPC transport can be recovered through the normal path.
+            pass
         browser_kind = daemon_browser_kind(name)
         if browser_kind in {"cloud", None}:
             # A stale Cloud daemon still owns a billable browser. Its shutdown
@@ -564,13 +570,13 @@ def ensure_daemon(wait=None, name=None, env=None):
             stderr_sink = open(ipc.log_path(name or NAME), "ab")
         except OSError:
             stderr_sink = subprocess.DEVNULL
-        if local:
+        try:
+            # One connection per name, including when agents share a remote
+            # endpoint. Publish the child before releasing the spawn lock.
             with _spawn_lock(name, timeout=startup_wait) as lock:
                 if lock.fd is None:
                     raise RuntimeError("daemon-starting: another browser-harness daemon is still starting; retry later")
                 if daemon_alive(name):
-                    if stderr_sink is not subprocess.DEVNULL:
-                        stderr_sink.close()
                     return
                 pending_pid = _parked_daemon_pid(name) or _starting_daemon_pid(name)
                 if pending_pid:
@@ -582,13 +588,9 @@ def ensure_daemon(wait=None, name=None, env=None):
                     )
                     _publish_pid(ipc.pid_path(name or NAME), p.pid)
                     pending_pid = p.pid
-        else:
-            p = subprocess.Popen(
-                [sys.executable, "-m", "browser_harness.daemon"],
-                env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
-            )
-        if stderr_sink is not subprocess.DEVNULL:
-            stderr_sink.close()
+        finally:
+            if stderr_sink is not subprocess.DEVNULL:
+                stderr_sink.close()
         spawned = time.monotonic()
         deadline = spawned + startup_wait
         hinted = not local

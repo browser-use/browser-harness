@@ -30,7 +30,7 @@ from . import paths
 # inspection-heavy sessions without adding visual beats.
 ACTIONS = {
     "goto_url", "click_at_xy", "type_text", "fill_input", "press_key",
-    "scroll", "dispatch_key", "upload_file", "new_tab", "switch_tab",
+    "scroll", "dispatch_key", "upload_file", "new_tab", "activate_tab",
     "close_tab", "ensure_real_tab",
     "wait", "wait_for_load", "wait_for_element", "wait_for_network_idle",
 }

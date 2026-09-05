@@ -1,7 +1,16 @@
 import base64
 import json
+from unittest.mock import Mock
 
 from browser_harness import helpers, recorder
+
+
+def test_tab_selection_never_waits_for_a_recording_frame(monkeypatch):
+    capture = Mock(side_effect=AssertionError("selection must not capture"))
+    monkeypatch.setattr(recorder, "_capture", capture)
+    monkeypatch.setenv("BH_RECORD", "1")
+    recorder.observe("switch_tab", ("tab",), {}, 0.01)
+    capture.assert_not_called()
 
 
 class _FakeCDP:
@@ -69,6 +78,7 @@ def test_dropped_frame_is_recorded_and_never_raises(tmp_path, monkeypatch):
     def _timeout(_conn, _token, _req):
         raise TimeoutError("timed out")
 
+    monkeypatch.setattr(helpers, "_TARGET_ID", "recorded-target")
     monkeypatch.setattr(helpers.ipc, "connect", lambda _name, timeout=None: (_Socket(), None))
     monkeypatch.setattr(helpers.ipc, "request", _timeout)
     monkeypatch.setattr(helpers, "js", lambda expression: {})

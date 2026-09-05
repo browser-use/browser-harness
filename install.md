@@ -14,11 +14,12 @@ uv tool install --python 3.12 --upgrade --force browser-harness
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness"
 browser-harness skill > "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness/SKILL.md"
 browser-harness <<'PY'
-print(page_info())
+print(list_tabs())
 PY
 ```
 
-If `page_info()` prints, configure recording consent below, then stop.
+If `list_tabs()` prints, configure recording consent below, then stop. Browser
+work selects a target with `switch_tab(id)` or `new_tab(url)` first.
 
 `--python 3.12` prevents uv from selecting old releases that support older Python versions. `--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
 
@@ -49,7 +50,8 @@ In Chrome:
 
 1. Open `chrome://inspect/#remote-debugging`.
 2. Tick "Allow remote debugging for this browser instance".
-3. Retry `page_info()`.
+3. Run the connection check above, or leave its original process running if it
+   is already waiting for approval; do not start another connection.
 
 If that reports `permission-blocked` on macOS, handle the per-connection Allow
 sheet without bringing Chrome to the foreground:
@@ -82,7 +84,7 @@ Then use it by name:
 
 ```bash
 BU_NAME=r7k2 browser-harness <<'PY'
-print(page_info())
+print(list_tabs())
 PY
 ```
 

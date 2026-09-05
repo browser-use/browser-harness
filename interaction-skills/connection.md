@@ -6,28 +6,24 @@ When Chrome opens fresh, the only CDP `type: "page"` targets are `chrome://inspe
 
 The daemon's `attach_first_page()` handles this by creating an `about:blank` tab when no real pages exist. If you still end up on an invisible tab, use `switch_tab()` to attach to the real tab. Call `activate_tab()` only when the user explicitly asks Chrome to visibly show it.
 
-## Startup sequence
+## Shared connection
 
-1. Check if a daemon is already running with `daemon_alive()`
-2. If stale sockets exist but daemon is dead, clean them up
-3. List open tabs with `list_tabs()` to see what's available
-4. `ensure_real_tab()` attaches to a real page
-5. `switch_tab(target_id)` attaches without changing the visible Chrome tab; use `activate_tab(target_id)` only for a user-requested visible switch
+The CLI starts or reuses the default background connection automatically.
+Multiple agents use the same daemon and separate tab IDs, not separate daemon
+names. Do not remove socket/PID files yourself: another caller may be starting
+the connection or waiting for Chrome's approval.
 
-```python
-if not daemon_alive():
-    import os, ipc
-    ipc.cleanup_endpoint("default")
-    pid = ipc.pid_path("default")
-    if pid.exists(): pid.unlink()
-    ensure_daemon()
+For a new task, print and retain `new_tab(url)`'s target ID. For later calls,
+`switch_tab(target_id)` selects that exact tab for this script without changing
+the visible Chrome tab or another agent's selection. If the user explicitly
+asks to work in an existing tab, inspect `list_tabs()` and select its ID. A
+matching URL alone is not proof that the tab is unused by another task.
 
-tabs = list_tabs()
-for t in tabs:
-    print(t["url"][:60])
-
-tab = ensure_real_tab()
-```
+Run `browser-harness --doctor` for connection trouble. A closed tab, slow
+command, or truncated output does not mean the shared connection needs
+restarting. A timed-out mutation may already have happened: inspect its result
+before deciding what to do next. For a local Allow prompt, keep the original
+command running and follow the platform-specific instructions in `SKILL.md`.
 
 ## Bringing Chrome to front
 
@@ -39,14 +35,15 @@ subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate
 ```
 
 For normal agent work, do not activate Chrome. Screenshots and CDP input work
-on the attached background tab; activate only for a page that demonstrably
-pauses visibility-dependent rendering while hidden.
+on the attached background tab. Rendering trouble is not permission to
+foreground Chrome; try temporary focus emulation as described in `SKILL.md`,
+then report any remaining limitation.
 
 ## Navigating
 
-Prefer navigating an existing tab over `new_tab()`. Harness-created tabs open in the background.
+Reuse a tab owned by this task. Harness-created tabs open in the background.
 
 ```python
-tab = ensure_real_tab()
+switch_tab("TARGET_ID_RETAINED_BY_THIS_TASK")
 goto_url("https://example.com")
 ```

@@ -146,11 +146,7 @@ def test_tab_marker_disabled_on_page_load_events(monkeypatch, value):
 
 
 def test_set_session_enables_all_four_default_domains_on_new_session():
-    """Regression: switch_tab() / new_tab() in helpers.py route through the
-    `set_session` IPC, which previously only enabled Page on the new
-    session. With Network disabled, wait_for_network_idle() silently stops
-    receiving events after a tab switch. Initial attach enables all four
-    (Page, DOM, Runtime, Network); set_session must enable the same set."""
+    """Legacy set_session must retain domain parity with initial attach."""
     d = _fresh_daemon()
     new_session = "session-AFTER-switch"
 
@@ -170,6 +166,193 @@ def test_set_session_enables_all_four_default_domains_on_new_session():
     )
     assert d.session == new_session
     assert d.target_id == "target-2"
+
+
+def test_prepare_target_attaches_once_without_changing_daemon_default():
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP()
+    d.session = "daemon-default-session"
+    d.target_id = "daemon-default-target"
+
+    result = asyncio.run(d.handle({
+        "meta": "prepare_target",
+        "target_id": "agent-target",
+    }))
+    again = asyncio.run(d.handle({
+        "meta": "prepare_target",
+        "target_id": "agent-target",
+    }))
+
+    assert result == {"session_id": "session-for-agent-target", "target_id": "agent-target"}
+    assert again == result
+    assert d.session == "daemon-default-session"
+    assert d.target_id == "daemon-default-target"
+    enabled = {
+        method for method, _params, session_id in d.cdp.calls
+        if session_id == "session-for-agent-target" and method.endswith(".enable")
+    }
+    assert enabled == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}
+    assert [method for method, _params, _session in d.cdp.calls].count("Target.attachToTarget") == 1
+    assert [call for call in d.cdp.calls if call[0] == "Emulation.setFocusEmulationEnabled"] == [
+        ("Emulation.setFocusEmulationEnabled", {"enabled": True}, "session-for-agent-target")
+    ]
+    asyncio.run(d.handle({"method":"Emulation.setFocusEmulationEnabled", "target_id":"agent-target", "params":{"enabled":False}}))
+    asyncio.run(d.handle({"meta":"prepare_target", "target_id":"agent-target"}))
+    assert [call[1] for call in d.cdp.calls if call[0] == "Emulation.setFocusEmulationEnabled"] == [
+        {"enabled":True}, {"enabled":False}
+    ], "reselecting a cached target must preserve the agent's override"
+    assert not [
+        call for call in d.cdp.calls
+        if call[0] == "Network.disable" and call[2] == "daemon-default-session"
+    ]
+
+
+def test_concurrent_prepare_target_calls_share_one_attachment():
+    class _SlowAttachCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                await asyncio.sleep(0)
+                return {"sessionId": "shared-session"}
+            return {}
+
+    async def run():
+        d = daemon.Daemon()
+        d.cdp = _SlowAttachCDP()
+        requests = [
+            d.handle({"meta": "prepare_target", "target_id": "shared-target"}),
+            d.handle({"meta": "prepare_target", "target_id": "shared-target"}),
+        ]
+        return d, await asyncio.gather(*requests)
+
+    d, results = asyncio.run(run())
+
+    expected = {"session_id": "shared-session", "target_id": "shared-target"}
+    assert results == [expected, expected]
+    assert [call[0] for call in d.cdp.calls].count("Target.attachToTarget") == 1
+
+
+def test_concurrent_clients_keep_commands_on_their_target_sessions():
+    class _ConcurrentCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            await asyncio.sleep(0)
+            return {"value": f"{session_id}:{params['expression']}"}
+
+    async def run():
+        d = daemon.Daemon()
+        d.cdp = _ConcurrentCDP()
+        d.session = "daemon-default-session"
+        d.target_sessions = {"target-a": "session-a", "target-b": "session-b"}
+        d.session_targets = {"session-a": "target-a", "session-b": "target-b"}
+        return d, await asyncio.gather(
+            d.handle({
+                "method": "Runtime.evaluate",
+                "params": {"expression": "agent-a"},
+                "target_id": "target-a",
+            }),
+            d.handle({
+                "method": "Runtime.evaluate",
+                "params": {"expression": "agent-b"},
+                "target_id": "target-b",
+            }),
+        )
+
+    d, results = asyncio.run(run())
+
+    assert results == [
+        {"result": {"value": "session-a:agent-a"}},
+        {"result": {"value": "session-b:agent-b"}},
+    ]
+    assert d.session == "daemon-default-session"
+
+
+def test_browser_domain_commands_bypass_the_selected_target_session():
+    d = _fresh_daemon()
+    d._remember_target_session("agent-target", "agent-session")
+
+    asyncio.run(d.handle({
+        "method": "Browser.getVersion",
+        "params": {},
+        "target_id": "agent-target",
+    }))
+
+    assert d.cdp.calls == [("Browser.getVersion", {}, None)]
+
+
+def test_target_scoped_event_drain_does_not_consume_another_agents_events():
+    d = _fresh_daemon()
+    d.session_targets = {"session-a": "target-a", "session-b": "target-b"}
+    d._record_event("Network.requestWillBeSent", {"requestId": "a"}, "session-a")
+    d._record_event("Network.requestWillBeSent", {"requestId": "b"}, "session-b")
+
+    first = asyncio.run(d.handle({"meta": "drain_events", "target_id": "target-a"}))
+    second = asyncio.run(d.handle({"meta": "drain_events", "target_id": "target-b"}))
+
+    assert [event["params"]["requestId"] for event in first["events"]] == ["a"]
+    assert [event["params"]["requestId"] for event in second["events"]] == ["b"]
+
+
+def test_global_event_drain_preserves_raw_events_and_independent_tab_queues():
+    d = _fresh_daemon()
+    d.target_id = "default-target"
+    d.session_targets = {"default-session": "default-target", "other-session": "other-target"}
+    d._record_event("Network.requestWillBeSent", {"requestId": "default"}, "default-session")
+    d._record_event("Network.requestWillBeSent", {"requestId": "other"}, "other-session")
+    d._record_event("Browser.downloadWillBegin", {})
+    d._record_event("Target.attachedToTarget", {})
+    d._record_event("Network.requestWillBeSent", {}, "raw-iframe")
+
+    default = asyncio.run(d.handle({"meta": "drain_events"}))
+    other = asyncio.run(d.handle({"meta": "drain_events", "target_id": "other-target"}))
+
+    assert len(default["events"]) == 5
+    assert default["events"][-1]["session_id"] == "raw-iframe"
+    assert [event["params"]["requestId"] for event in other["events"]] == ["other"]
+    assert asyncio.run(d.handle({"meta":"drain_events"}))["events"] == []
+    d._record_event("Network.responseReceived", {}, "other-session")
+    asyncio.run(d.handle({"meta":"drain_events", "target_id":"other-target"}))
+    assert len(asyncio.run(d.handle({"meta":"drain_events"}))["events"]) == 1
+
+
+def test_pending_dialog_is_scoped_to_the_requesting_target():
+    d = _fresh_daemon()
+    d.session_targets = {"session-a": "target-a", "session-b": "target-b"}
+    d._record_event("Page.javascriptDialogOpening", {"message": "A"}, "session-a")
+    d._record_event("Page.javascriptDialogOpening", {"message": "B"}, "session-b")
+
+    a = asyncio.run(d.handle({"meta": "pending_dialog", "target_id": "target-a"}))
+    b = asyncio.run(d.handle({"meta": "pending_dialog", "target_id": "target-b"}))
+
+    assert a == {"dialog": {"message": "A"}}
+    assert b == {"dialog": {"message": "B"}}
+
+
+def test_pending_dialog_survives_a_later_command_for_the_same_target():
+    d = _fresh_daemon()
+    d.session_targets["old-session"] = "same-target"
+    d._record_event("Page.javascriptDialogOpening", {"message": "Still open"}, "old-session")
+
+    result = asyncio.run(d.handle({
+        "meta": "pending_dialog",
+        "target_id": "same-target",
+    }))
+
+    assert result == {"dialog": {"message": "Still open"}}
+
+
+def test_target_destroyed_cleans_cached_target_state():
+    d = _fresh_daemon()
+    d._remember_target_session("agent-target", "agent-session")
+    d._record_event("Network.requestWillBeSent", {"requestId": "a"}, "agent-session")
+    d._record_event("Page.javascriptDialogOpening", {"message": "A"}, "agent-session")
+
+    d._record_event("Target.targetDestroyed", {"targetId": "agent-target"})
+
+    assert "agent-session" not in d.session_targets
+    assert "agent-target" not in d.target_sessions
+    assert "agent-target" not in d.events_by_target
+    assert "agent-target" not in d.dialogs_by_target
 
 
 def test_set_session_falls_back_to_existing_target_id_when_not_provided():
@@ -196,7 +379,7 @@ def test_enable_default_domains_swallows_errors_per_domain():
     class _PartialFailureCDP(_FakeCDP):
         async def send_raw(self, method, params=None, session_id=None):
             self.calls.append((method, params, session_id))
-            if method == "DOM.enable":
+            if method in ("DOM.enable", "Emulation.setFocusEmulationEnabled"):
                 raise RuntimeError("simulated DOM failure")
             return {}
 
@@ -210,16 +393,15 @@ def test_enable_default_domains_swallows_errors_per_domain():
     assert "DOM.enable" in attempted  # attempted, but raised
     assert "Runtime.enable" in attempted
     assert "Network.enable" in attempted
+    assert "Emulation.setFocusEmulationEnabled" in attempted
 
 
-def test_set_session_disables_network_on_old_session_before_enabling_new():
-    """When switching tabs, the previous session's Network domain must be
-    disabled so background tabs (polling, SSE, etc.) stop emitting events
-    into the global buffer that wait_for_network_idle reads. Initial attach
-    has no `old_session` so this disable doesn't fire then."""
+def test_set_session_keeps_old_target_domains_enabled():
+    """A legacy client moving the default must not disrupt target-aware clients."""
     d = _fresh_daemon()
     d.session = "session-OLD"
     d.target_id = "target-OLD"
+    d._remember_target_session("target-OLD", "session-OLD")
 
     asyncio.run(d.handle({
         "meta": "set_session",
@@ -227,49 +409,17 @@ def test_set_session_disables_network_on_old_session_before_enabling_new():
         "target_id": "target-NEW",
     }))
 
-    disabled = [
-        (method, sid) for (method, _params, sid) in d.cdp.calls
-        if method == "Network.disable"
-    ]
-    assert disabled == [("Network.disable", "session-OLD")], (
-        f"Network.disable must fire on the old session before re-enabling on "
-        f"the new one. Got: {disabled}"
-    )
-
-    # Sanity: the new session still gets Network.enable.
+    assert not [call for call in d.cdp.calls if call[0] == "Network.disable"]
+    assert d.target_sessions["target-OLD"] == "session-OLD"
     enabled_on_new = {
         method for (method, _p, sid) in d.cdp.calls
         if sid == "session-NEW" and method.endswith(".enable")
     }
-    assert "Network.enable" in enabled_on_new
+    assert enabled_on_new == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}
 
 
-def test_set_session_does_not_disable_network_when_no_previous_session():
-    """First set_session call (e.g. very early in startup before any attach)
-    has no old_session — the Network.disable path must be skipped."""
-    d = _fresh_daemon()
-    d.session = None  # no prior attach
-
-    asyncio.run(d.handle({
-        "meta": "set_session",
-        "session_id": "session-FIRST",
-        "target_id": "target-FIRST",
-    }))
-
-    disables = [m for (m, _p, _s) in d.cdp.calls if m == "Network.disable"]
-    assert disables == [], (
-        f"Network.disable must not fire when there's no previous session "
-        f"to disable. Got: {disables}"
-    )
-
-
-def test_set_session_runs_disable_and_enables_in_parallel():
-    """The four Domain.enable calls (plus Network.disable on the old session)
-    must run concurrently via asyncio.gather, not sequentially. With the old
-    sequential code, helpers.switch_tab() would block in _send() for up to
-    ~22s on a slow/remote daemon while the helper's IPC socket has a 5s
-    read timeout, causing client-side socket timeouts. Verifying that all
-    five CDP calls reach send_raw before any returns proves parallelization."""
+def test_set_session_runs_enables_in_parallel():
+    """Legacy set_session keeps the four domain enables concurrent."""
     class _ConcurrencyProbeCDP:
         def __init__(self):
             self.calls = []
@@ -290,7 +440,6 @@ def test_set_session_runs_disable_and_enables_in_parallel():
     async def run():
         d = daemon.Daemon()
         d.cdp = _ConcurrencyProbeCDP()
-        d.session = "session-OLD"  # ensures Network.disable on old fires
         d.cdp.release = asyncio.Event()
 
         handle_task = asyncio.create_task(d.handle({
@@ -302,7 +451,6 @@ def test_set_session_runs_disable_and_enables_in_parallel():
         # in-flight. Cap iterations to avoid hanging if parallelization breaks.
         for _ in range(50):
             await asyncio.sleep(0)
-            # 5 = Network.disable on OLD + 4 enables on NEW.
             if d.cdp.in_flight >= 5:
                 break
         peak = d.cdp.max_concurrent
@@ -312,61 +460,11 @@ def test_set_session_runs_disable_and_enables_in_parallel():
 
     peak, calls = asyncio.run(run())
     assert peak == 5, (
-        f"set_session must run disable + 4 enables concurrently via gather "
-        f"(observed peak in-flight = {peak}; expected 5 = 1 disable on OLD + "
-        f"4 enables on NEW). Sequential await would peak at 1."
+        f"set_session must run domain and focus enables concurrently "
+        f"(observed peak in-flight = {peak}). Sequential await would peak at 1."
     )
-    # Sanity: the right calls were made.
     methods = sorted({m for (m, _p, _s) in calls})
-    assert "Network.disable" in methods
     assert {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}.issubset(methods)
-
-
-def test_set_session_first_attach_runs_four_enables_in_parallel():
-    """When there's no previous session, the disable path is skipped — only
-    the four enables run, still in parallel."""
-    class _ConcurrencyProbeCDP:
-        def __init__(self):
-            self.calls = []
-            self.in_flight = 0
-            self.max_concurrent = 0
-            self.release = None
-
-        async def send_raw(self, method, params=None, session_id=None):
-            self.calls.append((method, params, session_id))
-            self.in_flight += 1
-            self.max_concurrent = max(self.max_concurrent, self.in_flight)
-            try:
-                await self.release.wait()
-            finally:
-                self.in_flight -= 1
-            return {}
-
-    async def run():
-        d = daemon.Daemon()
-        d.cdp = _ConcurrencyProbeCDP()
-        d.session = None  # no previous session
-        d.cdp.release = asyncio.Event()
-
-        handle_task = asyncio.create_task(d.handle({
-            "meta": "set_session",
-            "session_id": "session-FIRST",
-            "target_id": "target-FIRST",
-        }))
-        for _ in range(50):
-            await asyncio.sleep(0)
-            if d.cdp.in_flight >= 4:
-                break
-        peak = d.cdp.max_concurrent
-        d.cdp.release.set()
-        await handle_task
-        return peak
-
-    peak = asyncio.run(run())
-    assert peak == 4, (
-        f"first set_session must run 4 enables concurrently "
-        f"(observed peak = {peak}). No Network.disable should fire."
-    )
 
 
 def test_current_tab_meta_passes_attached_target_id():
@@ -845,3 +943,30 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_stale_target_session_reattaches_to_the_same_target():
+    class _StaleTargetCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Runtime.evaluate" and session_id == "stale-session":
+                raise RuntimeError("Session with given id not found")
+            if method == "Target.attachToTarget":
+                return {"sessionId": "replacement-session"}
+            if method == "Runtime.evaluate" and session_id == "replacement-session":
+                return {"value": "same-target"}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _StaleTargetCDP()
+    d._remember_target_session("agent-target", "stale-session")
+
+    result = asyncio.run(d.handle({
+        "method": "Runtime.evaluate",
+        "params": {"expression": "1"},
+        "target_id": "agent-target",
+    }))
+
+    assert result == {"result": {"value": "same-target"}}
+    assert d.target_sessions["agent-target"] == "replacement-session"
+    assert d.session_targets["replacement-session"] == "agent-target"

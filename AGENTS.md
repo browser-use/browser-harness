@@ -30,9 +30,9 @@ From a **git checkout** (no global install required for local testing):
 # doctor — install/daemon/browser state
 ./browser-harness --doctor
 
-# smoke — CDP attach + page_info (Chrome remote debugging must be allowed)
+# smoke — CDP attach + tab listing (Chrome remote debugging must be allowed)
 ./browser-harness <<'PY'
-print(page_info())
+print(list_tabs())
 PY
 
 # unit tests (no live browser)
