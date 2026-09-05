@@ -1130,6 +1130,59 @@ def test_ensure_daemon_returns_when_the_parked_daemon_finishes(tmp_path, monkeyp
     admin_mod.ensure_daemon(wait=5.0)  # returns, does not raise
 
 
+def test_ensure_daemon_launches_chrome_when_cold_child_exits(tmp_path, monkeypatch):
+    """A cold child may report chrome-not-running only as it exits."""
+    from browser_harness import admin as admin_mod
+
+    pid_file = tmp_path / "daemon.pid"
+    log_file = tmp_path / "daemon.log"
+    log_file.write_text("fatal: chrome-not-running: no supported browser is running")
+    monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
+    monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
+    monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
+    monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: None)
+    process_state = {"dead": False}
+    monkeypatch.setattr(
+        admin_mod,
+        "_process_start_time",
+        lambda pid: None if process_state["dead"] else f"start-{pid}",
+    )
+    monkeypatch.setattr(admin_mod, "restart_daemon", lambda name=None: None)
+    monkeypatch.setattr(admin_mod, "_cleanup_unattached_browser_launch", lambda launch: None)
+    monkeypatch.setattr("browser_harness.daemon.supported_browser_running", lambda: True)
+
+    spawned = []
+
+    class Child:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def poll(self):
+            if self.pid == 4321:
+                process_state["dead"] = True
+                pid_file.unlink(missing_ok=True)
+                return 1
+            return None
+
+    def spawn(*args, **kwargs):
+        child = Child(4321 + len(spawned))
+        spawned.append(child)
+        return child
+
+    monkeypatch.setattr(admin_mod.subprocess, "Popen", spawn)
+    monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: len(spawned) >= 2)
+    launches = []
+    launched = (object(), tmp_path / "profile")
+    monkeypatch.setattr(admin_mod, "_launch_browser", lambda: launches.append(True) or launched)
+
+    admin_mod.ensure_daemon(wait=0.1)
+
+    assert launches == [True]
+    assert len(spawned) == 2
+
+
 def test_ensure_daemon_does_not_replace_pending_approval_that_exited(tmp_path, monkeypatch):
     """A failed approval attempt must not create another Chrome prompt."""
     from browser_harness import admin as admin_mod
@@ -1186,6 +1239,198 @@ def test_dead_pending_cleanup_does_not_unlink_successor(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="did not retry or create another connection"):
         admin_mod.ensure_daemon(wait=0.1)
     assert pid_file.read_text() == "222"
+
+
+def test_cold_pending_cleanup_does_not_launch_over_successor(tmp_path, monkeypatch):
+    """A successor published before cleanup owns cold-browser recovery."""
+    from browser_harness import admin as admin_mod
+
+    pid_file = tmp_path / "daemon.pid"
+    log_file = tmp_path / "daemon.log"
+    pid_file.write_text("111")
+    log_file.write_text("fatal: chrome-not-running")
+    monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
+    monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
+    monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", dict)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    alive = iter([False, False, False, True])
+    monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: next(alive, True))
+    monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
+    monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: None)
+    monkeypatch.setattr(admin_mod, "_process_start_time", lambda pid: "start")
+
+    class Dead:
+        pid = 111
+
+        def poll(self):
+            pid_file.write_text("222")
+            return 1
+
+    monkeypatch.setattr(admin_mod.subprocess, "Popen", lambda *a, **k: Dead())
+    monkeypatch.setattr(
+        admin_mod,
+        "_launch_browser",
+        lambda: (_ for _ in ()).throw(AssertionError("successor owns recovery")),
+    )
+
+    admin_mod.ensure_daemon(wait=0.1)
+
+    assert pid_file.read_text() == "222"
+
+
+def test_cold_timeout_does_not_restart_successor(tmp_path, monkeypatch):
+    """Timeout recovery must not stop a successor published after spawning."""
+    from browser_harness import admin as admin_mod
+
+    pid_file = tmp_path / "daemon.pid"
+    log_file = tmp_path / "daemon.log"
+    monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
+    monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
+    monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", dict)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
+    monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: None)
+    monkeypatch.setattr(admin_mod, "_process_start_time", lambda pid: f"start-{pid}")
+
+    class Starting:
+        pid = 111
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(admin_mod.subprocess, "Popen", lambda *a, **k: Starting())
+
+    def successor_arrives(name=None):
+        pid_file.write_text("222")
+        return "fatal: chrome-not-running"
+
+    monkeypatch.setattr(admin_mod, "_log_tail", successor_arrives)
+    monkeypatch.setattr(
+        admin_mod,
+        "restart_daemon",
+        lambda name=None: (_ for _ in ()).throw(AssertionError("must not stop successor")),
+    )
+    monkeypatch.setattr(
+        admin_mod,
+        "_launch_browser",
+        lambda: (_ for _ in ()).throw(AssertionError("successor owns recovery")),
+    )
+
+    with pytest.raises(RuntimeError, match="didn't come up"):
+        admin_mod.ensure_daemon(wait=0)
+
+    assert pid_file.read_text() == "222"
+
+
+def test_cold_timeout_cancels_owned_generation_without_reentering_lock(tmp_path, monkeypatch):
+    """Owned timeout recovery stops its child without nested lock acquisition."""
+    from browser_harness import admin as admin_mod
+
+    pid_file = tmp_path / "daemon.pid"
+    log_file = tmp_path / "daemon.log"
+    log_file.write_text("fatal: chrome-not-running")
+    monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
+    monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
+    monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", dict)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    spawned = []
+    monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: len(spawned) >= 2)
+    monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
+    monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: None)
+    process_alive = {111: True}
+    monkeypatch.setattr(
+        admin_mod,
+        "_process_start_time",
+        lambda pid: f"start-{pid}" if process_alive.get(pid, True) else None,
+    )
+    monkeypatch.setattr("browser_harness.daemon.supported_browser_running", lambda: True)
+    monkeypatch.setattr(admin_mod, "_cleanup_unattached_browser_launch", lambda launch: None)
+    monkeypatch.setattr(
+        admin_mod,
+        "restart_daemon",
+        lambda name=None: (_ for _ in ()).throw(AssertionError("must not re-enter spawn lock")),
+    )
+
+    class Starting:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def wait(self, timeout=None):
+            process_alive[self.pid] = False
+
+        def poll(self):
+            return None
+
+    def spawn(*args, **kwargs):
+        child = Starting(111 + len(spawned))
+        spawned.append(child)
+        return child
+
+    monkeypatch.setattr(admin_mod.subprocess, "Popen", spawn)
+    killed = []
+
+    def kill(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(admin_mod.os, "kill", kill)
+    launches = []
+    monkeypatch.setattr(
+        admin_mod,
+        "_launch_browser",
+        lambda: launches.append(True) or (object(), tmp_path / "profile"),
+    )
+
+    admin_mod.ensure_daemon(wait=0.01)
+
+    assert killed and killed[0][0] == 111
+    assert launches == [True]
+
+
+def test_legacy_dead_child_chrome_marker_still_launches_browser(tmp_path, monkeypatch):
+    """A proven-dead legacy raw-PID generation remains recoverable."""
+    from browser_harness import admin as admin_mod
+
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("111")
+    monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name=None: pid_path)
+    monkeypatch.setattr(admin_mod.ipc, "cleanup_endpoint", lambda name=None: None)
+    monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: 111)
+    monkeypatch.setattr(admin_mod, "_pending_pid_record", lambda path: None)
+    monkeypatch.setattr(admin_mod, "_process_start_time", lambda pid: None)
+    monkeypatch.setattr(admin_mod, "_log_tail", lambda name=None: "error: chrome-not-running")
+
+    class ImmediateLock:
+        fd = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        admin_mod, "_spawn_lock", lambda name=None, timeout=None: ImmediateLock()
+    )
+    monkeypatch.setattr("browser_harness.daemon.supported_browser_running", lambda: True)
+    monkeypatch.setattr(admin_mod.time, "sleep", lambda seconds: None)
+    launches = []
+    monkeypatch.setattr(
+        admin_mod,
+        "daemon_alive",
+        lambda name=None: bool(launches),
+    )
+    monkeypatch.setattr(
+        admin_mod,
+        "_launch_browser",
+        lambda: launches.append(True) or ("proc", None, None),
+    )
+    monkeypatch.setattr(admin_mod, "_cleanup_unattached_browser_launch", lambda *args: None)
+
+    admin_mod.ensure_daemon(wait=0.1)
+
+    assert launches == [True]
+    assert not pid_path.exists()
 
 
 def test_default_local_approval_has_no_deadline_without_affecting_remote():
