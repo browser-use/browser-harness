@@ -30,6 +30,7 @@ from .admin import (
     sync_local_profile,
 )
 from . import auth, recorder, telemetry
+from . import helpers as helper_module
 from .helpers import *
 
 HELP = """Browser Harness
@@ -403,7 +404,29 @@ def _run(args):
             print(f"browser-harness: {e}", file=sys.stderr)
             sys.exit(1)
     _install_helper_trace()
-    exec(code, globals())
+    helper_module._reset_tab_ownership()
+    task_failed = False
+    try:
+        exec(code, globals())
+    except BaseException as exc:
+        task_failed = not (
+            isinstance(exc, SystemExit) and exc.code in (None, 0)
+        )
+        raise
+    finally:
+        keep_tabs = os.environ.get("BH_KEEP_TABS", "").lower()
+        try:
+            if keep_tabs in {"1", "true", "yes"}:
+                helper_module.keep_opened_tabs()
+            helper_module.close_opened_tabs()
+        except BaseException as exc:
+            if task_failed:
+                # Preserve the task's original error when cleanup also fails.
+                print(f"Warning: automatic tab cleanup failed: {exc}", file=sys.stderr)
+            else:
+                raise
+        finally:
+            helper_module._reset_tab_ownership()
 
 
 if __name__ == "__main__":
