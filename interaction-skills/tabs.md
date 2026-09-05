@@ -8,11 +8,14 @@ Use **CDP for control**, **UI automation for user-visible order**.
 tabs = list_tabs()                    # includes chrome:// pages too
 real_tabs = list_tabs(include_chrome=False)
 tid = new_tab("https://example.com")  # create + attach in the background
-switch_tab(tid)                       # attach harness, move the horse marker
-activate_tab(tid)                     # optional: explicitly show it in Chrome
+switch_tab(tid)                       # select for this CLI process only
 print(current_tab())
 print(page_info())
 ```
+
+Agents on different tabs can run this concurrently through the default daemon.
+Retain the target ID and call `switch_tab(id)` at the start of each later CLI
+invocation. Only a user-requested visible switch should call `activate_tab(id)`.
 
 What CDP is good at:
 - attach to a tab

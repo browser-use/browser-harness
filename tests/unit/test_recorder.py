@@ -69,6 +69,7 @@ def test_dropped_frame_is_recorded_and_never_raises(tmp_path, monkeypatch):
     def _timeout(_conn, _token, _req):
         raise TimeoutError("timed out")
 
+    monkeypatch.setattr(helpers, "_TARGET_ID", "recorded-target")
     monkeypatch.setattr(helpers.ipc, "connect", lambda _name, timeout=None: (_Socket(), None))
     monkeypatch.setattr(helpers.ipc, "request", _timeout)
     monkeypatch.setattr(helpers, "js", lambda expression: {})

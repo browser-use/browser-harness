@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, time, urllib.request
+import base64, importlib.util, json, math, os, tempfile, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -44,6 +44,10 @@ DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
 # their IPC socket alive within the caller's existing 90-second process budget.
 SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
 
+# One CLI process only needs to remember its tab. The daemon owns and reuses the
+# CDP session for that target over its single browser-level WebSocket.
+_TARGET_ID = None
+
 
 class _IPCResponseTimeout(TimeoutError):
     pass
@@ -65,19 +69,49 @@ def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
             ) from e
     finally:
         c.close()
-    if "error" in r: raise RuntimeError(r["error"])
+    if "error" in r:
+        if req.get("meta") == "prepare_target" and r["error"] == "'method'":
+            # Pre-routing daemons treat an unknown meta command as raw CDP.
+            raise RuntimeError(
+                "this daemon predates per-tab routing; restart it once after "
+                "its active tasks finish, then select your tab again"
+            )
+        raise RuntimeError(r["error"])
     return r
 
 
 def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
+    if not session_id and not method.startswith(("Target.", "Browser.")):
+        _selected_target()
     return _send(
-        {"method": method, "params": params, "session_id": session_id},
+        {
+            "method": method,
+            "params": params,
+            "session_id": session_id,
+            "target_id": _TARGET_ID,
+        },
         response_timeout=_response_timeout,
     ).get("result", {})
 
 
-def drain_events():  return _send({"meta": "drain_events"})["events"]
+def drain_events():
+    """Drain events for this CLI process's selected tab only."""
+    return _send({"meta": "drain_events", "target_id": _selected_target()})["events"]
+
+
+def _selected_target():
+    # Legacy scripts inherit the default once; another client cannot move it
+    # between two calls in this process. Concurrent tasks should select their
+    # own tab explicitly with new_tab()/switch_tab().
+    if _TARGET_ID is None:
+        current_tab()
+    return _TARGET_ID
+
+
+def _set_client_tab(target_id):
+    global _TARGET_ID
+    _TARGET_ID = target_id
 
 
 def _js_snippet(expression, limit=160):
@@ -162,7 +196,10 @@ def page_info():
     If a native dialog (alert/confirm/prompt/beforeunload) is open, returns
     {dialog: {type, message, ...}} instead — the page's JS thread is frozen
     until the dialog is handled (see interaction-skills/dialogs.md)."""
-    dialog = _send({"meta": "pending_dialog"}).get("dialog")
+    dialog = _send({
+        "meta": "pending_dialog",
+        "target_id": _selected_target(),
+    }).get("dialog")
     if dialog:
         return {"dialog": dialog}
     expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
@@ -177,7 +214,7 @@ def click_at_xy(x, y, button="left", clicks=1):
         try:
             from PIL import Image, ImageDraw
             dpr = js("window.devicePixelRatio") or 1
-            path = capture_screenshot(str(ipc._TMP / f"debug_click_{_debug_click_counter}.png"))
+            path = capture_screenshot()
             img = Image.open(path)
             draw = ImageDraw.Draw(img)
             px, py = int(x * dpr), int(y * dpr)
@@ -331,7 +368,6 @@ def scroll(x, y, dy=-300, dx=0):
 def capture_screenshot(path=None, full=False, max_dim=None):
     """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
     keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
-    path = path or str(ipc._TMP / "shot.png")
     try:
         r = cdp(
             "Page.captureScreenshot",
@@ -343,7 +379,16 @@ def capture_screenshot(path=None, full=False, max_dim=None):
         raise RuntimeError(
             f"Page.captureScreenshot timed out after {SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS:g}s"
         ) from e
-    open(path, "wb").write(base64.b64decode(r["data"]))
+    data = base64.b64decode(r["data"])
+    if path is None:
+        # Separate agents (and successive screenshots) must not overwrite a
+        # file another agent is still reading or showing to the user.
+        fd, path = tempfile.mkstemp(prefix="shot-", suffix=".png", dir=ipc._TMP)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    else:
+        with open(path, "wb") as f:
+            f.write(data)
     if max_dim:
         from PIL import Image
         img = Image.open(path)
@@ -377,7 +422,16 @@ def list_tabs(include_chrome=True):
     return out
 
 def current_tab():
-    r = _send({"meta": "current_tab"})
+    if _TARGET_ID is None:
+        r = _send({"meta": "current_tab"})
+        _set_client_tab(r["targetId"])
+    else:
+        info = cdp("Target.getTargetInfo", targetId=_TARGET_ID)["targetInfo"]
+        r = {
+            "targetId": info["targetId"],
+            "url": info.get("url", ""),
+            "title": info.get("title", ""),
+        }
     return {
         "targetId": r["targetId"],
         "target_id": r["targetId"],
@@ -417,33 +471,20 @@ def switch_tab(target, activate=False):
     target_id = _target_id(target)
     # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
-    except Exception: pass
+    if _TARGET_ID:
+        try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
+        except Exception: pass
     if activate:
         activate_tab(target_id)
-    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    prepared = _send({"meta": "prepare_target", "target_id": target_id})
+    _set_client_tab(target_id)
     _mark_tab()
-    return sid
+    return prepared["session_id"]
 
 def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
-        try:
-            cur = current_tab()
-            cur_url = cur.get("url") or ""
-            # Reuse attached tab when it's blank
-            if (
-                cur_url in ("", "about:blank", "data:text/html,")
-                or cur_url.startswith("about:blank#")
-                or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
-            ):
-                goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
-        except Exception:
-            pass
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
@@ -538,10 +579,10 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
     deadline = time.time() + timeout
     last_activity = time.time()
     inflight = set()
-    active_session = _send({"meta": "session"}).get("session_id")
+    active_target = _selected_target()
     while time.time() < deadline:
         for e in drain_events():
-            if e.get("session_id") != active_session:
+            if e.get("target_id") != active_target:
                 continue
             method = e.get("method", "")
             params = e.get("params", {})

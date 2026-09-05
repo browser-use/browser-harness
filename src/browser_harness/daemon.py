@@ -414,7 +414,11 @@ class _PatientCDPClient(CDPClient):
         import websockets
         if self.ws is not None:
             raise RuntimeError("Client is already started")
-        connect_kwargs = {"max_size": self.max_ws_frame_size, "open_timeout": LOCAL_HANDSHAKE_TIMEOUT}
+        # A sleeping laptop or busy local Chrome is not a dead connection.
+        # Keep TCP/WS close detection, without a timed ping failure creating a
+        # replacement connection (and another approval). Remote clients keep
+        # their normal network keepalive policy.
+        connect_kwargs = {"max_size": self.max_ws_frame_size, "open_timeout": LOCAL_HANDSHAKE_TIMEOUT, "ping_interval": None}
         if self.additional_headers:
             connect_kwargs["additional_headers"] = self.additional_headers
         self.ws = await websockets.connect(self.url, **connect_kwargs)
@@ -435,8 +439,13 @@ class Daemon:
         self._recoveries_idle.set()
         self._shutting_down = False
         self._session_replacements = {}
+        self.target_sessions = {}
+        self.session_targets = {}
+        self._target_attach_tasks = {}
         self.events = deque(maxlen=BUF)
+        self.events_by_target = {}
         self.dialog = None
+        self.dialogs_by_target = {}
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
@@ -476,6 +485,7 @@ class Daemon:
             ))["sessionId"]
             self._record_session_replacement(replaces_session, self.session)
             self.target_id = tid
+            self._remember_target_session(tid, self.session)
             log(f"attached {tid} ({page.get('url','')[:80]}) session={self.session}")
             if enable_domains:
                 await self._enable_default_domains(self.session)
@@ -509,6 +519,7 @@ class Daemon:
         ))["sessionId"]
         self._record_session_replacement(replaces_session, self.session)
         self.target_id = pages[0]["targetId"]
+        self._remember_target_session(self.target_id, self.session)
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         if take_over:
             try:
@@ -541,11 +552,10 @@ class Daemon:
     async def _enable_default_domains(self, session_id):
         """Enable Page/DOM/Runtime/Network on a CDP session.
 
-        Used by both initial attach and set_session (called after switch_tab/
-        new_tab). Without this, helpers that depend on Network.* events —
-        notably wait_for_network_idle() — silently stop receiving events
-        after a tab switch, because each fresh CDP session starts with all
-        domains disabled.
+        Used by initial attach, legacy set_session, and each daemon-owned target
+        session. Without this, helpers that depend on Network.* events — notably
+        wait_for_network_idle() — silently stop receiving events after a tab
+        switch, because each fresh CDP session starts with all domains disabled.
 
         Runs the four enables in parallel via gather so the worst-case time is
         bounded by a single CDP round trip rather than four sequential ones —
@@ -561,6 +571,51 @@ class Daemon:
             except Exception as e:
                 log(f"enable {d} on {session_id}: {e}")
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+
+    def _remember_target_session(self, target_id, session_id):
+        previous = self.target_sessions.get(target_id)
+        if previous and previous != session_id:
+            self.session_targets.pop(previous, None)
+        self.target_sessions[target_id] = session_id
+        self.session_targets[session_id] = target_id
+
+    def _forget_target_session(self, target_id, session_id=None):
+        current = self.target_sessions.get(target_id)
+        if session_id is not None and current != session_id:
+            return
+        if current:
+            self.session_targets.pop(current, None)
+        self.target_sessions.pop(target_id, None)
+
+    async def _ensure_target_session(self, target_id):
+        """Return the daemon-owned CDP session for one page target."""
+        if self._shutting_down:
+            raise RuntimeError("daemon is shutting down")
+        task = self._target_attach_tasks.get(target_id)
+        # The mapping is published before domain enables so their events can
+        # be routed. Wait for that initialization before using the session.
+        if task is not None:
+            return await asyncio.shield(task)
+        existing = self.target_sessions.get(target_id)
+        if existing:
+            return existing
+        if task is None:
+            async def attach():
+                try:
+                    session_id = (await self.cdp.send_raw(
+                        "Target.attachToTarget", {"targetId": target_id, "flatten": True}
+                    ))["sessionId"]
+                    self._remember_target_session(target_id, session_id)
+                    await self._enable_default_domains(session_id)
+                    return session_id
+                finally:
+                    self._target_attach_tasks.pop(target_id, None)
+
+            task = asyncio.create_task(attach())
+            # Consume failures even if every waiting IPC caller was cancelled.
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            self._target_attach_tasks[target_id] = task
+        return await asyncio.shield(task)
 
     def _record_session_replacement(self, stale_session, replacement_session):
         """Remember which recovered session still controls the same tab."""
@@ -597,7 +652,7 @@ class Daemon:
         """Cancel active stale-session handlers and wait a bounded time."""
         current = asyncio.current_task()
         tasks = [
-            task for task in self._recovery_tasks
+            task for task in self._recovery_tasks | set(self._target_attach_tasks.values())
             if task is not current and not task.done()
         ]
         for task in tasks:
@@ -624,13 +679,40 @@ class Daemon:
         )))
 
     def _record_event(self, method, params, session_id=None):
-        self.events.append({"method": method, "params": params, "session_id": session_id})
+        target_id = self.session_targets.get(session_id)
+        event = {
+            "method": method,
+            "params": params,
+            "session_id": session_id,
+            "target_id": target_id,
+        }
+        self.events.append(event)
+        if target_id:
+            self.events_by_target.setdefault(target_id, deque(maxlen=BUF)).append(event)
         if method == "Page.javascriptDialogOpening":
-            self.dialog = params
+            if target_id:
+                self.dialogs_by_target[target_id] = params
+            if not session_id or target_id == self.target_id:
+                self.dialog = params
         elif method == "Page.javascriptDialogClosed":
-            self.dialog = None
+            if target_id:
+                self.dialogs_by_target.pop(target_id, None)
+            if not session_id or target_id == self.target_id:
+                self.dialog = None
+        elif method == "Target.targetDestroyed":
+            destroyed_target_id = params.get("targetId")
+            self.dialogs_by_target.pop(destroyed_target_id, None)
+            self.events_by_target.pop(destroyed_target_id, None)
+            self._forget_target_session(destroyed_target_id)
+        elif method == "Target.detachedFromTarget":
+            detached_session_id = params.get("sessionId")
+            detached_target_id = self.session_targets.get(detached_session_id)
+            if detached_target_id:
+                self._forget_target_session(detached_target_id, detached_session_id)
+                self.events_by_target.pop(detached_target_id, None)
+                self.dialogs_by_target.pop(detached_target_id, None)
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-            self._schedule_tab_marker(self.session)
+            self._schedule_tab_marker(session_id or self.session)
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -655,12 +737,18 @@ class Daemon:
                     "browser-harness did not retry or create another connection"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
-        await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
         async def tap(method, params, session_id=None):
             self._record_event(method, params, session_id)
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+        try:
+            await self.cdp.send_raw("Target.setDiscoverTargets", {"discover": True})
+        except Exception as e:
+            # Some scoped remote relays expose attachments but not discovery.
+            # detachedFromTarget still cleans up the sessions we own.
+            log(f"target discovery unavailable: {e}")
+        await self.attach_first_page()
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -676,67 +764,71 @@ class Daemon:
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
         if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
         if meta == "drain_events":
-            out = list(self.events); self.events.clear()
+            target_id = req.get("target_id") or self.target_id
+            if target_id:
+                out = list(self.events_by_target.pop(target_id, ()))
+                self.events = deque(
+                    (event for event in self.events if event.get("target_id") != target_id),
+                    maxlen=BUF,
+                )
+            else:
+                out = list(self.events); self.events.clear()
+                self.events_by_target.clear()
             return {"events": out}
         if meta == "session":     return {"session_id": self.session}
         if meta == "current_tab":
-            # Resolve the attached page's target info server-side. Helpers can't
-            # send Target.getTargetInfo themselves: daemon strips session_id for
-            # any Target.* method (browser-level call), and without a targetId
-            # Chrome silently returns the *browser* target.
+            # Legacy/default selection. Target-aware clients request the exact
+            # target themselves; never infer one from the visible Chrome tab.
             if not self.target_id:
                 return {"error": "not_attached"}
             try:
                 info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
-            except Exception:
-                return {"error": "cdp_disconnected"}
+            except Exception as e:
+                return {"error": f"default tab unavailable: {e}; select a target with switch_tab() or new_tab()"}
             return {"targetId": info.get("targetId"), "url": info.get("url", ""), "title": info.get("title", "")}
         if meta == "connection_status":
-            if not self.target_id:
-                return {"error": "not_attached"}
             try:
-                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
+                targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
             except Exception:
                 return {"error": "cdp_disconnected"}
+            # Closing a tab does not close the browser WebSocket. Diagnostics
+            # must not tell agents to restart an otherwise shared connection.
+            info = next((t for t in targets if t["targetId"] == self.target_id), None)
             page = None
-            if is_real_page(info):
+            if info and is_real_page(info):
                 page = {
                     "targetId": info.get("targetId"),
                     "title": info.get("title") or "(untitled)",
                     "url": info.get("url") or "",
                 }
-            return {"target_id": self.target_id, "session_id": self.session, "page": page}
+            return {"target_id": self.target_id if info else None, "session_id": self.session if info else None, "page": page}
         if meta == "set_session":
             async with self._session_state_lock:
-                old_session = self.session
                 self.session = req.get("session_id")
                 self.target_id = req.get("target_id") or self.target_id
                 new_session = self.session
-            # Run the old-session Network.disable (defense in depth — keeps
-            # background-tab traffic out of the global event buffer; the
-            # consumer-side filter in wait_for_network_idle is the actual
-            # correctness gate) in parallel with the four enables on the new
-            # session. Different sessions, independent CDP requests. Keeps
-            # the synchronous reply under the helper's 5s IPC read timeout
-            # even on a remote daemon — sequentially these would have stacked
-            # to ~22s worst case.
-            tasks = []
-            if old_session and old_session != new_session:
-                async def disable_old():
-                    try:
-                        await asyncio.wait_for(
-                            self.cdp.send_raw("Network.disable", session_id=old_session),
-                            timeout=2,
-                        )
-                    except Exception: pass
-                tasks.append(disable_old())
-            tasks.append(self._enable_default_domains(new_session))
-            await asyncio.gather(*tasks)
+                if new_session and self.target_id:
+                    self._remember_target_session(self.target_id, new_session)
+            # Backward compatibility for older helpers that still move the
+            # daemon-wide default. Never disable domains on the old session:
+            # a target-aware client may still be using that tab concurrently.
+            await self._enable_default_domains(new_session)
             # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
             # it doesn't add to the synchronous IPC budget.
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
-        if meta == "pending_dialog": return {"dialog": self.dialog}
+        if meta == "prepare_target":
+            target_id = req.get("target_id")
+            if not target_id:
+                return {"error": "target_id is required"}
+            try:
+                session_id = await self._ensure_target_session(target_id)
+            except Exception as e:
+                return {"error": str(e)}
+            return {"session_id": session_id, "target_id": target_id}
+        if meta == "pending_dialog":
+            target_id = req.get("target_id")
+            return {"dialog": self.dialogs_by_target.get(target_id) if target_id else self.dialog}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
             # cancel/drain existing handlers. In particular, a CDP replay that
@@ -762,9 +854,19 @@ class Daemon:
 
         method = req["method"]
         params = req.get("params") or {}
-        # Browser-level Target.* calls must not use a session (stale or otherwise).
-        # For everything else, explicit session in req wins; else default.
-        sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        target_id = req.get("target_id")
+        # Browser-wide commands must not use a target session (stale or otherwise).
+        # For everything else, explicit session in req wins, then the request's
+        # target, then the legacy daemon default.
+        try:
+            sid = (
+                req.get("session_id") or (
+                    None if method.startswith(("Target.", "Browser."))
+                    else (await self._ensure_target_session(target_id) if target_id else self.session)
+                )
+            )
+        except Exception as e:
+            return {"error": str(e)}
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
@@ -774,6 +876,24 @@ class Daemon:
                 # silently redirect them to the daemon's current tab.
                 if req.get("session_id"):
                     return {"error": msg}
+                if target_id:
+                    recovery_task = self._begin_recovery()
+                    if recovery_task is None:
+                        return {"error": "daemon is shutting down"}
+                    try:
+                        self._forget_target_session(target_id, sid)
+                        replacement_session = await self._ensure_target_session(target_id)
+                        if self.target_id == target_id:
+                            self._record_session_replacement(self.session, replacement_session)
+                            self.session = replacement_session
+                        try:
+                            return {"result": await self.cdp.send_raw(
+                                method, params, session_id=replacement_session
+                            )}
+                        except Exception as retry_error:
+                            return {"error": str(retry_error)}
+                    finally:
+                        self._finish_recovery(recovery_task)
                 recovery_task = self._begin_recovery()
                 if recovery_task is None:
                     return {"error": "daemon is shutting down"}
