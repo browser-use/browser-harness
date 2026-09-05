@@ -293,135 +293,36 @@ def test_wait_for_element_non_visible_uses_simple_check():
 
 # --- wait_for_network_idle ---
 
-def test_wait_for_network_idle_returns_true_when_no_events():
-    call_count = 0
-
-    def fake_send(req):
-        nonlocal call_count
-        call_count += 1
-        return {"events": []}
-
-    with patch("browser_harness.helpers._send", side_effect=fake_send), \
-         patch("browser_harness.helpers.time") as mock_time:
-        start = 1000.0
-        # first call: not idle yet; second call: idle window elapsed
-        mock_time.time.side_effect = [start, start, start, start + 0.6, start + 0.6]
-        mock_time.sleep = lambda _: None
-        result = helpers.wait_for_network_idle(timeout=5.0, idle_ms=500)
-
-    assert result is True
-
-
-def test_wait_for_network_idle_waits_for_inflight_request():
-    # Verifies inflight tracking: must not return True until loadingFinished,
-    # even though >idle_ms elapses between requestWillBeSent and loadingFinished.
-    # An event-silence-only implementation would return True at iter2 (wrong).
-    events_seq = [
-        [{"method": "Network.requestWillBeSent", "params": {"requestId": "req1"}}],
-        [],   # >500ms elapsed — old impl returns True here; new must NOT
-        [{"method": "Network.loadingFinished",   "params": {"requestId": "req1"}}],
-        [],   # idle_ms after loadingFinished → return True
-    ]
-    idx = 0
-
-    def fake_send(req):
-        nonlocal idx
-        evs = events_seq[min(idx, len(events_seq) - 1)]
-        idx += 1
-        return {"events": evs}
-
-    with patch("browser_harness.helpers._send", side_effect=fake_send), \
-         patch("browser_harness.helpers.time") as mock_time:
-        start = 1000.0
-        # inflight non-empty → short-circuit skips time.time() in idle check for iter1/iter2
-        mock_time.time.side_effect = [
-            start, start,       # deadline + last_activity init
-            start + 0.1,        # iter1 while-check
-            start + 0.1,        # iter1 rWS last_activity update
-                                # iter1 idle-check: inflight non-empty → short-circuit
-            start + 0.7,        # iter2 while-check (>500ms since rWS but request still in flight)
-                                # iter2 idle-check: inflight non-empty → short-circuit
-            start + 0.8,        # iter3 while-check
-            start + 0.8,        # iter3 lF last_activity update
-            start + 0.8,        # iter3 idle-check: 0ms < 500 → not idle
-            start + 1.4,        # iter4 while-check
-            start + 1.4,        # iter4 idle-check: 600ms >= 500 → True
-        ]
-        mock_time.sleep = lambda _: None
-        result = helpers.wait_for_network_idle(timeout=5.0, idle_ms=500)
-
-    assert result is True
-    assert idx == 4  # did not short-circuit at iter2 despite silence > idle_ms
-
-
-def test_wait_for_network_idle_returns_false_on_timeout():
-    # Continuous rWS keeps inflight non-empty → idle check short-circuits every iteration.
-    # time.time() is only called for while-check and rWS last_activity (not idle check).
-    def fake_send(req):
-        return {"events": [{"method": "Network.requestWillBeSent", "params": {"requestId": "r"}}]}
-
-    with patch("browser_harness.helpers._send", side_effect=fake_send), \
-         patch("browser_harness.helpers.time") as mock_time:
-        start = 1000.0
-        mock_time.time.side_effect = [
-            start, start,       # deadline + last_activity init
-            start + 0.1,        # iter1 while-check (in deadline)
-            start + 0.1,        # iter1 rWS last_activity update
-                                # iter1 idle-check: inflight non-empty → short-circuit
-            start + 20.0,       # iter2 while-check (past deadline → exit)
-        ]
-        mock_time.sleep = lambda _: None
-        result = helpers.wait_for_network_idle(timeout=10.0, idle_ms=500)
-
-    assert result is False
-
-
-
-def test_wait_for_network_idle_filters_events_to_active_session():
-    """Background tabs (e.g. a polling page the agent switched away from) keep
-    emitting Network events into the daemon's global buffer. The wait must
-    filter by session_id of the currently-attached tab — otherwise it would
-    see the background tab's traffic and either fail to return idle or wait
-    on the wrong tab's requests."""
-    active = "session-ACTIVE"
-    background = "session-BACKGROUND"
-
-    # First /drain_events/ payload: rWS + lF on the BACKGROUND session that we
-    # must ignore, plus zero events on the active session. With filtering, the
-    # active session sees no traffic and the idle window can elapse.
-    events_seq = [
-        [
-            {"session_id": background, "method": "Network.requestWillBeSent", "params": {"requestId": "bg1"}},
-            {"session_id": background, "method": "Network.loadingFinished",   "params": {"requestId": "bg1"}},
-        ],
-        [],  # second drain — quiet on both sessions; idle window should fire here
-    ]
-    drain_idx = 0
-
-    def fake_send(req):
-        nonlocal drain_idx
-        if req.get("meta") == "session":
-            return {"session_id": active}
-        if req.get("meta") == "drain_events":
-            evs = events_seq[min(drain_idx, len(events_seq) - 1)]
-            drain_idx += 1
-            return {"events": evs}
-        return {}
-
-    with patch("browser_harness.helpers._send", side_effect=fake_send), \
-         patch("browser_harness.helpers.time") as mock_time:
-        start = 1000.0
-        # No inflight on active session → idle check uses time.time().
-        mock_time.time.side_effect = [start, start, start, start + 0.6, start + 0.6]
-        mock_time.sleep = lambda _: None
-        result = helpers.wait_for_network_idle(timeout=5.0, idle_ms=500)
-
-    assert result is True, (
-        "wait_for_network_idle must return True even when the BACKGROUND "
-        "session is busy, as long as the ACTIVE session is idle. Without the "
-        "session filter, the background rWS/lF pair would have updated "
-        "last_activity and prevented the idle window from elapsing."
-    )
+@pytest.mark.parametrize("busy_until,background,expected", [(0, False, True), (0.8, False, True), (100, False, False), (0, True, True)])
+def test_wait_for_network_idle_uses_retained_request_state(monkeypatch, busy_until, background, expected):
+    from browser_harness import daemon
+    from browser_harness._events import RequestState
+    from types import SimpleNamespace
+    import asyncio
+    now = [0.0]
+    monkeypatch.setattr(helpers.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(helpers.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    d = daemon.Daemon()
+    d.cdp = SimpleNamespace(ws=SimpleNamespace(state=1))
+    d.session = "active"
+    d.network = RequestState("active")
+    d.network.enabled = True
+    d._record_event("Page.frameNavigated", {"frame": {"id": "root"}}, "active")
+    sid = "background" if background else "active"
+    if busy_until or background:
+        d._record_event("Network.requestWillBeSent", {"requestId": "pending"}, sid)
+    d.events.drain()  # Another reader already consumed the request start.
+    finished = [False]
+    def send(req):
+        assert req["meta"] != "drain_events"
+        if not finished[0] and now[0] >= busy_until:
+            d._record_event("Network.loadingFinished", {"requestId": "pending"}, sid)
+            finished[0] = True
+        return asyncio.run(d.handle(req))
+    monkeypatch.setattr(helpers, "_send", send)
+    assert helpers.wait_for_network_idle(timeout=2, idle_ms=500) is expected
+    if expected:
+        assert now[0] >= (0.5 if background else busy_until + 0.5)
 
 
 @pytest.mark.parametrize("value", ["0", "false", "NO", "off"])

@@ -41,6 +41,7 @@ from browser_harness.helpers import (
     new_tab,
     page_info,
     press_key,
+    read_events,
     scroll,
     start_recording,
     stop_recording,
@@ -251,6 +252,12 @@ def browser_wait_for_element(
     """Wait for an element matching `selector` to appear. Set `visible=True` to
     also require it to be rendered."""
     return {"ok": wait_for_element(selector, timeout=timeout, visible=visible)}
+
+
+@_tool
+def browser_read_events(cursor: dict | None = None, session_id: str | None = None):
+    """Read bounded event history without consuming it. Retain cursor; check dropped/truncated."""
+    return read_events(cursor=cursor, session_id=session_id)
 
 
 @_tool
