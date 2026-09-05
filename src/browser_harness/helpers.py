@@ -79,6 +79,13 @@ def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
 
+def read_events(cursor=None, session_id=None):
+    """Read bounded history without consuming it. Retain cursor; check dropped/truncated.
+
+    Each caller owns its cursor. A daemon restart expires old cursors explicitly.
+    """
+    return _send({"meta": "read_events", "cursor": cursor, "session_id": session_id})
+
 
 def _js_snippet(expression, limit=160):
     snippet = expression.strip().replace("\n", "\\n")
@@ -524,38 +531,24 @@ def wait_for_element(selector, timeout=10.0, visible=False):
     return False
 
 def wait_for_network_idle(timeout=10.0, idle_ms=500):
-    """Wait until all in-flight requests finish and no Network.* events arrive for idle_ms ms.
+    """Wait for tracked requests to finish and Network events to stay quiet.
 
-    Useful after form submits, SPA route transitions, and any action that triggers
-    XHR/fetch without a visible DOM change. Builds on drain_events() — no daemon changes.
-    Returns True if idle window reached, False on timeout.
-
-    Events are filtered to the active session — a previously-attached background
-    tab (e.g. a polling/SSE page the agent switched away from) keeps emitting
-    Network events into the daemon's global event buffer; without this filter
-    they would poison the idle check on the current tab.
+    True on idle, False on timeout. Unknown coverage or a tab/session change
+    raises: navigate after attachment to establish coverage, or wait for a DOM
+    condition instead. Reading events never changes request tracking.
     """
-    deadline = time.time() + timeout
-    last_activity = time.time()
-    inflight = set()
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0 for v in (timeout, idle_ms)):
+        raise ValueError("timeout and idle_ms must be finite non-negative numbers")
+    started = time.monotonic()
+    deadline = started + timeout
     active_session = _send({"meta": "session"}).get("session_id")
-    while time.time() < deadline:
-        for e in drain_events():
-            if e.get("session_id") != active_session:
-                continue
-            method = e.get("method", "")
-            params = e.get("params", {})
-            if method == "Network.requestWillBeSent":
-                inflight.add(params.get("requestId"))
-                last_activity = time.time()
-            elif method in ("Network.loadingFinished", "Network.loadingFailed"):
-                inflight.discard(params.get("requestId"))
-                last_activity = time.time()
-            elif method.startswith("Network."):
-                last_activity = time.time()
-        if not inflight and (time.time() - last_activity) * 1000 >= idle_ms:
+    while time.monotonic() < deadline:
+        state = _send({"meta": "network_status", "session_id": active_session})
+        if not state.get("known"):
+            raise RuntimeError(f"Network idle unknown: {state.get('reason', 'reload daemon to update event tracking')}")
+        if not state["inflight"] and min(state["quiet_ms"], (time.monotonic() - started) * 1000) >= idle_ms:
             return True
-        time.sleep(0.1)
+        time.sleep(max(0, min(0.1, deadline - time.monotonic())))
     return False
 
 def js(expression, target_id=None):
