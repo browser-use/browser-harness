@@ -183,3 +183,36 @@ def test_acknowledged_close_rejects_next_action_before_detach_event(setup_browse
         assert "TabLost" in result["error"]
         assert browser.calls == []
     asyncio.run(run())
+
+
+def test_new_tab_after_close_ack_creates_once_without_navigating_closing_target(setup_browser, monkeypatch):
+    browser, _ = setup_browser
+    d = daemon.Daemon()
+    asyncio.run(d.start())
+    original = browser.send_raw
+    async def send(method, params=None, session_id=None):
+        result = await original(method, params, session_id)
+        if method == "Target.getTargetInfo":
+            return {"targetInfo": {"targetId": "owned", "url": "", "title": ""}}
+        if method == "Target.closeTarget":
+            return {"success": True}
+        if method == "Target.createTarget":
+            return {"targetId": "fresh"}
+        return result
+    browser.send_raw = send
+    def ipc(req, **kwargs):
+        result = asyncio.run(d.handle(req))
+        if "error" in result:
+            raise RuntimeError(result["error"])
+        return result
+    monkeypatch.setattr(helpers, "_send", ipc)
+    helpers.close_tab("owned")
+    with pytest.raises(RuntimeError, match="TabLost"):
+        helpers.current_tab()
+    browser.calls.clear()
+    assert helpers.new_tab("https://example.test/recovery") == "fresh"
+    assert sum(m == "Target.createTarget" for m, _, _ in browser.calls) == 1
+    assert [(p, s) for m, p, s in browser.calls if m == "Page.navigate"] == [
+        ({"url": "https://example.test/recovery"}, "session-fresh")]
+    assert d.target_id == "fresh"
+    assert d._binding_error is None
