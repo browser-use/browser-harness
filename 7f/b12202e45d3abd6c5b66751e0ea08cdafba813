@@ -1,0 +1,25 @@
+tests/unit/test_navigation_errors.py
+  s_f75f87390da152::t_8206e5b5fe96fe 1-51
+src/mcp_server.py
+  s_f75f87390da152::t_e1c4b3c236a94d 146
+SKILL.md
+  s_f75f87390da152::t_e1c4b3c236a94d 189-190
+src/browser_harness/helpers.py
+  s_f75f87390da152::t_8206e5b5fe96fe 153,155-160,443-445,452
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7fb12202e45d3abd6c5b66751e0ea08cdafba813",
+  "prompts": {},
+  "sessions": {
+    "s_f75f87390da152": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06ff1-8bda-7691-8935-ff78c3fdfead",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}
