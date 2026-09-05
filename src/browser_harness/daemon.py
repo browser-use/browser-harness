@@ -8,6 +8,7 @@ from . import _ipc as ipc
 from . import auth
 from . import paths
 from cdp_use.client import CDPClient
+from websockets.exceptions import ConnectionClosed
 
 
 def _load_env():
@@ -421,6 +422,27 @@ class _PatientCDPClient(CDPClient):
         self._message_handler_task = asyncio.create_task(self._handle_messages())
 
 
+def error_class(exc):
+    """Wire class of a failed CDP call.
+
+    Closed set of reply classes: session_stale, cdp_disconnected, cdp_error
+    (CDP failures); unauthorized, not_attached, shutting_down, internal (daemon-side)."""
+    # cdp_use raises a CDP error response as RuntimeError({"code": .., "message": ..}).
+    # Chrome's stable session-not-found code is primary; keep the message match
+    # only for older/alternate clients that discard the structured payload.
+    payload = exc.args[0] if exc.args and isinstance(exc.args[0], dict) else {}
+    msg = str(payload.get("message", "")) if payload else str(exc)
+    if payload.get("code") == -32001 or "Session with given id not found" in msg:
+        return "session_stale"
+    # in-flight calls get ConnectionError when the socket closes; later sends raise websockets' ConnectionClosed
+    if isinstance(exc, (ConnectionError, ConnectionClosed)) or "connection closed" in msg or "Client is not started" in msg:
+        return "cdp_disconnected"
+    return "cdp_error"
+
+
+def _error(msg, cls): return {"error": msg, "class": cls}
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -668,7 +690,7 @@ class Daemon:
         # this check is a no-op there (AF_UNIX + chmod 600 is the boundary).
         expected = ipc.expected_token()
         if expected is not None and req.get("token") != expected:
-            return {"error": "unauthorized"}
+            return _error("unauthorized", "unauthorized")
         meta = req.get("meta")
         # Liveness probe — lets clients confirm the listener is actually this
         # daemon and not an unrelated process that reused our port post-crash.
@@ -685,19 +707,19 @@ class Daemon:
             # any Target.* method (browser-level call), and without a targetId
             # Chrome silently returns the *browser* target.
             if not self.target_id:
-                return {"error": "not_attached"}
+                return _error("not_attached", "not_attached")
             try:
                 info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
             except Exception:
-                return {"error": "cdp_disconnected"}
+                return _error("cdp_disconnected", "cdp_disconnected")
             return {"targetId": info.get("targetId"), "url": info.get("url", ""), "title": info.get("title", "")}
         if meta == "connection_status":
             if not self.target_id:
-                return {"error": "not_attached"}
+                return _error("not_attached", "not_attached")
             try:
                 info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
             except Exception:
-                return {"error": "cdp_disconnected"}
+                return _error("cdp_disconnected", "cdp_disconnected")
             page = None
             if is_real_page(info):
                 page = {
@@ -742,13 +764,13 @@ class Daemon:
             # cancel/drain existing handlers. In particular, a CDP replay that
             # never answers must not prevent Cloud cleanup from being attempted.
             if self._shutting_down:
-                return {"error": "shutdown already in progress"}
+                return _error("shutdown already in progress", "shutting_down")
             self._shutting_down = True
             if not await self._cancel_and_drain_recoveries():
                 # Preserve the daemon as a retryable cleanup authority. The
                 # strict caller will leave its endpoint and PID file intact.
                 self._shutting_down = False
-                return {"error": "stale-session recovery did not stop"}
+                return _error("stale-session recovery did not stop", "shutting_down")
             try:
                 stop_remote(strict=True)
             except Exception as e:
@@ -756,7 +778,7 @@ class Daemon:
                 # shutdown request can retry the billable-browser cleanup.
                 async with self._session_state_lock:
                     self._shutting_down = False
-                return {"error": str(e)}
+                return _error(str(e), "internal")
             self.stop.set()
             return {"ok": True}
 
@@ -769,26 +791,27 @@ class Daemon:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
-            if "Session with given id not found" in msg and sid:
+            cls = error_class(e)
+            if cls == "session_stale" and sid:
                 # Explicit session callers asked for that exact session; do not
                 # silently redirect them to the daemon's current tab.
                 if req.get("session_id"):
-                    return {"error": msg}
+                    return _error(msg, cls)
                 recovery_task = self._begin_recovery()
                 if recovery_task is None:
-                    return {"error": "daemon is shutting down"}
+                    return _error("daemon is shutting down", "shutting_down")
                 try:
                     recovered_here = False
                     async with self._session_state_lock:
                         if self._shutting_down:
-                            return {"error": "daemon is shutting down"}
+                            return _error("daemon is shutting down", "shutting_down")
                         replacement_session = self._session_replacements.get(sid)
                         if replacement_session is None and sid == self.session:
                             log(f"stale session {sid}, re-attaching")
                             if not await self.attach_first_page(
                                 replaces_session=sid, enable_domains=False
                             ):
-                                return {"error": msg}
+                                return _error(msg, cls)
                             replacement_session = self._session_replacements.get(sid)
                             recovered_here = replacement_session is not None
                     if recovered_here:
@@ -802,10 +825,10 @@ class Daemon:
                                 method, params, session_id=replacement_session
                             )}
                         except Exception as retry_error:
-                            return {"error": str(retry_error)}
+                            return _error(str(retry_error), error_class(retry_error))
                 finally:
                     self._finish_recovery(recovery_task)
-            return {"error": msg}
+            return _error(msg, cls)
 
 
 async def serve(d):
@@ -819,7 +842,7 @@ async def serve(d):
         except Exception as e:
             log(f"conn: {e}")
             try:
-                writer.write((json.dumps({"error": str(e)}) + "\n").encode())
+                writer.write((json.dumps(_error(str(e), "internal")) + "\n").encode())
                 await writer.drain()
             except Exception:
                 pass
