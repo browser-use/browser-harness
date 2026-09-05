@@ -1,0 +1,51 @@
+src/browser_harness/helpers.py
+  s_5d40ae83f8d939::t_cb12d6b07c7523 6,47-49,85-86,88-93,98-114,199-202,217,382-391,425-434,474-476,479-480,482,582,585
+  s_5d40ae83f8d939::t_84dceedbad1aeb 72-79
+src/browser_harness/daemon.py
+  s_5d40ae83f8d939::t_84dceedbad1aeb 745-750
+  s_5d40ae83f8d939::t_79f690ff945266 780-781
+  s_5d40ae83f8d939::t_cb12d6b07c7523 417-421,442-444,446,448,488,522,555-558,575-619,655,682-691,693-696,698-713,715,751,767-776,786-787,791,794-796,798,804,810-815,820-831,857-869,879-896
+interaction-skills/connection.md
+  s_5d40ae83f8d939::t_d7b265685dc929 9,11-14,16-26,38-40,44,47
+docs/shared-browser.md
+  s_5d40ae83f8d939::t_84dceedbad1aeb 1-149,153-158
+  s_5d40ae83f8d939::t_0fc965fa0e0222 150-152
+src/browser_harness/admin.py
+  s_5d40ae83f8d939::t_3ebc227a5c112a 573-575,591-593
+  s_5d40ae83f8d939::t_78f14cf7f2d2b8 533-534,538-546
+SKILL.md
+  s_5d40ae83f8d939::t_79f690ff945266 31-33,76-77,164,170-171,220-221
+  s_5d40ae83f8d939::t_78f14cf7f2d2b8 28-30,44,63-75,78-103,160-162,167-169,175-178
+tests/integration/test_shared_browser.py
+  s_5d40ae83f8d939::t_6c4c3a2302c86b 111-113
+  s_5d40ae83f8d939::t_14119f52edd763 114
+  s_5d40ae83f8d939::t_d7b265685dc929 1-110,115-155
+tests/unit/test_helpers.py
+  s_5d40ae83f8d939::t_3ebc227a5c112a 12-16,326,328,367,444-472,481-485,490-494,505-509,526-530,538,541-577,587,590-596
+  s_5d40ae83f8d939::t_b5e9dd6fe4ed7d 69
+  s_5d40ae83f8d939::t_79f690ff945266 386-387,396-397,540
+tests/unit/test_recorder.py
+  s_5d40ae83f8d939::t_3ebc227a5c112a 72
+tests/unit/test_shared_browser.py
+  s_5d40ae83f8d939::t_0fc965fa0e0222 131-150
+  s_5d40ae83f8d939::t_14119f52edd763 53
+  s_5d40ae83f8d939::t_b5e9dd6fe4ed7d 1-52,54-130,151-194
+interaction-skills/tabs.md
+  s_5d40ae83f8d939::t_d7b265685dc929 11,16-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "db47d45c3210dee7bab95684118bb3eea86dfee4",
+  "prompts": {},
+  "sessions": {
+    "s_5d40ae83f8d939": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0694d-b970-7ad2-864c-a19af40d1523",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "MagMueller <mamagnus00@gmail.com>"
+    }
+  }
+}
