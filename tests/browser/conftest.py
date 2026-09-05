@@ -55,7 +55,10 @@ def browser_cli():
             def run(code, timeout=20):
                 result = subprocess.run([sys.executable, "-m", "browser_harness.run"], input=code, text=True,
                                         capture_output=True, env=env, cwd=repo, timeout=timeout)
-                assert result.returncode == 0, result.stdout + result.stderr
+                if result.returncode:
+                    log = root / "tmp" / "bu.log"
+                    evidence = log.read_text()[-4000:] if log.exists() else "no daemon log"
+                    raise AssertionError(result.stdout + result.stderr + "\nDaemon log:\n" + evidence)
                 return result.stdout
             yield run
         finally:
