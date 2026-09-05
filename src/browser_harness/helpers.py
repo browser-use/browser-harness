@@ -392,9 +392,52 @@ def _mark_tab():
     try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
+def _is_target_id(val: str) -> bool:
+    if len(val) == 32 and all(c in "0123456789abcdefABCDEF" for c in val):
+        return True
+    if len(val) == 36 and val.count("-") == 4:
+        return all(c in "0123456789abcdefABCDEF-" for c in val)
+    return False
+
+
 def _target_id(target):
-    """Accept a raw target id or a tab dict returned by the helpers."""
-    return (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
+    """Accept a raw target id, a tab dict, or a URL/title substring."""
+    if isinstance(target, dict):
+        tid = target.get("targetId") or target.get("target_id")
+        if tid:
+            return tid
+        query = target.get("url") or target.get("title")
+    else:
+        query = target
+
+    if not isinstance(query, str):
+        return query
+
+    if _is_target_id(query):
+        return query
+
+    if not query or not query.strip():
+        return query
+
+    try:
+        tabs = list_tabs(include_chrome=True)
+    except Exception:
+        return query
+
+    for t in tabs:
+        if t.get("targetId") == query:
+            return query
+
+    query_lower = query.lower()
+    for t in tabs:
+        if query_lower in (t.get("url") or "").lower():
+            return t["targetId"]
+
+    for t in tabs:
+        if query_lower in (t.get("title") or "").lower():
+            return t["targetId"]
+
+    return query
 
 def activate_tab(target):
     """Make a target the visible Chrome tab.
