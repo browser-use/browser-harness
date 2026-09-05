@@ -1,5 +1,6 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
 import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+import traceback
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -220,6 +221,19 @@ def supported_browser_running():
 
 def log(msg):
     open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
+
+
+def _start_log():
+    # Keep the most recent MiB across restarts, including the original failure.
+    # Truncate in place: admin already opened this inode as the child's stderr.
+    with open(LOG, "a+b") as stream:
+        if stream.tell() > 1024 * 1024:
+            stream.seek(-1024 * 1024, os.SEEK_END)
+            tail = stream.read()
+            stream.seek(0)
+            stream.truncate()
+            stream.write(b"[earlier daemon log truncated]\n" + tail)
+    log(f"daemon starting pid={os.getpid()} utc={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
 
 
 def _safe_connection_label(url):
@@ -954,13 +968,16 @@ if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
-    open(LOG, "w").close()
+    _start_log()
     _publish_own_pid()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
     except Exception as e:
+        # Stack locations without locals or chained exception payloads. The
+        # existing final error stays last for admin's one-line diagnostic.
+        log("Traceback (most recent call last):\n" + "".join(traceback.format_tb(e.__traceback__)))
         log(f"fatal: {e}")
         sys.exit(1)
     finally:
