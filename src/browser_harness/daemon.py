@@ -7,6 +7,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from ._tab_binding import TabBinding, TabLost, browser_key
 from cdp_use.client import CDPClient
 
 
@@ -427,6 +428,9 @@ class Daemon:
         self.session = None
         self.target_id = None
         self.dedicated_target_id = None
+        self._binding = None
+        self._binding_error = None
+        self._detached_sessions = deque(maxlen=32)
         self._dedicated_target_lock = asyncio.Lock()
         self._session_state_lock = asyncio.Lock()
         self._active_recoveries = 0
@@ -440,8 +444,17 @@ class Daemon:
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
-        """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
+        """Choose a page once; every subsequent attachment keeps that exact target."""
+        selected_before_discovery = self.target_id
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        if self.target_id != selected_before_discovery:
+            # Another first attachment may have created a tab after our snapshot.
+            targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        if self.target_id:
+            page = next((t for t in targets if t["targetId"] == self.target_id and t["type"] == "page"), None)
+            if page is None:
+                raise TabLost(f"selected target {self.target_id} disappeared")
+            return await self._attach_page(page, replaces_session, enable_domains)
         # Named daemons (BU_NAME != "default") share one browser with other
         # daemons — attaching to the first page makes parallel daemons fight
         # over a single tab (navigations clobber each other). Give each named
@@ -453,12 +466,9 @@ class Daemon:
             if BROWSER_KIND == "local":
                 await self._close_inspect_tabs(targets)
             pages_by_id = {t["targetId"]: t for t in targets if t["type"] == "page"}
-            # A stale CDP session does not necessarily mean its tab disappeared.
-            # Reattach to the current tab first, then the daemon's dedicated tab.
-            page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
+            page = pages_by_id.get(self.dedicated_target_id)
             if page is None:
-                # Two stale IPC requests can recover concurrently. Recheck
-                # inside a narrow lock so they share one replacement tab.
+                # Concurrent first attachments share one dedicated tab.
                 async with self._dedicated_target_lock:
                     refreshed = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
                     pages_by_id = {t["targetId"]: t for t in refreshed if t["type"] == "page"}
@@ -470,16 +480,7 @@ class Daemon:
                         self.dedicated_target_id = tid
                         log(f"named daemon {NAME}: created dedicated tab ({tid})")
                         page = {"targetId": tid, "url": "about:blank", "type": "page"}
-            tid = page["targetId"]
-            self.session = (await self.cdp.send_raw(
-                "Target.attachToTarget", {"targetId": tid, "flatten": True}
-            ))["sessionId"]
-            self._record_session_replacement(replaces_session, self.session)
-            self.target_id = tid
-            log(f"attached {tid} ({page.get('url','')[:80]}) session={self.session}")
-            if enable_domains:
-                await self._enable_default_domains(self.session)
-            return page
+            return await self._attach_page(page, replaces_session, enable_domains)
 
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
@@ -504,12 +505,7 @@ class Daemon:
             ))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
-        self.session = (await self.cdp.send_raw(
-            "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
-        ))["sessionId"]
-        self._record_session_replacement(replaces_session, self.session)
-        self.target_id = pages[0]["targetId"]
-        log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
+        await self._attach_page(pages[0], replaces_session, enable_domains=False)
         if take_over:
             try:
                 await self.cdp.send_raw("Page.navigate", {"url": "about:blank"}, session_id=self.session)
@@ -521,6 +517,24 @@ class Daemon:
         if enable_domains:
             await self._enable_default_domains(self.session)
         return pages[0]
+
+    def _persist_tab(self, target_id):
+        if self._binding is not None:
+            self._binding.save(target_id, self.dedicated_target_id)
+
+    async def _attach_page(self, page, replaces_session=None, enable_domains=True):
+        target_id = page["targetId"]
+        self._persist_tab(target_id)
+        session = (await self.cdp.send_raw(
+            "Target.attachToTarget", {"targetId": target_id, "flatten": True}
+        ))["sessionId"]
+        self.session, self.target_id = session, target_id
+        self._binding_error = None
+        self._record_session_replacement(replaces_session, session)
+        log(f"attached {target_id} session={session}")
+        if enable_domains:
+            await self._enable_default_domains(session)
+        return page
 
     async def _close_inspect_tabs(self, targets):
         """Close chrome://inspect tabs left open by the permission recovery flow"""
@@ -624,6 +638,8 @@ class Daemon:
         )))
 
     def _record_event(self, method, params, session_id=None):
+        if method == "Target.detachedFromTarget" and params.get("sessionId"):
+            self._detached_sessions.append(params["sessionId"])
         self.events.append({"method": method, "params": params, "session_id": session_id})
         if method == "Page.javascriptDialogOpening":
             self.dialog = params
@@ -655,7 +671,16 @@ class Daemon:
                     "browser-harness did not retry or create another connection"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
-        await self.attach_first_page()
+        self._binding = TabBinding(ipc.pid_path(NAME).with_suffix(".tab.json"), browser_key(url, REMOTE_ID))
+        try:
+            saved = self._binding.load()
+            if saved:
+                self.target_id, self.dedicated_target_id = saved["target"], saved.get("owned")
+            await self.attach_first_page()
+        except TabLost as e:
+            # Keep the control plane available for explicit tab selection.
+            self._binding_error = str(e)
+            log(self._binding_error)
         orig = self.cdp._event_registry.handle_event
         async def tap(method, params, session_id=None):
             self._record_event(method, params, session_id)
@@ -708,9 +733,15 @@ class Daemon:
             return {"target_id": self.target_id, "session_id": self.session, "page": page}
         if meta == "set_session":
             async with self._session_state_lock:
+                target_id = req.get("target_id") or self.target_id
+                try:
+                    self._persist_tab(target_id)
+                except OSError:
+                    return {"error": "TabBindingWriteFailed: selection unchanged; saved binding could not be written"}
                 old_session = self.session
                 self.session = req.get("session_id")
-                self.target_id = req.get("target_id") or self.target_id
+                self.target_id = target_id
+                self._binding_error = None
                 new_session = self.session
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
@@ -762,11 +793,20 @@ class Daemon:
 
         method = req["method"]
         params = req.get("params") or {}
+        if self._binding_error and not method.startswith("Target.") and not req.get("session_id"):
+            return {"error": self._binding_error}
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            if sid in self._detached_sessions:
+                raise RuntimeError("Session with given id not found")
+            result = await self.cdp.send_raw(method, params, session_id=sid)
+            if method == "Target.closeTarget" and params.get("targetId") == self.target_id and result.get("success"):
+                # Chrome may acknowledge close before emitting the detach event.
+                # Never send the next page command into that closing session.
+                self._binding_error = str(TabLost(f"selected target {self.target_id} was closed"))
+            return {"result": result}
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid:
@@ -803,6 +843,8 @@ class Daemon:
                             )}
                         except Exception as retry_error:
                             return {"error": str(retry_error)}
+                except TabLost as lost:
+                    return {"error": str(lost)}
                 finally:
                     self._finish_recovery(recovery_task)
             return {"error": msg}
