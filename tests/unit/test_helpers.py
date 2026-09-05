@@ -9,6 +9,11 @@ from PIL import Image
 from browser_harness import helpers
 
 
+@pytest.fixture(autouse=True)
+def _reset_client_tab(monkeypatch):
+    monkeypatch.setattr(helpers, "_TARGET_ID", None)
+
+
 def _run(fake_png, width, height, **kwargs):
     fake = lambda method, **_: {"data": fake_png(width, height)}
     with patch("browser_harness.helpers.cdp", side_effect=fake), tempfile.TemporaryDirectory() as d:
@@ -61,6 +66,7 @@ def test_screenshot_uses_long_response_timeout_without_forwarding_it_to_cdp(fake
         "method": "Page.captureScreenshot",
         "params": {"format": "png", "captureBeyondViewport": False},
         "session_id": None,
+        "target_id": None,
     }
     assert send.call_args.kwargs == {
         "response_timeout": helpers.SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS
@@ -439,21 +445,57 @@ def test_mark_tab_can_be_disabled(monkeypatch, value):
     assert calls == []
 
 
+def test_cdp_routes_calls_with_the_cli_target(monkeypatch):
+    requests = []
+    monkeypatch.setattr(helpers, "_TARGET_ID", "target-agent-a")
+    monkeypatch.setattr(
+        helpers,
+        "_send",
+        lambda request, response_timeout=helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS:
+            requests.append(request) or {"result": {}},
+    )
+
+    helpers.cdp("Page.captureScreenshot")
+    helpers.cdp("Target.getTargets")
+
+    assert requests == [
+        {
+            "method": "Page.captureScreenshot",
+            "params": {},
+            "session_id": None,
+            "target_id": "target-agent-a",
+        },
+        {
+            "method": "Target.getTargets",
+            "params": {},
+            "session_id": None,
+            "target_id": "target-agent-a",
+        },
+    ]
+
+
 def test_switch_tab_keeps_visible_tab_unchanged_by_default(monkeypatch):
     calls = []
 
     def fake_cdp(method, **kwargs):
         calls.append((method, kwargs))
-        if method == "Target.attachToTarget":
-            return {"sessionId": "session-new"}
         return {}
 
     monkeypatch.setattr(helpers, "cdp", fake_cdp)
-    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(
+        helpers,
+        "_send",
+        lambda request: calls.append(("ipc", request)) or {"session_id": "session-new"},
+    )
     monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
 
     assert helpers.switch_tab({"target_id": "target-new"}) == "session-new"
     assert not any(method == "Target.activateTarget" for method, _ in calls)
+    assert ("ipc", {
+        "meta": "prepare_target",
+        "target_id": "target-new",
+    }) in calls
+    assert helpers._TARGET_ID == "target-new"
 
 
 def test_switch_tab_can_explicitly_activate_visible_tab(monkeypatch):
@@ -461,12 +503,14 @@ def test_switch_tab_can_explicitly_activate_visible_tab(monkeypatch):
 
     def fake_cdp(method, **kwargs):
         calls.append((method, kwargs))
-        if method == "Target.attachToTarget":
-            return {"sessionId": "session-new"}
         return {}
 
     monkeypatch.setattr(helpers, "cdp", fake_cdp)
-    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(
+        helpers,
+        "_send",
+        lambda request: calls.append(("ipc", request)) or {"session_id": "session-new"},
+    )
     monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
 
     assert helpers.switch_tab("target-new", activate=True) == "session-new"
@@ -480,12 +524,14 @@ def test_new_tab_creates_and_attaches_in_background(monkeypatch):
         calls.append((method, kwargs))
         if method == "Target.createTarget":
             return {"targetId": "target-new"}
-        if method == "Target.attachToTarget":
-            return {"sessionId": "session-new"}
         return {}
 
     monkeypatch.setattr(helpers, "cdp", fake_cdp)
-    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(
+        helpers,
+        "_send",
+        lambda request: calls.append(("ipc", request)) or {"session_id": "session-new"},
+    )
     monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
 
     assert helpers.new_tab() == "target-new"
@@ -493,8 +539,45 @@ def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     assert not any(method == "Target.activateTarget" for method, _ in calls)
 
 
+def test_first_new_tab_does_not_reuse_the_daemon_default_tab(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            return {"targetId": "agent-owned-target"}
+        return {}
+
+    monkeypatch.setattr(helpers, "current_tab", lambda: pytest.fail("must not inspect shared default"))
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {"session_id": "agent-owned-session"})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    assert helpers.new_tab("https://example.com") == "agent-owned-target"
+    assert ("Target.createTarget", {"url": "about:blank", "background": True}) in calls
+
+
+def test_current_tab_stays_on_the_cli_process_target(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "_TARGET_ID", "target-agent-a")
+
+    def fake_cdp(method, **params):
+        calls.append((method, params))
+        return {"targetInfo": {
+            "targetId": params["targetId"],
+            "url": "https://a.example/",
+            "title": "Agent A",
+        }}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+
+    assert helpers.current_tab()["targetId"] == "target-agent-a"
+    assert calls == [("Target.getTargetInfo", {"targetId": "target-agent-a"})]
+
+
 def test_new_tab_reuses_an_empty_data_document(monkeypatch):
     calls = []
+    monkeypatch.setattr(helpers, "_TARGET_ID", "target-placeholder")
     monkeypatch.setattr(
         helpers,
         "current_tab",
