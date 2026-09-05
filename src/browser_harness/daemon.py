@@ -288,6 +288,20 @@ def get_ws_url():
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
+    # A named/managed daemon may have been launched with a pinned BU_CDP_URL that a
+    # later respawn (parent restart, session teardown) fails to carry forward. Falling
+    # through to the local profile scan below would then silently attach to whatever
+    # browser happens to be running on the user's default profile instead of the
+    # dedicated automation Chrome the caller pinned -- opt in to failing loudly instead
+    # with BU_NO_LOCAL_FALLBACK=1. Off by default: named local daemons sharing the
+    # user's default browser (each getting its own tab, see attach_first_page) are a
+    # legitimate, currently-supported setup and must keep scanning PROFILES normally.
+    if NAME != "default" and (os.environ.get("BU_NO_LOCAL_FALLBACK") or "").strip().lower() not in ("", "0", "false", "no", "off"):
+        raise RuntimeError(
+            f"pinned endpoint lost for managed daemon BU_NAME={NAME!r}: BU_CDP_WS/BU_CDP_URL "
+            "is unset and BU_NO_LOCAL_FALLBACK is set, so refusing to scan the default browser "
+            "profile -- relaunch the session with its pinned endpoint restored"
+        )
     deadline = time.time() + 30
     next_liveness_check = 0.0
     while time.time() < deadline:

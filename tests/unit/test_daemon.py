@@ -40,6 +40,112 @@ def test_safe_connection_label_removes_credentials_paths_and_queries(url, label)
     assert daemon._safe_connection_label(url) == label
 
 
+class _FakeResponse:
+    """Minimal stand-in for urllib's addinfourl: supports .read() directly
+    (used by the PROFILES-scan branch) and the context-manager protocol."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def read(self):
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_get_ws_url_fails_closed_for_named_daemon_instead_of_scanning_default_profile(
+    monkeypatch, tmp_path
+):
+    """Regression test for #479.
+
+    get_ws_url() checks BU_CDP_WS then BU_CDP_URL, and if neither is set,
+    falls straight into scanning PROFILES (the user's default Chrome/Brave/
+    etc. profile dirs) with no guard at all. For a named/managed daemon that
+    was explicitly pinned to a dedicated automation Chrome via BU_CDP_URL, a
+    later respawn that loses that pinned env would then silently attach to
+    whatever browser happens to be running on the user's real daily-driver
+    profile instead of failing loudly.
+
+    Note this guard is opt-in (BU_NO_LOCAL_FALLBACK=1), not automatic on
+    NAME != "default": named local daemons that share the user's default
+    browser (each getting its own dedicated tab -- see
+    Daemon.attach_first_page's "Named daemons ... share one browser" branch)
+    are a legitimate, currently-supported setup and must keep scanning
+    PROFILES normally. This test simulates a caller that knows its daemon is
+    meant to be pinned and has opted in to failing closed.
+    """
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setenv("BU_NO_LOCAL_FALLBACK", "1")
+    monkeypatch.setattr(daemon, "NAME", "worker-a")
+
+    default_profile = tmp_path / "default-chrome-profile"
+    default_profile.mkdir()
+    (default_profile / "DevToolsActivePort").write_text(
+        "9999\n/devtools/browser/abc123\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(daemon, "PROFILES", [default_profile])
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", list)
+    monkeypatch.setattr(daemon, "remote_debugging_user_enabled", lambda: True)
+
+    urlopen_calls = []
+
+    def fake_urlopen(url, timeout=1):
+        urlopen_calls.append(url)
+        return _FakeResponse(
+            b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9999/devtools/browser/abc123"}'
+        )
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match=r"(?i)pinned|managed daemon|BU_CDP_"):
+        daemon.get_ws_url()
+
+    assert not urlopen_calls, (
+        "get_ws_url() must not scan/attach to the default browser profile "
+        "for a named daemon that opted in to failing closed"
+    )
+
+
+def test_get_ws_url_still_scans_default_profile_for_named_local_daemon_by_default(
+    monkeypatch, tmp_path
+):
+    """Companion to the regression test above: without BU_NO_LOCAL_FALLBACK
+    set, a named daemon must keep falling back to the local profile scan --
+    this is the existing, legitimate "parallel named daemons share the
+    user's default local browser" setup and must not regress."""
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.delenv("BU_NO_LOCAL_FALLBACK", raising=False)
+    monkeypatch.setattr(daemon, "NAME", "worker-a")
+
+    default_profile = tmp_path / "default-chrome-profile"
+    default_profile.mkdir()
+    (default_profile / "DevToolsActivePort").write_text(
+        "9999\n/devtools/browser/abc123\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(daemon, "PROFILES", [default_profile])
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", list)
+    monkeypatch.setattr(daemon, "remote_debugging_user_enabled", lambda: True)
+
+    def fake_urlopen(url, timeout=1):
+        return _FakeResponse(
+            b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9999/devtools/browser/abc123"}'
+        )
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    assert (
+        daemon.get_ws_url() == "ws://127.0.0.1:9999/devtools/browser/abc123"
+    )
+
+
 def test_remote_stop_retries_and_succeeds(monkeypatch):
     attempts = []
     monkeypatch.setattr(daemon, "REMOTE_ID", "browser-1")
