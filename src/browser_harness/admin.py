@@ -1375,6 +1375,20 @@ def _open_chrome_inspect():
                 return True
         except Exception:
             pass
+    if platform.system() == "Windows":
+        # ShellExecute can't resolve chrome:// URIs (no protocol handler -> MS Store
+        # dialog); pass the URL as an argument to the Chrome binary instead.
+        for chrome in (
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ):
+            if os.path.exists(chrome):
+                try:
+                    subprocess.Popen([chrome, url])
+                    return
+                except Exception:
+                    pass
     try:
         return bool(webbrowser.open(url, new=2))
     except Exception:
