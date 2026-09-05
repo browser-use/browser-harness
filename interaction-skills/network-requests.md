@@ -18,6 +18,8 @@ empty params. Check both before drawing conclusions. A daemon restart raises
 `EventCursorExpired`; explicitly start a new reader. `drain_events()` retains its
 legacy shared-reader behavior, but no longer deletes the retained history.
 MCP exposes the same cursor interface as `browser_read_events`.
+Pass the returned cursor unchanged, not `0`, a reader name, or `drain_events()`.
+Malformed cursors raise `ValueError` before IPC; they do not mean the daemon restarted.
 
 `wait_for_network_idle()` tracks requests as they arrive, including redirects
 and failed loads. It returns `True` after no pending requests and a quiet window,
@@ -26,6 +28,8 @@ Coverage requires Network enabled before a top-level navigation. Requests that
 started before attachment cannot be reconstructed reliably. After attachment or
 recovery, navigate explicitly or use a specific DOM condition instead. Tracking
 more than 4096 concurrent requests fails closed; reattach and navigate to reset.
+Repeated `Network.enable` preserves tracking. `Network.disable` creates a coverage
+gap; reattach and navigate before using network idle again.
 
 For form submission, verify the actual result in the UI. Network quiet is not
 proof that a save succeeded. Do not print headers, cookies, or full event payloads

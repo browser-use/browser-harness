@@ -142,3 +142,67 @@ def test_wait_unknown_status_and_stale_daemon_raise(monkeypatch):
     monkeypatch.setattr(helpers, "_send", lambda req: {"session_id": "s"} if req.get("meta") == "session" else {})
     with pytest.raises(RuntimeError, match="Network idle unknown"):
         helpers.wait_for_network_idle()
+
+
+@pytest.mark.parametrize("cursor", [0, "reader-name", [], [{"payload": "x" * 100_000}],
+    {}, {"generation": "x" * 100_000, "sequence": 0},
+    {"generation": "a" * 32, "sequence": 0, "events": "x" * 100_000},
+    {"generation": "a" * 32, "sequence": True}])
+def test_invalid_cursor_fails_before_ipc_without_claiming_restart(monkeypatch, cursor):
+    def unexpected_send(req):
+        pytest.fail("invalid cursor reached IPC")
+    monkeypatch.setattr(helpers, "_send", unexpected_send)
+    for read in (helpers.read_events, EventHistory().read):
+        with pytest.raises(ValueError, match="Invalid event cursor") as error:
+            read(cursor)
+        assert "daemon changed" not in str(error.value)
+        assert len(str(error.value)) < 250
+
+
+def test_helper_cursor_roundtrip_and_real_restart(monkeypatch):
+    history = EventHistory()
+    monkeypatch.setattr(helpers, "_send", lambda req: history.read(req["cursor"], req["session_id"]))
+    batch = helpers.read_events()
+    history.append(event())
+    assert helpers.read_events(batch["cursor"])["events"][0]["sequence"] == 1
+    history = EventHistory()
+    with pytest.raises(RuntimeError, match="EventCursorExpired"):
+        helpers.read_events(batch["cursor"])
+
+
+def test_redundant_enable_preserves_pending_requests_and_idle_recovery():
+    async def run():
+        d = ready_daemon()
+        async def send(*args, **kwargs):
+            return {}
+        d.cdp.send_raw = send
+        d._record_event(**event())
+        assert await d.handle({"method": "Network.enable"}) == {"result": {}}
+        d._record_event("Page.frameNavigated", {"frame": {"id": "root"}}, "active")
+        state = d.network.snapshot()
+        assert state["known"] is True
+        assert state["inflight"] == 1
+        d._record_event(**event("Network.loadingFinished"))
+        assert d.network.snapshot()["inflight"] == 0
+    asyncio.run(run())
+
+
+def test_disable_remains_unknown_even_when_delayed_enable_finishes_later():
+    async def run():
+        d = ready_daemon()
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def send(method, *args, **kwargs):
+            if method == "Network.enable":
+                entered.set()
+                await release.wait()
+            return {}
+        d.cdp.send_raw = send
+        enable = asyncio.create_task(d.handle({"method": "Network.enable"}))
+        await entered.wait()
+        await d.handle({"method": "Network.disable"})
+        assert d.network.snapshot()["known"] is False
+        release.set()
+        await enable
+        d._record_event("Page.frameNavigated", {"frame": {"id": "root"}}, "active")
+        assert d.network.snapshot()["known"] is False
+    asyncio.run(run())

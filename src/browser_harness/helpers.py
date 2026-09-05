@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from . import _ipc as ipc
 from . import paths
+from ._events import validate_cursor as _validate_event_cursor
 
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -82,8 +83,10 @@ def drain_events():  return _send({"meta": "drain_events"})["events"]
 def read_events(cursor=None, session_id=None):
     """Read bounded history without consuming it. Retain cursor; check dropped/truncated.
 
-    Each caller owns its cursor. A daemon restart expires old cursors explicitly.
+    Start with batch = read_events(), then read_events(batch['cursor']).
+    Each caller owns its cursor. A daemon restart expires valid old cursors explicitly.
     """
+    _validate_event_cursor(cursor)
     return _send({"meta": "read_events", "cursor": cursor, "session_id": session_id})
 
 
