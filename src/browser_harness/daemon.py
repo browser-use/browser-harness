@@ -439,7 +439,7 @@ class Daemon:
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
-    async def attach_first_page(self, replaces_session=None, enable_domains=True):
+    async def attach_first_page(self, replaces_session=None, enable_domains=True, exclude_target_id=None):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         # Named daemons (BU_NAME != "default") share one browser with other
@@ -452,7 +452,7 @@ class Daemon:
             # Clean it up before returning from this early path as well.
             if BROWSER_KIND == "local":
                 await self._close_inspect_tabs(targets)
-            pages_by_id = {t["targetId"]: t for t in targets if t["type"] == "page"}
+            pages_by_id = {t["targetId"]: t for t in targets if t["type"] == "page" and t["targetId"] != exclude_target_id}
             # A stale CDP session does not necessarily mean its tab disappeared.
             # Reattach to the current tab first, then the daemon's dedicated tab.
             page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
@@ -461,7 +461,7 @@ class Daemon:
                 # inside a narrow lock so they share one replacement tab.
                 async with self._dedicated_target_lock:
                     refreshed = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-                    pages_by_id = {t["targetId"]: t for t in refreshed if t["type"] == "page"}
+                    pages_by_id = {t["targetId"]: t for t in refreshed if t["type"] == "page" and t["targetId"] != exclude_target_id}
                     page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
                     if page is None:
                         tid = (await self.cdp.send_raw(
@@ -481,22 +481,26 @@ class Daemon:
                 await self._enable_default_domains(self.session)
             return page
 
-        pages = [t for t in targets if is_real_page(t)]
+        pages = [t for t in targets if is_real_page(t) and t["targetId"] != exclude_target_id]
         if not pages:
             # Fresh browser (ex: BU cloud) starts w about:blank; reuse it
-            pages = [t for t in targets if is_reusable_blank_page(t)]
+            pages = [t for t in targets if is_reusable_blank_page(t) and t["targetId"] != exclude_target_id]
         if not pages:
             # Freshly launched browser (ex: harness relaunching closed Chrome)
             # starts with just the New Tab Page. Reuse it — creating about:blank
-            pages = [t for t in targets if is_reusable_new_tab_page(t)]
+            pages = [t for t in targets if is_reusable_new_tab_page(t) and t["targetId"] != exclude_target_id]
         take_over = None
         if not pages and harness_opened_inspect():
             # After perms granted, only tab is often chrome://inspect
             # Attach to it instead of creating a new about:blank
-            inspect_tabs = [t for t in targets if is_inspect_tab(t)]
+            inspect_tabs = [t for t in targets if is_inspect_tab(t) and t["targetId"] != exclude_target_id]
             if inspect_tabs:
                 pages = [inspect_tabs[0]]
                 take_over = inspect_tabs[0]["targetId"]
+        if not pages:
+            other_pages = [t for t in targets if t.get("type") == "page" and t["targetId"] != exclude_target_id]
+            if other_pages:
+                pages = [other_pages[0]]
         if not pages:
             # No usable pages - create one instead of attaching to omnibox popup.
             tid = (await self.cdp.send_raw(
@@ -736,6 +740,50 @@ class Daemon:
             # it doesn't add to the synchronous IPC budget.
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
+        if meta == "close_tab":
+            old_session = None
+            new_session = None
+            close_error = None
+            async with self._session_state_lock:
+                target_to_close = req.get("target_id") or self.target_id
+                if not target_to_close:
+                    return {"error": "not_attached"}
+                if target_to_close == self.target_id:
+                    old_session = self.session
+                    await self.attach_first_page(
+                        replaces_session=None,
+                        enable_domains=False,
+                        exclude_target_id=target_to_close,
+                    )
+                    new_session = self.session
+                elif target_to_close == self.dedicated_target_id:
+                    self.dedicated_target_id = None
+                try:
+                    res = await self.cdp.send_raw("Target.closeTarget", {"targetId": target_to_close})
+                    if isinstance(res, dict) and res.get("success") is False:
+                        close_error = RuntimeError("Target.closeTarget failed")
+                except Exception as e:
+                    close_error = e
+
+            if new_session:
+                tasks = []
+                if old_session and old_session != new_session:
+                    async def disable_old():
+                        try:
+                            await asyncio.wait_for(
+                                self.cdp.send_raw("Network.disable", session_id=old_session),
+                                timeout=2,
+                            )
+                        except Exception:
+                            pass
+                    tasks.append(disable_old())
+                tasks.append(self._enable_default_domains(new_session))
+                await asyncio.gather(*tasks)
+                self._schedule_tab_marker(new_session)
+
+            if close_error is not None:
+                return {"error": str(close_error)}
+            return {"success": True}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
