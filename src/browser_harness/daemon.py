@@ -823,7 +823,9 @@ class Daemon:
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
-        if method in ("Network.disable", "Network.enable") and sid == self.network.session_id:
+        # Repeated enable is idempotent: it must not poison existing coverage.
+        # Disable creates a gap even if an earlier enable reply arrives later.
+        if method == "Network.disable" and sid == self.network.session_id:
             self.network.error = "network subscription changed; reattach and navigate before waiting for idle"
         try:
             if sid in self._detached_sessions:

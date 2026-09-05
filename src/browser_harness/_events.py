@@ -5,6 +5,17 @@ import time
 import uuid
 
 
+def validate_cursor(cursor):
+    """Reject malformed/oversized cursors before IPC and distinguish stale readers."""
+    if cursor is None:
+        return
+    if (not isinstance(cursor, dict) or cursor.keys() != {"generation", "sequence"}
+            or not isinstance(cursor["generation"], str) or len(cursor["generation"]) != 32
+            or any(c not in "0123456789abcdef" for c in cursor["generation"])
+            or type(cursor["sequence"]) is not int or not 0 <= cursor["sequence"] < 2**63):
+        raise ValueError("Invalid event cursor: start with batch = read_events(), then pass batch['cursor']; not an event list or reader name")
+
+
 class EventHistory:
     def __init__(self, capacity=500, max_event_bytes=16384):
         self.events = deque(maxlen=capacity)
@@ -20,9 +31,10 @@ class EventHistory:
         self.events.append((self.sequence, event))
 
     def read(self, cursor=None, session_id=None):
+        validate_cursor(cursor)
         sequence = 0
         if cursor is not None:
-            if not isinstance(cursor, dict) or cursor.get("generation") != self.generation:
+            if cursor["generation"] != self.generation:
                 raise RuntimeError("EventCursorExpired: daemon changed; start a new reader with cursor=None")
             sequence = cursor.get("sequence")
             if type(sequence) is not int or not 0 <= sequence <= self.sequence:
