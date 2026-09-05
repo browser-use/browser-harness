@@ -1,0 +1,46 @@
+tests/unit/test_recorder.py
+  s_5d40ae83f8d939::t_19de5b75424eee 3,8-13
+AGENTS.md
+  s_5d40ae83f8d939::t_e630befabb78be 33,35
+src/browser_harness/helpers.py
+  s_5d40ae83f8d939::t_75ad62d67dcab6 85-86,100-102,107,424,426-429
+SKILL.md
+  s_5d40ae83f8d939::t_19de5b75424eee 22,31-34,54-59,228-233,249-253
+tests/integration/test_shared_browser.py
+  s_5d40ae83f8d939::t_ed184be5c4a184 35,67,71-73,88-98,110-114,129,164-173
+tests/unit/test_shared_browser.py
+  s_5d40ae83f8d939::t_19de5b75424eee 179-182,184-186,189-191,193-227
+docs/shared-browser.md
+  s_5d40ae83f8d939::t_19de5b75424eee 44-55,84-87
+src/browser_harness/run.py
+  s_5d40ae83f8d939::t_06be7502cbfbea 41,73
+install.md
+  s_5d40ae83f8d939::t_e630befabb78be 17,21-22,53-54,87
+src/browser_harness/daemon.py
+  s_5d40ae83f8d939::t_75ad62d67dcab6 565,568,572-578,772,776-777,888-890
+  s_5d40ae83f8d939::t_e630befabb78be 560
+tests/unit/test_daemon.py
+  s_5d40ae83f8d939::t_8d5b3e542aa665 313
+  s_5d40ae83f8d939::t_ed184be5c4a184 196-203,382,396,454
+  s_5d40ae83f8d939::t_19de5b75424eee 296,302-304,309-310,312,314-315,462-463
+src/browser_harness/recorder.py
+  s_5d40ae83f8d939::t_75ad62d67dcab6 33
+interaction-skills/tabs.md
+  s_5d40ae83f8d939::t_19de5b75424eee 68-70,72-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e285724fabac1cd7cc949a0038013d80055a7aab",
+  "prompts": {},
+  "sessions": {
+    "s_5d40ae83f8d939": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0694d-b970-7ad2-864c-a19af40d1523",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "MagMueller <mamagnus00@gmail.com>"
+    }
+  }
+}
