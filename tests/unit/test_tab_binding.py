@@ -144,3 +144,42 @@ def test_switch_detaches_only_after_explicit_binding_rejection(monkeypatch, fail
     with pytest.raises(type(failure)):
         helpers.switch_tab("selected")
     assert ("Target.detachFromTarget" in calls) is detach
+
+
+def test_observed_detach_recovers_without_sending_into_dead_session(setup_browser):
+    browser, _ = setup_browser
+    async def run():
+        d = daemon.Daemon()
+        await d.start()
+        old = d.session
+        original = browser.send_raw
+        async def send(method, params=None, session_id=None):
+            result = await original(method, params, session_id)
+            return {"sessionId": "recovered"} if method == "Target.attachToTarget" else result
+        browser.send_raw = send
+        d._record_event("Target.detachedFromTarget", {"sessionId": old})
+        browser.calls.clear()
+        await d.handle({"method": "Runtime.evaluate"})
+        methods = [m for m, _, _ in browser.calls]
+        assert methods[0] == "Target.getTargets"
+        assert methods.index("Target.attachToTarget") < methods.index("Runtime.evaluate")
+    asyncio.run(run())
+
+
+def test_acknowledged_close_rejects_next_action_before_detach_event(setup_browser):
+    browser, _ = setup_browser
+    async def run():
+        d = daemon.Daemon()
+        await d.start()
+        original = browser.send_raw
+        async def send(method, params=None, session_id=None):
+            if method == "Target.closeTarget":
+                return {"success": True}
+            return await original(method, params, session_id)
+        browser.send_raw = send
+        await d.handle({"method": "Target.closeTarget", "params": {"targetId": "owned"}})
+        browser.calls.clear()
+        result = await d.handle({"method": "Input.dispatchMouseEvent"})
+        assert "TabLost" in result["error"]
+        assert browser.calls == []
+    asyncio.run(run())

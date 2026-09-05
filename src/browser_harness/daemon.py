@@ -1,6 +1,7 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
 import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
+from collections import deque
 from pathlib import Path
 
 from . import _ipc as ipc
@@ -430,6 +431,7 @@ class Daemon:
         self.dedicated_target_id = None
         self._binding = None
         self._binding_error = None
+        self._detached_sessions = deque(maxlen=32)
         self._dedicated_target_lock = asyncio.Lock()
         self._session_state_lock = asyncio.Lock()
         self._active_recoveries = 0
@@ -644,6 +646,8 @@ class Daemon:
         )))
 
     def _record_event(self, method, params, session_id=None):
+        if method == "Target.detachedFromTarget" and params.get("sessionId"):
+            self._detached_sessions.append(params["sessionId"])
         self.network.record(method, params, session_id)
         if method == "Target.detachedFromTarget" and params.get("sessionId") == self.network.session_id:
             self.network.error = "session detached"
@@ -717,7 +721,9 @@ class Daemon:
             if req.get("session_id") != self.session:
                 return {"error": "network wait session changed; start a new wait explicitly"}
             ws = getattr(self.cdp, "ws", None)
-            if ws is None or ws.state != 1:  # websockets.protocol.State.OPEN
+            reader = getattr(self.cdp, "_message_handler_task", None)
+            if ws is None or ws.state != 1 or (reader is not None and reader.done()):
+                # State.OPEN == 1; an open socket with a stopped reader is not coverage.
                 self.network.error = "browser connection lost"
             return self.network.snapshot()
         if meta == "session":     return {"session_id": self.session}
@@ -820,7 +826,14 @@ class Daemon:
         if method in ("Network.disable", "Network.enable") and sid == self.network.session_id:
             self.network.error = "network subscription changed; reattach and navigate before waiting for idle"
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            if sid in self._detached_sessions:
+                raise RuntimeError("Session with given id not found")
+            result = await self.cdp.send_raw(method, params, session_id=sid)
+            if method == "Target.closeTarget" and params.get("targetId") == self.target_id and result.get("success"):
+                # Chrome may acknowledge close before emitting the detach event.
+                # Never send the next page command into that closing session.
+                self._binding_error = str(TabLost(f"selected target {self.target_id} was closed"))
+            return {"result": result}
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid:
