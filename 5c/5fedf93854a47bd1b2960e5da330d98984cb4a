@@ -1,0 +1,25 @@
+interaction-skills/scrolling.md
+  s_5d40ae83f8d939::t_165d30400cb1f1 11-16,18-22
+interaction-skills/tabs.md
+  s_5d40ae83f8d939::t_165d30400cb1f1 66-68
+SKILL.md
+  s_5d40ae83f8d939::t_165d30400cb1f1 40-42,51-57
+interaction-skills/connection.md
+  s_5d40ae83f8d939::t_165d30400cb1f1 7,15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5c5fedf93854a47bd1b2960e5da330d98984cb4a",
+  "prompts": {},
+  "sessions": {
+    "s_5d40ae83f8d939": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0694d-b970-7ad2-864c-a19af40d1523",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "MagMueller <mamagnus00@gmail.com>"
+    }
+  }
+}
