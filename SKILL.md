@@ -19,6 +19,20 @@ print(page_info())
 PY
 ```
 
+## Closeout (mandatory)
+
+Use `BU_NAME=<task-slug>` for every task, not the shared `default` name. The harness records every tab it opens, so the tabs a task creates are tied to its name.
+
+End every task, at every terminal outcome (done, blocked, handed off, failed), with:
+
+```bash
+browser-harness <<< 'closeout()'
+```
+
+for that `BU_NAME`. It closes the tabs the task opened, drops the tab record, and stops the task's daemon.
+
+A sweeper closes idle daemons after 2 hours and untracked tabs in the shared browser after 6 hours. A forgotten closeout costs the next task a slower browser, not a broken one. Never close tabs you did not open.
+
 - Invoke as `browser-harness` — it's on `$PATH`. No `cd`, no `uv run`.
 - First navigation is `new_tab(url)`, not `goto(url)` — `goto` runs in the user's active tab and clobbers their work.
 

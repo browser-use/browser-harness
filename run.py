@@ -7,6 +7,7 @@ from admin import (
     restart_daemon,
     start_remote_daemon,
     stop_remote_daemon,
+    sweep_daemons,
     sync_local_profile,
 )
 from helpers import *

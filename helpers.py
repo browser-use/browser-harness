@@ -138,10 +138,50 @@ def new_tab(url="about:blank"):
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
     tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    with open(f"/tmp/bu-{NAME}.tabs", "a") as f:
+        f.write(f"{tid}\t{int(time.time())}\n")
     switch_tab(tid)
     if url != "about:blank":
         goto(url)
     return tid
+
+def close_tab(target_id):
+    """Close a tab by targetId."""
+    cdp("Target.closeTarget", targetId=target_id)
+
+def closeout():
+    """End-of-task cleanup: close every tab this BU_NAME's ledger still lists,
+    drop the ledger, and stop this task's daemon. Call this at every terminal
+    outcome (done, blocked, handed off, failed). Never raises on a missing
+    ledger or an already-dead daemon."""
+    ledger = f"/tmp/bu-{NAME}.tabs"
+    try:
+        ids = [ln.split("\t", 1)[0].strip() for ln in Path(ledger).read_text().splitlines() if ln.strip()]
+    except FileNotFoundError:
+        ids = []
+    try:
+        live = {t["targetId"] for t in cdp("Target.getTargets")["targetInfos"]}
+    except Exception:
+        live = set()
+    closed = 0
+    for tid in ids:
+        if tid not in live:
+            continue
+        try:
+            close_tab(tid)
+            closed += 1
+        except Exception:
+            pass
+    try:
+        os.unlink(ledger)
+    except FileNotFoundError:
+        pass
+    try:
+        from admin import restart_daemon
+        restart_daemon(NAME)
+    except Exception:
+        pass
+    print(f"closeout: closed {closed} tab(s), daemon stopped")
 
 def ensure_real_tab():
     """Switch to a real user tab if current is chrome:// / internal / stale."""

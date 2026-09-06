@@ -129,6 +129,43 @@ def restart_daemon(name=None):
             pass
 
 
+def sweep_daemons(idle_hours=2.0, dry_run=False):
+    """For every /tmp/bu-*.pid idle past idle_hours (by log mtime, falling
+    back to pid-file mtime), close its ledger tabs through the daemon socket,
+    stop the daemon, and drop the ledger. Returns the names handled."""
+    import glob
+    handled, now = [], time.time()
+    for pid_path in glob.glob("/tmp/bu-*.pid"):
+        name = Path(pid_path).stem.removeprefix("bu-")
+        log_path = f"/tmp/bu-{name}.log"
+        mtime = os.path.getmtime(log_path) if os.path.exists(log_path) else os.path.getmtime(pid_path)
+        age_h = (now - mtime) / 3600
+        if age_h < idle_hours:
+            continue
+        ledger = Path(f"/tmp/bu-{name}.tabs")
+        ids = [ln.split("\t", 1)[0].strip() for ln in ledger.read_text().splitlines()] if ledger.exists() else []
+        if dry_run:
+            print(f"would close {name} idle={age_h:.1f}h tabs={len(ids)}")
+            handled.append(name)
+            continue
+        for tid in ids:
+            if not tid:
+                continue
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(3)
+                s.connect(_paths(name)[0])
+                s.sendall((json.dumps({"method": "Target.closeTarget", "params": {"targetId": tid}}) + "\n").encode())
+                s.recv(4096)
+                s.close()
+            except Exception:
+                pass
+        ledger.unlink(missing_ok=True)
+        restart_daemon(name)
+        handled.append(name)
+    return handled
+
+
 def _browser_use(path, method, body=None):
     key = os.environ.get("BROWSER_USE_API_KEY")
     if not key:
