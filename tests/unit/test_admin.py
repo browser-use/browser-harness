@@ -185,6 +185,43 @@ def test_require_existing_daemon_probes_cdp(monkeypatch):
     assert sock.closed is True
 
 
+@pytest.mark.parametrize("kind", ["cloud", None])
+@pytest.mark.parametrize("failure", ["timeout", "error"])
+def test_cloud_health_failure_preserves_browser_and_recovers_on_retry(monkeypatch, kind, failure):
+    sockets = []
+    healthy = False
+
+    def connect(_name, timeout):
+        sock = FakeSocket()
+        sockets.append(sock)
+        return sock, None
+
+    def request(_sock, _token, _request):
+        if healthy:
+            return {"result": {"targetInfos": []}}
+        if failure == "timeout":
+            raise TimeoutError("CDP temporarily stalled")
+        return {"error": "CDP temporarily stalled"}
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: True)
+    monkeypatch.setattr(admin, "daemon_browser_kind", lambda _name: kind)
+    monkeypatch.setattr(admin.ipc, "connect", connect)
+    monkeypatch.setattr(admin.ipc, "request", request)
+    monkeypatch.setattr(admin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(admin, "stop_remote_daemon", lambda *_args: pytest.fail("health check destroyed the browser"))
+    monkeypatch.setattr(admin, "restart_daemon", lambda *_args: pytest.fail("health check replaced the daemon"))
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("health check started a replacement"))
+
+    with pytest.raises(RuntimeError, match="unhealthy.*preserved"):
+        admin.ensure_daemon(name="scoped")
+    assert len(sockets) == 2
+    assert all(sock.closed for sock in sockets)
+    healthy = True
+    admin.ensure_daemon(name="scoped")
+    assert len(sockets) == 3
+    assert all(sock.closed for sock in sockets)
+
+
 def test_strict_remote_stop_propagates_daemon_error(monkeypatch):
     sock = FakeSocket(response=b'{"error":"billing stop failed"}\n')
     monkeypatch.setattr(admin.ipc, "identify", lambda _name, timeout: 123)
