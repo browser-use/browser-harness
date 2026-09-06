@@ -172,10 +172,11 @@ def closeout():
             closed += 1
         except Exception:
             pass
-    try:
-        os.unlink(ledger)
-    except FileNotFoundError:
-        pass
+    for f in (ledger, f"/tmp/bu-{NAME}.owner"):
+        try:
+            os.unlink(f)
+        except FileNotFoundError:
+            pass
     try:
         from admin import restart_daemon
         restart_daemon(NAME)

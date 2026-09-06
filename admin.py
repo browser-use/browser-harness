@@ -48,6 +48,30 @@ def daemon_alive(name=None):
         return False
 
 
+def _record_owner(name):
+    """Walk the ppid chain to the launching Claude/Codex/OpenClaw process and
+    record it in /tmp/bu-<name>.owner, so sweep_daemons() can tell a finished
+    task (owner pid gone) from one merely idle. Matches only argv[0] of each
+    ancestor: a raw substring search over the whole command line false-
+    matches on unrelated text (e.g. a Bash-tool cwd tempfile literally named
+    /tmp/claude-<id>-cwd), which would record a wrapper shell that exits
+    within seconds instead of the actual long-lived agent process."""
+    import subprocess as sp
+    start = pid = os.getppid()
+    surface = None
+    for _ in range(20):
+        try: ppid_s, cmd = sp.check_output(["ps", "-o", "ppid=,command=", "-p", str(pid)], text=True).strip().split(None, 1)
+        except Exception: break
+        argv0 = cmd.split(" ", 1)[0]
+        if argv0.endswith("/claude") or "share/claude/versions/" in argv0: surface = "claude"; break
+        if argv0.endswith("/codex"): surface = "codex"; break
+        if "openclaw/dist/index.js" in argv0: surface = "openclaw"; break
+        pid = int(ppid_s)
+        if pid <= 1: break
+    owner_pid = pid if surface else start
+    Path(f"/tmp/bu-{name or NAME}.owner").write_text(f"{owner_pid}\t{surface or 'unknown'}\t{int(time.time())}\n")
+
+
 def ensure_daemon(wait=60.0, name=None, env=None):
     """Idempotent. `env` is merged into the child process env."""
     if daemon_alive(name):
@@ -66,6 +90,10 @@ def ensure_daemon(wait=60.0, name=None, env=None):
     deadline = time.time() + wait
     while time.time() < deadline:
         if daemon_alive(name):
+            try:
+                _record_owner(name)
+            except Exception:
+                pass
             return
         if p.poll() is not None:
             break
@@ -132,7 +160,10 @@ def restart_daemon(name=None):
 def sweep_daemons(idle_hours=2.0, dry_run=False):
     """For every /tmp/bu-*.pid idle past idle_hours (by log mtime, falling
     back to pid-file mtime), close its ledger tabs through the daemon socket,
-    stop the daemon, and drop the ledger. Returns the names handled."""
+    stop the daemon, and drop the ledger. Also force-closes a daemon whose
+    owner pid (see _record_owner) is gone, regardless of idle time, unless
+    its surface is openclaw (the gateway pid is long-lived, so idle still
+    applies there). Returns the names handled."""
     import glob
     handled, now = [], time.time()
     for pid_path in glob.glob("/tmp/bu-*.pid"):
@@ -140,12 +171,21 @@ def sweep_daemons(idle_hours=2.0, dry_run=False):
         log_path = f"/tmp/bu-{name}.log"
         mtime = os.path.getmtime(log_path) if os.path.exists(log_path) else os.path.getmtime(pid_path)
         age_h = (now - mtime) / 3600
-        if age_h < idle_hours:
+        owner_path, force = Path(f"/tmp/bu-{name}.owner"), False
+        if owner_path.exists():
+            try:
+                opid, surface, _ = owner_path.read_text().strip().split("\t")
+                os.kill(int(opid), 0)
+            except ProcessLookupError:
+                force = surface != "openclaw"
+            except Exception:
+                pass
+        if age_h < idle_hours and not force:
             continue
         ledger = Path(f"/tmp/bu-{name}.tabs")
         ids = [ln.split("\t", 1)[0].strip() for ln in ledger.read_text().splitlines()] if ledger.exists() else []
         if dry_run:
-            print(f"would close {name} idle={age_h:.1f}h tabs={len(ids)}")
+            print(f"would close {name} idle={age_h:.1f}h tabs={len(ids)}" + (" owner-dead" if force else ""))
             handled.append(name)
             continue
         for tid in ids:
@@ -161,6 +201,7 @@ def sweep_daemons(idle_hours=2.0, dry_run=False):
             except Exception:
                 pass
         ledger.unlink(missing_ok=True)
+        owner_path.unlink(missing_ok=True)
         restart_daemon(name)
         handled.append(name)
     return handled
