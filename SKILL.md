@@ -184,6 +184,9 @@ When the task is done and a cloud browser is still running, ask directly: "Shoul
 
 Do not start a remote daemon and then keep using the default daemon. Use the same name for `BU_NAME`.
 
+A failed Cloud health check preserves the existing browser. Retry after it
+recovers; explicitly stop it when finished. Billing continues until stop or timeout.
+
 Cloud profile cookie sync reference: https://github.com/browser-use/browser-harness/blob/main/interaction-skills/profile-sync.md.
 
 ## Page Workflow
