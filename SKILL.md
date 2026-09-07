@@ -186,6 +186,11 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
+- For an async UI change, wait for the actual condition: `wait_until("location.pathname === '/done'")`,
+  `wait_until("document.body.innerText.includes('Saved')")`, or
+  `wait_until("!document.querySelector('[role=progressbar]')", timeout=10)`.
+  It returns `True` or raises on timeout/JS/session error. It stays on the original
+  session; use read-only expressions. Existing `wait_for_*` Boolean results stay unchanged.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.
