@@ -130,6 +130,42 @@ serves. Adding is `#add-domain-form` with a single `domain` input.
   scope to `#slide3` when reading or writing the sell price, or you will pick
   up the wrong one.
 
+## Save order matters — Landing clobbers Signup
+
+Saving the **Landing** pane resets the Signup pane's stored values:
+`free_credit_on_signup` reverts to unchecked and `free_credits` / `sms_price`
+fall back to `0`. The reverse is not true — saving Signup leaves Landing
+intact. So when you are configuring both in one pass:
+
+> **Save Landing first, Signup last.**
+
+Verify after a full reload, not from the in-page DOM: re-`goto_url` the
+settings page, click through the panes, and read the values back. This bites
+silently — the Signup pane looks correct right up until the next Landing save.
+
+## Where the reseller's own cost lives
+
+The panel's hidden `sms_price` is *not* the reseller's current buy rate — it is
+one tier off a volume rate card. The real card is on
+`/reseller/wallet` under **Plan Details**, as a volume → per-SMS → amount table
+(with GST added separately at purchase). Read that page before reasoning about
+margin; the dashboard's "₹X wallet / N SMS" pair gives the effective rate the
+account is actually on.
+
+## Per-user rates (how volume slabs are honoured)
+
+The Signup pane sets one default rate for every new signup. Per-client rates are
+assigned separately at
+`/reseller/users/add-debit-credit/<userId>` ("Add Plan" in the Manage Users
+row). That form's `per_message_cost` pre-fills from the Signup pane's
+`sms_price`, and `expiry_date` pre-fills from `default_validity`. So a public
+slab table is delivered manually per client from this page — the landing page
+does not price orders by itself.
+
+Other useful reseller routes (the sidebar names differ from the paths):
+`/reseller/wallet`, `/reseller/users`, `/reseller/transactional-history`,
+`/reseller/dev-api`, `/reseller/settings`.
+
 ## Verification
 
 `page_info()['title']` on both the panel and the public site is
