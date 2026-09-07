@@ -27,3 +27,28 @@ Works for regular tweets. For article tweets it again returns only `article.prev
 
 - Tweet pages are the new `x-web` Rolldown/Relay app; bundles at `abs.twimg.com/x-web/x-web/assets/*.js`. Persisted GraphQL query ids live in per-route modules (`params:{id:\`...\`,name:\`OperationName\`}`); the endpoint template is in `environment-*.js` (`https://api.x.com/graphql/<id>/<name>`, GET with `?variables=` for queries).
 - `x.com/<user>` profile HTML fetches fine logged-out with a desktop UA and lists all bundle URLs — useful for scraping current query ids.
+
+## Reply threads (full conversation): logged-out page is walled — use the official API
+
+- Logged-out `x.com/<user>/status/<id>` renders the root plus ONE reply, then a fixed
+  "See all the replies / Continue to X" overlay. Scrolling loads nothing more. Don't fight it
+  with coordinate clicks; the wall is a login redirect.
+- `https://api.fxtwitter.com/<user>/status/<id>` gives the root tweet as clean JSON (text,
+  author, counts, media, quoted tweet) with no auth — but no replies.
+- For the replies, the reliable path is X API v2 recent search with a `conversation_id:` query.
+  Needs an app with user-context OAuth1 (or a bearer) on a paid/pay-per-use plan:
+
+  ```python
+  # GET https://api.x.com/2/tweets/search/recent
+  params = {"query": f"conversation_id:{ROOT_ID}", "max_results": 100,
+            "tweet.fields": "author_id,created_at,referenced_tweets,note_tweet,public_metrics",
+            "expansions": "author_id", "user.fields": "username"}
+  # page with meta.next_token until absent; ~1s between pages is enough
+  ```
+
+  - Recent search only covers the last 7 days. Older threads need the full-archive endpoint.
+  - Rebuild the tree from `referenced_tweets[type=replied_to].id`. Replies to a tweet that is
+    not in the result set (deleted, or older than the window) come back as orphans — keep them.
+  - Long posts arrive truncated in `text`; the full body is in `note_tweet.text`.
+  - Volume reference: a 54-visible-reply post returned 262 tweets across 3 pages once nested
+    replies were included.
