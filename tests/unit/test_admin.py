@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import sys
 import time
 import subprocess
 from pathlib import Path
@@ -45,17 +46,27 @@ def test_cleanup_unattached_browser_launch_stops_posix_process_group(monkeypatch
     killed = []
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: False)
-    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)), raising=False)
 
     admin._cleanup_unattached_browser_launch((process, Path("/profile")))
 
     assert killed == [(123, signal.SIGTERM)]
 
 
+def test_cleanup_unattached_browser_launch_stops_windows_process(monkeypatch):
+    process = FakeProcess()
+    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", True)
+    monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: False)
+
+    admin._cleanup_unattached_browser_launch((process, Path("/profile")))
+
+    assert process.terminated is True
+
+
 def test_cleanup_unattached_browser_launch_keeps_cdp_browser(monkeypatch):
     process = FakeProcess()
     monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: True)
-    monkeypatch.setattr(admin.os, "killpg", lambda _pid, _sig: pytest.fail("must keep the attached browser"))
+    monkeypatch.setattr(admin.os, "killpg", lambda _pid, _sig: pytest.fail("must keep the attached browser"), raising=False)
 
     admin._cleanup_unattached_browser_launch((process, Path("/profile")))
 
@@ -88,7 +99,7 @@ def test_explicit_chrome_path_retains_matching_profile_on_linux(monkeypatch, tmp
     monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: process)
     killed = []
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
-    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)), raising=False)
 
     launch = admin._launch_browser()
     assert launch == (process, profile)
@@ -112,7 +123,7 @@ def test_explicit_chrome_path_remains_unowned_without_platform_cleanup(monkeypat
     monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
     monkeypatch.setattr("platform.system", lambda: system)
     monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(admin.os, "killpg", lambda *_args: pytest.fail("must not terminate an unowned browser"))
+    monkeypatch.setattr(admin.os, "killpg", lambda *_args: pytest.fail("must not terminate an unowned browser"), raising=False)
 
     launch = admin._launch_browser()
     assert launch == (process, None)
@@ -377,6 +388,7 @@ def test_is_snap_browser(path, expected):
     assert admin._is_snap_browser(path) == expected
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="snap probes are Linux-specific and symlinks require privileges on Windows")
 def test_doctor_probe_preserves_snap_bin_env_symlink(monkeypatch, tmp_path):
     target = tmp_path / "usr" / "bin" / "snap"
     target.parent.mkdir(parents=True)
@@ -396,6 +408,7 @@ def test_doctor_probe_preserves_snap_bin_env_symlink(monkeypatch, tmp_path):
     assert admin._is_snap_browser(path)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="snap probes are Linux-specific and symlinks require privileges on Windows")
 def test_doctor_probe_preserves_snap_bin_path_symlink(monkeypatch, tmp_path):
     target = tmp_path / "usr" / "bin" / "snap"
     target.parent.mkdir(parents=True)
