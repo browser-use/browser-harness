@@ -276,3 +276,22 @@ def test_cli_doctor_rejects_unknown_flags():
             run.main()
     assert ei.value.code == 2
     assert "usage" in err.getvalue().lower()
+
+
+def test_step_args_masks_sensitive_values():
+    assert run._step_args(("#user", "hunter2"), {}) == "<str>, <str>"
+    assert run._step_args((), {"text": "secret-token"}) == "text=<str>"
+    assert run._step_args(({"token": "x"},), {}) == "<dict>"
+    assert run._step_args((0.5, None, True), {}) == "0.5, None, True"
+
+
+def test_traced_helper_records_masked_args(monkeypatch):
+    monkeypatch.setattr(run.recorder, "observe", lambda *a, **k: None)
+    run._helper_trace.clear()
+
+    def fill_input(selector, text):
+        return "ok"
+
+    traced = run._traced("fill_input", fill_input)
+    assert traced("#user", "hunter2") == "ok"
+    assert run._helper_trace[-1]["args"] == "<str>, <str>"

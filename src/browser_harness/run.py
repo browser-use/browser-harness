@@ -149,7 +149,14 @@ _helper_call_count = 0
 
 
 def _step_args(args, kwargs):
-    parts = [repr(a) for a in args] + [f"{k}={v!r}" for k, v in kwargs.items()]
+    # steps reach PostHog verbatim (capture_cli_event bypasses _safe_properties),
+    # so only trivially safe scalars are kept; strings/containers become placeholders
+    def safe(value):
+        if value is None or isinstance(value, (int, float)):
+            return repr(value)
+        return f"<{type(value).__name__}>"
+
+    parts = [safe(a) for a in args] + [f"{k}={safe(v)}" for k, v in kwargs.items()]
     return ", ".join(parts)[:_MAX_STEP_ARGS_LENGTH]
 
 
