@@ -410,7 +410,7 @@ def _probe(path: Path) -> dict:
     return json.loads(proc.stdout)
 
 
-def export(recording: Path, output_name: str, reviewed: bool) -> int:
+def export(recording: Path, output_name: str, reviewed: bool, dub: bool = False) -> int:
     if not reviewed:
         raise RuntimeError("inspect the review sheet and full-resolution privacy frames, then rerun with --reviewed")
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
@@ -479,10 +479,22 @@ def export(recording: Path, output_name: str, reviewed: bool) -> int:
 
     conversion_started = time.monotonic()
     _probe(webm)
-    _run([
-        "ffmpeg", "-v", "error", "-i", str(webm), "-c:v", "libx264",
-        "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output),
-    ], recording)
+    if dub:
+        from . import dubbing
+
+        narration_track = dubbing.build_narration_track(recording, comp, expected)
+        _run([
+            "ffmpeg", "-v", "error", "-i", str(webm), "-i", str(narration_track),
+            "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "160k",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-movflags", "+faststart", str(output),
+        ], recording)
+    else:
+        _run([
+            "ffmpeg", "-v", "error", "-i", str(webm), "-c:v", "libx264",
+            "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output),
+        ], recording)
     conversion_seconds = time.monotonic() - conversion_started
 
     verify_started = time.monotonic()

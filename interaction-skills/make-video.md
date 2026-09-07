@@ -22,6 +22,20 @@ checkout use `./browser-harness`. Never edit generated `composition.js` or
 `video.html`; change the brief or shared implementation. Export never
 overwrites an existing video, so use `--output video-v2.mp4` for another cut.
 
+## Dubbing (fork addition)
+
+Add `--dub` to `video export` to synthesize a pt-BR speech track for the sticky
+`narration` text via ElevenLabs, muxed into the MP4 in place of silence:
+
+```bash
+browser-harness video export <recording> --reviewed --dub
+```
+
+Requires `ELEVENLABS_API_KEY` (set in `.env` or exported); `ELEVENLABS_VOICE_ID`
+optionally overrides the stock voice. Only the action beats' narration is
+voiced — one clip per sticky span, timed to start exactly when that text first
+appears on screen — not the intro/outcome cards. See `dubbing.py`.
+
 ## Cut
 
 - Optimize for first-time comprehension; the raw trace is the debugging
