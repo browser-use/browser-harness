@@ -1,21 +1,56 @@
 # eBay — Scraping & Data Extraction
 
-Field-tested against ebay.com on 2026-04-18 using `uv run python` with `http_get`.
-Chrome is NOT required — `http_get` returns full HTML on first access.
+Field-tested against ebay.com on 2026-04-18 with `http_get`,
+re-tested 2026-05-15 from a CN/HK IP without `BROWSER_USE_API_KEY` (see Prerequisites).
 
-## Critical: Bot Detection ("Pardon Our Interruption")
+## Prerequisites
 
-eBay's bot detection fires after roughly **5–10 requests per IP in a short window**.
-The block page is ~13 KB, title `"Pardon Our Interruption..."`, and contains no listing data.
+- **Set `BROWSER_USE_API_KEY` if you can.** When set, `http_get` routes through fetch-use
+  (residential proxies, retries). Without it, the request goes through your local IP via
+  urllib, and **eBay's edge (Akamai) returns HTTP 403/503 before any HTML is served** for
+  any IP it doesn't trust — common for VPN, datacenter, or non-US residential IPs.
+- **Fallback when `http_get` fails at the edge:** drive a real Chrome via the harness
+  (`new_tab(url)` + `wait_for_load()` + `js("return document.documentElement.outerHTML")`).
+  Chrome inherits the user's geolocation/cookies and is not blocked. The card-level regex
+  parsers below work identically on the resulting HTML.
+
+## Critical: Bot Detection (two layers)
+
+eBay sits behind two independent block layers. The skill must detect both:
+
+1. **Akamai edge** — IP reputation check. Returns `HTTP 403` (often a 389-byte
+   `errors.edgesuite.net` page titled "Access Denied") or `HTTP 503` for transient
+   throttling. Fires on the very first request from a low-reputation IP, before any
+   eBay HTML is served.
+2. **eBay in-page interstitial ("Pardon Our Interruption")** — fires after roughly
+   **5–10 requests per IP in a short window** once the edge has let you in. The block
+   page is ~13 KB and contains no listing data.
 
 **Always check before parsing:**
 ```python
-def is_blocked(html):
-    return 'Pardon Our Interruption' in html or len(html) < 20_000
+import urllib.error
 
-html = http_get("https://www.ebay.com/sch/i.html?_nkw=laptop&LH_BIN=1", headers=HEADERS)
-if is_blocked(html):
-    raise RuntimeError("eBay bot-detection triggered — back off and retry later")
+def is_blocked(html_or_exc):
+    """Detect both Akamai edge blocks (HTTPError) and the in-page interstitial."""
+    if isinstance(html_or_exc, urllib.error.HTTPError):
+        return html_or_exc.code in (403, 429, 503)
+    if not isinstance(html_or_exc, str):
+        return True
+    return 'Pardon Our Interruption' in html_or_exc or len(html_or_exc) < 20_000
+
+def safe_get(url, headers):
+    """http_get + edge-block detection. Returns html or None."""
+    try:
+        html = http_get(url, headers=headers)
+    except urllib.error.HTTPError as e:
+        if is_blocked(e):
+            return None
+        raise
+    return None if is_blocked(html) else html
+
+html = safe_get("https://www.ebay.com/sch/i.html?_nkw=laptop&LH_BIN=1", HEADERS)
+if html is None:
+    raise RuntimeError("eBay block (edge or in-page) — back off, switch IP, or use Chrome fallback")
 ```
 
 **When blocked:** wait at minimum 60–120 seconds before retrying. The block is IP-session-scoped,
@@ -110,8 +145,8 @@ Each result is an `<li>` element with `data-listingid=<id>`. Key elements within
 | Listing ID | `data-listingid=(\d+)` on the `<li>` |
 | Item URL | `href=(https://(?:www\.)?ebay\.com/itm/(\d+))` |
 | Title | `s-card__title` > `su-styled-text primary` > text |
-| Current price | `class=price">\$([0-9,\.]+)<` |
-| Original/list price | `strikethrough[^>]*>\$([0-9,\.]+)` |
+| Current price | `s-card__price[^>]*>([^<]+)<` (returns raw inner text — currency varies by IP geo) |
+| Original/list price | `strikethrough[^>]*>([^<]+)<` (raw inner text) |
 | Image | `class=s-card__image[^>]*src=([^\s>]+)` |
 | Alt title | `img[alt]` in the card (same as product title) |
 
@@ -154,15 +189,14 @@ def extract_search_results(html):
         if not title or title == 'Shop on eBay':
             continue
 
-        # Current price
-        price_m = re.search(r'class=(?:["\'])?[a-z- ]*price["\']?>\$([0-9,\.]+)<', card)
-        if not price_m:
-            price_m = re.search(r'price">\$([0-9,\.]+)<', card)
-        price = '$' + price_m.group(1) if price_m else None
+        # Current price (raw inner text — currency varies by IP geo,
+        # e.g. "$159.00", "HKD 297.54", "EUR 49.99"). Do NOT assume "$" prefix.
+        price_m = re.search(r's-card__price[^>]*>([^<]+)<', card)
+        price = price_m.group(1).strip() if price_m else None
 
         # Original / list price (strikethrough — present when discounted)
-        orig_m = re.search(r'strikethrough[^>]*>\$([0-9,\.]+)', card)
-        original_price = '$' + orig_m.group(1) if orig_m else None
+        orig_m = re.search(r'strikethrough[^>]*>([^<]+)<', card)
+        original_price = orig_m.group(1).strip() if orig_m else None
 
         # Thumbnail image URL
         img_m = re.search(r'class=s-card__image[^>]*src=([^\s>]+)', card)
@@ -199,6 +233,23 @@ for item in items[:5]:
 # 168219240588 | One Plus Keyboard 81 Pro Winter Bonfire Mecha... | $159.00
 # 167461643107 | Logitech 920-012869 G515 TKL Wired Low Profil... | $49.99
 # 167040158614 | Logitech - PRO X TKL LIGHTSPEED Wireless Mech... | $74.99
+```
+
+## "No exact matches" — fuzzy fallback results
+
+When the search query has no precise match, eBay still returns ~60 cards but they are
+**fuzzy/recommended substitutes**, not exact matches. The page renders normally and the
+extractor returns full results — only a small "No exact matches found" hint marks the
+difference. Detect this before treating results as authoritative:
+
+```python
+def has_exact_match(html):
+    return 'No exact matches found' not in html
+
+# Field-tested 2026-05-15: query "dj posket4" → 0 exact matches, 60 recommended cards.
+# 5 of 60 contained "posket" in the title (fuzzy match on the most distinctive token);
+# the other 55 were unrelated. Always surface this signal — the user may have typoed
+# the query, and silently returning fuzzy results looks like a successful match.
 ```
 
 ## Item Detail Pages: JSON-LD (Reliable)
@@ -433,3 +484,20 @@ for item in items[:5]:
 - **`list_price` only present when discounted** — `offers.priceSpecification` only appears in JSON-LD when eBay shows a "List Price" comparison. Check `price_spec.get('name') == 'List Price'` before using.
 
 - **Seller data is NOT in JSON-LD** — `d.get('seller')` returns `None` on item pages. The seller name, feedback %, and items sold count are only in `ux-textspans` elements in the HTML body.
+
+- **Akamai edge block (HTTP 403/503) is upstream of "Pardon Our Interruption"** —
+  When IP reputation is low (VPN, datacenter, non-US residential), `http_get` raises
+  `urllib.error.HTTPError(403)` returning a 389-byte `errors.edgesuite.net` page,
+  not the in-page interstitial. A text-only `is_blocked()` misses this entirely.
+  Always use `safe_get()` (above) which catches both layers.
+
+- **Currency varies by client IP** — eBay localizes prices server-side. A US IP returns
+  `$74.99`; a CN/HK IP returns `HKD 297.54`; an EU IP returns `EUR 64.99`. The
+  `s-card__price` extractor returns raw inner text; do not hard-code a `$` prefix.
+  For numeric comparison, split currency and amount:
+  `re.match(r'([A-Z$€£¥]+)\s*([\d,.]+)', price)`.
+
+- **"No exact matches" is silent** — eBay returns ~60 cards even when the query has zero
+  exact matches; the page is structurally identical to a successful search except for a
+  small "No exact matches found" hint. Always call `has_exact_match(html)` and surface
+  the result to the agent before claiming the listings answer the user's query.
