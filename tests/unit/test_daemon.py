@@ -553,8 +553,8 @@ def test_named_reattach_keeps_selected_tab_when_it_still_exists(monkeypatch):
     assert d.session == "session-for-selected-tab"
 
 
-def test_named_reattach_creates_replacement_only_when_tab_is_gone(monkeypatch):
-    """If the user closes the dedicated tab, the daemon creates one replacement."""
+def test_named_reattach_fails_when_tab_is_gone(monkeypatch):
+    """A closed selected tab must never redirect an outstanding action."""
     monkeypatch.setattr(daemon, "NAME", "worker-a")
     monkeypatch.setattr(daemon, "REMOTE_ID", None)
     monkeypatch.setattr(daemon, "BROWSER_KIND", "cdp")
@@ -563,16 +563,17 @@ def test_named_reattach_creates_replacement_only_when_tab_is_gone(monkeypatch):
 
     asyncio.run(d.attach_first_page())
     d.cdp.targets = [t for t in d.cdp.targets if t["targetId"] != "created-1"]
-    asyncio.run(d.attach_first_page())
+    with pytest.raises(daemon.TabLost, match="disappeared"):
+        asyncio.run(d.attach_first_page())
 
-    assert d.cdp.created == 2
+    assert d.cdp.created == 1
     assert d.cdp.closed == []
-    assert d.target_id == "created-2"
-    assert d.dedicated_target_id == "created-2"
+    assert d.target_id == "created-1"
+    assert d.dedicated_target_id == "created-1"
 
 
-def test_concurrent_named_reattach_creates_one_replacement(monkeypatch):
-    """Concurrent recovery after a user closes the tab shares one replacement."""
+def test_concurrent_named_first_attach_creates_one_tab(monkeypatch):
+    """Concurrent first attachments share one dedicated tab."""
     class _ConcurrentAttachCDP(_AttachCDP):
         def __init__(self):
             super().__init__()
