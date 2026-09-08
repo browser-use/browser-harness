@@ -166,11 +166,16 @@ def _lock_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.lock"
 
 
 def _lock_holder_alive(path):
-    """True iff the PID recorded in `path` is still a live process. Unreadable
-    or corrupt contents count as not-alive (safe to reclaim)."""
+    """True iff the PID recorded in `path` is still a live process. Unreadable,
+    corrupt, or out-of-range contents count as not-alive (safe to reclaim)."""
     try:
         pid = int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
+        return False
+    # Same bounds as identify() above: os.kill(0, sig) hits the calling process
+    # group rather than a specific process, and a value outside pid_t's range
+    # makes os.kill() raise OverflowError instead of telling us "not alive".
+    if not 0 < pid < (1 << 31):
         return False
     try:
         os.kill(pid, 0)
@@ -187,8 +192,13 @@ def acquire_startup_lock(name):
     can be tens of seconds wide (CDP handshake, an unclicked Allow popup) --
     and the second would silently unlink + rebind over a still-live first
     daemon's socket, orphaning it with no error raised anywhere.
-    O_CREAT|O_EXCL is atomic at the filesystem level, unlike the bare
-    `if os.path.exists(...): os.unlink(...)` it guards here.
+    The claim itself is a write-then-link: the PID is written to a private
+    temp file first, then published via os.link(), which atomically creates
+    the lock's directory entry only if it doesn't already exist. That keeps
+    another invocation from ever observing a lock that exists but is still
+    empty -- which a plain O_CREAT|O_EXCL-then-write would allow, and which
+    would read as "corrupt, not-alive" and get reclaimed out from under the
+    process that just created it.
 
     Staleness is decided by whether the PID recorded in the lock is still a
     live process, not by pinging the endpoint: the lock is meant to be held
@@ -206,10 +216,11 @@ def acquire_startup_lock(name):
     old endpoint files might still be cleaned up out from under it."""
     path = _lock_path(name)
     for _attempt in range(2):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(str(os.getpid()), encoding="utf-8")
+        os.chmod(tmp, 0o600)
         try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
+            os.link(str(tmp), str(path))
             return path
         except FileExistsError:
             if _lock_holder_alive(path):
@@ -217,6 +228,9 @@ def acquire_startup_lock(name):
                     f"a browser-harness daemon is already running for BU_NAME={name!r}"
                 ) from None
             try: path.unlink()  # stale lock, no live owner -- reclaim it
+            except FileNotFoundError: pass
+        finally:
+            try: tmp.unlink()
             except FileNotFoundError: pass
     raise RuntimeError(f"failed to acquire startup lock for BU_NAME={name!r}")
 

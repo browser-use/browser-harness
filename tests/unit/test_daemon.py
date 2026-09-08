@@ -676,6 +676,55 @@ def test_main_never_touches_endpoint_when_a_daemon_already_holds_the_lock(monkey
     assert cleanup_calls == []
 
 
+def test_run_skips_stop_remote_when_startup_lock_was_never_acquired(monkeypatch, tmp_path):
+    """Regression test for cubic review comment on #692 (finding 3, P0).
+
+    A duplicate invocation that loses the startup-lock race raises out of
+    main() before Daemon.start() (or _OWNS_REMOTE) ever runs. The old code
+    still ran stop_remote() unconditionally in the __main__ finally block,
+    which would stop REMOTE_ID's cloud browser -- the winner's browser, not
+    anything this losing process started.
+    """
+    monkeypatch.setattr(daemon, "already_running", lambda: False)
+    monkeypatch.setattr(daemon, "LOG", str(tmp_path / "daemon.log"))
+    monkeypatch.setattr(daemon, "PID", str(tmp_path / "daemon.pid"))
+    monkeypatch.setattr(daemon, "_OWNS_REMOTE", False)
+    monkeypatch.setattr(daemon, "log", lambda _message: None)
+
+    async def fake_main():
+        raise RuntimeError("a browser-harness daemon is already running for BU_NAME='default'")
+
+    monkeypatch.setattr(daemon, "main", fake_main)
+    stop_calls = []
+    monkeypatch.setattr(daemon, "stop_remote", lambda: stop_calls.append(True))
+
+    with pytest.raises(SystemExit):
+        daemon._run()
+
+    assert stop_calls == []
+
+
+def test_run_still_calls_stop_remote_after_a_daemon_that_actually_ran(monkeypatch, tmp_path):
+    """The P0 fix must not skip cleanup for the process that legitimately
+    acquired the lock and owns REMOTE_ID's browser."""
+    monkeypatch.setattr(daemon, "already_running", lambda: False)
+    monkeypatch.setattr(daemon, "LOG", str(tmp_path / "daemon.log"))
+    monkeypatch.setattr(daemon, "PID", str(tmp_path / "daemon.pid"))
+    monkeypatch.setattr(daemon, "_OWNS_REMOTE", False)
+    monkeypatch.setattr(daemon, "log", lambda _message: None)
+
+    async def fake_main():
+        daemon._OWNS_REMOTE = True
+
+    monkeypatch.setattr(daemon, "main", fake_main)
+    stop_calls = []
+    monkeypatch.setattr(daemon, "stop_remote", lambda: stop_calls.append(True))
+
+    daemon._run()
+
+    assert stop_calls == [True]
+
+
 def test_delayed_stale_request_follows_recovery_during_domain_enable(monkeypatch):
     """Publish the replacement before post-attach domain setup can yield."""
     class _RecoveryWindowCDP(_FakeCDP):

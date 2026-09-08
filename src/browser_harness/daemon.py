@@ -88,6 +88,12 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 _REMOTE_STOPPED = False
+# Set once main() has claimed the startup lock, i.e. once this process is the
+# one actually responsible for REMOTE_ID's browser rather than a duplicate
+# invocation that lost the race for the same BU_NAME. Gates stop_remote() in
+# the __main__ finally block below so a losing invocation can't stop the
+# winner's browser out from under it.
+_OWNS_REMOTE = False
 BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
 # Chrome 144+ shows a per-connection popup. Keep popup open enough to click.
 LOCAL_HANDSHAKE_TIMEOUT = 45
@@ -826,7 +832,9 @@ async def main():
     # remote debugging?" popup. Held until after serve() has torn down this
     # daemon's own endpoint, so a replacement can never bind while that
     # teardown might still be racing it.
+    global _OWNS_REMOTE
     lock_path = await asyncio.to_thread(ipc.acquire_startup_lock, NAME)
+    _OWNS_REMOTE = True
     try:
         d = Daemon()
         await d.start()
@@ -841,7 +849,7 @@ def already_running():
     return ipc.ping(NAME, timeout=1.0)
 
 
-if __name__ == "__main__":
+def _run():
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
@@ -855,6 +863,15 @@ if __name__ == "__main__":
         log(f"fatal: {e}")
         sys.exit(1)
     finally:
-        stop_remote()
+        # A losing invocation (RuntimeError from acquire_startup_lock because
+        # another live daemon already owns NAME) never set _OWNS_REMOTE, so it
+        # must not stop REMOTE_ID's browser -- that's the winner's browser,
+        # not something this process started.
+        if _OWNS_REMOTE:
+            stop_remote()
         try: os.unlink(PID)
         except FileNotFoundError: pass
+
+
+if __name__ == "__main__":
+    _run()

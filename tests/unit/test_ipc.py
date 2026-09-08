@@ -178,6 +178,53 @@ def test_acquire_startup_lock_reclaims_a_lock_left_by_a_dead_pid(monkeypatch, tm
     assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
 
 
+def test_acquire_startup_lock_reclaims_a_lock_containing_pid_zero(monkeypatch, tmp_path):
+    """Regression test for cubic review comment on #692 (finding 4).
+
+    os.kill(0, 0) signals the caller's own process group and succeeds, so a
+    lock file containing "0" would read as a live holder forever without the
+    same pid-range guard identify() already applies elsewhere.
+    """
+    monkeypatch.setattr(ipc, "_RUNTIME", tmp_path)
+    lock_path = ipc._lock_path("worker")
+    lock_path.write_text("0", encoding="utf-8")
+
+    reclaimed = ipc.acquire_startup_lock("worker")
+
+    assert reclaimed == lock_path
+    assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
+
+
+def test_acquire_startup_lock_never_publishes_the_lock_before_its_pid_is_written(
+    monkeypatch, tmp_path
+):
+    """Regression test for cubic review comment on #692 (finding 1).
+
+    The old O_CREAT|O_EXCL-then-write left a window where the lock's
+    directory entry existed before its PID was written. A racing acquire
+    that hit that window would read the file as empty, treat it as corrupt
+    (not-alive), and reclaim a lock another process was still creating.
+    Publishing must happen via os.link() from an already-fully-written temp
+    file, so the lock is never observable with partial content.
+    """
+    monkeypatch.setattr(ipc, "_RUNTIME", tmp_path)
+    real_link = os.link
+    seen_content_at_publish = {}
+
+    def spy_link(src, dst):
+        seen_content_at_publish["content"] = Path(src).read_text(encoding="utf-8")
+        return real_link(src, dst)
+
+    monkeypatch.setattr(ipc.os, "link", spy_link)
+
+    lock_path = ipc.acquire_startup_lock("worker")
+
+    assert seen_content_at_publish["content"] == str(os.getpid())
+    assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
+    # The private temp file used to stage the write must not linger.
+    assert list(tmp_path.iterdir()) == [lock_path]
+
+
 # --- serve(): startup mutual exclusion ---
 
 
