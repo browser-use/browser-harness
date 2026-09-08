@@ -40,6 +40,171 @@ def test_safe_connection_label_removes_credentials_paths_and_queries(url, label)
     assert daemon._safe_connection_label(url) == label
 
 
+@pytest.mark.parametrize(
+    ("targets", "expected", "expected_requests"),
+    [
+        ([{"id": "page-1", "type": "page"}], True, 1),
+        ([{"id": "worker-1", "type": "service_worker"}], False, 3),
+        ([], False, 3),
+    ],
+)
+def test_local_page_target_status_uses_devtools_http_endpoint(
+    monkeypatch, targets, expected, expected_requests
+):
+    requests = []
+
+    class Response:
+        def read(self):
+            return daemon.json.dumps(targets).encode()
+
+    def urlopen(url, timeout):
+        requests.append((url, timeout))
+        return Response()
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(daemon.time, "sleep", lambda _seconds: None)
+
+    assert daemon._local_page_target_status(
+        "ws://127.0.0.1:9222/devtools/browser/browser-id"
+    ) is expected
+    assert requests == [("http://127.0.0.1:9222/json/list", 1)] * expected_requests
+
+
+def test_local_page_target_status_allows_page_to_appear_during_startup(monkeypatch):
+    payloads = iter([b"[]", b'[{"id": "page-1", "type": "page"}]'])
+    sleeps = []
+
+    class Response:
+        def read(self):
+            return next(payloads)
+
+    monkeypatch.setattr(
+        daemon.urllib.request, "urlopen", lambda *_args, **_kwargs: Response()
+    )
+    monkeypatch.setattr(daemon.time, "sleep", sleeps.append)
+
+    assert daemon._local_page_target_status(
+        "ws://127.0.0.1:9222/devtools/browser/browser-id"
+    ) is True
+    assert sleeps == [0.2]
+
+
+@pytest.mark.parametrize(
+    "ws_url",
+    [
+        "wss://remote.example/devtools/browser/id",
+        "not-a-websocket-url",
+        "ws://127.0.0.1:bad/devtools/browser/id",
+    ],
+)
+def test_local_page_target_status_skips_non_loopback_or_invalid_urls(
+    monkeypatch, ws_url
+):
+    monkeypatch.setattr(
+        daemon.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("must not probe a non-local endpoint"),
+    )
+
+    assert daemon._local_page_target_status(ws_url) is None
+
+
+def test_local_page_target_status_is_unknown_when_probe_fails(monkeypatch):
+    monkeypatch.setattr(
+        daemon.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+    )
+
+    assert daemon._local_page_target_status(
+        "ws://127.0.0.1:9222/devtools/browser/browser-id"
+    ) is None
+
+
+def test_local_page_target_status_is_unknown_for_malformed_http(monkeypatch):
+    monkeypatch.setattr(
+        daemon.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            daemon.http.client.BadStatusLine("malformed")
+        ),
+    )
+
+    assert daemon._local_page_target_status(
+        "ws://127.0.0.1:9222/devtools/browser/browser-id"
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        [{}],
+        [{"type": 7}],
+        ["page"],
+        [{"type": "page"}, {}],
+    ],
+)
+def test_local_page_target_status_is_unknown_for_malformed_targets(
+    monkeypatch, targets
+):
+    class Response:
+        def read(self):
+            return daemon.json.dumps(targets).encode()
+
+    monkeypatch.setattr(
+        daemon.urllib.request, "urlopen", lambda *_args, **_kwargs: Response()
+    )
+    monkeypatch.setattr(
+        daemon.time,
+        "sleep",
+        lambda _seconds: pytest.fail("malformed targets must fail open immediately"),
+    )
+
+    assert daemon._local_page_target_status(
+        "ws://127.0.0.1:9222/devtools/browser/browser-id"
+    ) is None
+
+
+def test_start_reports_windowless_chrome_before_handshake(monkeypatch):
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
+    monkeypatch.setattr(
+        daemon,
+        "get_ws_url",
+        lambda: "ws://127.0.0.1:9222/devtools/browser/browser-id",
+    )
+    monkeypatch.setattr(daemon, "_local_page_target_status", lambda _url: False)
+
+    d = daemon.Daemon()
+    with pytest.raises(
+        RuntimeError, match="chrome-windowless: Chrome has no open window"
+    ):
+        asyncio.run(d.start())
+
+    assert d.cdp is None
+
+
+def test_start_preserves_handshake_when_page_probe_is_unknown(monkeypatch):
+    class FailingClient:
+        async def start(self):
+            raise RuntimeError("sentinel handshake failure")
+
+    client = FailingClient()
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
+    monkeypatch.setattr(
+        daemon, "get_ws_url", lambda: "ws://127.0.0.1:9222/devtools/browser/id"
+    )
+    monkeypatch.setattr(daemon, "_local_page_target_status", lambda _url: None)
+    monkeypatch.setattr(daemon, "_PatientCDPClient", lambda _url: client)
+    monkeypatch.setattr(daemon, "remote_debugging_user_enabled", lambda: False)
+    monkeypatch.setattr(daemon, "log", lambda _message: None)
+
+    with pytest.raises(
+        RuntimeError, match="CDP WS handshake failed: sentinel handshake failure"
+    ):
+        asyncio.run(daemon.Daemon().start())
+
+
 def test_remote_stop_retries_and_succeeds(monkeypatch):
     attempts = []
     monkeypatch.setattr(daemon, "REMOTE_ID", "browser-1")
