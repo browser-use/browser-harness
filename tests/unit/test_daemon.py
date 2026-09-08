@@ -115,7 +115,10 @@ def test_get_ws_url_still_scans_default_profile_for_named_local_daemon_by_defaul
     monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", list)
     monkeypatch.setattr(daemon, "remote_debugging_user_enabled", lambda: True)
 
+    urlopen_calls = []
+
     def fake_urlopen(url, timeout=1):
+        urlopen_calls.append(url)
         return _FakeResponse(
             b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9999/devtools/browser/abc123"}'
         )
@@ -125,6 +128,10 @@ def test_get_ws_url_still_scans_default_profile_for_named_local_daemon_by_defaul
     assert (
         daemon.get_ws_url() == "ws://127.0.0.1:9999/devtools/browser/abc123"
     )
+    # Must come from the DevToolsActivePort port found via the PROFILES scan
+    # (9999), not the 9222/9223 fallback probe -- otherwise this test would
+    # pass even if get_ws_url() skipped PROFILES scanning entirely.
+    assert urlopen_calls == ["http://127.0.0.1:9999/json/version"]
 
 
 def test_remote_stop_retries_and_succeeds(monkeypatch):
