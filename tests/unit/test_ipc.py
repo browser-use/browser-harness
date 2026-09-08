@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -133,6 +134,48 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
         assert ipc.ping("default", timeout=0.0) is False, (
             f"ping() should require pong is exactly True; got: {resp!r}"
         )
+
+
+# --- acquire_startup_lock(): staleness must track process liveness, not ping ---
+
+
+def test_acquire_startup_lock_rejects_a_lock_held_by_a_live_pid_that_isnt_answering_yet(
+    monkeypatch, tmp_path
+):
+    """Regression test for cubic review comment on #692 (finding 1).
+
+    A daemon that has claimed the lock but hasn't bound its endpoint yet (mid
+    CDP handshake, or an unclicked "Allow remote debugging?" popup) has no
+    endpoint to ping. Deciding staleness by pinging would treat "nothing
+    answers yet" as "the holder is gone" and let a second invocation steal
+    the lock and race to bind -- exactly the bug this lock exists to prevent.
+    Staleness must be decided by whether the recorded PID is still alive.
+    """
+    monkeypatch.setattr(ipc, "_RUNTIME", tmp_path)
+    lock_path = ipc._lock_path("worker")
+    lock_path.write_text(str(os.getpid()), encoding="utf-8")  # our own pid: always alive
+
+    with pytest.raises(RuntimeError, match="already running"):
+        ipc.acquire_startup_lock("worker")
+
+    assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
+
+
+def test_acquire_startup_lock_reclaims_a_lock_left_by_a_dead_pid(monkeypatch, tmp_path):
+    monkeypatch.setattr(ipc, "_RUNTIME", tmp_path)
+    lock_path = ipc._lock_path("worker")
+    lock_path.write_text("999999", encoding="utf-8")
+
+    def fake_kill(pid, _sig):
+        if pid == 999999:
+            raise ProcessLookupError()
+
+    monkeypatch.setattr(ipc.os, "kill", fake_kill)
+
+    reclaimed = ipc.acquire_startup_lock("worker")
+
+    assert reclaimed == lock_path
+    assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
 
 
 # --- serve(): startup mutual exclusion ---

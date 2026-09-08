@@ -596,11 +596,13 @@ def test_shutdown_closes_only_the_daemon_owned_tab(monkeypatch):
         d.stop = asyncio.Event()
         d.stop.set()
 
-    async def wait_forever(*_args):
+    async def wait_forever(*_args, **_kwargs):
         await asyncio.Event().wait()
 
     d.start = start
     monkeypatch.setattr(daemon, "Daemon", lambda: d)
+    monkeypatch.setattr(daemon.ipc, "acquire_startup_lock", lambda _name: "test.lock")
+    monkeypatch.setattr(daemon.ipc, "release_startup_lock", lambda _lock_path: None)
     monkeypatch.setattr(daemon.ipc, "serve", wait_forever)
     monkeypatch.setattr(daemon.ipc, "sock_addr", lambda _name: "test-socket")
     monkeypatch.setattr(daemon.ipc, "cleanup_endpoint", lambda _name: None)
@@ -611,6 +613,67 @@ def test_shutdown_closes_only_the_daemon_owned_tab(monkeypatch):
     assert d.cdp.closed == ["daemon-tab"]
     assert d.dedicated_target_id is None
     assert d.target_id == "user-selected-tab"
+
+
+def test_main_holds_startup_lock_across_handshake_and_endpoint_cleanup(monkeypatch):
+    """Regression test for cubic review comments on #692 (findings 2 and 4).
+
+    The lock must be claimed before Daemon.start()'s CDP handshake -- not
+    inside serve(), which only runs after that handshake completes -- or a
+    racing invocation is free to run its own handshake unprotected, which is
+    the exact gap this PR's lock was meant to close. And it must be released
+    only after serve()'s own endpoint cleanup has finished, or a replacement
+    invocation can acquire the freed lock and bind its own endpoint before
+    this daemon's still-pending cleanup_endpoint() call deletes it out from
+    under them.
+    """
+    calls = []
+    d = daemon.Daemon()
+
+    async def start():
+        calls.append("cdp_start")
+
+    d.start = start
+    monkeypatch.setattr(daemon, "Daemon", lambda: d)
+    monkeypatch.setattr(
+        daemon.ipc, "acquire_startup_lock", lambda _name: calls.append("acquire_lock") or "test.lock"
+    )
+    monkeypatch.setattr(
+        daemon.ipc, "release_startup_lock", lambda _lp: calls.append("release_lock")
+    )
+
+    async def fake_serve(_d, _lock_path):
+        # The real serve() calls ipc.cleanup_endpoint(NAME) as its last step.
+        daemon.ipc.cleanup_endpoint(daemon.NAME)
+        calls.append("serve")
+
+    monkeypatch.setattr(daemon, "serve", fake_serve)
+    monkeypatch.setattr(daemon.ipc, "cleanup_endpoint", lambda _name: calls.append("cleanup_endpoint"))
+
+    asyncio.run(daemon.main())
+
+    assert calls == ["acquire_lock", "cdp_start", "cleanup_endpoint", "serve", "release_lock"]
+
+
+def test_main_never_touches_endpoint_when_a_daemon_already_holds_the_lock(monkeypatch):
+    """Regression test for cubic review comment on #692 (finding 3, P0).
+
+    A duplicate invocation that loses the startup-lock race must exit before
+    ever calling cleanup_endpoint() -- that call unconditionally deletes the
+    socket/port file for NAME, which would orphan the live daemon that still
+    holds the lock even though it's still running.
+    """
+    def fake_acquire(_name):
+        raise RuntimeError(f"a browser-harness daemon is already running for BU_NAME={_name!r}")
+
+    cleanup_calls = []
+    monkeypatch.setattr(daemon.ipc, "acquire_startup_lock", fake_acquire)
+    monkeypatch.setattr(daemon.ipc, "cleanup_endpoint", lambda _name: cleanup_calls.append(_name))
+
+    with pytest.raises(RuntimeError, match="already running"):
+        asyncio.run(daemon.main())
+
+    assert cleanup_calls == []
 
 
 def test_delayed_stale_request_follows_recovery_during_domain_enable(monkeypatch):

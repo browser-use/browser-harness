@@ -764,7 +764,7 @@ class Daemon:
             return {"error": msg}
 
 
-async def serve(d):
+async def serve(d, lock_path=None):
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -782,7 +782,7 @@ async def serve(d):
         finally:
             writer.close()
 
-    serve_task = asyncio.create_task(ipc.serve(NAME, handler))
+    serve_task = asyncio.create_task(ipc.serve(NAME, handler, lock_path=lock_path))
     stop_task = asyncio.create_task(d.stop.wait())
     await asyncio.sleep(0.05)  # let serve() bind so sock_addr() resolves to the live endpoint
     log(f"listening on {ipc.sock_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
@@ -820,9 +820,19 @@ async def serve(d):
 
 
 async def main():
-    d = Daemon()
-    await d.start()
-    await serve(d)
+    # Claim the name before the CDP handshake (not inside serve()), so the
+    # startup-lock's protection covers the whole gap a racing invocation could
+    # otherwise land in -- including a handshake stuck on an unclicked "Allow
+    # remote debugging?" popup. Held until after serve() has torn down this
+    # daemon's own endpoint, so a replacement can never bind while that
+    # teardown might still be racing it.
+    lock_path = await asyncio.to_thread(ipc.acquire_startup_lock, NAME)
+    try:
+        d = Daemon()
+        await d.start()
+        await serve(d, lock_path)
+    finally:
+        await asyncio.to_thread(ipc.release_startup_lock, lock_path)
 
 
 def already_running():
