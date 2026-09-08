@@ -114,6 +114,12 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 _REMOTE_STOPPED = False
+# Set once main() has claimed the startup lock, i.e. once this process is the
+# one actually responsible for REMOTE_ID's browser rather than a duplicate
+# invocation that lost the race for the same BU_NAME. Gates stop_remote() in
+# the __main__ finally block below so a losing invocation can't stop the
+# winner's browser out from under it.
+_OWNS_REMOTE = False
 BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
 # Chrome 144+ shows a per-connection popup, and the connection that raised it is
 # the only thing keeping it on screen. There is deliberately no approval
@@ -808,7 +814,7 @@ class Daemon:
             return {"error": msg}
 
 
-async def serve(d):
+async def serve(d, lock_path=None):
     async def handler(reader, writer):
         try:
             line = await reader.readline()
@@ -826,7 +832,7 @@ async def serve(d):
         finally:
             writer.close()
 
-    serve_task = asyncio.create_task(ipc.serve(NAME, handler))
+    serve_task = asyncio.create_task(ipc.serve(NAME, handler, lock_path=lock_path))
     stop_task = asyncio.create_task(d.stop.wait())
     await asyncio.sleep(0.05)  # let serve() bind so sock_addr() resolves to the live endpoint
     log(f"listening on {ipc.sock_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
@@ -864,9 +870,21 @@ async def serve(d):
 
 
 async def main():
-    d = Daemon()
-    await d.start()
-    await serve(d)
+    # Claim the name before the CDP handshake (not inside serve()), so the
+    # startup-lock's protection covers the whole gap a racing invocation could
+    # otherwise land in -- including a handshake stuck on an unclicked "Allow
+    # remote debugging?" popup. Held until after serve() has torn down this
+    # daemon's own endpoint, so a replacement can never bind while that
+    # teardown might still be racing it.
+    global _OWNS_REMOTE
+    lock_path = await asyncio.to_thread(ipc.acquire_startup_lock, NAME)
+    _OWNS_REMOTE = True
+    try:
+        d = Daemon()
+        await d.start()
+        await serve(d, lock_path)
+    finally:
+        await asyncio.to_thread(ipc.release_startup_lock, lock_path)
 
 
 def already_running():
@@ -875,7 +893,7 @@ def already_running():
     return ipc.ping(NAME, timeout=1.0)
 
 
-if __name__ == "__main__":
+def _run():
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
@@ -889,6 +907,15 @@ if __name__ == "__main__":
         log(f"fatal: {e}")
         sys.exit(1)
     finally:
-        stop_remote()
+        # A losing invocation (RuntimeError from acquire_startup_lock because
+        # another live daemon already owns NAME) never set _OWNS_REMOTE, so it
+        # must not stop REMOTE_ID's browser -- that's the winner's browser,
+        # not something this process started.
+        if _OWNS_REMOTE:
+            stop_remote()
         try: os.unlink(PID)
         except FileNotFoundError: pass
+
+
+if __name__ == "__main__":
+    _run()

@@ -162,32 +162,127 @@ def identify(name, timeout=1.0):
         except OSError: pass
 
 
-async def serve(name, handler):
-    """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
-    global _server_token
-    if not IS_WINDOWS:
-        path = str(_sock_path(name))
-        if os.path.exists(path): os.unlink(path)
-        # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
-        old_umask = os.umask(0o077)
-        try: server = await asyncio.start_unix_server(handler, path=path)
-        finally: os.umask(old_umask)
-        _server_token = None
-        async with server: await asyncio.Event().wait()
-        return
-    server = await asyncio.start_server(handler, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    _server_token = secrets.token_hex(32)
-    pf = port_path(name)
-    # Atomic write so a concurrent reader never sees a half-written file.
-    tmp = pf.with_name(pf.name + ".tmp")
-    tmp.write_text(json.dumps({"port": port, "token": _server_token}), encoding="utf-8")
-    os.replace(tmp, pf)
+def _lock_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.lock"
+
+
+def _lock_holder_alive(path):
+    """True iff the PID recorded in `path` is still a live process. Unreadable,
+    corrupt, or out-of-range contents count as not-alive (safe to reclaim)."""
     try:
-        async with server: await asyncio.Event().wait()
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    # Same bounds as identify() above: os.kill(0, sig) hits the calling process
+    # group rather than a specific process, and a value outside pid_t's range
+    # makes os.kill() raise OverflowError instead of telling us "not alive".
+    if not 0 < pid < (1 << 31):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, OSError, SystemError, OverflowError):
+        return False
+
+
+def acquire_startup_lock(name):
+    """Claim exclusive ownership of `name`'s endpoint for the life of this server.
+
+    Without this, two invocations racing for the same name could both pass a
+    prior ping-based "not already running" check -- that check-then-act gap
+    can be tens of seconds wide (CDP handshake, an unclicked Allow popup) --
+    and the second would silently unlink + rebind over a still-live first
+    daemon's socket, orphaning it with no error raised anywhere.
+    The claim itself is a write-then-link: the PID is written to a private
+    temp file first, then published via os.link(), which atomically creates
+    the lock's directory entry only if it doesn't already exist. That keeps
+    another invocation from ever observing a lock that exists but is still
+    empty -- which a plain O_CREAT|O_EXCL-then-write would allow, and which
+    would read as "corrupt, not-alive" and get reclaimed out from under the
+    process that just created it.
+
+    Staleness is decided by whether the PID recorded in the lock is still a
+    live process, not by pinging the endpoint: the lock is meant to be held
+    from before the endpoint exists (through the CDP handshake) to after it
+    is torn down, so "nothing answers yet/anymore" is not evidence the lock
+    holder is gone -- a ping-based check would let a second invocation steal
+    the lock out from under a holder that simply hasn't bound yet.
+
+    Raises RuntimeError if a live process already holds the lock. Reclaims a
+    stale lock (previous holder crashed/was killed without cleanup).
+
+    Call once per daemon lifetime and pass the returned path to serve();
+    release it with release_startup_lock() only after the endpoint itself
+    has been torn down, so a replacement can never bind while this process's
+    old endpoint files might still be cleaned up out from under it."""
+    path = _lock_path(name)
+    for _attempt in range(2):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(str(os.getpid()), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        try:
+            os.link(str(tmp), str(path))
+            return path
+        except FileExistsError:
+            if _lock_holder_alive(path):
+                raise RuntimeError(
+                    f"a browser-harness daemon is already running for BU_NAME={name!r}"
+                ) from None
+            try: path.unlink()  # stale lock, no live owner -- reclaim it
+            except FileNotFoundError: pass
+        finally:
+            try: tmp.unlink()
+            except FileNotFoundError: pass
+    raise RuntimeError(f"failed to acquire startup lock for BU_NAME={name!r}")
+
+
+def release_startup_lock(lock_path):
+    try: lock_path.unlink()
+    except FileNotFoundError: pass
+
+
+async def serve(name, handler, lock_path=None):
+    """Run the server until cancelled. handler(reader, writer) sees the same interface either way.
+
+    `lock_path`: a lock already claimed via acquire_startup_lock(). Pass one
+    when the caller needs to hold it across more than this call (e.g. a CDP
+    handshake beforehand and endpoint cleanup after) -- the caller then owns
+    releasing it via release_startup_lock(), not this function. Omit it to
+    have serve() claim and release its own lock for the duration of the call."""
+    global _server_token
+    owns_lock = lock_path is None
+    if owns_lock:
+        # Off-thread: acquire_startup_lock() does blocking file I/O to check a
+        # stale lock's liveness; running it inline would block this same event
+        # loop that a *different* daemon's handler (in-process, e.g. tests)
+        # needs to run on.
+        lock_path = await asyncio.to_thread(acquire_startup_lock, name)
+    try:
+        if not IS_WINDOWS:
+            path = str(_sock_path(name))
+            if os.path.exists(path): os.unlink(path)
+            # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
+            old_umask = os.umask(0o077)
+            try: server = await asyncio.start_unix_server(handler, path=path)
+            finally: os.umask(old_umask)
+            _server_token = None
+            async with server: await asyncio.Event().wait()
+            return
+        server = await asyncio.start_server(handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        _server_token = secrets.token_hex(32)
+        pf = port_path(name)
+        # Atomic write so a concurrent reader never sees a half-written file.
+        tmp = pf.with_name(pf.name + ".tmp")
+        tmp.write_text(json.dumps({"port": port, "token": _server_token}), encoding="utf-8")
+        os.replace(tmp, pf)
+        try:
+            async with server: await asyncio.Event().wait()
+        finally:
+            try: pf.unlink()
+            except FileNotFoundError: pass
     finally:
-        try: pf.unlink()
-        except FileNotFoundError: pass
+        if owns_lock:
+            await asyncio.to_thread(release_startup_lock, lock_path)
 
 
 def expected_token():
