@@ -27,3 +27,14 @@ The first call uses `doR=1` (reset). Then repeat with `PageDir=1&doR=0` — the 
 - Only `AREA=W` returns the grid; `AREA=C` is the countdown strip.
 - `zaction=AUCTION&zmethod=UPDATE&VALUE=<aids>&LUDATE=` (what the page polls) is the bid-status refresher, not the listing.
 - The home page has no calendar link in its anchors (it's a JS menu); go to the calendar URL directly.
+
+## Florida: `<county>.realforeclose.com` and `<county>.realtaxdeed.com`
+
+Same app, same calendar and item-loader calls (the vendor is Realauction.com). Differences:
+
+- Two sites per county: `realforeclose.com` (mortgage foreclosures) and `realtaxdeed.com` (tax deeds). Not every county uses both — the calendar of an unused one is empty, not an error. Counties seen active 2026-09: Hillsborough, Duval, Pinellas, Polk, Volusia, Marion, Escambia, Lee, Orange, Broward, Miami-Dade, Palm Beach, Brevard, Pasco, Leon, Alachua, Manatee, Sarasota, Seminole, Osceola, St. Lucie, Bay, Charlotte, Hernando, Citrus, Clay.
+- Different token dictionary in `retHTML` (`@H`, `@F`, …). Don't decode tokens; read pairs by the `AD_LBL` / `AD_DTA` class names — every site uses those.
+- Labels: tax deed = `Auction Type` (TAXDEED), `Case #`, `Certificate #`, `Opening Bid`, `Parcel ID` (links to the property appraiser), `Property Address`, unlabeled `CITY, FL- 32207` row, `Assessed Value`. Foreclosure = `Auction Type` (FORECLOSURE), `Case #`, `Final Judgment Amount` (no opening bid), `Parcel ID`, `Property Address`, city row, `Assessed Value`.
+- Many tax-deed parcels have address `NO SITUS` or `0 <STREET>` (vacant land) — Marion is 95% of those.
+- The site returns HTTP 403 to non-browser user agents; send a normal Chrome UA.
+- Auction days can carry 200+ items; paging works the same (`doR=1` then `PageDir=1`).
