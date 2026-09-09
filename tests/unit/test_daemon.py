@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 
 import pytest
 
@@ -845,3 +846,47 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def _isolated(monkeypatch, idle):
+    """Unique BU_NAME so serve() binds its own socket and never unlinks a live daemon's."""
+    monkeypatch.setattr(daemon, "NAME", f"test-idle-{os.getpid()}")
+    monkeypatch.setattr(daemon, "IDLE_EXIT", idle)
+    d = _fresh_daemon()
+    d.stop = asyncio.Event()
+    d.last_seen = time.monotonic()
+    return d
+
+
+def test_serve_exits_by_itself_when_no_request_arrives(monkeypatch):
+    """Regression: the daemon detaches from whoever spawned it, so nothing stops it
+    when that agent goes away. They accumulate -- 90 were found alive on one machine,
+    the oldest three days old. serve() must return on its own after IDLE_EXIT seconds
+    without a request; ensure_daemon() spawns a fresh one on the next call."""
+    d = _isolated(monkeypatch, 0.2)
+
+    async def scenario():
+        # Without the idle watchdog serve() waits forever and this times out.
+        await asyncio.wait_for(daemon.serve(d), timeout=5)
+
+    asyncio.run(scenario())
+
+
+def test_serve_stays_alive_while_requests_keep_arriving(monkeypatch):
+    """The other half: an over-eager timeout would kill daemons mid-task and churn
+    a restart into every session. Each connection refreshes last_seen, so a daemon
+    in use must never hit the deadline."""
+    d = _isolated(monkeypatch, 0.3)
+
+    async def scenario():
+        task = asyncio.create_task(daemon.serve(d))
+        for _ in range(9):          # 0.9 s of traffic against a 0.3 s deadline
+            await asyncio.sleep(0.1)
+            d.last_seen = time.monotonic()
+        alive = not task.done()
+        d.stop.set()
+        await asyncio.wait_for(task, timeout=5)
+        return alive
+
+    assert asyncio.run(scenario()), "le daemon s'est arrete alors qu'il etait sollicite"
+
