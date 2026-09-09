@@ -835,6 +835,11 @@ async def main():
     global _OWNS_REMOTE
     lock_path = await asyncio.to_thread(ipc.acquire_startup_lock, NAME)
     _OWNS_REMOTE = True
+    # Written only now, not by _run() before main() is even called: a losing
+    # invocation runs the same open(PID, "w") line before it ever attempts the
+    # lock, which would overwrite the winner's already-written PID file with
+    # its own -- and then have nothing to stop it un-writing that file too.
+    open(PID, "w").write(str(os.getpid()))
     try:
         d = Daemon()
         await d.start()
@@ -854,7 +859,6 @@ def _run():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
     open(LOG, "w").close()
-    open(PID, "w").write(str(os.getpid()))
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -865,12 +869,13 @@ def _run():
     finally:
         # A losing invocation (RuntimeError from acquire_startup_lock because
         # another live daemon already owns NAME) never set _OWNS_REMOTE, so it
-        # must not stop REMOTE_ID's browser -- that's the winner's browser,
-        # not something this process started.
+        # never wrote PID and must not stop REMOTE_ID's browser -- that's the
+        # winner's browser, not something this process started -- or unlink
+        # the winner's PID file.
         if _OWNS_REMOTE:
             stop_remote()
-        try: os.unlink(PID)
-        except FileNotFoundError: pass
+            try: os.unlink(PID)
+            except FileNotFoundError: pass
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import pytest
 
@@ -723,6 +724,64 @@ def test_run_still_calls_stop_remote_after_a_daemon_that_actually_ran(monkeypatc
     daemon._run()
 
     assert stop_calls == [True]
+
+
+def test_run_never_touches_pid_file_when_startup_lock_was_never_acquired(monkeypatch, tmp_path):
+    """Regression test for cubic review comment on #692 (P2, second review pass).
+
+    _run() used to write PID unconditionally before even attempting the
+    lock, so a losing invocation would overwrite the winner's already-written
+    PID file with its own pid, and then its unconditional os.unlink(PID) in
+    the finally block would delete that file outright -- both while the
+    winner was still alive and using it. PID is now written inside main(),
+    only after the lock is actually acquired, and only unlinked when
+    _OWNS_REMOTE is set.
+    """
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("12345", encoding="utf-8")  # the winner's PID
+    monkeypatch.setattr(daemon, "already_running", lambda: False)
+    monkeypatch.setattr(daemon, "LOG", str(tmp_path / "daemon.log"))
+    monkeypatch.setattr(daemon, "PID", str(pid_path))
+    monkeypatch.setattr(daemon, "_OWNS_REMOTE", False)
+    monkeypatch.setattr(daemon, "log", lambda _message: None)
+
+    async def fake_main():
+        raise RuntimeError("a browser-harness daemon is already running for BU_NAME='default'")
+
+    monkeypatch.setattr(daemon, "main", fake_main)
+    monkeypatch.setattr(daemon, "stop_remote", lambda: None)
+
+    with pytest.raises(SystemExit):
+        daemon._run()
+
+    assert pid_path.read_text(encoding="utf-8") == "12345"
+
+
+def test_main_writes_pid_file_only_after_acquiring_the_lock(monkeypatch, tmp_path):
+    """PID must be written inside main(), after the lock is claimed -- not
+    unconditionally by _run() before main() even attempts it, which would let
+    a losing invocation overwrite the winner's PID file with its own."""
+    pid_path = tmp_path / "daemon.pid"
+    monkeypatch.setattr(daemon, "PID", str(pid_path))
+    d = daemon.Daemon()
+
+    async def start():
+        pass
+
+    d.start = start
+    monkeypatch.setattr(daemon, "Daemon", lambda: d)
+    monkeypatch.setattr(daemon.ipc, "acquire_startup_lock", lambda _name: "test.lock")
+    monkeypatch.setattr(daemon.ipc, "release_startup_lock", lambda _lp: None)
+
+    async def fake_serve(_d, _lock_path):
+        # By the time serve() runs, main() must already have written PID.
+        assert pid_path.read_text(encoding="utf-8") == str(os.getpid())
+
+    monkeypatch.setattr(daemon, "serve", fake_serve)
+
+    asyncio.run(daemon.main())
+
+    assert pid_path.read_text(encoding="utf-8") == str(os.getpid())
 
 
 def test_delayed_stale_request_follows_recovery_during_domain_enable(monkeypatch):

@@ -225,6 +225,32 @@ def test_acquire_startup_lock_never_publishes_the_lock_before_its_pid_is_written
     assert list(tmp_path.iterdir()) == [lock_path]
 
 
+def test_acquire_startup_lock_refuses_to_write_through_a_preexisting_staging_path(
+    monkeypatch, tmp_path
+):
+    """Regression test for cubic review comment on #692 (P2, second review pass).
+
+    The staging file used to be published with tmp.write_text(), which opens
+    with default flags and follows symlinks -- so a local attacker who could
+    predict or pre-create that path as a symlink could make us overwrite an
+    arbitrary file with our own pid instead of writing a private temp file.
+    Creation is now O_CREAT|O_EXCL, so a pre-existing path (symlink or not)
+    makes acquisition fail loudly instead of writing through it.
+    """
+    monkeypatch.setattr(ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(ipc.secrets, "token_hex", lambda _n: "predictable")
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("do not touch", encoding="utf-8")
+    staged_name = f"{ipc._lock_path('worker').name}.{os.getpid()}.predictable.tmp"
+    (tmp_path / staged_name).symlink_to(victim)
+
+    with pytest.raises(FileExistsError):
+        ipc.acquire_startup_lock("worker")
+
+    assert victim.read_text(encoding="utf-8") == "do not touch"
+
+
 # --- serve(): startup mutual exclusion ---
 
 

@@ -216,9 +216,17 @@ def acquire_startup_lock(name):
     old endpoint files might still be cleaned up out from under it."""
     path = _lock_path(name)
     for _attempt in range(2):
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(str(os.getpid()), encoding="utf-8")
-        os.chmod(tmp, 0o600)
+        # Random suffix (not just our pid) so the staging path isn't
+        # predictable, and O_CREAT|O_EXCL so if something has pre-created it
+        # anyway -- e.g. a symlink planted by another local user in a shared
+        # runtime dir -- we fail instead of writing through it via a plain
+        # open()-and-truncate, which follows symlinks.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+        fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.write(fd, str(os.getpid()).encode())
+        finally:
+            os.close(fd)
         try:
             os.link(str(tmp), str(path))
             return path
@@ -230,7 +238,7 @@ def acquire_startup_lock(name):
             try: path.unlink()  # stale lock, no live owner -- reclaim it
             except FileNotFoundError: pass
         finally:
-            try: tmp.unlink()
+            try: os.unlink(tmp)
             except FileNotFoundError: pass
     raise RuntimeError(f"failed to acquire startup lock for BU_NAME={name!r}")
 
