@@ -82,3 +82,11 @@ Two identifier caveats found the hard way:
 - Build the key set from `sosparno`, `parcel_number`, `ppin` **and** the `P#`
   inside `legal_description` — 2,359 records yield ~2,020 distinct identifier
   forms, and any single field alone under-matches.
+
+## Update 2026-09-09 — the inventory is a plain ArcGIS query, no browser needed
+
+- `www.sos.ms.gov` is Akamai-gated (403 to non-browser clients), but the map app `https://tflgis.sos.ms.gov/` is not, and its HTML embeds an anonymous ArcGIS portal token in `<input id="tk" …>`.
+- Inventory: `GET https://gisserver.its.ms.gov/arcgis/rest/services/Hosted/Active_Tax_Forfeited_Properties/FeatureServer/0/query?f=json&token=<tk>&where=county='Hinds'&outFields=*&returnGeometry=false&resultOffset=N&resultRecordCount=2000` — standard ArcGIS paging. Contrary to the note above, the layer DOES carry situs fields: `street_line_1`, `city`, `zip`, `propertyaddress`, plus `market_value`, `sumoftaxfees`, `activeapplications`.
+- Multi-part parcels repeat rows: dedupe on `parcel_id`. Rows whose address ends in "(Lot)" are unimproved. `activeapplications > 0` means someone already applied.
+- Per-parcel page `https://www.sos.ms.gov/tfsearch/default.aspx?parcel_id=<id>` is a JS shell fed by `LandsSearch.asmx/ProcessSearchDetail` (browser-only); it renders address, owner, legal description, county market value and taxes owed.
+- The token-free `Hinds_Tax_Forfeit_Properties_May_2026` layer on the same server is a stale snapshot — don't use it.
