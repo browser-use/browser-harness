@@ -46,3 +46,23 @@
 - Channel action repetitions may not appear through run-history APIs until the
   enclosing loop completes. An empty repetitions list while the loop is running
   is not evidence that the message step was skipped.
+
+## Power Platform admin center usage guardrails
+
+- Licensing > Copilot Studio > Manage Agents opens
+  `https://admin.powerplatform.microsoft.com/billing/licenses/agents/CopilotStudio`.
+  This is separate from the authoring Monitor page and may require a different
+  administrative account. Stop for user sign-in if an authentication wall appears.
+- The agent row's ellipsis menu exposes Set Limit. The grid may label the column
+  Message Limit even though the side pane uses Copilot Credits. Match both the
+  agent name and environment before editing.
+- Setting the numeric limit alone does not enable hard enforcement: explicitly
+  check Stop Usage. Overage notification is a separate checkbox and percentage.
+  The tested notification control allowed values from 50 to 100 percent.
+- Save leaves the pane open with a success banner. Verify persistence with a full
+  reload and reopen Set Limit; inspect both the number and checkbox states.
+- An environment marked Draw from tenant pool can still have per-agent limits.
+  The prepaid pane validates against available tenant credits. A credit limit is
+  not an invoice-currency budget: inspect prepaid versus PAYG billing before
+  interpreting the amount as money, and do not change the shared allocation to
+  implement a single-agent guardrail.
