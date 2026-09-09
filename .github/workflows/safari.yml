@@ -1,0 +1,32 @@
+name: Safari adapter checks
+
+on:
+  push:
+    paths:
+      - 'adapters/safari/**'
+      - '.github/workflows/safari.yml'
+  pull_request:
+    paths:
+      - 'adapters/safari/**'
+      - '.github/workflows/safari.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: adapters/safari
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m unittest discover -s tests -v
+      - run: node --test tests/bridge.test.cjs
