@@ -1,0 +1,4 @@
+# Court-docket portals that are NOT scrapable (verified 2026-09-09)
+
+- **MiCOURT** (`micourt.courts.michigan.gov/api/casesearch/v1/`): every search/detail requires an hCaptcha token (proof-of-work + visible puzzle for automation) AND a surname or case number — there is no new-filings listing. The data model has no address fields at all. ToS prohibits bulk/automated access. Wayne, Kent, Saginaw and Berrien courts are not on it (Wayne probate: wcpc.us; Kent: kentcountymi.gov).
+- **OSCN** (`oscn.net/dockets`): Cloudflare Turnstile after every 9 requests, keyed per IP and sticky without a cookie; ~15 solves in 10 minutes → HTTP 403 "Temporary restriction" until midnight, applied to the /24. Foreclosure petitions mostly carry the property address only inside scanned PDFs (`GetDocument.aspx?ct=<county>&bc=<barcode>&cn=<case>&fmt=pdf`, no text layer); probate dockets carry no decedent address. `db=` is the lower-cased county name.
