@@ -1505,3 +1505,52 @@ def test_ensure_daemon_launches_chrome_when_daemon_dies_on_a_cold_start(monkeypa
     assert calls["launch"] == 1
     assert calls["restart"] == 1
     assert calls["spawned"] == 1
+
+
+def test_ensure_daemon_waiter_on_anothers_dead_daemon_does_not_launch_chrome(monkeypatch, tmp_path):
+    """Only the caller that spawned the dead daemon recovers by launching Chrome;
+    a concurrent waiter on someone else's pending daemon keeps looping so two
+    callers never launch two browsers."""
+    import contextlib
+    from browser_harness import daemon
+
+    calls = {"launch": 0, "restart": 0}
+
+    class Lock:
+        fd = 1
+
+    @contextlib.contextmanager
+    def spawn_lock(_name=None, timeout=None):
+        yield Lock()
+
+    def launch():
+        calls["launch"] += 1
+        return (FakeProcess(pid=999), None)
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda _env=None: True)
+    monkeypatch.setattr(admin, "_daemon_wait_windows", lambda _wait, _local: (5, None))
+    monkeypatch.setattr(admin, "_spawn_lock", spawn_lock)
+    monkeypatch.setattr(admin, "_parked_daemon_pid", lambda _name=None: None)
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda _name=None: 555)
+    monkeypatch.setattr(admin, "_pending_pid_record", lambda _path: None)
+    monkeypatch.setattr(admin, "_pid_number", lambda _path: None)
+    monkeypatch.setattr(admin, "_cleanup_unattached_browser_launch", lambda _launch: None)
+    monkeypatch.setattr(
+        admin,
+        "_log_tail",
+        lambda _name: "chrome-not-running: no supported Chromium-family browser is running -- start Chrome, then retry",
+    )
+    monkeypatch.setattr(admin, "restart_daemon", lambda _name=None, **_kwargs: calls.__setitem__("restart", calls["restart"] + 1))
+    monkeypatch.setattr(admin, "_launch_browser", launch)
+    monkeypatch.setattr(admin.ipc, "log_path", lambda _name: tmp_path / "bu.log")
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda _name: tmp_path / "bu.pid")
+    monkeypatch.setattr(admin.ipc, "spawn_kwargs", lambda: {})
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(admin.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="didn't come up"):
+        admin.ensure_daemon(name="default")
+
+    assert calls["launch"] == 0
+    assert calls["restart"] == 0
