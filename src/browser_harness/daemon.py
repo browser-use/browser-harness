@@ -35,6 +35,10 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
+# The daemon detaches from whoever spawned it, so nothing tells it to stop when that
+# agent goes away and they pile up. Exit after a stretch with no request instead:
+# ensure_daemon() spawns a fresh one on the next call, so the cost is a restart.
+IDLE_EXIT = float(os.environ.get("BU_IDLE_EXIT", 1800))  # seconds, 0 disables
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -438,6 +442,7 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        self.last_seen = time.monotonic()
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -810,6 +815,7 @@ class Daemon:
 
 async def serve(d):
     async def handler(reader, writer):
+        d.last_seen = time.monotonic()
         try:
             line = await reader.readline()
             if not line: return
@@ -826,15 +832,23 @@ async def serve(d):
         finally:
             writer.close()
 
+    async def idle_watch():
+        while time.monotonic() - d.last_seen < IDLE_EXIT:
+            await asyncio.sleep(min(60.0, IDLE_EXIT))
+        log(f"no request for {IDLE_EXIT:.0f}s, exiting")
+
     serve_task = asyncio.create_task(ipc.serve(NAME, handler))
     stop_task = asyncio.create_task(d.stop.wait())
+    tasks = [serve_task, stop_task]
+    if IDLE_EXIT > 0:
+        tasks.append(asyncio.create_task(idle_watch()))
     await asyncio.sleep(0.05)  # let serve() bind so sock_addr() resolves to the live endpoint
     log(f"listening on {ipc.sock_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
     try:
-        await asyncio.wait({serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait(set(tasks), return_when=asyncio.FIRST_COMPLETED)
         if serve_task.done(): await serve_task  # surfaces a serve crash
     finally:
-        for t in (serve_task, stop_task):
+        for t in tasks:
             t.cancel()
             try: await t
             except (asyncio.CancelledError, Exception): pass
