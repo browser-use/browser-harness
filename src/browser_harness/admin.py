@@ -646,7 +646,12 @@ def ensure_daemon(wait=None, name=None, env=None):
                     "permission-blocked: the pending Chrome connection ended before approval; "
                     "browser-harness did not retry or create another connection."
                 )
-            continue
+            if not (launched_browser is None and _chrome_not_running(msg)):
+                continue
+            # A true cold start: the daemon's first liveness check found no
+            # browser at all and it exited before this loop could see the
+            # message from a live process. Respawning the same daemon would
+            # just repeat that, so fall through to the launch-and-retry below.
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup
             # on screen. Killing it dropped the popup and the retry raised a new
