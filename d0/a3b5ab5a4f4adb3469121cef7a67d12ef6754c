@@ -1,0 +1,35 @@
+tests/unit/test_daemon.py
+  s_f75f87390da152::t_b3345f6b5eefe8 556-557,566-567,569,571-572,575-576
+src/browser_harness/daemon.py
+  s_f75f87390da152::t_b3345f6b5eefe8 10,431-432,446,452-456,468,470,482,507,520-537,671-680,733,740-741,793-794,836-837
+  s_f75f87390da152::t_531ae59f02dc49 734-737
+  s_f75f87390da152::t_004f7ec6704c55 447,449-451
+tests/unit/test_tab_binding.py
+  s_f75f87390da152::t_3a0b05134727df 9,132-146
+  s_f75f87390da152::t_531ae59f02dc49 112-113
+  s_f75f87390da152::t_7592a59ea3f259 1-8,10-111,114-131
+SKILL.md
+  s_f75f87390da152::t_531ae59f02dc49 195-196
+  s_f75f87390da152::t_004f7ec6704c55 83-89
+src/browser_harness/helpers.py
+  s_f75f87390da152::t_b3345f6b5eefe8 425-426,432-434
+  s_f75f87390da152::t_531ae59f02dc49 427-431
+src/browser_harness/_tab_binding.py
+  s_f75f87390da152::t_b3345f6b5eefe8 1-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d0a3b5ab5a4f4adb3469121cef7a67d12ef6754c",
+  "prompts": {},
+  "sessions": {
+    "s_f75f87390da152": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06ff1-8bda-7691-8935-ff78c3fdfead",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}

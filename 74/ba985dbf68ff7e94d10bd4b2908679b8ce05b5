@@ -1,0 +1,21 @@
+tests/unit/test_mcp_http.py
+  s_f75f87390da152::t_e1c4b3c236a94d 1-58
+src/mcp_server.py
+  s_f75f87390da152::t_004f7ec6704c55 10,116,119,125-127,131-132,279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "74ba985dbf68ff7e94d10bd4b2908679b8ce05b5",
+  "prompts": {},
+  "sessions": {
+    "s_f75f87390da152": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06ff1-8bda-7691-8935-ff78c3fdfead",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}

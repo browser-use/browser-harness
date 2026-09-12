@@ -1,0 +1,21 @@
+src/browser_harness/daemon.py
+  s_f75f87390da152::t_6e732ce88fec88 698-700
+tests/unit/test_event_history.py
+  s_f75f87390da152::t_9c4693b55e085b 134-140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "97885c03ba7549149d918fa58379bd527f5619fd",
+  "prompts": {},
+  "sessions": {
+    "s_f75f87390da152": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06ff1-8bda-7691-8935-ff78c3fdfead",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}

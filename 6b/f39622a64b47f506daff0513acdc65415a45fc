@@ -1,0 +1,29 @@
+src/browser_harness/daemon.py
+  s_f75f87390da152::t_6ae17210456513 826-828
+tests/unit/test_event_history.py
+  s_f75f87390da152::t_0d1c643d639665 145-208
+SKILL.md
+  s_f75f87390da152::t_6ae17210456513 212-214
+interaction-skills/network-requests.md
+  s_f75f87390da152::t_6ae17210456513 21-22,31-32
+src/browser_harness/helpers.py
+  s_f75f87390da152::t_6ae17210456513 12,91-92,94
+src/browser_harness/_events.py
+  s_f75f87390da152::t_6ae17210456513 8-18,34,37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6bf39622a64b47f506daff0513acdc65415a45fc",
+  "prompts": {},
+  "sessions": {
+    "s_f75f87390da152": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06ff1-8bda-7691-8935-ff78c3fdfead",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}

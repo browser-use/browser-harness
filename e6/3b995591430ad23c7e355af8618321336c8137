@@ -1,0 +1,16 @@
+src/browser_harness/daemon.py
+  s_f75f87390da152::t_b4d593982ab811 5,784
+  s_f75f87390da152::t_33d253aa429424 228
+  s_86d24eaeebcb12::t_dcfb362f9b4744 50
+  s_5d40ae83f8d939::t_c3d0fffcfec813 2,120-124,426,669-670
+  s_86d24eaeebcb12::t_e1dcd2fd1df86d 131-136,628-640,752
+  s_86d24eaeebcb12::t_00399b74ea32c3 641-649
+tests/unit/test_daemon_log.py
+  s_f75f87390da152::t_33d253aa429424 2,25-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e63b995591430ad23c7e355af8618321336c8137",
+  "prompts": {}
+}

@@ -1,0 +1,36 @@
+SKILL.md
+  s_86d24eaeebcb12::t_e1dcd2fd1df86d 49-50
+  s_5d40ae83f8d939::t_515ca39f50bfae 43-48,62-66,81-82,84-87,119-127
+  s_86d24eaeebcb12::t_3ee1b742c7e3d3 191
+  s_bea25444757db5::t_b7b99366ce1d86 28-34
+  s_ce918503ef4b01::t_6cfc8004ee1515 37
+  s_ce918503ef4b01::t_1f894a019d0ec3 35-36
+  s_f75f87390da152::t_6ae17210456513 194-196
+  s_5d40ae83f8d939::t_1fa3ed8d838e81 67-80,129-134,139-143
+  s_5d40ae83f8d939::t_165d30400cb1f1 40-42,51-57
+tests/unit/test_event_history.py
+  s_f75f87390da152::t_0d1c643d639665 145-208
+  s_f75f87390da152::t_b00f5ac0f195d9 134-140
+src/browser_harness/_events.py
+  s_f75f87390da152::t_6ae17210456513 8-18,34,37
+src/browser_harness/helpers.py
+  s_86d24eaeebcb12::t_e54c5a87724bdc 571-574,597-598
+  s_86d24eaeebcb12::t_9635528c34701c 400-401
+  s_f75f87390da152::t_6ae17210456513 12,86-87,89
+src/browser_harness/daemon.py
+  s_f75f87390da152::t_b4d593982ab811 797
+  s_86d24eaeebcb12::t_dcfb362f9b4744 49
+  s_5d40ae83f8d939::t_c3d0fffcfec813 2,119-123,411,666-667
+  s_86d24eaeebcb12::t_e1dcd2fd1df86d 130-135,620-632,761
+  s_86d24eaeebcb12::t_00399b74ea32c3 633,639-646
+  s_f75f87390da152::t_0c702dd2d8004d 698-700
+  s_f75f87390da152::t_6ae17210456513 792-794
+interaction-skills/network-requests.md
+  s_f75f87390da152::t_6ae17210456513 21-22,31-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2b2d50c3f937340707a7d006a8f65145f7640c53",
+  "prompts": {}
+}

@@ -1,0 +1,29 @@
+src/browser_harness/_ipc.py
+  s_f75f87390da152::t_664b4328ee6f11 2,89-93,100,107-111
+tests/unit/test_wait_until.py
+  s_f75f87390da152::t_c398b80f654112 1-75,77,94-107
+  s_f75f87390da152::t_664b4328ee6f11 76,78-93
+src/browser_harness/helpers.py
+  s_f75f87390da152::t_c398b80f654112 52-58,60,531-561
+  s_f75f87390da152::t_664b4328ee6f11 62
+src/mcp_server.py
+  s_f75f87390da152::t_c398b80f654112 53,257-260
+SKILL.md
+  s_f75f87390da152::t_c398b80f654112 189-193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "119d0f55f321ed7765a9d2e1a055b1de23e85c65",
+  "prompts": {},
+  "sessions": {
+    "s_f75f87390da152": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06ff1-8bda-7691-8935-ff78c3fdfead",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+tests/browser/test_checked_click.py
+  s_f75f87390da152::t_859b8aa68e2bee 1-47
+tests/browser/conftest.py
+  s_f75f87390da152::t_859b8aa68e2bee 1-69
+interaction-skills/checked-clicks.md
+  s_f75f87390da152::t_859b8aa68e2bee 1-93
+SKILL.md
+  s_f75f87390da152::t_3a0b05134727df 188-189
+  s_f75f87390da152::t_859b8aa68e2bee 187,190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b75daf01b1ca6c43d17c621350d7cb2ecb4cf06a",
+  "prompts": {},
+  "sessions": {
+    "s_f75f87390da152": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06ff1-8bda-7691-8935-ff78c3fdfead",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Gregor Žunič <36313686+gregpr07@users.noreply.github.com>"
+    }
+  }
+}
