@@ -646,7 +646,12 @@ def ensure_daemon(wait=None, name=None, env=None):
                     "permission-blocked: the pending Chrome connection ended before approval; "
                     "browser-harness did not retry or create another connection."
                 )
-            continue
+            # A daemon that died for a diagnosable reason -- Chrome closed, or
+            # remote debugging never enabled -- must reach the branches below.
+            # Retrying it three times and then reporting the generic "didn't
+            # come up" buries the one message that tells the user what to do.
+            if not (_chrome_not_running(msg) or _needs_chrome_remote_debugging_prompt(msg)):
+                continue
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup
             # on screen. Killing it dropped the popup and the retry raised a new
@@ -692,7 +697,13 @@ def ensure_daemon(wait=None, name=None, env=None):
                     "permission-blocked: Chrome did not approve the connection; browser-harness did not retry or create another connection."
                 )
             restart_daemon(name)
-            _open_chrome_inspect_once()
+            where = (
+                "opened chrome://inspect/#remote-debugging in Chrome"
+                if _open_chrome_inspect_once()
+                else "ask the user to open chrome://inspect/#remote-debugging in Chrome themselves "
+                "(type or paste it in the address bar -- Chrome refuses chrome:// URLs from the "
+                "command line, so browser-harness cannot open it for them)"
+            )
             if remote_debugging_toggle_profiles():
                 # Toggle already ticked from a previous run, but Chrome 144+
                 # wants new Allow for this browser run.
@@ -700,7 +711,7 @@ def ensure_daemon(wait=None, name=None, env=None):
             else:
                 todo = 'tick "Allow remote debugging for this browser instance" and click Allow on the popup'
             raise RuntimeError(
-                f"remote-debugging-setup: opened chrome://inspect/#remote-debugging in Chrome -- ask the user to {todo}. "
+                f"remote-debugging-setup: {where} -- then {todo}. "
                 "Warn them Chrome shows ONE more Allow popup when the harness connects on the next attempt (per-connection approval; it is expected, not a re-ask). "
                 "Retry after the user confirms; do not retry before."
             )
@@ -1362,7 +1373,7 @@ def _cleanup_unattached_browser_launch(launch):
 
 def _open_chrome_inspect():
     """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
-    import platform, subprocess, webbrowser
+    import platform, subprocess
     url = "chrome://inspect/#remote-debugging"
     if platform.system() == "Darwin":
         try:
@@ -1375,10 +1386,13 @@ def _open_chrome_inspect():
                 return True
         except Exception:
             pass
-    try:
-        return bool(webbrowser.open(url, new=2))
-    except Exception:
-        return False
+    # Off macOS the only way to hand Chrome a URL is the command line
+    # (webbrowser.open shells out to `chrome <url>`), and Chrome silently
+    # rewrites *any* chrome:// argument to chrome://newtab. The user lands on
+    # the New Tab Page, never sees the toggle, and the caller is told the page
+    # was opened. Report the failure so the message can tell them to paste the
+    # URL into the address bar themselves.
+    return False
 
 
 INSPECT_REOPEN_TTL = 180.0  # seconds open new chrome://inspect tab
@@ -1389,16 +1403,17 @@ def _open_chrome_inspect_once():
     marker = paths.inspect_marker()
     try:
         if time.time() - marker.stat().st_mtime < INSPECT_REOPEN_TTL:
-            return
+            return True
     except OSError:
         pass
     if not _open_chrome_inspect():
-        return
+        return False
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.touch()
     except OSError:
         pass
+    return True
 
 
 def run_doctor():
