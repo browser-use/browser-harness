@@ -785,13 +785,26 @@ def test_verify_input_delivery_true_when_probe_event_arrives(monkeypatch):
     assert helpers.verify_input_delivery() is True
     dispatched = [kw for (m, kw) in calls if m == "Input.dispatchKeyEvent"]
     assert len(dispatched) == 1
-    assert dispatched[0]["key"] == (
-        "__browser_harness_input_probe_fixed-token"
-    )
+    assert dispatched[0]["key"] == "a"
+    assert dispatched[0]["code"] == "KeyA"
+    assert dispatched[0]["windowsVirtualKeyCode"] == 65
     assert "e.isTrusted" in evals[0]
+    assert "__browser_harness_input_probe_fixed-token" in evals[0]
     assert "Object.defineProperty(window,k" in evals[0]
+    assert "document.addEventListener('keydown',state.listener,true)" in evals[0]
     assert "probe.focus({preventScroll:true})" in evals[0]
     assert "s.previous.focus({preventScroll:true})" in evals[-1]
+
+
+def test_input_probe_does_not_require_focus_retention():
+    setup, _read, teardown = helpers._input_probe_expressions("probe-token")
+
+    # A modal focus trap may redirect focus to one of its own controls. The
+    # document capture listener still observes the dispatched key, so setup
+    # must not reject the probe just because activeElement is not the probe.
+    assert "document.activeElement===probe" not in setup
+    assert "probe.focus({preventScroll:true});return true" in setup
+    assert "document.removeEventListener('keydown',s.listener,true)" in teardown
 
 
 def test_verify_input_delivery_false_when_probe_event_is_silently_dropped(monkeypatch):
@@ -879,6 +892,24 @@ def test_ensure_real_tab_reprobes_when_reattach_is_rejected(monkeypatch):
     monkeypatch.setattr(helpers, "verify_input_delivery", _sequence([False, True]))
 
     assert helpers.ensure_real_tab()["targetId"] == "target-1"
+
+
+def test_ensure_real_tab_reprobes_when_reattach_times_out(monkeypatch):
+    _patch_tab_helpers(monkeypatch, "https://example.com")
+    monkeypatch.setattr(
+        helpers, "reattach_session",
+        lambda: (_ for _ in ()).throw(TimeoutError("reattach timed out")),
+    )
+    probes = []
+
+    def verify():
+        probes.append(1)
+        return len(probes) == 2
+
+    monkeypatch.setattr(helpers, "verify_input_delivery", verify)
+
+    assert helpers.ensure_real_tab()["targetId"] == "target-1"
+    assert len(probes) == 2
 
 
 def test_ensure_real_tab_reports_reattach_error_when_delivery_stays_dead(monkeypatch):

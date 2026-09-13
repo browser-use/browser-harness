@@ -208,17 +208,18 @@ def _input_probe_expressions(token):
         "probe.type='text';probe.tabIndex=-1;probe.setAttribute('aria-hidden','true');"
         "probe.style.cssText='position:fixed;left:-10000px;top:-10000px;"
         "width:1px;height:1px;opacity:0;pointer-events:none';"
-        "const state={hits:0,previous,probe};"
-        f"state.listener=e=>{{if(e.isTrusted&&e.key==={key})state.hits++}};"
-        "probe.addEventListener('keydown',state.listener,true);"
+        "const state={hits:0,previous,probe,token:k};"
+        "state.listener=e=>{if(e.isTrusted&&e.key==='a'&&"
+        "window[k]===state)state.hits++};"
+        "document.addEventListener('keydown',state.listener,true);"
         "Object.defineProperty(window,k,{value:state,configurable:true});"
         "(document.documentElement||document.body).appendChild(probe);"
-        "probe.focus({preventScroll:true});return document.activeElement===probe})()"
+        "probe.focus({preventScroll:true});return true})()"
     )
     read = f"(()=>{{const s=window[{key}];return s?s.hits:-1}})()"
     teardown = (
         f"(()=>{{const k={key};const s=window[k];if(!s)return true;"
-        "try{s.probe.removeEventListener('keydown',s.listener,true)}catch(e){}"
+        "try{document.removeEventListener('keydown',s.listener,true)}catch(e){}"
         "try{s.probe.remove()}catch(e){}"
         "try{if(s.previous&&s.previous.isConnected)"
         "s.previous.focus({preventScroll:true})}catch(e){}"
@@ -235,7 +236,7 @@ def verify_input_delivery(session_id=None):
     success for every dispatch, so no error ever reaches the daemon's
     stale-session recovery and the input path is dead in a way no URL or
     connection check can see. This registers a capture-phase keydown
-    listener, sends one synthetic key event no real keyboard can produce,
+    listener, sends one controlled synthetic key event,
     and reads the hit counter back — delivery is verified, not assumed.
 
     Raises RuntimeError when Runtime.evaluate itself fails. That is a
@@ -253,7 +254,7 @@ def verify_input_delivery(session_id=None):
         if not _runtime_evaluate(setup, session_id=session_id):
             return False
         cdp("Input.dispatchKeyEvent", session_id=session_id, type="keyDown",
-            key=token, code="", windowsVirtualKeyCode=0)
+            key="a", code="KeyA", windowsVirtualKeyCode=65)
         hits = _runtime_evaluate(read, session_id=session_id)
     finally:
         try:
@@ -309,7 +310,7 @@ def _reattach_and_require_input_delivery(context):
     reattach_error = None
     try:
         reattach_session()
-    except RuntimeError as e:
+    except (RuntimeError, TimeoutError) as e:
         # A rejected/transient reattach must not turn a false-negative first
         # probe into an immediate hard failure. The second probe is decisive;
         # retain the reattach error as context if delivery is genuinely dead.

@@ -750,6 +750,9 @@ class Daemon:
             recovery_task = self._begin_recovery()
             if recovery_task is None:
                 return {"error": "daemon is shutting down"}
+            old_session = None
+            new_session = None
+            previous_replacements = None
             try:
                 async with self._session_state_lock:
                     if self._shutting_down:
@@ -765,6 +768,7 @@ class Daemon:
                         ))["sessionId"]
                     except Exception as e:
                         return {"error": str(e)}
+                    previous_replacements = self._session_replacements.copy()
                     self.session = new_session
                     self._record_session_replacement(old_session, new_session)
                 # Mirrors set_session: drop the old session's Network subscription
@@ -788,6 +792,33 @@ class Daemon:
                     "session_id": new_session,
                     "target_id": reattached_target_id,
                 }
+            except asyncio.CancelledError:
+                if new_session is not None:
+                    # Shutdown can cancel this handler after the session swap but
+                    # before the replacement domains are ready. Put the old,
+                    # fully configured session back before declaring recovery
+                    # drained; otherwise a failed Cloud cleanup would leave the
+                    # still-running daemon on a half-configured session.
+                    restored_session = False
+                    async with self._session_state_lock:
+                        if self.session == new_session:
+                            self.session = old_session
+                            restored_session = True
+                        if previous_replacements is not None:
+                            self._session_replacements = previous_replacements
+                    if restored_session:
+                        await self._enable_default_domains(old_session)
+                    try:
+                        await asyncio.wait_for(
+                            self.cdp.send_raw(
+                                "Target.detachFromTarget",
+                                {"sessionId": new_session},
+                            ),
+                            timeout=2,
+                        )
+                    except Exception as e:
+                        log(f"detach cancelled reattach session {new_session}: {e}")
+                raise
             finally:
                 self._finish_recovery(recovery_task)
         if meta == "pending_dialog": return {"dialog": self.dialog}

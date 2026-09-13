@@ -958,6 +958,64 @@ def test_shutdown_cancels_and_drains_inflight_reattach(monkeypatch):
     assert d._recoveries_idle.is_set()
 
 
+def test_shutdown_cancel_rolls_back_installed_reattach_before_cloud_failure(monkeypatch):
+    class _BlockingDomainSetupCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.enable_started = asyncio.Event()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-replacement"}
+            if method.endswith(".enable") and session_id == "session-replacement":
+                self.enable_started.set()
+                await asyncio.Event().wait()
+            return {}
+
+    async def run():
+        d = _fresh_daemon()
+        d.cdp = _BlockingDomainSetupCDP()
+        d.session = "session-old"
+        d.target_id = "target-1"
+        d._session_replacements = {"session-older": "session-old"}
+        d.stop = asyncio.Event()
+        reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
+        await d.cdp.enable_started.wait()
+        shutdown_result = await d.handle({"meta": "shutdown"})
+        result = await asyncio.gather(reattach, return_exceptions=True)
+        return d, shutdown_result, result
+
+    monkeypatch.setattr(
+        daemon,
+        "stop_remote",
+        lambda strict=False: (_ for _ in ()).throw(RuntimeError("billing stop failed")),
+    )
+    d, shutdown_result, result = asyncio.run(run())
+
+    assert shutdown_result == {"error": "billing stop failed"}
+    assert d.stop.is_set() is False
+    assert d._shutting_down is False
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert d.session == "session-old"
+    assert d.target_id == "target-1"
+    assert d._session_replacements == {"session-older": "session-old"}
+    enabled_on_old = {
+        method for method, _params, session_id in d.cdp.calls
+        if method.endswith(".enable") and session_id == "session-old"
+    }
+    assert enabled_on_old == {
+        "Page.enable", "DOM.enable", "Runtime.enable", "Network.enable",
+    }
+    detach_calls = [
+        (params, session_id) for method, params, session_id in d.cdp.calls
+        if method == "Target.detachFromTarget"
+    ]
+    assert detach_calls == [({"sessionId": "session-replacement"}, None)]
+    assert d._active_recoveries == 0
+    assert d._recoveries_idle.is_set()
+
+
 def test_reattach_response_keeps_target_that_was_reattached_during_switch():
     class _SlowEnableCDP(_FakeCDP):
         def __init__(self):
