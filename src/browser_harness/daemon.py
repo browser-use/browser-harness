@@ -747,39 +747,49 @@ class Daemon:
             # their own replacement (Target.attachToTarget + explicit
             # session_id) leave this session bookkeeping inconsistent and have
             # been observed hanging the IPC socket, so the swap happens here.
-            async with self._session_state_lock:
-                if self._shutting_down:
-                    return {"error": "daemon is shutting down"}
-                if not self.target_id or not self.session:
-                    return {"error": "not_attached"}
-                old_session = self.session
-                try:
-                    new_session = (await self.cdp.send_raw(
-                        "Target.attachToTarget",
-                        {"targetId": self.target_id, "flatten": True},
-                    ))["sessionId"]
-                except Exception as e:
-                    return {"error": str(e)}
-                self.session = new_session
-                self._record_session_replacement(old_session, new_session)
-            # Mirrors set_session: drop the old session's Network subscription
-            # (defense in depth against background-tab traffic) and enable the
-            # default domains on the new one, in parallel, so the synchronous
-            # reply stays inside the helper's IPC read budget.
-            tasks = []
-            if old_session != new_session:
-                async def disable_old():
+            recovery_task = self._begin_recovery()
+            if recovery_task is None:
+                return {"error": "daemon is shutting down"}
+            try:
+                async with self._session_state_lock:
+                    if self._shutting_down:
+                        return {"error": "daemon is shutting down"}
+                    if not self.target_id or not self.session:
+                        return {"error": "not_attached"}
+                    old_session = self.session
+                    reattached_target_id = self.target_id
                     try:
-                        await asyncio.wait_for(
-                            self.cdp.send_raw("Network.disable", session_id=old_session),
-                            timeout=2,
-                        )
-                    except Exception: pass
-                tasks.append(disable_old())
-            tasks.append(self._enable_default_domains(new_session))
-            await asyncio.gather(*tasks)
-            self._schedule_tab_marker(new_session)
-            return {"session_id": new_session, "target_id": self.target_id}
+                        new_session = (await self.cdp.send_raw(
+                            "Target.attachToTarget",
+                            {"targetId": reattached_target_id, "flatten": True},
+                        ))["sessionId"]
+                    except Exception as e:
+                        return {"error": str(e)}
+                    self.session = new_session
+                    self._record_session_replacement(old_session, new_session)
+                # Mirrors set_session: drop the old session's Network subscription
+                # (defense in depth against background-tab traffic) and enable the
+                # default domains on the new one, in parallel, so the synchronous
+                # reply stays inside the helper's IPC read budget.
+                tasks = []
+                if old_session != new_session:
+                    async def disable_old():
+                        try:
+                            await asyncio.wait_for(
+                                self.cdp.send_raw("Network.disable", session_id=old_session),
+                                timeout=2,
+                            )
+                        except Exception: pass
+                    tasks.append(disable_old())
+                tasks.append(self._enable_default_domains(new_session))
+                await asyncio.gather(*tasks)
+                self._schedule_tab_marker(new_session)
+                return {
+                    "session_id": new_session,
+                    "target_id": reattached_target_id,
+                }
+            finally:
+                self._finish_recovery(recovery_task)
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then

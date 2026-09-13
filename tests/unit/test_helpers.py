@@ -760,6 +760,7 @@ def _patch_tab_helpers(monkeypatch, current_url):
         helpers, "switch_tab",
         lambda target, activate=False: "session-switched",
     )
+    monkeypatch.setattr(helpers, "_send", lambda req, **kwargs: {"dialog": None})
 
 
 def test_verify_input_delivery_true_when_probe_event_arrives(monkeypatch):
@@ -770,9 +771,12 @@ def test_verify_input_delivery_true_when_probe_event_arrives(monkeypatch):
         return {}
 
     monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers.secrets, "token_hex", lambda _size: "fixed-token")
+    evals = []
 
     def fake_runtime_evaluate(expression, session_id=None, await_promise=False):
-        if expression == helpers._INPUT_PROBE_READ:
+        evals.append(expression)
+        if "return s?s.hits:-1" in expression:
             return 1
         return True
 
@@ -781,14 +785,20 @@ def test_verify_input_delivery_true_when_probe_event_arrives(monkeypatch):
     assert helpers.verify_input_delivery() is True
     dispatched = [kw for (m, kw) in calls if m == "Input.dispatchKeyEvent"]
     assert len(dispatched) == 1
-    assert dispatched[0]["key"] == "__bh_input_probe__"
+    assert dispatched[0]["key"] == (
+        "__browser_harness_input_probe_fixed-token"
+    )
+    assert "e.isTrusted" in evals[0]
+    assert "Object.defineProperty(window,k" in evals[0]
+    assert "probe.focus({preventScroll:true})" in evals[0]
+    assert "s.previous.focus({preventScroll:true})" in evals[-1]
 
 
 def test_verify_input_delivery_false_when_probe_event_is_silently_dropped(monkeypatch):
     monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: {})
 
     def fake_runtime_evaluate(expression, session_id=None, await_promise=False):
-        if expression == helpers._INPUT_PROBE_READ:
+        if "return s?s.hits:-1" in expression:
             return 0
         return True
 
@@ -825,6 +835,18 @@ def test_ensure_real_tab_returns_current_tab_when_input_delivery_is_healthy(monk
     assert not reattached
 
 
+def test_ensure_real_tab_skips_probe_while_native_dialog_is_pending(monkeypatch):
+    _patch_tab_helpers(monkeypatch, "https://example.com")
+    monkeypatch.setattr(
+        helpers, "_send", lambda req, **kwargs: {"dialog": {"type": "alert"}},
+    )
+    probed = []
+    monkeypatch.setattr(helpers, "verify_input_delivery", lambda: probed.append(1))
+
+    assert helpers.ensure_real_tab()["targetId"] == "target-1"
+    assert probed == []
+
+
 def test_ensure_real_tab_reattaches_when_input_delivery_is_silently_dead(monkeypatch):
     """Regression for browser-use#5469: the URL check passed and
     Runtime.evaluate stayed healthy, but Input.* events silently stopped
@@ -845,6 +867,29 @@ def test_ensure_real_tab_raises_when_input_stays_dead_after_reattach(monkeypatch
     monkeypatch.setattr(helpers, "verify_input_delivery", _sequence([False, False]))
 
     with pytest.raises(RuntimeError, match="Input dispatch is not reaching the document"):
+        helpers.ensure_real_tab()
+
+
+def test_ensure_real_tab_reprobes_when_reattach_is_rejected(monkeypatch):
+    _patch_tab_helpers(monkeypatch, "https://example.com")
+    monkeypatch.setattr(
+        helpers, "reattach_session",
+        lambda: (_ for _ in ()).throw(RuntimeError("transient attach failure")),
+    )
+    monkeypatch.setattr(helpers, "verify_input_delivery", _sequence([False, True]))
+
+    assert helpers.ensure_real_tab()["targetId"] == "target-1"
+
+
+def test_ensure_real_tab_reports_reattach_error_when_delivery_stays_dead(monkeypatch):
+    _patch_tab_helpers(monkeypatch, "https://example.com")
+    monkeypatch.setattr(
+        helpers, "reattach_session",
+        lambda: (_ for _ in ()).throw(RuntimeError("transient attach failure")),
+    )
+    monkeypatch.setattr(helpers, "verify_input_delivery", _sequence([False, False]))
+
+    with pytest.raises(RuntimeError, match="session re-attach failed.*transient"):
         helpers.ensure_real_tab()
 
 
@@ -871,6 +916,7 @@ def test_ensure_real_tab_switches_to_real_tab_and_verifies_delivery(monkeypatch)
     monkeypatch.setattr(
         helpers, "switch_tab", lambda target, activate=False: switched.append(target),
     )
+    monkeypatch.setattr(helpers, "_send", lambda req, **kwargs: {"dialog": None})
     monkeypatch.setattr(helpers, "verify_input_delivery", lambda: True)
     monkeypatch.setattr(helpers, "reattach_session", lambda: None)
 

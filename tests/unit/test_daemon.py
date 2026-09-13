@@ -921,3 +921,79 @@ def test_reattach_session_keeps_old_session_when_attach_fails():
     assert d.target_id == "target-1"
     # No domain enables may leak onto any session when the swap itself failed.
     assert not any(m.endswith(".enable") for (m, _p, _s) in d.cdp.calls)
+
+
+def test_shutdown_cancels_and_drains_inflight_reattach(monkeypatch):
+    class _BlockingAttachCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.attach_started = asyncio.Event()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                self.attach_started.set()
+                await asyncio.Event().wait()
+            return {}
+
+    async def run():
+        d = _fresh_daemon()
+        d.cdp = _BlockingAttachCDP()
+        d.session = "session-old"
+        d.target_id = "target-1"
+        d.stop = asyncio.Event()
+        reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
+        await d.cdp.attach_started.wait()
+        shutdown_result = await d.handle({"meta": "shutdown"})
+        result = await asyncio.gather(reattach, return_exceptions=True)
+        return d, shutdown_result, result
+
+    monkeypatch.setattr(daemon, "stop_remote", lambda strict=False: None)
+    d, shutdown_result, result = asyncio.run(run())
+
+    assert shutdown_result == {"ok": True}
+    assert d.stop.is_set()
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert d._active_recoveries == 0
+    assert d._recoveries_idle.is_set()
+
+
+def test_reattach_response_keeps_target_that_was_reattached_during_switch():
+    class _SlowEnableCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.enable_started = asyncio.Event()
+            self.release_enables = asyncio.Event()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                return {"sessionId": "reattached-session"}
+            if method.endswith(".enable") and session_id == "reattached-session":
+                self.enable_started.set()
+                await self.release_enables.wait()
+            return {}
+
+    async def run():
+        d = _fresh_daemon()
+        d.cdp = _SlowEnableCDP()
+        d.session = "session-old"
+        d.target_id = "target-old"
+        reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
+        await d.cdp.enable_started.wait()
+        switched = await d.handle({
+            "meta": "set_session",
+            "session_id": "session-new-tab",
+            "target_id": "target-new",
+        })
+        d.cdp.release_enables.set()
+        return d, await reattach, switched
+
+    d, reattach_result, switch_result = asyncio.run(run())
+
+    assert reattach_result == {
+        "session_id": "reattached-session",
+        "target_id": "target-old",
+    }
+    assert switch_result == {"session_id": "session-new-tab"}
+    assert d.target_id == "target-new"

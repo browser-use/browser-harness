@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, time, urllib.request
+import base64, importlib.util, json, math, os, secrets, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -196,21 +196,35 @@ def click_at_xy(x, y, button="left", clicks=1):
 def type_text(text):
     cdp("Input.insertText", text=text)
 
-_INPUT_PROBE_KEY = "__bh_input_probe__"
-_INPUT_PROBE_SETUP = (
-    "(()=>{window.__bh_input_probe=0;"
-    "window.__bh_input_probe_listener=function(e){"
-    "if(e.key==='__bh_input_probe__')window.__bh_input_probe++;};"
-    "document.addEventListener('keydown',window.__bh_input_probe_listener,true);"
-    "return true})()"
-)
-_INPUT_PROBE_READ = "window.__bh_input_probe"
-_INPUT_PROBE_TEARDOWN = (
-    "(()=>{try{document.removeEventListener('keydown',"
-    "window.__bh_input_probe_listener,true)}catch(e){}"
-    "delete window.__bh_input_probe;delete window.__bh_input_probe_listener;"
-    "return true})()"
-)
+_INPUT_PROBE_PREFIX = "__browser_harness_input_probe_"
+
+
+def _input_probe_expressions(token):
+    """Build a collision-resistant probe that restores the page's focus."""
+    key = json.dumps(token)
+    setup = (
+        f"(()=>{{const k={key};const previous=document.activeElement;"
+        "const probe=document.createElement('input');"
+        "probe.type='text';probe.tabIndex=-1;probe.setAttribute('aria-hidden','true');"
+        "probe.style.cssText='position:fixed;left:-10000px;top:-10000px;"
+        "width:1px;height:1px;opacity:0;pointer-events:none';"
+        "const state={hits:0,previous,probe};"
+        f"state.listener=e=>{{if(e.isTrusted&&e.key==={key})state.hits++}};"
+        "probe.addEventListener('keydown',state.listener,true);"
+        "Object.defineProperty(window,k,{value:state,configurable:true});"
+        "(document.documentElement||document.body).appendChild(probe);"
+        "probe.focus({preventScroll:true});return document.activeElement===probe})()"
+    )
+    read = f"(()=>{{const s=window[{key}];return s?s.hits:-1}})()"
+    teardown = (
+        f"(()=>{{const k={key};const s=window[k];if(!s)return true;"
+        "try{s.probe.removeEventListener('keydown',s.listener,true)}catch(e){}"
+        "try{s.probe.remove()}catch(e){}"
+        "try{if(s.previous&&s.previous.isConnected)"
+        "s.previous.focus({preventScroll:true})}catch(e){}"
+        "try{delete window[k]}catch(e){}return true})()"
+    )
+    return setup, read, teardown
 
 
 def verify_input_delivery(session_id=None):
@@ -229,14 +243,21 @@ def verify_input_delivery(session_id=None):
     stale-session recovery does handle), so it is not folded into the
     False return.
     """
-    _runtime_evaluate(_INPUT_PROBE_SETUP, session_id=session_id)
+    # Keyboard events stay inside their browsing context. Focus a private,
+    # off-screen top-document control for the dispatch, then restore the page's
+    # previous focus in teardown. This keeps an iframe-focused page from looking
+    # falsely dead while still testing the current page session's Input path.
+    token = f"{_INPUT_PROBE_PREFIX}{secrets.token_hex(16)}"
+    setup, read, teardown = _input_probe_expressions(token)
     try:
+        if not _runtime_evaluate(setup, session_id=session_id):
+            return False
         cdp("Input.dispatchKeyEvent", session_id=session_id, type="keyDown",
-            key=_INPUT_PROBE_KEY, code="", windowsVirtualKeyCode=0)
-        hits = _runtime_evaluate(_INPUT_PROBE_READ, session_id=session_id)
+            key=token, code="", windowsVirtualKeyCode=0)
+        hits = _runtime_evaluate(read, session_id=session_id)
     finally:
         try:
-            _runtime_evaluate(_INPUT_PROBE_TEARDOWN, session_id=session_id)
+            _runtime_evaluate(teardown, session_id=session_id)
         except Exception:
             pass
     return hits == 1
@@ -257,21 +278,43 @@ def reattach_session():
     return _send({"meta": "reattach_session"}, response_timeout=10.0)
 
 
-def _require_input_delivery(context):
+def _require_input_delivery(context, reattach_error=None):
     """Raise a descriptive RuntimeError unless a probe event reaches the page."""
     try:
         if verify_input_delivery():
             return
     except RuntimeError as e:
+        reattach_detail = (
+            f"; session re-attach also failed ({reattach_error})"
+            if reattach_error else ""
+        )
         raise RuntimeError(
             f"Input dispatch is not reaching the document even {context}: "
-            f"Runtime.evaluate failed ({e})"
+            f"Runtime.evaluate failed ({e}){reattach_detail}"
         ) from e
+    reattach_detail = (
+        f"; session re-attach failed ({reattach_error})"
+        if reattach_error else ""
+    )
     raise RuntimeError(
-        f"Input dispatch is not reaching the document even {context}; the "
+        f"Input dispatch is not reaching the document even {context}"
+        f"{reattach_detail}; the "
         "page or browser needs manual recovery (restart the daemon with "
         "`browser-harness --reload` or reopen the tab)"
     )
+
+
+def _reattach_and_require_input_delivery(context):
+    """Try a fresh session, then always re-probe before deciding it is dead."""
+    reattach_error = None
+    try:
+        reattach_session()
+    except RuntimeError as e:
+        # A rejected/transient reattach must not turn a false-negative first
+        # probe into an immediate hard failure. The second probe is decisive;
+        # retain the reattach error as context if delivery is genuinely dead.
+        reattach_error = e
+    _require_input_delivery(context, reattach_error=reattach_error)
 
 _SELECT_ALL_MODIFIER = None
 def _select_all_modifier():
@@ -558,16 +601,24 @@ def ensure_real_tab(verify_input=True):
     except Exception:
         url_ok = False
     if url_ok:
-        if not verify_input or verify_input_delivery():
+        if (
+            not verify_input
+            or _send({"meta": "pending_dialog"}).get("dialog")
+            or verify_input_delivery()
+        ):
             return cur
-        reattach_session()
-        _require_input_delivery("after a forced session re-attach")
+        _reattach_and_require_input_delivery("after a forced session re-attach")
         return current_tab()
     switch_tab(tabs[0]["targetId"])
-    if not verify_input or verify_input_delivery():
+    if (
+        not verify_input
+        or _send({"meta": "pending_dialog"}).get("dialog")
+        or verify_input_delivery()
+    ):
         return tabs[0]
-    reattach_session()
-    _require_input_delivery("after switching tabs and forcing a session re-attach")
+    _reattach_and_require_input_delivery(
+        "after switching tabs and forcing a session re-attach"
+    )
     return current_tab()
 
 def iframe_target(url_substr):
