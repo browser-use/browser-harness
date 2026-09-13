@@ -736,6 +736,50 @@ class Daemon:
             # it doesn't add to the synchronous IPC budget.
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
+        if meta == "reattach_session":
+            # Force a fresh CDP session for the currently attached target.
+            # Input.dispatchMouseEvent / dispatchKeyEvent can silently stop
+            # reaching the document while Runtime.evaluate on the same session
+            # stays healthy — Chrome answers every dispatch with success, so
+            # the "Session with given id not found" recovery path never fires
+            # and the client cannot detect the deadness except by round-tripping
+            # a probe event (helpers.verify_input_delivery). Helpers attaching
+            # their own replacement (Target.attachToTarget + explicit
+            # session_id) leave this session bookkeeping inconsistent and have
+            # been observed hanging the IPC socket, so the swap happens here.
+            async with self._session_state_lock:
+                if self._shutting_down:
+                    return {"error": "daemon is shutting down"}
+                if not self.target_id or not self.session:
+                    return {"error": "not_attached"}
+                old_session = self.session
+                try:
+                    new_session = (await self.cdp.send_raw(
+                        "Target.attachToTarget",
+                        {"targetId": self.target_id, "flatten": True},
+                    ))["sessionId"]
+                except Exception as e:
+                    return {"error": str(e)}
+                self.session = new_session
+                self._record_session_replacement(old_session, new_session)
+            # Mirrors set_session: drop the old session's Network subscription
+            # (defense in depth against background-tab traffic) and enable the
+            # default domains on the new one, in parallel, so the synchronous
+            # reply stays inside the helper's IPC read budget.
+            tasks = []
+            if old_session != new_session:
+                async def disable_old():
+                    try:
+                        await asyncio.wait_for(
+                            self.cdp.send_raw("Network.disable", session_id=old_session),
+                            timeout=2,
+                        )
+                    except Exception: pass
+                tasks.append(disable_old())
+            tasks.append(self._enable_default_domains(new_session))
+            await asyncio.gather(*tasks)
+            self._schedule_tab_marker(new_session)
+            return {"session_id": new_session, "target_id": self.target_id}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then

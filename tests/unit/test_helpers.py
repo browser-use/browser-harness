@@ -738,3 +738,141 @@ def test_js_keeps_base_exception_from_evaluation_when_detach_also_raises():
         KeyboardInterrupt, match="evaluation interrupted"
     ):
         helpers.js("7", target_id="iframe-target")
+
+
+# --- verify_input_delivery / ensure_real_tab input recovery (browser-use#5469) ---
+
+def _sequence(results):
+    it = iter(results)
+    return lambda *args, **kwargs: next(it)
+
+
+def _patch_tab_helpers(monkeypatch, current_url):
+    monkeypatch.setattr(
+        helpers, "list_tabs",
+        lambda include_chrome=False: [{"targetId": "target-2", "url": current_url}],
+    )
+    monkeypatch.setattr(
+        helpers, "current_tab",
+        lambda: {"targetId": "target-1", "url": current_url},
+    )
+    monkeypatch.setattr(
+        helpers, "switch_tab",
+        lambda target, activate=False: "session-switched",
+    )
+
+
+def test_verify_input_delivery_true_when_probe_event_arrives(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+
+    def fake_runtime_evaluate(expression, session_id=None, await_promise=False):
+        if expression == helpers._INPUT_PROBE_READ:
+            return 1
+        return True
+
+    monkeypatch.setattr(helpers, "_runtime_evaluate", fake_runtime_evaluate)
+
+    assert helpers.verify_input_delivery() is True
+    dispatched = [kw for (m, kw) in calls if m == "Input.dispatchKeyEvent"]
+    assert len(dispatched) == 1
+    assert dispatched[0]["key"] == "__bh_input_probe__"
+
+
+def test_verify_input_delivery_false_when_probe_event_is_silently_dropped(monkeypatch):
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: {})
+
+    def fake_runtime_evaluate(expression, session_id=None, await_promise=False):
+        if expression == helpers._INPUT_PROBE_READ:
+            return 0
+        return True
+
+    monkeypatch.setattr(helpers, "_runtime_evaluate", fake_runtime_evaluate)
+
+    assert helpers.verify_input_delivery() is False
+
+
+def test_verify_input_delivery_removes_listener_even_when_dispatch_fails(monkeypatch):
+    monkeypatch.setattr(
+        helpers, "cdp",
+        lambda method, **kwargs: (_ for _ in ()).throw(RuntimeError("dispatch boom")),
+    )
+    evals = []
+
+    def fake_runtime_evaluate(expression, session_id=None, await_promise=False):
+        evals.append(expression)
+        return True
+
+    monkeypatch.setattr(helpers, "_runtime_evaluate", fake_runtime_evaluate)
+
+    with pytest.raises(RuntimeError, match="dispatch boom"):
+        helpers.verify_input_delivery()
+    assert any("removeEventListener" in e for e in evals)
+
+
+def test_ensure_real_tab_returns_current_tab_when_input_delivery_is_healthy(monkeypatch):
+    _patch_tab_helpers(monkeypatch, "https://example.com")
+    reattached = []
+    monkeypatch.setattr(helpers, "verify_input_delivery", lambda: True)
+    monkeypatch.setattr(helpers, "reattach_session", lambda: reattached.append(1))
+
+    assert helpers.ensure_real_tab()["targetId"] == "target-1"
+    assert not reattached
+
+
+def test_ensure_real_tab_reattaches_when_input_delivery_is_silently_dead(monkeypatch):
+    """Regression for browser-use#5469: the URL check passed and
+    Runtime.evaluate stayed healthy, but Input.* events silently stopped
+    reaching the document. ensure_real_tab must force a fresh CDP session and
+    verify delivery instead of returning a false-healthy tab."""
+    _patch_tab_helpers(monkeypatch, "https://example.com")
+    reattached = []
+    monkeypatch.setattr(helpers, "reattach_session", lambda: reattached.append(1))
+    monkeypatch.setattr(helpers, "verify_input_delivery", _sequence([False, True]))
+
+    assert helpers.ensure_real_tab()["targetId"] == "target-1"
+    assert reattached == [1]
+
+
+def test_ensure_real_tab_raises_when_input_stays_dead_after_reattach(monkeypatch):
+    _patch_tab_helpers(monkeypatch, "https://example.com")
+    monkeypatch.setattr(helpers, "reattach_session", lambda: None)
+    monkeypatch.setattr(helpers, "verify_input_delivery", _sequence([False, False]))
+
+    with pytest.raises(RuntimeError, match="Input dispatch is not reaching the document"):
+        helpers.ensure_real_tab()
+
+
+def test_ensure_real_tab_skips_probe_when_verification_disabled(monkeypatch):
+    _patch_tab_helpers(monkeypatch, "https://example.com")
+    probed = []
+    monkeypatch.setattr(helpers, "verify_input_delivery", lambda: probed.append(1))
+    monkeypatch.setattr(helpers, "reattach_session", lambda: None)
+
+    assert helpers.ensure_real_tab(verify_input=False)["targetId"] == "target-1"
+    assert not probed
+
+
+def test_ensure_real_tab_switches_to_real_tab_and_verifies_delivery(monkeypatch):
+    monkeypatch.setattr(
+        helpers, "list_tabs",
+        lambda include_chrome=False: [{"targetId": "target-2", "url": "https://example.com"}],
+    )
+    monkeypatch.setattr(
+        helpers, "current_tab",
+        lambda: {"targetId": "target-1", "url": "chrome://new-tab-page"},
+    )
+    switched = []
+    monkeypatch.setattr(
+        helpers, "switch_tab", lambda target, activate=False: switched.append(target),
+    )
+    monkeypatch.setattr(helpers, "verify_input_delivery", lambda: True)
+    monkeypatch.setattr(helpers, "reattach_session", lambda: None)
+
+    assert helpers.ensure_real_tab()["targetId"] == "target-2"
+    assert switched == ["target-2"]

@@ -845,3 +845,79 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+# --- reattach_session meta (silent Input drop recovery, browser-use#5469) ---
+
+def test_reattach_session_swaps_session_and_enables_default_domains():
+    """reattach_session must attach browser-level (no session), swap
+    self.session under the state lock, record the replacement so delayed
+    requests still land on the same tab, disable Network on the old session,
+    and enable the four default domains on the new one."""
+    class _AttachSessionCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                return {"sessionId": f"session-for-{params['targetId']}"}
+            return {}
+
+    d = _fresh_daemon()
+    d.cdp = _AttachSessionCDP()
+    d.session = "session-old"
+    d.target_id = "target-1"
+
+    result = asyncio.run(d.handle({"meta": "reattach_session"}))
+
+    assert result == {"session_id": "session-for-target-1", "target_id": "target-1"}
+    assert d.session == "session-for-target-1"
+    assert d._session_replacements.get("session-old") == "session-for-target-1"
+    attach_calls = [(m, s) for (m, _p, s) in d.cdp.calls if m == "Target.attachToTarget"]
+    assert attach_calls == [("Target.attachToTarget", None)]  # browser-level, no session
+    enabled = [
+        m for (m, _p, s) in d.cdp.calls
+        if s == "session-for-target-1" and m.endswith(".enable")
+    ]
+    assert set(enabled) == {"Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"}
+    old_session_calls = [m for (m, _p, s) in d.cdp.calls if s == "session-old"]
+    assert "Network.disable" in old_session_calls
+
+
+def test_reattach_session_returns_not_attached_without_a_session():
+    d = _fresh_daemon()
+
+    assert asyncio.run(d.handle({"meta": "reattach_session"})) == {"error": "not_attached"}
+
+
+def test_reattach_session_refuses_during_shutdown():
+    d = _fresh_daemon()
+    d.session = "session-old"
+    d.target_id = "target-1"
+    d._shutting_down = True
+
+    assert asyncio.run(d.handle({"meta": "reattach_session"})) == {
+        "error": "daemon is shutting down"
+    }
+    assert d.cdp.calls == []
+
+
+def test_reattach_session_keeps_old_session_when_attach_fails():
+    d = _fresh_daemon()
+    d.session = "session-old"
+    d.target_id = "target-1"
+
+    class _FailAttachCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                raise RuntimeError("simulated attach failure")
+            return {}
+
+    d.cdp = _FailAttachCDP()
+
+    result = asyncio.run(d.handle({"meta": "reattach_session"}))
+
+    assert result == {"error": "simulated attach failure"}
+    assert d.session == "session-old"
+    assert d.target_id == "target-1"
+    # No domain enables may leak onto any session when the swap itself failed.
+    assert not any(m.endswith(".enable") for (m, _p, _s) in d.cdp.calls)

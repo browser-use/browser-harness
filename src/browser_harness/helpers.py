@@ -196,6 +196,83 @@ def click_at_xy(x, y, button="left", clicks=1):
 def type_text(text):
     cdp("Input.insertText", text=text)
 
+_INPUT_PROBE_KEY = "__bh_input_probe__"
+_INPUT_PROBE_SETUP = (
+    "(()=>{window.__bh_input_probe=0;"
+    "window.__bh_input_probe_listener=function(e){"
+    "if(e.key==='__bh_input_probe__')window.__bh_input_probe++;};"
+    "document.addEventListener('keydown',window.__bh_input_probe_listener,true);"
+    "return true})()"
+)
+_INPUT_PROBE_READ = "window.__bh_input_probe"
+_INPUT_PROBE_TEARDOWN = (
+    "(()=>{try{document.removeEventListener('keydown',"
+    "window.__bh_input_probe_listener,true)}catch(e){}"
+    "delete window.__bh_input_probe;delete window.__bh_input_probe_listener;"
+    "return true})()"
+)
+
+
+def verify_input_delivery(session_id=None):
+    """True when Input.* dispatch on the current session reaches the document.
+
+    Runtime.evaluate can stay healthy while Input.dispatchMouseEvent /
+    Input.dispatchKeyEvent silently stop reaching the page: Chrome returns
+    success for every dispatch, so no error ever reaches the daemon's
+    stale-session recovery and the input path is dead in a way no URL or
+    connection check can see. This registers a capture-phase keydown
+    listener, sends one synthetic key event no real keyboard can produce,
+    and reads the hit counter back — delivery is verified, not assumed.
+
+    Raises RuntimeError when Runtime.evaluate itself fails. That is a
+    different, already-visible failure (and the one the daemon's
+    stale-session recovery does handle), so it is not folded into the
+    False return.
+    """
+    _runtime_evaluate(_INPUT_PROBE_SETUP, session_id=session_id)
+    try:
+        cdp("Input.dispatchKeyEvent", session_id=session_id, type="keyDown",
+            key=_INPUT_PROBE_KEY, code="", windowsVirtualKeyCode=0)
+        hits = _runtime_evaluate(_INPUT_PROBE_READ, session_id=session_id)
+    finally:
+        try:
+            _runtime_evaluate(_INPUT_PROBE_TEARDOWN, session_id=session_id)
+        except Exception:
+            pass
+    return hits == 1
+
+
+def reattach_session():
+    """Force a fresh CDP session for the currently attached tab (daemon-side).
+
+    When input dispatch goes silent on a session that otherwise answers, the
+    client cannot fix it alone: attaching its own replacement session via
+    cdp("Target.attachToTarget", ...) + cdp(..., session_id=...) leaves the
+    daemon's session bookkeeping (replacements, domain enables, tab marker)
+    pointing at the old session, and the explicit-session attach has been
+    observed hanging the IPC socket. The daemon owns the swap instead: this
+    asks it to re-attach to the current target, enable the default domains,
+    and record the replacement so delayed requests still land correctly.
+    """
+    return _send({"meta": "reattach_session"}, response_timeout=10.0)
+
+
+def _require_input_delivery(context):
+    """Raise a descriptive RuntimeError unless a probe event reaches the page."""
+    try:
+        if verify_input_delivery():
+            return
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"Input dispatch is not reaching the document even {context}: "
+            f"Runtime.evaluate failed ({e})"
+        ) from e
+    raise RuntimeError(
+        f"Input dispatch is not reaching the document even {context}; the "
+        "page or browser needs manual recovery (restart the daemon with "
+        "`browser-harness --reload` or reopen the tab)"
+    )
+
 _SELECT_ALL_MODIFIER = None
 def _select_all_modifier():
     """Select-all modifier by the browser's OS (not this process's): 4=Meta on macOS, else 2=Ctrl."""
@@ -459,19 +536,39 @@ def close_tab(target=None):
     cdp("Target.closeTarget", targetId=target_id)
 
 
-def ensure_real_tab():
-    """Switch to a real user tab if current is chrome:// / internal / stale."""
+def ensure_real_tab(verify_input=True):
+    """Switch to a real user tab if current is chrome:// / internal / stale.
+
+    With verify_input=True (default) a healthy-looking URL is not trusted
+    blindly: one synthetic key event is round-tripped against a capture-phase
+    listener, because Runtime.evaluate can stay healthy while Input.* silently
+    stops reaching the document (Chrome returns success for every dispatch, so
+    the daemon's stale-session recovery never fires). When the probe detects
+    dead input delivery, a fresh CDP session is forced via reattach_session()
+    and the probe runs again; RuntimeError is raised if delivery is still
+    dead, so callers never mistake a silent-input session for a healthy one.
+    Pass verify_input=False to keep the old URL-only behavior.
+    """
     tabs = list_tabs(include_chrome=False)
     if not tabs:
         return None
     try:
         cur = current_tab()
-        if cur["url"] and not cur["url"].startswith(INTERNAL):
-            return cur
+        url_ok = bool(cur["url"]) and not cur["url"].startswith(INTERNAL)
     except Exception:
-        pass
+        url_ok = False
+    if url_ok:
+        if not verify_input or verify_input_delivery():
+            return cur
+        reattach_session()
+        _require_input_delivery("after a forced session re-attach")
+        return current_tab()
     switch_tab(tabs[0]["targetId"])
-    return tabs[0]
+    if not verify_input or verify_input_delivery():
+        return tabs[0]
+    reattach_session()
+    _require_input_delivery("after switching tabs and forcing a session re-attach")
+    return current_tab()
 
 def iframe_target(url_substr):
     """First iframe target whose URL contains `url_substr`. Use with js(..., target_id=...)."""
