@@ -258,7 +258,10 @@ def verify_input_delivery(session_id=None):
         try:
             hits = _runtime_evaluate(read, session_id=session_id)
         finally:
-            cdp("Input.dispatchKeyEvent", session_id=session_id, type="keyUp", **key)
+            try:
+                cdp("Input.dispatchKeyEvent", session_id=session_id, type="keyUp", **key)
+            except Exception as e:
+                print(f"[verify_input_delivery] keyUp failed: {e}")
     finally:
         try:
             _runtime_evaluate(teardown, session_id=session_id)

@@ -843,6 +843,29 @@ def test_verify_input_delivery_releases_probe_key_when_counter_read_fails(monkey
     assert all(event["key"] == "F24" for event in dispatched)
 
 
+def test_verify_input_delivery_keeps_counter_error_when_key_release_fails(monkeypatch):
+    def fake_cdp(method, **kwargs):
+        if method == "Input.dispatchKeyEvent" and kwargs["type"] == "keyUp":
+            raise RuntimeError("key release failed")
+        return {}
+
+    def fake_runtime_evaluate(expression, session_id=None, await_promise=False):
+        if "return s?s.hits:-1" in expression:
+            raise RuntimeError("counter read failed")
+        return True
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_runtime_evaluate", fake_runtime_evaluate)
+
+    with pytest.raises(RuntimeError, match="counter read failed") as direct:
+        helpers.verify_input_delivery()
+    assert "key release failed" not in str(direct.value)
+
+    with pytest.raises(RuntimeError, match=r"Runtime.evaluate failed \(counter read failed\)") as required:
+        helpers._require_input_delivery("after a forced session re-attach")
+    assert "key release failed" not in str(required.value)
+
+
 def test_verify_input_delivery_removes_listener_even_when_dispatch_fails(monkeypatch):
     monkeypatch.setattr(
         helpers, "cdp",

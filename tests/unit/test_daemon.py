@@ -1082,6 +1082,54 @@ def test_shutdown_cancel_rolls_back_installed_reattach_before_cloud_failure(monk
     assert d._recoveries_idle.is_set()
 
 
+def test_shutdown_cancel_restores_reattach_map_after_tab_switch(monkeypatch):
+    class _BlockingDomainSetupCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.enable_started = asyncio.Event()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-replacement"}
+            if method.endswith(".enable") and session_id == "session-replacement":
+                self.enable_started.set()
+                await asyncio.Event().wait()
+            return {}
+
+    async def run():
+        d = _fresh_daemon()
+        d.cdp = _BlockingDomainSetupCDP()
+        d.session = "session-old"
+        d.target_id = "target-old"
+        d._session_replacements = {"session-older": "session-old"}
+        d.stop = asyncio.Event()
+        reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
+        await asyncio.wait_for(d.cdp.enable_started.wait(), timeout=3)
+        switched = await d.handle({
+            "meta": "set_session",
+            "session_id": "session-new-tab",
+            "target_id": "target-new",
+        })
+        shutdown_result = await d.handle({"meta": "shutdown"})
+        result = await asyncio.gather(reattach, return_exceptions=True)
+        return d, switched, shutdown_result, result
+
+    monkeypatch.setattr(daemon, "stop_remote", lambda strict=False: None)
+    d, switched, shutdown_result, result = asyncio.run(run())
+
+    assert switched == {"session_id": "session-new-tab"}
+    assert shutdown_result == {"ok": True}
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert d.session == "session-new-tab"
+    assert d._session_replacements == {"session-older": "session-old"}
+    detach_calls = [
+        (params, session_id) for method, params, session_id in d.cdp.calls
+        if method == "Target.detachFromTarget"
+    ]
+    assert detach_calls == [({"sessionId": "session-replacement"}, None)]
+
+
 def test_cancelled_reattach_does_not_clobber_newer_replacement_map():
     class _ConcurrentReattachCDP(_FakeCDP):
         def __init__(self):

@@ -810,20 +810,21 @@ class Daemon:
                     if new_session is None:
                         return
 
-                    # Restore only while this handler still owns both pieces of
-                    # session state. A newer reattach may already have replaced
-                    # new_session and advanced the replacement chain.
+                    # Restore each piece only while this handler still owns it.
+                    # A tab switch can move the active session without changing
+                    # the replacement map, while a newer reattach can advance
+                    # both pieces of state.
                     restored_session = False
                     async with self._session_state_lock:
                         owns_replacement = (
                             previous_replacements is not None
-                            and self.session == new_session
                             and self._session_replacements.get(old_session) == new_session
                         )
                         if owns_replacement:
-                            self.session = old_session
+                            if self.session == new_session:
+                                self.session = old_session
+                                restored_session = True
                             self._session_replacements = previous_replacements
-                            restored_session = True
 
                     async def restore_network():
                         if not restored_session:
