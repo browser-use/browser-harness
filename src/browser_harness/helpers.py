@@ -209,7 +209,7 @@ def _input_probe_expressions(token):
         "probe.style.cssText='position:fixed;left:-10000px;top:-10000px;"
         "width:1px;height:1px;opacity:0;pointer-events:none';"
         "const state={hits:0,previous,probe,token:k};"
-        "state.listener=e=>{if(e.isTrusted&&e.key==='a'&&"
+        "state.listener=e=>{if(e.isTrusted&&e.key==='F24'&&"
         "window[k]===state)state.hits++};"
         "document.addEventListener('keydown',state.listener,true);"
         "Object.defineProperty(window,k,{value:state,configurable:true});"
@@ -253,9 +253,12 @@ def verify_input_delivery(session_id=None):
     try:
         if not _runtime_evaluate(setup, session_id=session_id):
             return False
-        cdp("Input.dispatchKeyEvent", session_id=session_id, type="keyDown",
-            key="a", code="KeyA", windowsVirtualKeyCode=65)
-        hits = _runtime_evaluate(read, session_id=session_id)
+        key = {"key": "F24", "code": "F24", "windowsVirtualKeyCode": 135}
+        cdp("Input.dispatchKeyEvent", session_id=session_id, type="keyDown", **key)
+        try:
+            hits = _runtime_evaluate(read, session_id=session_id)
+        finally:
+            cdp("Input.dispatchKeyEvent", session_id=session_id, type="keyUp", **key)
     finally:
         try:
             _runtime_evaluate(teardown, session_id=session_id)

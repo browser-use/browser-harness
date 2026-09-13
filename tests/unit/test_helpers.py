@@ -784,11 +784,12 @@ def test_verify_input_delivery_true_when_probe_event_arrives(monkeypatch):
 
     assert helpers.verify_input_delivery() is True
     dispatched = [kw for (m, kw) in calls if m == "Input.dispatchKeyEvent"]
-    assert len(dispatched) == 1
-    assert dispatched[0]["key"] == "a"
-    assert dispatched[0]["code"] == "KeyA"
-    assert dispatched[0]["windowsVirtualKeyCode"] == 65
+    assert [event["type"] for event in dispatched] == ["keyDown", "keyUp"]
+    assert all(event["key"] == "F24" for event in dispatched)
+    assert all(event["code"] == "F24" for event in dispatched)
+    assert all(event["windowsVirtualKeyCode"] == 135 for event in dispatched)
     assert "e.isTrusted" in evals[0]
+    assert "e.key==='F24'" in evals[0]
     assert "__browser_harness_input_probe_fixed-token" in evals[0]
     assert "Object.defineProperty(window,k" in evals[0]
     assert "document.addEventListener('keydown',state.listener,true)" in evals[0]
@@ -818,6 +819,28 @@ def test_verify_input_delivery_false_when_probe_event_is_silently_dropped(monkey
     monkeypatch.setattr(helpers, "_runtime_evaluate", fake_runtime_evaluate)
 
     assert helpers.verify_input_delivery() is False
+
+
+def test_verify_input_delivery_releases_probe_key_when_counter_read_fails(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {}
+
+    def fake_runtime_evaluate(expression, session_id=None, await_promise=False):
+        if "return s?s.hits:-1" in expression:
+            raise RuntimeError("counter read failed")
+        return True
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_runtime_evaluate", fake_runtime_evaluate)
+
+    with pytest.raises(RuntimeError, match="counter read failed"):
+        helpers.verify_input_delivery()
+    dispatched = [kw for method, kw in calls if method == "Input.dispatchKeyEvent"]
+    assert [event["type"] for event in dispatched] == ["keyDown", "keyUp"]
+    assert all(event["key"] == "F24" for event in dispatched)
 
 
 def test_verify_input_delivery_removes_listener_even_when_dispatch_fails(monkeypatch):

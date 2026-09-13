@@ -127,6 +127,8 @@ TOGGLE_BOOT_GRACE = 12
 # Cancellation should make an in-flight CDP call finish immediately. Keep the
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
+# Leave headroom for _cancel_and_drain_recoveries() to observe task completion.
+REATTACH_CANCEL_ROLLBACK_TIMEOUT = 1.5
 TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
 
 
@@ -753,6 +755,7 @@ class Daemon:
             old_session = None
             new_session = None
             previous_replacements = None
+            attach_task = None
             try:
                 async with self._session_state_lock:
                     if self._shutting_down:
@@ -762,10 +765,11 @@ class Daemon:
                     old_session = self.session
                     reattached_target_id = self.target_id
                     try:
-                        new_session = (await self.cdp.send_raw(
+                        attach_task = asyncio.create_task(self.cdp.send_raw(
                             "Target.attachToTarget",
                             {"targetId": reattached_target_id, "flatten": True},
-                        ))["sessionId"]
+                        ))
+                        new_session = (await asyncio.shield(attach_task))["sessionId"]
                     except Exception as e:
                         return {"error": str(e)}
                     previous_replacements = self._session_replacements.copy()
@@ -793,31 +797,75 @@ class Daemon:
                     "target_id": reattached_target_id,
                 }
             except asyncio.CancelledError:
-                if new_session is not None:
-                    # Shutdown can cancel this handler after the session swap but
-                    # before the replacement domains are ready. Put the old,
-                    # fully configured session back before declaring recovery
-                    # drained; otherwise a failed Cloud cleanup would leave the
-                    # still-running daemon on a half-configured session.
+                async def rollback():
+                    nonlocal new_session
+                    if new_session is None and attach_task is not None:
+                        try:
+                            new_session = (await asyncio.shield(attach_task))["sessionId"]
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            log(f"finish cancelled reattach: {e}")
+                            return
+                    if new_session is None:
+                        return
+
+                    # Restore only while this handler still owns both pieces of
+                    # session state. A newer reattach may already have replaced
+                    # new_session and advanced the replacement chain.
                     restored_session = False
                     async with self._session_state_lock:
-                        if self.session == new_session:
-                            self.session = old_session
-                            restored_session = True
-                        if previous_replacements is not None:
-                            self._session_replacements = previous_replacements
-                    if restored_session:
-                        await self._enable_default_domains(old_session)
-                    try:
-                        await asyncio.wait_for(
-                            self.cdp.send_raw(
-                                "Target.detachFromTarget",
-                                {"sessionId": new_session},
-                            ),
-                            timeout=2,
+                        owns_replacement = (
+                            previous_replacements is not None
+                            and self.session == new_session
+                            and self._session_replacements.get(old_session) == new_session
                         )
+                        if owns_replacement:
+                            self.session = old_session
+                            self._session_replacements = previous_replacements
+                            restored_session = True
+
+                    async def restore_network():
+                        if not restored_session:
+                            return
+                        try:
+                            await asyncio.wait_for(
+                                self.cdp.send_raw("Network.enable", session_id=old_session),
+                                timeout=0.5,
+                            )
+                        except Exception as e:
+                            log(f"restore Network on {old_session}: {e}")
+
+                    async def detach_new():
+                        try:
+                            await asyncio.wait_for(
+                                self.cdp.send_raw(
+                                    "Target.detachFromTarget",
+                                    {"sessionId": new_session},
+                                ),
+                                timeout=0.5,
+                            )
+                        except Exception as e:
+                            log(f"detach cancelled reattach session {new_session}: {e}")
+
+                    await asyncio.gather(restore_network(), detach_new())
+
+                rollback_task = asyncio.create_task(rollback())
+                done, _pending = await asyncio.wait(
+                    {rollback_task}, timeout=REATTACH_CANCEL_ROLLBACK_TIMEOUT
+                )
+                if not done:
+                    rollback_task.cancel()
+                    if attach_task is not None and not attach_task.done():
+                        attach_task.cancel()
+                    log("cancelled reattach rollback timed out")
+                else:
+                    # Retrieve any unexpected exception without extending the
+                    # bounded cancellation path.
+                    try:
+                        rollback_task.result()
                     except Exception as e:
-                        log(f"detach cancelled reattach session {new_session}: {e}")
+                        log(f"cancelled reattach rollback failed: {e}")
                 raise
             finally:
                 self._finish_recovery(recovery_task)

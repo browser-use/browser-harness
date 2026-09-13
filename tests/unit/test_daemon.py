@@ -943,7 +943,7 @@ def test_shutdown_cancels_and_drains_inflight_reattach(monkeypatch):
         d.target_id = "target-1"
         d.stop = asyncio.Event()
         reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
-        await d.cdp.attach_started.wait()
+        await asyncio.wait_for(d.cdp.attach_started.wait(), timeout=3)
         shutdown_result = await d.handle({"meta": "shutdown"})
         result = await asyncio.gather(reattach, return_exceptions=True)
         return d, shutdown_result, result
@@ -958,17 +958,62 @@ def test_shutdown_cancels_and_drains_inflight_reattach(monkeypatch):
     assert d._recoveries_idle.is_set()
 
 
+def test_cancelled_attach_response_is_detached_during_shutdown(monkeypatch):
+    class _DelayedAttachCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.attach_started = asyncio.Event()
+            self.release_attach = asyncio.Event()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                self.attach_started.set()
+                await self.release_attach.wait()
+                return {"sessionId": "late-session"}
+            return {}
+
+    async def run():
+        d = _fresh_daemon()
+        d.cdp = _DelayedAttachCDP()
+        d.session = "session-old"
+        d.target_id = "target-1"
+        d.stop = asyncio.Event()
+        reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
+        await asyncio.wait_for(d.cdp.attach_started.wait(), timeout=3)
+        shutdown = asyncio.create_task(d.handle({"meta": "shutdown"}))
+        await asyncio.sleep(0)
+        d.cdp.release_attach.set()
+        shutdown_result = await shutdown
+        result = await asyncio.gather(reattach, return_exceptions=True)
+        return d, shutdown_result, result
+
+    monkeypatch.setattr(daemon, "stop_remote", lambda strict=False: None)
+    d, shutdown_result, result = asyncio.run(run())
+
+    assert shutdown_result == {"ok": True}
+    assert isinstance(result[0], asyncio.CancelledError)
+    detach_calls = [
+        params for method, params, _session_id in d.cdp.calls
+        if method == "Target.detachFromTarget"
+    ]
+    assert detach_calls == [{"sessionId": "late-session"}]
+
+
 def test_shutdown_cancel_rolls_back_installed_reattach_before_cloud_failure(monkeypatch):
     class _BlockingDomainSetupCDP(_FakeCDP):
         def __init__(self):
             super().__init__()
             self.enable_started = asyncio.Event()
+            self.block_replacement_enable = True
 
         async def send_raw(self, method, params=None, session_id=None):
             self.calls.append((method, params, session_id))
             if method == "Target.attachToTarget":
                 return {"sessionId": "session-replacement"}
-            if method.endswith(".enable") and session_id == "session-replacement":
+            if (method.endswith(".enable") and session_id == "session-replacement"
+                    and self.block_replacement_enable):
+                self.block_replacement_enable = False
                 self.enable_started.set()
                 await asyncio.Event().wait()
             return {}
@@ -981,37 +1026,144 @@ def test_shutdown_cancel_rolls_back_installed_reattach_before_cloud_failure(monk
         d._session_replacements = {"session-older": "session-old"}
         d.stop = asyncio.Event()
         reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
-        await d.cdp.enable_started.wait()
+        await asyncio.wait_for(d.cdp.enable_started.wait(), timeout=3)
         shutdown_result = await d.handle({"meta": "shutdown"})
         result = await asyncio.gather(reattach, return_exceptions=True)
-        return d, shutdown_result, result
+        rolled_back = (
+            d.session,
+            d.target_id,
+            d._session_replacements.copy(),
+            d._active_recoveries,
+            d._recoveries_idle.is_set(),
+        )
+        retry_result = await asyncio.wait_for(
+            d.handle({"meta": "reattach_session"}), timeout=3
+        )
+        return d, shutdown_result, result, rolled_back, retry_result
 
     monkeypatch.setattr(
         daemon,
         "stop_remote",
         lambda strict=False: (_ for _ in ()).throw(RuntimeError("billing stop failed")),
     )
-    d, shutdown_result, result = asyncio.run(run())
+    d, shutdown_result, result, rolled_back, retry_result = asyncio.run(run())
 
     assert shutdown_result == {"error": "billing stop failed"}
     assert d.stop.is_set() is False
     assert d._shutting_down is False
     assert isinstance(result[0], asyncio.CancelledError)
-    assert d.session == "session-old"
+    assert rolled_back == (
+        "session-old",
+        "target-1",
+        {"session-older": "session-old"},
+        0,
+        True,
+    )
+    assert retry_result == {
+        "session_id": "session-replacement", "target_id": "target-1",
+    }
+    assert d.session == "session-replacement"
     assert d.target_id == "target-1"
-    assert d._session_replacements == {"session-older": "session-old"}
+    assert d._session_replacements == {
+        "session-older": "session-replacement",
+        "session-old": "session-replacement",
+    }
     enabled_on_old = {
         method for method, _params, session_id in d.cdp.calls
         if method.endswith(".enable") and session_id == "session-old"
     }
-    assert enabled_on_old == {
-        "Page.enable", "DOM.enable", "Runtime.enable", "Network.enable",
-    }
+    assert enabled_on_old == {"Network.enable"}
     detach_calls = [
         (params, session_id) for method, params, session_id in d.cdp.calls
         if method == "Target.detachFromTarget"
     ]
     assert detach_calls == [({"sessionId": "session-replacement"}, None)]
+    assert d._active_recoveries == 0
+    assert d._recoveries_idle.is_set()
+
+
+def test_cancelled_reattach_does_not_clobber_newer_replacement_map():
+    class _ConcurrentReattachCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.attach_count = 0
+            self.first_enable_started = asyncio.Event()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                self.attach_count += 1
+                return {"sessionId": f"session-{self.attach_count}"}
+            if method.endswith(".enable") and session_id == "session-1":
+                self.first_enable_started.set()
+                await asyncio.Event().wait()
+            return {}
+
+    async def run():
+        d = _fresh_daemon()
+        d.cdp = _ConcurrentReattachCDP()
+        d.session = "session-old"
+        d.target_id = "target-1"
+        first = asyncio.create_task(d.handle({"meta": "reattach_session"}))
+        await asyncio.wait_for(d.cdp.first_enable_started.wait(), timeout=3)
+        second_result = await asyncio.wait_for(
+            d.handle({"meta": "reattach_session"}), timeout=3
+        )
+        first.cancel()
+        first_result = await asyncio.gather(first, return_exceptions=True)
+        return d, second_result, first_result
+
+    d, second_result, first_result = asyncio.run(run())
+
+    assert second_result == {"session_id": "session-2", "target_id": "target-1"}
+    assert isinstance(first_result[0], asyncio.CancelledError)
+    assert d.session == "session-2"
+    assert d._session_replacements == {
+        "session-old": "session-2", "session-1": "session-2",
+    }
+
+
+def test_shutdown_drain_bounds_cancelled_reattach_rollback(monkeypatch):
+    class _WedgedRollbackCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.enable_started = asyncio.Event()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.attachToTarget":
+                return {"sessionId": "session-replacement"}
+            if (method.endswith(".enable") and session_id == "session-replacement"):
+                self.enable_started.set()
+                await asyncio.Event().wait()
+            if (method == "Network.enable" and session_id == "session-old"):
+                await asyncio.Event().wait()
+            if method == "Target.detachFromTarget":
+                await asyncio.Event().wait()
+            return {}
+
+    async def run():
+        d = _fresh_daemon()
+        d.cdp = _WedgedRollbackCDP()
+        d.session = "session-old"
+        d.target_id = "target-1"
+        d.stop = asyncio.Event()
+        reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
+        await asyncio.wait_for(d.cdp.enable_started.wait(), timeout=3)
+        started = asyncio.get_running_loop().time()
+        shutdown_result = await d.handle({"meta": "shutdown"})
+        elapsed = asyncio.get_running_loop().time() - started
+        result = await asyncio.gather(reattach, return_exceptions=True)
+        return d, shutdown_result, result, elapsed
+
+    monkeypatch.setattr(daemon, "REATTACH_CANCEL_ROLLBACK_TIMEOUT", 0.2)
+    monkeypatch.setattr(daemon, "RECOVERY_CANCEL_DRAIN_TIMEOUT", 0.5)
+    monkeypatch.setattr(daemon, "stop_remote", lambda strict=False: None)
+    d, shutdown_result, result, elapsed = asyncio.run(run())
+
+    assert shutdown_result == {"ok": True}
+    assert elapsed < daemon.RECOVERY_CANCEL_DRAIN_TIMEOUT
+    assert isinstance(result[0], asyncio.CancelledError)
     assert d._active_recoveries == 0
     assert d._recoveries_idle.is_set()
 
@@ -1038,7 +1190,7 @@ def test_reattach_response_keeps_target_that_was_reattached_during_switch():
         d.session = "session-old"
         d.target_id = "target-old"
         reattach = asyncio.create_task(d.handle({"meta": "reattach_session"}))
-        await d.cdp.enable_started.wait()
+        await asyncio.wait_for(d.cdp.enable_started.wait(), timeout=3)
         switched = await d.handle({
             "meta": "set_session",
             "session_id": "session-new-tab",
