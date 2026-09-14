@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, json, os, re, secrets, socket, struct, subprocess, sys
 from pathlib import Path
 
 from . import paths
@@ -24,6 +24,12 @@ _RUNTIME = paths.ensure_private_dir(Path(BH_RUNTIME_DIR).expanduser().resolve())
 _TMP.mkdir(parents=True, exist_ok=True)
 _RUNTIME.mkdir(parents=True, exist_ok=True)
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+
+# Login frames stay binary and bounded; secret bytes never enter JSON.
+LOGIN_SECRET_OPCODE = 1
+LOGIN_ABORT_OPCODE = 2
+LOGIN_FRAME_HEADER = struct.Struct("!B16sI")
+LOGIN_SECRET_MAX_BYTES = 16 * 1024
 
 # Set by serve() on Windows. Daemon's handle() requires every request to carry
 # this token (TCP loopback has no chmod-equivalent so any local process could
@@ -104,6 +110,21 @@ def request(c, token, req):
         if not chunk: break
         data += chunk
     return json.loads(data or b"{}")
+
+
+def send_login_secret(c, transaction_id, secret):
+    """Send opaque login bytes outside argv, env, JSON, and text streams."""
+    if IS_WINDOWS:
+        raise NotImplementedError("login secret transport unsupported on Windows")
+    if not isinstance(secret, bytes) or not (1 <= len(secret) <= LOGIN_SECRET_MAX_BYTES):
+        raise ValueError("invalid login secret")
+    try:
+        raw_id = bytes.fromhex(transaction_id)
+    except (TypeError, ValueError):
+        raise ValueError("invalid login transaction id") from None
+    if len(raw_id) != 16:
+        raise ValueError("invalid login transaction id")
+    c.sendall(LOGIN_FRAME_HEADER.pack(LOGIN_SECRET_OPCODE, raw_id, len(secret)) + secret)
 
 
 def ping(name, timeout=1.0):

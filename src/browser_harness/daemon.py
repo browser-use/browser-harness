@@ -1,5 +1,6 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+import asyncio, json, os, platform, secrets, socket, sys, time, urllib.error, urllib.request
+from dataclasses import dataclass
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -128,6 +129,20 @@ TOGGLE_BOOT_GRACE = 12
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
 TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
+LOGIN_ADAPTER = "credential-form-v1"
+LOGIN_SECRET_MAX_BYTES = ipc.LOGIN_SECRET_MAX_BYTES
+LOGIN_TIMEOUT_SECONDS = 120
+
+
+@dataclass
+class _LoginTransaction:
+    transaction_id: str
+    adapter: str
+    owner: object
+    target_id: str
+    session_id: str
+    generation: int
+    deadline: float
 
 
 def tab_marker_enabled():
@@ -435,9 +450,22 @@ class Daemon:
         self._recoveries_idle.set()
         self._shutting_down = False
         self._session_replacements = {}
+        self._session_generation = 0
+        self._login_transaction = None
+        self._login_lock = asyncio.Lock()
+        # Transaction admission is a writer barrier around ordinary requests:
+        # existing executions drain, then new ones remain blocked until begin
+        # has installed the transaction. Ordinary requests remain concurrent.
+        self._execution_condition = asyncio.Condition()
+        self._ordinary_in_flight = 0
+        self._login_begin_pending = False
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+
+    def _invalidate_login_binding(self):
+        """Fail closed when the attached target/session identity changes."""
+        self._login_transaction = None
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -476,6 +504,8 @@ class Daemon:
             ))["sessionId"]
             self._record_session_replacement(replaces_session, self.session)
             self.target_id = tid
+            self._session_generation += 1
+            self._invalidate_login_binding()
             log(f"attached {tid} ({page.get('url','')[:80]}) session={self.session}")
             if enable_domains:
                 await self._enable_default_domains(self.session)
@@ -509,6 +539,8 @@ class Daemon:
         ))["sessionId"]
         self._record_session_replacement(replaces_session, self.session)
         self.target_id = pages[0]["targetId"]
+        self._session_generation += 1
+        self._invalidate_login_binding()
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         if take_over:
             try:
@@ -662,7 +694,75 @@ class Daemon:
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
-    async def handle(self, req):
+    def expire_login_transaction(self):
+        tx = self._login_transaction
+        if tx is not None and tx.deadline <= time.monotonic():
+            self._login_transaction = None
+            return True
+        return False
+
+    async def release_login_owner(self, owner):
+        async with self._login_lock:
+            if self._login_transaction is not None and self._login_transaction.owner is owner:
+                self._login_transaction = None
+
+    async def accept_login_secret(self, transaction_id, secret, owner):
+        async with self._login_lock:
+            self.expire_login_transaction()
+            tx = self._login_transaction
+            if tx is None:
+                return {"error": "no_login_transaction"}
+            if tx.transaction_id != transaction_id or tx.owner is not owner:
+                return {"error": "wrong_login_transaction"}
+            if (
+                self.target_id != tx.target_id
+                or self.session != tx.session_id
+                or self._session_generation != tx.generation
+            ):
+                self._login_transaction = None
+                return {"error": "stale_login_transaction"}
+            if len(secret) > LOGIN_SECRET_MAX_BYTES:
+                return {"error": "secret_too_large"}
+            if not secret:
+                return {"error": "empty_secret"}
+            self._login_transaction = None
+            return {"status": "secret_received"}
+
+    async def handle(self, req, owner=None):
+        expected = ipc.expected_token()
+        if expected is not None and req.get("token") != expected:
+            return {"error": "unauthorized"}
+        if req.get("meta") == "ping":
+            return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
+        if req.get("meta") == "login_begin":
+            async with self._execution_condition:
+                while self._login_begin_pending:
+                    await self._execution_condition.wait()
+                self._login_begin_pending = True
+                try:
+                    while self._ordinary_in_flight:
+                        await self._execution_condition.wait()
+                    return await self._handle_admitted(req, owner=owner)
+                finally:
+                    self._login_begin_pending = False
+                    self._execution_condition.notify_all()
+
+        async with self._execution_condition:
+            while self._login_begin_pending:
+                await self._execution_condition.wait()
+            self.expire_login_transaction()
+            if self._login_transaction is not None and req.get("meta") not in {"shutdown", "login_abort"}:
+                return {"error": "login_transaction_active"}
+            self._ordinary_in_flight += 1
+        try:
+            return await self._handle_admitted(req, owner=owner)
+        finally:
+            async with self._execution_condition:
+                self._ordinary_in_flight -= 1
+                if self._ordinary_in_flight == 0:
+                    self._execution_condition.notify_all()
+
+    async def _handle_admitted(self, req, owner=None):
         # Token guard for Windows TCP loopback: any local process can otherwise
         # connect and issue CDP commands. expected_token() is None on POSIX so
         # this check is a no-op there (AF_UNIX + chmod 600 is the boundary).
@@ -670,6 +770,39 @@ class Daemon:
         if expected is not None and req.get("token") != expected:
             return {"error": "unauthorized"}
         meta = req.get("meta")
+        if meta == "login_begin":
+            if ipc.IS_WINDOWS or REMOTE_ID:
+                return {"error": "login_secret_transport_unsupported"}
+            if NAME == "default" or set(req) != {"meta", "adapter"} or req.get("adapter") != LOGIN_ADAPTER:
+                return {"error": "invalid_login_request"}
+            async with self._login_lock:
+                self.expire_login_transaction()
+                if self._login_transaction is not None:
+                    return {"error": "login_transaction_active"}
+                if not self.target_id or not self.session:
+                    return {"error": "not_attached"}
+                transaction_id = secrets.token_hex(16)
+                self._login_transaction = _LoginTransaction(
+                    transaction_id, LOGIN_ADAPTER, owner, self.target_id,
+                    self.session, self._session_generation,
+                    time.monotonic() + LOGIN_TIMEOUT_SECONDS,
+                )
+                return {"status": "awaiting_secret", "transaction_id": transaction_id}
+        if meta == "login_abort":
+            if set(req) != {"meta", "transaction_id"}:
+                return {"error": "invalid_login_request"}
+            async with self._login_lock:
+                self.expire_login_transaction()
+                tx = self._login_transaction
+                if tx is None:
+                    return {"error": "no_login_transaction"}
+                if tx.transaction_id != req.get("transaction_id") or tx.owner is not owner:
+                    return {"error": "wrong_login_transaction"}
+                self._login_transaction = None
+                return {"status": "aborted"}
+        self.expire_login_transaction()
+        if self._login_transaction is not None and meta not in {"ping", "shutdown"}:
+            return {"error": "login_transaction_active"}
         # Liveness probe — lets clients confirm the listener is actually this
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
@@ -711,6 +844,8 @@ class Daemon:
                 old_session = self.session
                 self.session = req.get("session_id")
                 self.target_id = req.get("target_id") or self.target_id
+                self._session_generation += 1
+                self._invalidate_login_binding()
                 new_session = self.session
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
@@ -744,6 +879,7 @@ class Daemon:
             if self._shutting_down:
                 return {"error": "shutdown already in progress"}
             self._shutting_down = True
+            self._login_transaction = None
             if not await self._cancel_and_drain_recoveries():
                 # Preserve the daemon as a retryable cleanup authority. The
                 # strict caller will leave its endpoint and PID file intact.
@@ -808,23 +944,79 @@ class Daemon:
             return {"error": msg}
 
 
+def _remaining(deadline):
+    return max(0.0, deadline - time.monotonic())
+
+
+async def _deadline_readexactly(reader, size, deadline):
+    return await asyncio.wait_for(reader.readexactly(size), _remaining(deadline))
+
+
+async def _deadline_drain(writer, deadline):
+    await asyncio.wait_for(writer.drain(), _remaining(deadline))
+
+
+async def _connection_handler(d, reader, writer):
+    owner = object()
+    login_deadline = None
+    try:
+        line = await reader.readline()
+        if not line:
+            return
+        req = json.loads(line)
+        resp = await d.handle(req, owner=owner)
+        if req.get("meta") == "login_begin" and resp.get("status") == "awaiting_secret":
+            login_deadline = d._login_transaction.deadline
+        writer.write((json.dumps(resp, default=str) + "\n").encode())
+        if login_deadline is None:
+            await writer.drain()
+            return
+        await _deadline_drain(writer, login_deadline)
+        header = await _deadline_readexactly(reader, ipc.LOGIN_FRAME_HEADER.size, login_deadline)
+        opcode, raw_id, length = ipc.LOGIN_FRAME_HEADER.unpack(header)
+        transaction_id = raw_id.hex()
+        if opcode == ipc.LOGIN_ABORT_OPCODE:
+            if length != 0:
+                frame_resp = {"error": "invalid_login_frame"}
+            else:
+                frame_resp = await d.handle(
+                    {"meta": "login_abort", "transaction_id": transaction_id}, owner=owner
+                )
+        elif opcode == ipc.LOGIN_SECRET_OPCODE:
+            if not (1 <= length <= LOGIN_SECRET_MAX_BYTES):
+                frame_resp = {"error": "invalid_login_frame"}
+            else:
+                secret = await _deadline_readexactly(reader, length, login_deadline)
+                frame_resp = await d.accept_login_secret(transaction_id, secret, owner)
+        else:
+            frame_resp = {"error": "invalid_login_frame"}
+        writer.write((json.dumps(frame_resp) + "\n").encode())
+        await _deadline_drain(writer, login_deadline)
+    except (asyncio.IncompleteReadError, asyncio.TimeoutError):
+        # The peer may have supplied arbitrary bytes; keep the response fixed.
+        try:
+            writer.write(b'{"error":"login_frame_incomplete"}\n')
+            if login_deadline is not None:
+                await _deadline_drain(writer, login_deadline)
+            else:
+                await writer.drain()
+        except Exception:
+            pass
+    except Exception as e:
+        log(f"conn: {type(e).__name__}")
+        try:
+            writer.write(b'{"error":"connection_error"}\n')
+            await writer.drain()
+        except Exception:
+            pass
+    finally:
+        await d.release_login_owner(owner)
+        writer.close()
+
+
 async def serve(d):
     async def handler(reader, writer):
-        try:
-            line = await reader.readline()
-            if not line: return
-            resp = await d.handle(json.loads(line))
-            writer.write((json.dumps(resp, default=str) + "\n").encode())
-            await writer.drain()
-        except Exception as e:
-            log(f"conn: {e}")
-            try:
-                writer.write((json.dumps({"error": str(e)}) + "\n").encode())
-                await writer.drain()
-            except Exception:
-                pass
-        finally:
-            writer.close()
+        await _connection_handler(d, reader, writer)
 
     serve_task = asyncio.create_task(ipc.serve(NAME, handler))
     stop_task = asyncio.create_task(d.stop.wait())
