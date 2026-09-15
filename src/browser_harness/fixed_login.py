@@ -65,13 +65,27 @@ def _expressions(site):
  ready:document.readyState,user:!!u,password:!!p,submit:!!s,bound:!!c,
  action:f?f.action:'',method:f?(f.method||'get').toLowerCase():''}};
 }})()"""
-    fill = f"""function(u,p){{
+    if site is PROXMOX:
+        fill = f"""function(u,p){{
+ const a=this.querySelector({site.user_selector!r}),b=this.querySelector({site.password_selector!r}),r=this.querySelector('input[name="realm"]');
+ const c=[...this.querySelectorAll({site.container_selector!r})].find(e=>e.contains(a)&&e.contains(b));
+ const component=e=>{{const id=e&&e.id||'';return globalThis.Ext&&id.endsWith('-inputEl')?Ext.getCmp(id.slice(0,-8)):null;}};
+ const ac=component(a),bc=component(b),rc=component(r);
+ if(!c||!ac||!bc||!rc||typeof ac.setValue!=='function'||typeof bc.setValue!=='function'||typeof rc.setValue!=='function')return false;
+ ac.setValue(u);bc.setValue(p);rc.setValue('pam');
+ return ac.getValue()===u&&bc.getValue()===p&&rc.getValue()==='pam';
+}}"""
+    else:
+        fill = f"""function(u,p){{
  const a=this.querySelector({site.user_selector!r});const b=this.querySelector({site.password_selector!r});
  const c=[...this.querySelectorAll({site.container_selector!r})].find(e=>e.contains(a)&&e.contains(b));
  if(!a||!b||!c)return false;a.value=u;a.dispatchEvent(new Event('input',{{bubbles:true}}));a.dispatchEvent(new Event('change',{{bubbles:true}}));
  b.value=p;b.dispatchEvent(new Event('input',{{bubbles:true}}));b.dispatchEvent(new Event('change',{{bubbles:true}}));return true;
 }}"""
-    submit = f"""function(){{const a=this.querySelector({site.user_selector!r}),b=this.querySelector({site.password_selector!r});const c=[...this.querySelectorAll({site.container_selector!r})].find(e=>e.contains(a)&&e.contains(b));const s=[...(c||this).querySelectorAll({site.submit_selector!r})].find(e=>(e.innerText||e.value||'').trim()==={site.submit_text!r});if(!c||!s)return false;s.click();return true;}}"""
+    if site is PROXMOX:
+        submit = f"""function(){{const a=this.querySelector({site.user_selector!r}),b=this.querySelector({site.password_selector!r});const c=[...this.querySelectorAll({site.container_selector!r})].find(e=>e.contains(a)&&e.contains(b));const s=[...(c||this).querySelectorAll({site.submit_selector!r})].find(e=>(e.innerText||e.value||'').trim()==={site.submit_text!r});const button=globalThis.Ext&&s?Ext.getCmp(s.id):null;if(!c||!button||typeof button.click!=='function')return false;button.click();return true;}}"""
+    else:
+        submit = f"""function(){{const a=this.querySelector({site.user_selector!r}),b=this.querySelector({site.password_selector!r});const c=[...this.querySelectorAll({site.container_selector!r})].find(e=>e.contains(a)&&e.contains(b));const s=[...(c||this).querySelectorAll({site.submit_selector!r})].find(e=>(e.innerText||e.value||'').trim()==={site.submit_text!r});if(!c||!s)return false;s.click();return true;}}"""
     if site.success_kind == "gitlab":
         proof = "!!document.querySelector('meta[name=\"csrf-token\"]')&&!!document.querySelector('[data-testid=\"user-menu-toggle\"],a[href=\"/-/profile\"]')"
     else:
@@ -183,7 +197,15 @@ async def run(daemon, tx, payload, site):
                 return _result("failed")
             if _locked(form): return _result("locked")
             if _challenge(form): return _result("human_challenge")
-            if form.get("ready") == "complete": break
+            control_values = tuple(form.get(key) is True for key in ("user", "password", "submit", "bound"))
+            controls_ready = all(control_values)
+            gitlab_form_ready = site is not GITLAB or (
+                form.get("action") == site.login_url and form.get("method") == "post"
+            )
+            if controls_ready and not gitlab_form_ready:
+                return _result("failed")
+            if form.get("ready") == "complete" and controls_ready and gitlab_form_ready:
+                break
             await asyncio.sleep(.05)
         else:
             return _result("timeout")

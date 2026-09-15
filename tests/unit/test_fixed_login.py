@@ -74,11 +74,13 @@ def test_origin_form_and_mfa_fail_before_fill(monkeypatch, site, fault):
     monkeypatch.setattr(daemon, "NAME", "fixed-test")
     form = FakeCDP(site).form.copy()
     if fault == "origin": form["href"] = "https://evil.invalid/login"
-    elif fault == "form": form["bound"] = False
+    elif fault == "form":
+        form["bound"] = False
+        monkeypatch.setattr(fixed_login, "_FORM_WAIT_SECONDS", 0.01)
     else: form["body"] = "MFA verification code"
     cdp = FakeCDP(site, form=form)
     result, _ = asyncio.run(execute(site, cdp))
-    expected = "human_challenge" if fault == "mfa" else "failed"
+    expected = {"mfa": "human_challenge", "form": "timeout"}.get(fault, "failed")
     assert result == {"status": "failed", "state": expected}
     assert not any(method == "Runtime.callFunctionOn" for method, _params, _sid in cdp.calls)
 
@@ -90,8 +92,36 @@ def test_gitlab_requires_exact_post_action(monkeypatch):
     assert result == {"status": "failed", "state": "failed"}
 
 
+def test_proxmox_waits_for_delayed_extjs_form_after_document_complete(monkeypatch):
+    monkeypatch.setattr(daemon, "NAME", "fixed-test")
+
+    class DelayedFormCDP(FakeCDP):
+        def __init__(self):
+            super().__init__(fixed_login.PROXMOX)
+            self.form_reads = 0
+
+        async def send_raw(self, method, params=None, session_id=None):
+            params = params or {}
+            if method == "Runtime.evaluate" and params.get("expression") == self.validate:
+                self.calls.append((method, params, session_id))
+                self.form_reads += 1
+                form = self.form.copy()
+                if self.form_reads == 1:
+                    form.update(user=False, password=False, submit=False, bound=False)
+                return {"result": {"value": form}}
+            return await super().send_raw(method, params, session_id)
+
+    cdp = DelayedFormCDP()
+    result, _ = asyncio.run(execute(fixed_login.PROXMOX, cdp))
+    assert result == {"status": "success", "state": "active"}
+    assert cdp.form_reads == 2
+
+
 def test_proxmox_success_requires_visible_login_overlay_absent_and_named_user_control():
-    _validate, _fill, _submit, snapshot = fixed_login._expressions(fixed_login.PROXMOX)
+    _validate, fill, submit, snapshot = fixed_login._expressions(fixed_login.PROXMOX)
+    assert "Ext.getCmp" in fill and "setValue(u)" in fill and "setValue(p)" in fill
+    assert "setValue('pam')" in fill and "getValue()==='pam'" in fill
+    assert "Ext.getCmp" in submit and ".click()" in submit
     assert "Proxmox VE Login" in snapshot and "#userinfo" in snapshot
     assert "offsetWidth||e.offsetHeight||e.getClientRects().length" in snapshot
     assert "Logout" not in snapshot
