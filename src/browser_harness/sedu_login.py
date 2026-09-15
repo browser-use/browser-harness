@@ -11,9 +11,9 @@ FINAL_LOGIN_PATH = "/npms/accounts/login/"
 FORM_ACTION = "https://s-edu.cloud/npms/accounts/login/"
 PROTECTED_PATH = "/npms/"
 PROTECTED_INDICATORS = (
-    'a[href="/npms/schools/list/?tab=list"]',
+    'a[href="/npms/schools/list/"]',
     'a[href="/npms/accounts/profile/"]',
-    'a[href="/npms/accounts/logout/"]',
+    'form[action$="/npms/accounts/logout/"] button[type="submit"]',
 )
 HUMAN_MARKERS = (
     "captcha", "recaptcha", "hcaptcha", "otp", "mfa", "인증번호",

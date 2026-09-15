@@ -23,6 +23,14 @@ def test_versioned_result_fixture_is_captured_from_exact_producer_bytes():
     assert produced == RESULT_FIXTURE.read_bytes()
 
 
+def test_protected_indicators_match_current_dashboard_contract():
+    assert sedu_login.PROTECTED_INDICATORS == (
+        'a[href="/npms/schools/list/"]',
+        'a[href="/npms/accounts/profile/"]',
+        'form[action$="/npms/accounts/logout/"] button[type="submit"]',
+    )
+
+
 class FakeCDP:
     def __init__(self, form=None, snapshots=None, navigate=None):
         self.calls = []
