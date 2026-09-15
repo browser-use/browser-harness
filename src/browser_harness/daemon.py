@@ -8,7 +8,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
-from . import sedu_login
+from . import fixed_login, sedu_login
 from cdp_use.client import CDPClient
 
 
@@ -132,7 +132,7 @@ RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
 LOGIN_CANCEL_DRAIN_TIMEOUT = 2
 TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
 LOGIN_ADAPTER = "credential-form-v1"
-LOGIN_ADAPTERS = {LOGIN_ADAPTER, sedu_login.ADAPTER}
+LOGIN_ADAPTERS = {LOGIN_ADAPTER, sedu_login.ADAPTER, *fixed_login.SITES}
 LOGIN_SECRET_MAX_BYTES = ipc.LOGIN_SECRET_MAX_BYTES
 LOGIN_TIMEOUT_SECONDS = 120
 LOGIN_HANDOFF_ACK_TIMEOUT_SECONDS = 3
@@ -765,6 +765,8 @@ class Daemon:
                 return {"error": "empty_secret"}
             if tx.adapter == sedu_login.ADAPTER:
                 result = await sedu_login.run(self, tx, secret)
+            elif tx.adapter in fixed_login.SITES:
+                result = await fixed_login.run(self, tx, secret, fixed_login.SITES[tx.adapter])
             else:
                 result = {"status": "secret_received"}
             if result.get("status") == "success":

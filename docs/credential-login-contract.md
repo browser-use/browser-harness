@@ -6,7 +6,7 @@ Browser Harness reserves a daemon-owned named session while a host process suppl
 
 - Login transactions are available only when `BU_NAME` is not `default` and the daemon uses a supported local POSIX transport. Windows and Browser Use Cloud (`BU_BROWSER_ID`) fail closed.
 - One transaction may be active per named daemon.
-- `login_begin` accepts exactly `{"meta":"login_begin","adapter":"credential-form-v1"}` or the fixed S-EDU adapter identifier `sedu-v1`. URLs, selectors, JavaScript, commands, environment names, and credential paths are not accepted.
+- `login_begin` accepts exactly `{"meta":"login_begin","adapter":"<fixed-id>"}` where the fixed ID is `credential-form-v1`, `sedu-v1`, `gitlab-local-v1`, or `proxmox-local-v1`. URLs, selectors, JavaScript, commands, environment names, and credential paths are not accepted.
 - Begin binds a random 128-bit transaction ID to the daemon's current target ID, session ID, and session generation for at most 120 seconds.
 - While active, ordinary CDP and state-changing metadata requests are rejected with `login_transaction_active`. Ping and shutdown remain available.
 - A successful adapter result moves the transaction to `awaiting_handoff`; the reservation remains closed until the same socket owner sends the authenticated handoff ACK. Abort, owner disconnect, timeout, and daemon shutdown erase the transaction without handoff. Non-success adapter outcomes release the reservation after their fixed result is sent.
@@ -38,6 +38,10 @@ Immediately before fill, the daemon suppresses and purges every CDP event for th
 
 The helper `browser_harness._ipc.send_login_secret()` emits the bounded secret frame. Callers must source bytes through a host-private channel; they must not place secrets in command-line arguments, environment variables, JSON, stdout, telemetry, or logs.
 Python credential strings cannot be reliably zeroized; their references are kept only for the bounded adapter call. Mutable payload and parser buffers are zeroed after use.
+
+### Local GitLab and Proxmox adapters
+
+`gitlab-local-v1` fixes the origin and POST login URL to `https://gitlab.local-properties.org/users/sign_in`, binds `#user_login`, `#user_password`, and the `Sign in` submit control to one form, and requires both GitLab CSRF metadata and a profile/user-menu control after leaving the login path. `proxmox-local-v1` fixes the origin (including port) to `https://proxmox.local-properties.org:8006`, binds the stable `username` and `password` fields and role-button text `Login` inside one `.x-window`, and requires the `Proxmox VE Login` window to be absent plus a `Logout` control. Dynamic ExtJS IDs and the shell title are not authentication evidence. Both adapters share the payload/result schema, deadlines, origin checks, event suppression, cancellation, ACK, and quarantine behavior documented above.
 
 ## Windows
 
