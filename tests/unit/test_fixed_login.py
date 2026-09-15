@@ -90,10 +90,20 @@ def test_gitlab_requires_exact_post_action(monkeypatch):
     assert result == {"status": "failed", "state": "failed"}
 
 
-def test_proxmox_success_requires_overlay_absent_and_logout_control():
+def test_proxmox_success_requires_visible_login_overlay_absent_and_named_user_control():
     _validate, _fill, _submit, snapshot = fixed_login._expressions(fixed_login.PROXMOX)
-    assert "Proxmox VE Login" in snapshot and "Logout" in snapshot
+    assert "Proxmox VE Login" in snapshot and "#userinfo" in snapshot
+    assert "offsetWidth||e.offsetHeight||e.getClientRects().length" in snapshot
+    assert "Logout" not in snapshot
     assert "treepanel-" not in snapshot and "content-" not in snapshot
+
+
+def test_gitlab_contract_is_fixed_to_observed_single_step_local_form():
+    validate, _fill, submit, snapshot = fixed_login._expressions(fixed_login.GITLAB)
+    assert fixed_login.GITLAB.login_url == "https://gitlab.local-properties.org/users/sign_in"
+    assert "#user_login" in validate and "#user_password" in validate
+    assert "Sign in" in validate and "Sign in" in submit
+    assert "csrf-token" in snapshot and "user-menu-toggle" in snapshot and "/-/profile" in snapshot
 
 
 def test_event_sentinel_is_quarantined_and_concurrent_session_denied(monkeypatch):

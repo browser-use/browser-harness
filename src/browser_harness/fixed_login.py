@@ -75,7 +75,7 @@ def _expressions(site):
     if site.success_kind == "gitlab":
         proof = "!!document.querySelector('meta[name=\"csrf-token\"]')&&!!document.querySelector('[data-testid=\"user-menu-toggle\"],a[href=\"/-/profile\"]')"
     else:
-        proof = "![...document.querySelectorAll('.x-window')].some(e=>(e.innerText||'').includes('Proxmox VE Login'))&&[...document.querySelectorAll('a[role=\"button\"],button')].some(e=>(e.innerText||'').trim()==='Logout')"
+        proof = "![...document.querySelectorAll('.x-window')].some(e=>(e.offsetWidth||e.offsetHeight||e.getClientRects().length)&&(e.innerText||'').includes('Proxmox VE Login'))&&(()=>{const e=document.querySelector('#userinfo');return !!e&&!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length)&&!!(e.innerText||e.textContent||'').trim()})()"
     snapshot = f"""(() => ({{href:location.href,title:document.title||'',body:(document.body&&document.body.innerText||'').slice(0,8192),
  protected:!!({proof}),ready:document.readyState,identity:performance.timeOrigin}}))()"""
     return validate, fill, submit, snapshot
