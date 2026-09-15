@@ -1,0 +1,6 @@
+{"status": "success", "state": "active"}
+{"status": "failed", "state": "reauth_required"}
+{"status": "failed", "state": "human_challenge"}
+{"status": "failed", "state": "locked"}
+{"status": "failed", "state": "failed"}
+{"status": "failed", "state": "timeout"}

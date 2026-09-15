@@ -28,6 +28,7 @@ _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 # Login frames stay binary and bounded; secret bytes never enter JSON.
 LOGIN_SECRET_OPCODE = 1
 LOGIN_ABORT_OPCODE = 2
+LOGIN_HANDOFF_ACK_OPCODE = 3
 LOGIN_FRAME_HEADER = struct.Struct("!B16sI")
 LOGIN_SECRET_MAX_BYTES = 16 * 1024
 

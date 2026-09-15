@@ -8,6 +8,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from . import sedu_login
 from cdp_use.client import CDPClient
 
 
@@ -128,10 +129,13 @@ TOGGLE_BOOT_GRACE = 12
 # Cancellation should make an in-flight CDP call finish immediately. Keep the
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
+LOGIN_CANCEL_DRAIN_TIMEOUT = 2
 TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
 LOGIN_ADAPTER = "credential-form-v1"
+LOGIN_ADAPTERS = {LOGIN_ADAPTER, sedu_login.ADAPTER}
 LOGIN_SECRET_MAX_BYTES = ipc.LOGIN_SECRET_MAX_BYTES
 LOGIN_TIMEOUT_SECONDS = 120
+LOGIN_HANDOFF_ACK_TIMEOUT_SECONDS = 3
 
 
 @dataclass
@@ -143,6 +147,7 @@ class _LoginTransaction:
     session_id: str
     generation: int
     deadline: float
+    phase: str = "awaiting_secret"
 
 
 def tab_marker_enabled():
@@ -436,6 +441,10 @@ class _PatientCDPClient(CDPClient):
         self._message_handler_task = asyncio.create_task(self._handle_messages())
 
 
+def _new_cdp_client(url):
+    return _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
+
+
 class Daemon:
     def __init__(self):
         self.cdp = None
@@ -459,7 +468,9 @@ class Daemon:
         self._execution_condition = asyncio.Condition()
         self._ordinary_in_flight = 0
         self._login_begin_pending = False
+        self._execution_quarantined = False
         self.events = deque(maxlen=BUF)
+        self._sensitive_event_session = None
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
 
@@ -656,6 +667,9 @@ class Daemon:
         )))
 
     def _record_event(self, method, params, session_id=None):
+        # A hostile page can echo credentials through any enabled CDP domain.
+        if session_id == self._sensitive_event_session:
+            return
         self.events.append({"method": method, "params": params, "session_id": session_id})
         if method == "Page.javascriptDialogOpening":
             self.dialog = params
@@ -664,11 +678,28 @@ class Daemon:
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
 
+    def suppress_sensitive_events(self, session_id):
+        """Drop buffered and future events for one credential operation."""
+        self._sensitive_event_session = session_id
+        self._purge_session_events(session_id)
+
+    def release_sensitive_events(self, session_id):
+        """Purge the sensitive interval before restoring ordinary event capture."""
+        self._purge_session_events(session_id)
+        if self._sensitive_event_session == session_id:
+            self._sensitive_event_session = None
+
+    def _purge_session_events(self, session_id):
+        self.events = deque(
+            (event for event in self.events if event.get("session_id") != session_id),
+            maxlen=BUF,
+        )
+
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
         log(f"connecting to {_safe_connection_label(url)}")
-        self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
+        self.cdp = _new_cdp_client(url)
         if BROWSER_KIND == "local":
             # Allow while this handshake is still parked on the popup
             log("handshake-wait: if Chrome shows an 'Allow remote debugging?' popup, click Allow")
@@ -703,8 +734,13 @@ class Daemon:
 
     async def release_login_owner(self, owner):
         async with self._login_lock:
-            if self._login_transaction is not None and self._login_transaction.owner is owner:
-                self._login_transaction = None
+            tx = self._login_transaction
+            if tx is not None and tx.owner is owner:
+                if tx.phase in {"awaiting_handoff", "quarantined"}:
+                    tx.phase = "quarantined"
+                    self._execution_quarantined = True
+                else:
+                    self._login_transaction = None
 
     async def accept_login_secret(self, transaction_id, secret, owner):
         async with self._login_lock:
@@ -714,6 +750,8 @@ class Daemon:
                 return {"error": "no_login_transaction"}
             if tx.transaction_id != transaction_id or tx.owner is not owner:
                 return {"error": "wrong_login_transaction"}
+            if tx.phase != "awaiting_secret":
+                return {"error": "wrong_login_transaction_phase"}
             if (
                 self.target_id != tx.target_id
                 or self.session != tx.session_id
@@ -725,8 +763,42 @@ class Daemon:
                 return {"error": "secret_too_large"}
             if not secret:
                 return {"error": "empty_secret"}
+            if tx.adapter == sedu_login.ADAPTER:
+                result = await sedu_login.run(self, tx, secret)
+            else:
+                result = {"status": "secret_received"}
+            if result.get("status") == "success":
+                tx.phase = "awaiting_handoff"
+            else:
+                self._login_transaction = None
+            return result
+
+    async def acknowledge_login_handoff(self, transaction_id, owner):
+        """Release a successful transaction only for its live socket owner."""
+        async with self._login_lock:
+            self.expire_login_transaction()
+            tx = self._login_transaction
+            if tx is None:
+                return {"error": "no_login_transaction"}
+            if tx.transaction_id != transaction_id or tx.owner is not owner:
+                return {"error": "wrong_login_transaction"}
+            if tx.phase != "awaiting_handoff":
+                return {"error": "wrong_login_transaction_phase"}
+            if (self.target_id != tx.target_id or self.session != tx.session_id
+                    or self._session_generation != tx.generation):
+                self._login_transaction = None
+                return {"error": "stale_login_transaction"}
             self._login_transaction = None
-            return {"status": "secret_received"}
+            return {"status": "handoff_complete"}
+
+    async def quarantine_login_handoff(self, transaction_id, owner):
+        """Keep generic CDP closed when successful auth lacks a valid ACK."""
+        async with self._login_lock:
+            tx = self._login_transaction
+            if (tx is not None and tx.transaction_id == transaction_id
+                    and tx.owner is owner and tx.phase == "awaiting_handoff"):
+                tx.phase = "quarantined"
+                self._execution_quarantined = True
 
     async def handle(self, req, owner=None):
         expected = ipc.expected_token()
@@ -736,6 +808,8 @@ class Daemon:
             return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
         if req.get("meta") == "login_begin":
             async with self._execution_condition:
+                if self._execution_quarantined:
+                    return {"error": "cdp_transport_quarantined"}
                 while self._login_begin_pending:
                     await self._execution_condition.wait()
                 self._login_begin_pending = True
@@ -748,6 +822,8 @@ class Daemon:
                     self._execution_condition.notify_all()
 
         async with self._execution_condition:
+            if self._execution_quarantined and req.get("meta") not in {"ping", "shutdown"}:
+                return {"error": "cdp_transport_quarantined"}
             while self._login_begin_pending:
                 await self._execution_condition.wait()
             self.expire_login_transaction()
@@ -773,7 +849,7 @@ class Daemon:
         if meta == "login_begin":
             if ipc.IS_WINDOWS or REMOTE_ID:
                 return {"error": "login_secret_transport_unsupported"}
-            if NAME == "default" or set(req) != {"meta", "adapter"} or req.get("adapter") != LOGIN_ADAPTER:
+            if NAME == "default" or set(req) != {"meta", "adapter"} or req.get("adapter") not in LOGIN_ADAPTERS:
                 return {"error": "invalid_login_request"}
             async with self._login_lock:
                 self.expire_login_transaction()
@@ -783,7 +859,7 @@ class Daemon:
                     return {"error": "not_attached"}
                 transaction_id = secrets.token_hex(16)
                 self._login_transaction = _LoginTransaction(
-                    transaction_id, LOGIN_ADAPTER, owner, self.target_id,
+                    transaction_id, req["adapter"], owner, self.target_id,
                     self.session, self._session_generation,
                     time.monotonic() + LOGIN_TIMEOUT_SECONDS,
                 )
@@ -956,6 +1032,108 @@ async def _deadline_drain(writer, deadline):
     await asyncio.wait_for(writer.drain(), _remaining(deadline))
 
 
+async def _run_login_adapter_owned(d, reader, owner, transaction_id, secret, deadline):
+    """Run an adapter only while its owning connection remains live."""
+    adapter = asyncio.create_task(d.accept_login_secret(transaction_id, secret, owner))
+    control = asyncio.create_task(
+        _deadline_readexactly(reader, ipc.LOGIN_FRAME_HEADER.size, deadline)
+    )
+    # Start both peers before selecting a winner so already-buffered control
+    # cannot lose merely because the adapter coroutine was scheduled first.
+    await asyncio.sleep(0)
+    done, _pending = await asyncio.wait(
+        {adapter, control}, return_when=asyncio.FIRST_COMPLETED
+    )
+    if adapter in done and control not in done:
+        # Give already-readable control bytes one event-loop turn to become
+        # observable. Revocation wins when both sides complete together.
+        await asyncio.sleep(0)
+        if control.done():
+            done.add(control)
+    # Revocation wins ties: EOF/ABORT becoming ready in the same loop turn as
+    # adapter completion must not produce an authenticated handoff.
+    if control not in done:
+        control.cancel()
+        try:
+            await control
+        except (asyncio.CancelledError, asyncio.IncompleteReadError, TimeoutError):
+            pass
+        return await adapter
+
+    abort_response = None
+    try:
+        header = await control
+        opcode, raw_id, length = ipc.LOGIN_FRAME_HEADER.unpack(header)
+        if (opcode == ipc.LOGIN_ABORT_OPCODE and raw_id.hex() == transaction_id
+                and length == 0):
+            abort_response = {"status": "aborted"}
+    except (asyncio.IncompleteReadError, TimeoutError):
+        pass
+    adapter.cancel()
+    _done, pending = await asyncio.wait({adapter}, timeout=LOGIN_CANCEL_DRAIN_TIMEOUT)
+    if pending:
+        await _quarantine_adapter_and_recover(d, adapter)
+    try:
+        await adapter
+    except asyncio.CancelledError:
+        pass
+    await d.release_login_owner(owner)
+    return abort_response
+
+
+async def _read_handoff_ack(d, reader, owner, transaction_id, deadline):
+    header = await _deadline_readexactly(reader, ipc.LOGIN_FRAME_HEADER.size, deadline)
+    opcode, raw_id, length = ipc.LOGIN_FRAME_HEADER.unpack(header)
+    if (opcode == ipc.LOGIN_ABORT_OPCODE and raw_id.hex() == transaction_id
+            and length == 0):
+        return await d.handle(
+            {"meta": "login_abort", "transaction_id": transaction_id}, owner=owner
+        )
+    if (opcode != ipc.LOGIN_HANDOFF_ACK_OPCODE or raw_id.hex() != transaction_id
+            or length != 0):
+        await d.quarantine_login_handoff(transaction_id, owner)
+        return {"error": "invalid_login_frame"}
+    return await d.acknowledge_login_handoff(transaction_id, owner)
+
+
+async def _quarantine_adapter_and_recover(d, adapter):
+    """Sever an uncooperative adapter's transport before reopening the gate."""
+    async with d._execution_condition:
+        d._execution_quarantined = True
+        d._login_begin_pending = True
+    old_cdp = d.cdp
+    # Invalidate the binding before transport shutdown wakes send_raw.
+    d.session = None
+    d._session_generation += 1
+    try:
+        await old_cdp.stop()
+    except Exception as exc:
+        log(f"login adapter transport stop failed: {type(exc).__name__}")
+    adapter.cancel()
+    _done, pending = await asyncio.wait({adapter}, timeout=LOGIN_CANCEL_DRAIN_TIMEOUT)
+    if pending:
+        log("login adapter remained live after CDP transport reset")
+        return False
+    try:
+        await adapter
+    except (asyncio.CancelledError, Exception):
+        pass
+    try:
+        replacement = _new_cdp_client(get_ws_url())
+        await replacement.start()
+        d.cdp = replacement
+        await d.attach_first_page()
+    except Exception as exc:
+        d.cdp = None
+        log(f"login adapter CDP recovery failed: {type(exc).__name__}")
+        return False
+    async with d._execution_condition:
+        d._execution_quarantined = False
+        d._login_begin_pending = False
+        d._execution_condition.notify_all()
+    return True
+
+
 async def _connection_handler(d, reader, writer):
     owner = object()
     login_deadline = None
@@ -986,13 +1164,35 @@ async def _connection_handler(d, reader, writer):
             if not (1 <= length <= LOGIN_SECRET_MAX_BYTES):
                 frame_resp = {"error": "invalid_login_frame"}
             else:
-                secret = await _deadline_readexactly(reader, length, login_deadline)
-                frame_resp = await d.accept_login_secret(transaction_id, secret, owner)
+                secret = bytearray(await _deadline_readexactly(reader, length, login_deadline))
+                try:
+                    frame_resp = await _run_login_adapter_owned(
+                        d, reader, owner, transaction_id, secret, login_deadline
+                    )
+                finally:
+                    for index in range(len(secret)):
+                        secret[index] = 0
         else:
             frame_resp = {"error": "invalid_login_frame"}
+        if frame_resp is None:
+            return
         writer.write((json.dumps(frame_resp) + "\n").encode())
         await _deadline_drain(writer, login_deadline)
-    except (asyncio.IncompleteReadError, asyncio.TimeoutError):
+        if frame_resp.get("status") == "success":
+            ack_deadline = min(
+                login_deadline,
+                time.monotonic() + LOGIN_HANDOFF_ACK_TIMEOUT_SECONDS,
+            )
+            try:
+                ack_resp = await _read_handoff_ack(
+                    d, reader, owner, transaction_id, ack_deadline
+                )
+            except (asyncio.IncompleteReadError, TimeoutError):
+                await d.quarantine_login_handoff(transaction_id, owner)
+                raise
+            writer.write((json.dumps(ack_resp) + "\n").encode())
+            await _deadline_drain(writer, login_deadline)
+    except (asyncio.IncompleteReadError, TimeoutError):
         # The peer may have supplied arbitrary bytes; keep the response fixed.
         try:
             writer.write(b'{"error":"login_frame_incomplete"}\n')
