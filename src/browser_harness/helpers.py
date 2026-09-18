@@ -423,6 +423,13 @@ def switch_tab(target, activate=False):
         activate_tab(target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    # A background tab reports visibilityState "hidden" and hasFocus() false, so Chrome
+    # throttles rAF and defers rendering: menus and dropdowns never open, animated pages
+    # screenshot stale. Focus emulation makes the attached target behave as focused
+    # without activating it, which keeps switch_tab()'s no-take-over promise intact.
+    # The setting is per CDP session, so it has to be re-applied on every attach.
+    try: cdp("Emulation.setFocusEmulationEnabled", enabled=True)
+    except Exception: pass
     _mark_tab()
     return sid
 

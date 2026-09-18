@@ -473,6 +473,43 @@ def test_switch_tab_can_explicitly_activate_visible_tab(monkeypatch):
     assert ("Target.activateTarget", {"targetId": "target-new"}) in calls
 
 
+def test_switch_tab_enables_focus_emulation_after_attaching(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    helpers.switch_tab("target-new")
+
+    methods = [method for method, _ in calls]
+    assert ("Emulation.setFocusEmulationEnabled", {"enabled": True}) in calls
+    # Must run against the newly attached session, never by activating the tab.
+    assert methods.index("Emulation.setFocusEmulationEnabled") > methods.index("ipc")
+    assert "Target.activateTarget" not in methods
+
+
+def test_switch_tab_survives_targets_without_focus_emulation(monkeypatch):
+    def fake_cdp(method, **kwargs):
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        if method == "Emulation.setFocusEmulationEnabled":
+            raise RuntimeError("Emulation domain is not available")
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    assert helpers.switch_tab("target-new") == "session-new"
+
+
 def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     calls = []
 
