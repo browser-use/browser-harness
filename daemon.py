@@ -5,6 +5,8 @@ from pathlib import Path
 
 from cdp_use.client import CDPClient
 
+import ipc
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -192,7 +194,7 @@ class Daemon:
 
 
 async def serve(d):
-    if os.path.exists(SOCK):
+    if ipc.USE_UNIX_SOCKET and os.path.exists(SOCK):
         os.unlink(SOCK)
 
     async def handler(reader, writer):
@@ -212,9 +214,14 @@ async def serve(d):
         finally:
             writer.close()
 
-    server = await asyncio.start_unix_server(handler, path=SOCK)
-    os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    if ipc.USE_UNIX_SOCKET:
+        server = await asyncio.start_unix_server(handler, **ipc.listen_kwargs(NAME))
+        os.chmod(SOCK, 0o600)
+        endpoint_desc = SOCK
+    else:
+        server = await asyncio.start_server(handler, **ipc.listen_kwargs(NAME))
+        endpoint_desc = f"127.0.0.1:{ipc.tcp_port(NAME)} (Windows: no AF_UNIX, TCP loopback instead)"
+    log(f"listening on {endpoint_desc} (name={NAME}, remote={REMOTE_ID or 'local'})")
     async with server:
         await d.stop.wait()
 
@@ -227,9 +234,10 @@ async def main():
 
 def already_running():
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(1)
-        s.connect(SOCK); s.close(); return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        s = ipc.connect(NAME, timeout=1)
+        s.close()
+        return True
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ConnectionResetError, OSError):
         return False
 
 

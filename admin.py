@@ -5,6 +5,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import ipc
+
 
 def _load_env():
     p = Path(__file__).parent / ".env"
@@ -42,12 +44,12 @@ def _log_tail(name):
 
 def daemon_alive(name=None):
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(_paths(name)[0])
+        s = ipc.connect(name or NAME, timeout=1)
         s.close()
         return True
-    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, ConnectionResetError, OSError):
+        # OSError covers Windows' WSAECONNREFUSED (10061), which does not
+        # subclass ConnectionRefusedError on every Python/Windows combination.
         return False
 
 
@@ -57,8 +59,7 @@ def ensure_daemon(wait=60.0, name=None, env=None):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
-            s.connect(_paths(name)[0])
+            s = ipc.connect(name or NAME, timeout=3)
             s.sendall(b'{"method":"Target.getTargets","params":{}}\n')
             data = b""
             while not data.endswith(b"\n"):
@@ -114,11 +115,9 @@ def restart_daemon(name=None):
     ensure_daemon(). The function itself only stops."""
     import signal
 
-    sock, pid_path = _paths(name)
+    _sock, pid_path = _paths(name)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock)
+        s = ipc.connect(name or NAME, timeout=5)
         s.sendall(b'{"meta":"shutdown"}\n')
         s.recv(1024)
         s.close()
@@ -140,7 +139,9 @@ def restart_daemon(name=None):
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-    for f in (sock, pid_path):
+    # _sock is a no-op unlink on Windows: TCP loopback never created that file,
+    # so it always raises FileNotFoundError, already handled below.
+    for f in (_sock, pid_path):
         try:
             os.unlink(f)
         except FileNotFoundError:
