@@ -16,7 +16,25 @@ Returns JSON: `text`, `user`, `created_at`, `favorite_count`, `entities`, `conve
 
 Works for regular tweets. For article tweets it again returns only `article.preview_text`.
 
-## X Articles (x.com/i/article/<id>): login-walled — use mirrors
+## X Articles (x.com/i/article/<id>): full body via the official API v2 `article` field
+
+**Fastest and complete:** with an OAuth 1.0a user-context app (any Read-scope app, pay-per-use ~$0.005/read),
+request the tweet that *carries* the article and ask for `tweet.fields=article`:
+
+```
+GET https://api.x.com/2/tweets/<tweet_id>?tweet.fields=article,note_tweet,text,created_at,author_id
+```
+
+`data.article.plain_text` is the entire article body (18K+ chars verified), plus `title`, `cover_media`,
+`media_entities` and `entities` (cashtags/mentions). Two traps:
+
+- The id in the `x.com/i/article/<id>` URL is the article's own rest id and returns "Could not find post".
+  You need the id of the tweet that posted the article. If you only have a quote-tweet of it, fetch the
+  quote with `expansions=referenced_tweets.id&tweet.fields=article` — the `includes.tweets[]` entry for the
+  quoted tweet carries the full article inline.
+- fxtwitter / vxtwitter / syndication all 404 or return only `preview_text` for article tweets.
+
+Logged-out fallbacks (no API key):
 
 - Logged-out browser navigation to `/i/article/...` redirects to `x.com/i/jf/onboarding/web?...&mode=login`.
 - The article GraphQL op is `ArticleByTweetId` (persisted query id found in `abs.twimg.com/x-web/x-web/assets/article-by-tweet-id-*.js`; variables `{restId: "<tweet_id>"}`, endpoint `https://api.x.com/graphql/<id>/ArticleByTweetId`). It returns `plain_text` + DraftJS `content_state.blocks` — but **404s for guest tokens**, both raw and from page context. Auth cookies (`auth_token` + `ct0`) required. Don't burn time here.
