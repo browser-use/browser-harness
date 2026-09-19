@@ -32,9 +32,12 @@ PY
   `current_tab()` and `list_tabs()` and use `switch_tab()` to reuse a matching
   tab. Do not leave duplicate tabs on the same URL or close tabs you did not
   create.
-- At task completion, close tabs created for the task that are no longer needed.
-  Keep a tab open if the user needs to see it, it is needed for a known follow-up,
-  or closing it could discard unsaved work or other important state.
+- Retain the target ID returned by every `new_tab()` call made for the task. At
+  task completion, close those exact targets with `close_tab(target_id)`,
+  including in cleanup paths after failures. Do not infer ownership from the
+  current tab or URL, and do not bulk-close tabs. Keep a task-owned tab open if
+  the user needs to see it, it is needed for a known follow-up, or closing it
+  could discard unsaved work or other important state.
 - `new_tab()` and `switch_tab()` attach and move the horse marker without
   changing Chrome's visible tab. Screenshots and normal CDP input work in the
   background. Never call `activate_tab(target)` automatically: it brings Chrome
@@ -92,6 +95,12 @@ browser-harness --doctor
 ```
 
 If Chrome is not running at all, the harness launches it automatically and retries.
+
+When the user asks to close the whole local browser, verify shutdown with OS
+process or listening-port inspection. Do not run a normal stdin
+`browser-harness` script as the verification step: it calls `ensure_daemon()`
+and may launch or reconnect Chrome. `browser-harness --reload` stops the daemon
+only; it does not prove that the browser process exited.
 
 If Chrome is running but remote debugging is not enabled, the harness opens:
 
