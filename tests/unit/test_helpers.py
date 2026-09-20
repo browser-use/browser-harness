@@ -1,7 +1,7 @@
 import os
 import tempfile
 import time
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 from PIL import Image
@@ -68,9 +68,50 @@ def test_screenshot_uses_long_response_timeout_without_forwarding_it_to_cdp(fake
 
 
 def test_screenshot_timeout_has_context(tmp_path):
-    with patch("browser_harness.helpers._send", side_effect=helpers._IPCResponseTimeout):
+    with patch(
+        "browser_harness.helpers.cdp",
+        side_effect=[
+            helpers._IPCResponseTimeout("first capture timed out"),
+            {},
+            {},
+            helpers._IPCResponseTimeout("retry timed out"),
+        ],
+    ) as cdp, patch("browser_harness.helpers.time.sleep"):
         with pytest.raises(RuntimeError, match="Page.captureScreenshot timed out after 60s"):
             helpers.capture_screenshot(str(tmp_path / "shot.png"))
+    assert [item.args[0] for item in cdp.call_args_list] == [
+        "Page.captureScreenshot",
+        "Page.startScreencast",
+        "Page.stopScreencast",
+        "Page.captureScreenshot",
+    ]
+
+
+def test_screenshot_timeout_wakes_compositor_and_retries_once(fake_png, tmp_path):
+    screenshot = call(
+        "Page.captureScreenshot",
+        _response_timeout=helpers.SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS,
+        format="png",
+        captureBeyondViewport=True,
+    )
+    with patch(
+        "browser_harness.helpers.cdp",
+        side_effect=[
+            helpers._IPCResponseTimeout("capture timed out"),
+            {},
+            {},
+            {"data": fake_png(800, 400)},
+        ],
+    ) as cdp, patch("browser_harness.helpers.time.sleep") as sleep:
+        helpers.capture_screenshot(str(tmp_path / "shot.png"), full=True)
+
+    assert cdp.call_args_list == [
+        screenshot,
+        call("Page.startScreencast", format="jpeg", quality=1),
+        call("Page.stopScreencast"),
+        screenshot,
+    ]
+    sleep.assert_called_once_with(0.25)
 
 
 def _seed_skill(tmp_path):
