@@ -39,6 +39,25 @@ each value after input and after every Continue action. Do not silently rewrite
 a provider or employer value when the portal reports a validation error; a
 portal-safe alias must be an explicit, saved configuration value.
 
+## Landing, patient, and diagnosis controls
+
+The authenticated claim route can initially show a landing page. Click the
+visible `Start New Medical Claim` button before looking for the step form.
+
+| Step | Control | Selector or behavior |
+|---|---|---|
+| Patient | Member selector | `#selectedMemberId` native `<select>`; choose its option by displayed first and last name. |
+| Patient | Dependent confirmation | Selecting a different patient can open a reset warning. Its Continue button is `#btn-continue`; only confirm a selection made by the current flow. |
+| Patient | Required email | `#email` must be populated even if the signed-in profile has an email. |
+| Diagnosis | Treatment narrative | `#treatmentDescription` is a free-text textarea, not an autocomplete or diagnosis-coded input. |
+
+The review page can omit a middle initial and display a whole-dollar charge
+without decimal digits. Treat those as display formatting only after checking
+the selected member, provider, diagnosis, service date(s), numeric amount,
+employment disclosure, and uploaded filename. Once an attachment is visible
+on review, do not navigate the tab again: the portal warns that attachments do
+not survive a saved draft.
+
 ## Uploads
 
 The attachment control may be visually hidden. Set it directly through CDP:
