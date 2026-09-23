@@ -276,7 +276,9 @@ def cleanup_endpoint(name):  # best-effort; silent if already gone
     # process bound. A successor may already have rebound the same pathname
     # while this daemon is still finishing shutdown.
     identity = _server_unix_endpoint_identity
-    if not IS_WINDOWS and identity is not None and p == identity[0]:
+    if not IS_WINDOWS and identity is not None:
+        if p != identity[0]:
+            return
         try:
             current = p.stat()
         except FileNotFoundError:
