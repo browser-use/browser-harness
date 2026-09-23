@@ -71,6 +71,22 @@ booking number, amount, issue/payment dates, and product description, but no
 buyer company name, address, or tax ID. A separate support request was needed
 for a company document.
 
+### Escalating an eSIM company receipt
+
+If the Attractions & Tours channel is outside its English support hours, an
+active hotel human-support chat may be able to transfer the conversation to an
+available Japanese or Korean Attractions & Tours agent. Ask for **Human agent**,
+choose **Trip.com Customer Success Agent**, and request a channel transfer. The
+destination chat can enable inline AI translation and retains the transferred
+context.
+
+In the tested flow, the destination agent could start a reissue that adds the
+company name and tax number to the recipient address on the eSIM receipt. The
+agent quoted 24-48 hours for delivery by email. No separate case number was
+created; the booking number was the reference for later progress checks. Verify
+the exact company name, address, tax number, delivery email, and whether seller
+identification will remain on the reissued document before ending the chat.
+
 ## Interaction quirks
 
 - Booking cards are `div[role="link"]` elements rather than anchors.
