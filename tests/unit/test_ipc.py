@@ -1,3 +1,5 @@
+import pytest
+
 from browser_harness import _ipc as ipc
 
 
@@ -128,39 +130,72 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
         )
 
 
-def test_prepare_unix_endpoint_preserves_live_daemon(monkeypatch, tmp_path):
+
+class _EndpointProbe:
+    def __init__(self, outcome=None):
+        self.outcome = outcome
+        self.timeout = None
+        self.closed = False
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def connect(self, _path):
+        if self.outcome is not None:
+            raise self.outcome
+
+    def close(self):
+        self.closed = True
+
+
+def test_prepare_unix_endpoint_preserves_listening_socket(monkeypatch, tmp_path):
     socket_path = tmp_path / "bu-default.sock"
     socket_path.touch()
+    probe = _EndpointProbe()
     monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
-    monkeypatch.setattr(ipc, "ping", lambda _name, timeout=0.2: True)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
 
-    try:
+    with pytest.raises(RuntimeError, match="already listening"):
         ipc._prepare_unix_endpoint("default")
-    except RuntimeError as exc:
-        assert "already listening" in str(exc)
-    else:
-        raise AssertionError("live endpoint should prevent a second daemon from binding")
 
     assert socket_path.exists()
+    assert probe.timeout == 1.0
+    assert probe.closed is True
 
 
-def test_prepare_unix_endpoint_removes_only_stale_socket(monkeypatch, tmp_path):
+def test_prepare_unix_endpoint_removes_refused_stale_socket(monkeypatch, tmp_path):
     socket_path = tmp_path / "bu-default.sock"
     socket_path.touch()
+    probe = _EndpointProbe(ConnectionRefusedError())
     monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
-    monkeypatch.setattr(ipc, "ping", lambda _name, timeout=0.2: False)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
 
     assert ipc._prepare_unix_endpoint("default") == socket_path
     assert not socket_path.exists()
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_preserves_indeterminate_timeout(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(ipc.socket.timeout())
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    with pytest.raises(RuntimeError, match="did not answer"):
+        ipc._prepare_unix_endpoint("default")
+
+    assert socket_path.exists()
+    assert probe.closed is True
 
 
 def test_prepare_unix_endpoint_accepts_missing_socket(monkeypatch, tmp_path):
     socket_path = tmp_path / "bu-default.sock"
     monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
     monkeypatch.setattr(
-        ipc,
-        "ping",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not ping a missing socket")),
+        ipc.socket,
+        "socket",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not probe a missing socket")),
     )
 
     assert ipc._prepare_unix_endpoint("default") == socket_path
