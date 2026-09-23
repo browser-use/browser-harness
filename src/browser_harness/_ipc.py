@@ -198,7 +198,22 @@ def _prepare_unix_endpoint(name):
         if exc.errno not in (errno.ECONNREFUSED, errno.ENOENT):
             raise RuntimeError(f"cannot safely classify daemon endpoint {path}: {exc}") from exc
     else:
-        raise RuntimeError(f"daemon {name!r} is already listening at {path}")
+        try:
+            probe.sendall((json.dumps({"meta": "ping"}) + "\n").encode())
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = probe.recv(1 << 16)
+                if not chunk:
+                    break
+                data += chunk
+            response = json.loads(data or b"{}")
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"daemon endpoint {path} accepted a connection but did not complete the ping handshake"
+            ) from exc
+        if isinstance(response, dict) and response.get("pong") is True:
+            raise RuntimeError(f"daemon {name!r} is already listening at {path}")
+        raise RuntimeError(f"daemon endpoint {path} is occupied by an unknown listener")
     finally:
         probe.close()
 
