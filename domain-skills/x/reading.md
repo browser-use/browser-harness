@@ -23,6 +23,25 @@ Works for regular tweets. For article tweets it again returns only `article.prev
 - **Fastest workaround: youmind.com mirrors viral X articles in full.** Web-search the article title + author handle; look for `youmind.com/landing/x-viral-articles/<slug>`. Plain `http_get` returns the entire article text in the HTML (no JS needed). Medium/plainenglish.io reposts also show up for viral posts.
 - Wayback Machine generally has **no** snapshots of `x.com/i/article/...` URLs.
 
+## X Articles: full body via the official v2 API (needs the user's own OAuth1 keys)
+
+Field-tested 2026-09-23. If you have X API v2 user-context credentials (OAuth 1.0a
+consumer key/secret + access token/secret, the same ones used for posting), the
+article body comes back in one call:
+
+```
+GET https://api.x.com/2/tweets/<PARENT_TWEET_ID>?tweet.fields=article
+```
+
+- Query the **parent tweet** (the post that links `x.com/i/article/<id>`), not the
+  article id. The article id itself returns `resource-not-found`.
+- `data.article.plain_text` is the entire body (~13 KB for a long post).
+  `data.article.entities.code[]` holds every code block with `language`,
+  `entities.urls[]` the linked URLs, `entities.tweets[]` embedded tweet ids,
+  `media_entities[]` image/video media keys, `cover_media` the header image.
+- Works when the logged-out browser and fxtwitter/syndication all fail. Prefer it
+  over youmind mirrors when keys are available.
+
 ## Structure notes
 
 - Tweet pages are the new `x-web` Rolldown/Relay app; bundles at `abs.twimg.com/x-web/x-web/assets/*.js`. Persisted GraphQL query ids live in per-route modules (`params:{id:\`...\`,name:\`OperationName\`}`); the endpoint template is in `environment-*.js` (`https://api.x.com/graphql/<id>/<name>`, GET with `?variables=` for queries).
