@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, contextlib, errno, json, os, re, secrets, socket, subprocess, sys
 from pathlib import Path
 
 from . import paths
@@ -162,17 +162,46 @@ def identify(name, timeout=1.0):
         except OSError: pass
 
 
-def _prepare_unix_endpoint(name):
-    """Return the socket path after removing only a stale endpoint.
+@contextlib.contextmanager
+def _unix_bind_lock(name):
+    """Serialize same-name POSIX daemon startup through socket bind."""
+    import fcntl
 
-    A second daemon with the same name must not unlink a live daemon's socket:
-    the old process would keep running but become unreachable.
-    """
+    lock_path = _sock_path(name).with_suffix(".bindlock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_file = os.fdopen(fd, "a+")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+
+
+def _prepare_unix_endpoint(name):
+    """Return the socket path after removing only a definitely stale endpoint."""
     path = _sock_path(name)
     if not path.exists():
         return path
-    if ping(name, timeout=0.2):
+
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(1.0)
+    try:
+        probe.connect(str(path))
+    except FileNotFoundError:
+        return path
+    except ConnectionRefusedError:
+        pass
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(f"daemon endpoint {path} exists but did not answer") from exc
+    except OSError as exc:
+        if exc.errno not in (errno.ECONNREFUSED, errno.ENOENT):
+            raise RuntimeError(f"cannot safely classify daemon endpoint {path}: {exc}") from exc
+    else:
         raise RuntimeError(f"daemon {name!r} is already listening at {path}")
+    finally:
+        probe.close()
+
     try:
         path.unlink()
     except FileNotFoundError:
@@ -184,11 +213,15 @@ async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
     global _server_token
     if not IS_WINDOWS:
-        path = str(_prepare_unix_endpoint(name))
-        # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
-        old_umask = os.umask(0o077)
-        try: server = await asyncio.start_unix_server(handler, path=path)
-        finally: os.umask(old_umask)
+        # Hold an advisory per-name lock from stale-endpoint classification
+        # through bind. A concurrent browser-harness daemon cannot create a
+        # socket between the probe and unlink/bind sequence.
+        with _unix_bind_lock(name):
+            path = str(_prepare_unix_endpoint(name))
+            # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
+            old_umask = os.umask(0o077)
+            try: server = await asyncio.start_unix_server(handler, path=path)
+            finally: os.umask(old_umask)
         _server_token = None
         async with server: await asyncio.Event().wait()
         return
