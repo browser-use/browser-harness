@@ -254,11 +254,14 @@ def test_prepare_unix_endpoint_accepts_missing_socket(monkeypatch, tmp_path):
 
 
 class _CleanupEndpointPath:
-    def __init__(self, stat_result):
+    def __init__(self, stat_result=None, stat_error=None):
         self.stat_result = stat_result
+        self.stat_error = stat_error
         self.unlinked = False
 
     def stat(self):
+        if self.stat_error is not None:
+            raise self.stat_error
         return self.stat_result
 
     def unlink(self):
@@ -286,4 +289,30 @@ def test_cleanup_endpoint_unlinks_own_socket_generation(monkeypatch):
     ipc.cleanup_endpoint("default")
 
     assert path.unlinked is True
+    assert ipc._server_unix_endpoint_identity is None
+
+
+def test_cleanup_endpoint_preserves_different_recorded_path(monkeypatch):
+    current_path = _CleanupEndpointPath(SimpleNamespace(st_dev=1, st_ino=22, st_ctime_ns=300))
+    owned_path = _CleanupEndpointPath(SimpleNamespace(st_dev=1, st_ino=11, st_ctime_ns=200))
+    identity = (owned_path, 1, 11, 200)
+    monkeypatch.setattr(ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: current_path)
+    monkeypatch.setattr(ipc, "_server_unix_endpoint_identity", identity)
+
+    ipc.cleanup_endpoint("default")
+
+    assert current_path.unlinked is False
+    assert ipc._server_unix_endpoint_identity == identity
+
+
+def test_cleanup_endpoint_clears_identity_when_owned_socket_is_already_gone(monkeypatch):
+    path = _CleanupEndpointPath(stat_error=FileNotFoundError())
+    monkeypatch.setattr(ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: path)
+    monkeypatch.setattr(ipc, "_server_unix_endpoint_identity", (path, 1, 11, 200))
+
+    ipc.cleanup_endpoint("default")
+
+    assert path.unlinked is False
     assert ipc._server_unix_endpoint_identity is None
