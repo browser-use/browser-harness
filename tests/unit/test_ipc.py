@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from browser_harness import _ipc as ipc
@@ -249,3 +251,39 @@ def test_prepare_unix_endpoint_accepts_missing_socket(monkeypatch, tmp_path):
     )
 
     assert ipc._prepare_unix_endpoint("default") == socket_path
+
+
+class _CleanupEndpointPath:
+    def __init__(self, stat_result):
+        self.stat_result = stat_result
+        self.unlinked = False
+
+    def stat(self):
+        return self.stat_result
+
+    def unlink(self):
+        self.unlinked = True
+
+
+def test_cleanup_endpoint_does_not_unlink_successor_socket(monkeypatch):
+    path = _CleanupEndpointPath(SimpleNamespace(st_dev=1, st_ino=22, st_ctime_ns=300))
+    monkeypatch.setattr(ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: path)
+    monkeypatch.setattr(ipc, "_server_unix_endpoint_identity", (path, 1, 11, 200))
+
+    ipc.cleanup_endpoint("default")
+
+    assert path.unlinked is False
+    assert ipc._server_unix_endpoint_identity == (path, 1, 11, 200)
+
+
+def test_cleanup_endpoint_unlinks_own_socket_generation(monkeypatch):
+    path = _CleanupEndpointPath(SimpleNamespace(st_dev=1, st_ino=11, st_ctime_ns=200))
+    monkeypatch.setattr(ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: path)
+    monkeypatch.setattr(ipc, "_server_unix_endpoint_identity", (path, 1, 11, 200))
+
+    ipc.cleanup_endpoint("default")
+
+    assert path.unlinked is True
+    assert ipc._server_unix_endpoint_identity is None
