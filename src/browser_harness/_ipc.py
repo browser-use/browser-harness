@@ -30,6 +30,7 @@ _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 # otherwise issue CDP commands). Stays None on POSIX where AF_UNIX + chmod 600
 # is the boundary.
 _server_token = None
+_server_unix_endpoint_identity = None
 
 
 def _check(name):  # path-traversal guard for BU_NAME
@@ -226,7 +227,7 @@ def _prepare_unix_endpoint(name):
 
 async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
-    global _server_token
+    global _server_token, _server_unix_endpoint_identity
     if not IS_WINDOWS:
         # Hold an advisory per-name lock from stale-endpoint classification
         # through bind. A concurrent browser-harness daemon cannot create a
@@ -237,6 +238,13 @@ async def serve(name, handler):
             old_umask = os.umask(0o077)
             try: server = await asyncio.start_unix_server(handler, path=path)
             finally: os.umask(old_umask)
+            bound = os.stat(path)
+            _server_unix_endpoint_identity = (
+                Path(path),
+                bound.st_dev,
+                bound.st_ino,
+                bound.st_ctime_ns,
+            )
         _server_token = None
         async with server: await asyncio.Event().wait()
         return
@@ -261,6 +269,26 @@ def expected_token():
 
 
 def cleanup_endpoint(name):  # best-effort; silent if already gone
+    global _server_unix_endpoint_identity
     p = _sock_path(name) if not IS_WINDOWS else port_path(name)
-    try: p.unlink()
-    except FileNotFoundError: pass
+
+    # In the daemon process, only remove the exact Unix socket generation this
+    # process bound. A successor may already have rebound the same pathname
+    # while this daemon is still finishing shutdown.
+    identity = _server_unix_endpoint_identity
+    if not IS_WINDOWS and identity is not None and p == identity[0]:
+        try:
+            current = p.stat()
+        except FileNotFoundError:
+            _server_unix_endpoint_identity = None
+            return
+        if (current.st_dev, current.st_ino, current.st_ctime_ns) != identity[1:]:
+            return
+
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        pass
+    else:
+        if not IS_WINDOWS and identity is not None and p == identity[0]:
+            _server_unix_endpoint_identity = None
