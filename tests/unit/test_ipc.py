@@ -132,10 +132,12 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
 
 
 class _EndpointProbe:
-    def __init__(self, outcome=None):
+    def __init__(self, outcome=None, response=b'{"pong": true}\n'):
         self.outcome = outcome
+        self.response = response
         self.timeout = None
         self.closed = False
+        self.sent = b""
 
     def settimeout(self, timeout):
         self.timeout = timeout
@@ -143,6 +145,13 @@ class _EndpointProbe:
     def connect(self, _path):
         if self.outcome is not None:
             raise self.outcome
+
+    def sendall(self, data):
+        self.sent += data
+
+    def recv(self, _size):
+        response, self.response = self.response, b""
+        return response
 
     def close(self):
         self.closed = True
@@ -183,6 +192,47 @@ def test_prepare_unix_endpoint_preserves_indeterminate_timeout(monkeypatch, tmp_
     monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
 
     with pytest.raises(RuntimeError, match="did not answer"):
+        ipc._prepare_unix_endpoint("default")
+
+    assert socket_path.exists()
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_preserves_unknown_listener(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(response=b'{"service": "other"}\n')
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    with pytest.raises(RuntimeError, match="unknown listener"):
+        ipc._prepare_unix_endpoint("default")
+
+    assert socket_path.exists()
+    assert b'"meta": "ping"' in probe.sent
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_handles_socket_vanishing_during_connect(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(FileNotFoundError())
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    assert ipc._prepare_unix_endpoint("default") == socket_path
+    assert socket_path.exists()
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_preserves_unclassified_oserror(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(OSError("permission denied"))
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    with pytest.raises(RuntimeError, match="cannot safely classify"):
         ipc._prepare_unix_endpoint("default")
 
     assert socket_path.exists()
