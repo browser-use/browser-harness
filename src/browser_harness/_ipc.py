@@ -162,12 +162,29 @@ def identify(name, timeout=1.0):
         except OSError: pass
 
 
+def _prepare_unix_endpoint(name):
+    """Return the socket path after removing only a stale endpoint.
+
+    A second daemon with the same name must not unlink a live daemon's socket:
+    the old process would keep running but become unreachable.
+    """
+    path = _sock_path(name)
+    if not path.exists():
+        return path
+    if ping(name, timeout=0.2):
+        raise RuntimeError(f"daemon {name!r} is already listening at {path}")
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    return path
+
+
 async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
     global _server_token
     if not IS_WINDOWS:
-        path = str(_sock_path(name))
-        if os.path.exists(path): os.unlink(path)
+        path = str(_prepare_unix_endpoint(name))
         # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
         old_umask = os.umask(0o077)
         try: server = await asyncio.start_unix_server(handler, path=path)
