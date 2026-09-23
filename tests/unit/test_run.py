@@ -7,6 +7,20 @@ import pytest
 from browser_harness import run
 
 
+@pytest.fixture(autouse=True)
+def _isolate_browser_env(monkeypatch):
+    """run.main()'s cloud-bootstrap guard reads process env directly
+    (BROWSER_USE_API_KEY, BU_AUTOSPAWN, BU_CDP_URL, BU_CDP_WS). A dev box or CI
+    runner that exports any of these leaks it into every test — e.g. an ambient
+    BU_CDP_URL (a running local Chrome debug endpoint) makes
+    _explicit_cdp_configured() true and silently blocks the bootstrap these
+    tests assert on, and an ambient BU_AUTOSPAWN + key would fire the real
+    start_remote_daemon in tests that don't mock it. Start every test from a
+    clean slate; tests that need a var set it themselves."""
+    for var in ("BROWSER_USE_API_KEY", "BU_AUTOSPAWN", "BU_CDP_URL", "BU_CDP_WS"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def test_stdin_executes_code():
     stdout = StringIO()
     fake_stdin = StringIO("print('hello from stdin')")
