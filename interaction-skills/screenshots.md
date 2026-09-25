@@ -1,17 +1,17 @@
 # Screenshots
 
-`capture_screenshot()` writes a PNG of the current viewport. The file is in **device pixels** — on a 2× display a 2296×1143 CSS viewport produces a 4592×2286 PNG.
+Separate full-page screenshots from targeted section screenshots, and note when screenshots are only for discovery versus verification.
 
-That matters for two reasons:
+## Full page with iframes
 
-1. **Click coordinates are CSS pixels.** Don't read a target off the image and pass it to `click_at_xy()` directly without dividing by `devicePixelRatio`. The simplest workflow is to take the screenshot, look at it in a viewer that shows CSS coordinates, or measure relative positions and use `js("window.devicePixelRatio")` to convert.
-
-2. **Some LLMs reject images > 2000 px per side.** Long sessions on 2× displays will eventually hit this. Pass `max_dim=1800` to downscale the file before it gets into the conversation:
+`screenshot(full=True)` (`captureBeyondViewport`) renders the top document past the viewport, but an out-of-process iframe (cross-origin or sandboxed) is painted only where it overlapped the original viewport — the rest of the frame comes out blank. To capture a whole page that contains such a frame, make the viewport as tall as the page, then take a normal screenshot:
 
 ```python
-capture_screenshot("/tmp/shot.png", max_dim=1800)
+h = js("document.documentElement.scrollHeight")
+cdp("Emulation.setDeviceMetricsOverride", width=1400, height=int(h), deviceScaleFactor=1, mobile=False)
+wait(2)
+screenshot("/tmp/full.png")
+cdp("Emulation.clearDeviceMetricsOverride")
 ```
 
-The downscale only happens when the image actually exceeds `max_dim`, so it's safe to leave on for every shot.
-
-Use full-page screenshots (`full=True`) only when you need to see content below the fold — they are much larger and slower than viewport-only.
+If the frame itself has a fixed height and scrolls internally, the page's height does not include the frame's content: size the frame to its content first (many apps offer a print or "fit" mode), or scroll inside it with `scroll()` and take several shots.
