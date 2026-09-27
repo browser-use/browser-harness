@@ -1208,10 +1208,15 @@ def _chrome_running():
         if system == "Windows":
             out = subprocess.check_output(["tasklist"], text=True, errors="replace", timeout=5)
             names = ("chrome.exe", "msedge.exe", "helium.exe")
-        else:
-            out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium")
-        return any(n.lower() in out.lower() for n in names)
+            return any(n in out.lower() for n in names)
+        out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, errors="replace", timeout=5)
+        # comm is the full executable path on macOS and a name truncated to 15
+        # chars on Linux (chromium-browser -> chromium-browse). Match each
+        # process name, not the whole listing, so an Electron app's
+        # chrome_crashpad_handler doesn't count as a running Chrome.
+        names = ("google chrome", "chrome", "chromium", "chromium-browse", "microsoft edge", "msedge", "helium")
+        procs = {os.path.basename(line.strip()).lower() for line in out.splitlines()}
+        return any(p == n or p.startswith(n + " ") for p in procs for n in names)
     except Exception:
         return False
 

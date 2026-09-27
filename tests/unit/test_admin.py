@@ -365,6 +365,39 @@ def test_chrome_running_detects_helium_on_linux(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "system, comm",
+    [
+        ("Darwin", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ("Darwin", "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"),
+        ("Darwin", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+        ("Darwin", "/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ("Linux", "chrome"),
+        ("Linux", "chromium-browse"),
+        ("Linux", "msedge"),
+    ],
+)
+def test_chrome_running_detects_browser_process(monkeypatch, system, comm):
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: f"init\n{comm}\n")
+
+    assert admin._chrome_running()
+
+
+@pytest.mark.parametrize(
+    "system, comm",
+    [
+        ("Darwin", "/Applications/Claude.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler"),
+        ("Linux", "chrome_crashpad"),
+    ],
+)
+def test_chrome_running_ignores_electron_crashpad_handler(monkeypatch, system, comm):
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: f"init\n{comm}\n")
+
+    assert not admin._chrome_running()
+
+
+@pytest.mark.parametrize(
     "path, expected",
     [
         ("/snap/chromium/1234/usr/lib/chromium-browser/chromium-browser", True),
