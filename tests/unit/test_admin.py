@@ -374,6 +374,9 @@ def test_chrome_running_detects_helium_on_linux(monkeypatch):
         ("Linux", "chrome"),
         ("Linux", "chromium-browse"),
         ("Linux", "msedge"),
+        ("Linux", "google-chrome"),
+        ("Linux", "google-chrome-s"),
+        ("Linux", "microsoft-edge"),
     ],
 )
 def test_chrome_running_detects_browser_process(monkeypatch, system, comm):
