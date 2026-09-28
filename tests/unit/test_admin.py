@@ -1007,7 +1007,8 @@ def test_failed_upgrade_tells_a_pip_install_how_to_upgrade(tmp_path, monkeypatch
     assert admin.run_update(yes=True) == 1
     assert "uv tool install --python 3.12 --upgrade --force browser-harness" in capsys.readouterr().err
 
-def test_failed_upgrade_stays_quiet_for_a_uv_managed_install(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("separator", [" ", "\t"])
+def test_failed_upgrade_stays_quiet_for_a_uv_managed_install(tmp_path, monkeypatch, capsys, separator):
     """When uv owns the tool the failure is uv's own (offline, auth), so a pip hint
     would only mislead."""
     import subprocess
@@ -1016,7 +1017,7 @@ def test_failed_upgrade_stays_quiet_for_a_uv_managed_install(tmp_path, monkeypat
 
     def fake_run(command, *args, **kwargs):
         if list(command)[:3] == ["uv", "tool", "list"]:
-            return subprocess.CompletedProcess(command, 0, "browser-harness v0.1.0\n", "")
+            return subprocess.CompletedProcess(command, 0, f"\n browser-harness{separator}v0.1.0\n- bh\n", "")
         return subprocess.CompletedProcess(command, 1, "", "network unreachable")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -1451,11 +1452,14 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("standalone_also_installed", [False, True])
-def test_update_dependency_install_points_to_owning_tool(tmp_path, monkeypatch, capsys, standalone_also_installed):
+@pytest.mark.parametrize("separator", [" ", "\t"])
+def test_update_dependency_install_points_to_owning_tool(
+    tmp_path, monkeypatch, capsys, standalone_also_installed, separator
+):
     """A dependency install should point users to its owning uv tool."""
     commands = []
     tools_dir = tmp_path / "uv-tools"
-    listing = "browser-use v0.13.10\n- browser-use\n"
+    listing = f"\n browser-use{separator}v0.13.10\n- browser-use\n"
     if standalone_also_installed:
         listing += "browser-harness v0.1.13\n- browser-harness\n"
 

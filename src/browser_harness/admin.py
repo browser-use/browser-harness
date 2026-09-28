@@ -1498,6 +1498,15 @@ def _prompt_yes(question, default_yes=True, yes=False):
     return ans.startswith("y")
 
 
+def _uv_tool_list_contains(output, name):
+    """Match a tool entry in uv's listing, ignoring executable and blank lines."""
+    for line in (output or "").splitlines():
+        entry = line.strip()
+        if entry and not entry.startswith("-") and entry.split()[0] == name:
+            return True
+    return False
+
+
 def _uv_manages_browser_harness():
     """True when `uv tool list` shows browser-harness, i.e. `uv tool upgrade` owns it.
 
@@ -1510,16 +1519,7 @@ def _uv_manages_browser_harness():
         return True
     if listed.returncode != 0:
         return True
-    # `uv tool list` prints one "name vX.Y.Z" line per tool, then its executables as
-    # "- exe" lines. Match the entry name, so a tool merely containing our name (say
-    # my-browser-harness-wrapper) cannot silence the hint for a real pip install.
-    for line in (listed.stdout or "").splitlines():
-        entry = line.strip()
-        if entry.startswith("-"):
-            continue
-        if entry.split(" ", 1)[0] == "browser-harness":
-            return True
-    return False
+    return _uv_tool_list_contains(listed.stdout, "browser-harness")
 
 
 def _uv_dependency_owner():
@@ -1547,11 +1547,8 @@ def _uv_dependency_owner():
         if listed.returncode != 0:
             return None
 
-        for line in listed.stdout.splitlines():
-            entry = line.strip()
-            if entry and not entry.startswith("-"):
-                if entry.split()[0] == owner:
-                    return owner
+        if _uv_tool_list_contains(listed.stdout, owner):
+            return owner
     except (OSError, RuntimeError, ValueError):
         return None
 
