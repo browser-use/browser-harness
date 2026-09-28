@@ -1,6 +1,6 @@
 # Forgepoint Investor Portal — Admin and Deck Publishing
 
-`https://invest.forgepoint.ai` is a Next.js investor portal with an authenticated admin at `/admin`. Public share links are tokenized under `/d/{token}` and may require an allowed-domain email before opening.
+`https://invest.forgepoint.ai` is a Next.js investor portal with an authenticated admin at `/admin`. Public share links are tokenized under `/d/{token}` and may require either an allowed-domain email or an exact email allowlist before opening.
 
 ## Deck publishing workflow
 
@@ -147,4 +147,21 @@ The viewer page wraps a same-origin deck in an `iframe`. For verification, inspe
 
 Authenticated admins can inspect link metadata through `GET /api/admin/links`. Select links by exact `label` plus `targetType`; labels may overlap between document links and room links. Never log or persist the returned token.
 
-When a share link requires email collection, use an address in its `allowedEmailDomain`. The form has `input[type=email]` and a submit button. After submission, the portal records the viewer session and displays the room or document.
+Create a domain-restricted link with `allowedEmailDomain`, or an exact-address link with `allowedEmails`. Provide exactly one restriction type:
+
+```javascript
+await fetch('/api/admin/links', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({
+    label: 'Investor group — Data Room',
+    allowedEmails: ['person@firm.com', 'partner@gmail.com'],
+    targetType: 'room',
+    targetId: 123
+  })
+}).then(r => r.json())
+```
+
+The API normalizes exact addresses to lowercase and de-duplicates them. Existing `allowedEmailDomain` links continue to require an exact domain match. Exact-address links authorize only listed addresses, which is necessary for cross-domain groups and personal email accounts.
+
+The public gate has `input[type=email]` and a submit button. After an authorized submission, the portal records the viewer session and displays the room or document. Unlisted addresses receive `403` from `/api/auth/collect-email`.
