@@ -377,6 +377,7 @@ def test_chrome_running_detects_helium_on_linux(monkeypatch):
         ("Linux", "google-chrome"),
         ("Linux", "google-chrome-s"),
         ("Linux", "microsoft-edge"),
+        ("Linux", "microsoft-edge-"),
     ],
 )
 def test_chrome_running_detects_browser_process(monkeypatch, system, comm):
@@ -391,9 +392,11 @@ def test_chrome_running_detects_browser_process(monkeypatch, system, comm):
     [
         ("Darwin", "/Applications/Claude.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler"),
         ("Linux", "chrome_crashpad"),
+        ("Linux", "chrome-remote-d"),
+        ("Linux", "chrome-gnome-sh"),
     ],
 )
-def test_chrome_running_ignores_electron_crashpad_handler(monkeypatch, system, comm):
+def test_chrome_running_ignores_non_browser_process(monkeypatch, system, comm):
     monkeypatch.setattr("platform.system", lambda: system)
     monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: f"init\n{comm}\n")
 

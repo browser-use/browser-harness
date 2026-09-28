@@ -1214,9 +1214,13 @@ def _chrome_running():
         # chars on Linux (chromium-browser -> chromium-browse). Match each
         # process name, not the whole listing, so an Electron app's
         # chrome_crashpad_handler doesn't count as a running Chrome.
-        names = ("google chrome", "google-chrome", "chrome", "chromium", "chromium-browse", "microsoft edge", "microsoft-edge", "msedge", "helium")
+        names = (
+            "google chrome", "google-chrome", "google-chrome-s", "google-chrome-b", "google-chrome-u",
+            "chrome", "chromium", "chromium-browse",
+            "microsoft edge", "microsoft-edge", "microsoft-edge-", "msedge", "helium",
+        )
         procs = {os.path.basename(line.strip()).lower() for line in out.splitlines()}
-        return any(p == n or p.startswith((n + " ", n + "-")) for p in procs for n in names)
+        return any(p == n or p.startswith(n + " ") for p in procs for n in names)
     except Exception:
         return False
 
