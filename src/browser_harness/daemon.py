@@ -828,10 +828,12 @@ async def serve(d):
 
     serve_task = asyncio.create_task(ipc.serve(NAME, handler))
     stop_task = asyncio.create_task(d.stop.wait())
+    browser_task = d.cdp._message_handler_task
     await asyncio.sleep(0.05)  # let serve() bind so sock_addr() resolves to the live endpoint
     log(f"listening on {ipc.sock_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
     try:
-        await asyncio.wait({serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait({serve_task, stop_task, browser_task}, return_when=asyncio.FIRST_COMPLETED)
+        if browser_task.done(): log("browser connection closed, exiting")
         if serve_task.done(): await serve_task  # surfaces a serve crash
     finally:
         for t in (serve_task, stop_task):
@@ -850,7 +852,8 @@ async def serve(d):
         if recoveries_drained:
             async with d._session_state_lock:
                 async with d._dedicated_target_lock:
-                    if d.dedicated_target_id and d.cdp:
+                    # Without the reader no reply arrives, so a send would hang.
+                    if d.dedicated_target_id and d.cdp and not browser_task.done():
                         try:
                             await d.cdp.send_raw(
                                 "Target.closeTarget", {"targetId": d.dedicated_target_id}
