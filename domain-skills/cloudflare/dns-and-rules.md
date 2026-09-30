@@ -114,6 +114,20 @@ closing — screenshot to confirm rather than trusting the query.
 few seconds to re-render after Save, and the row-scraping query may return
 nothing while public DNS already has the record.
 
+**AAAA records and a more reliable path through the modal.** For AAAA the
+target is `textarea[name="ipv6_address"]`. Driving the modal with element
+`.click()` calls avoids the coordinate problems above: `.click()` the Type
+trigger (the dialog `button` whose `innerText` is the current type), then
+`.click()` the `[role=option]` whose text is `AAAA`. Then `.focus()`
+`input[name=name]` / the textarea and use `type_text()`. On current renders
+`Input.insertText` after a programmatic `focus()` sticks. Assert the summary
+sentence ("<host> points to 100:: and has its traffic proxied…") before Save.
+
+**Never press Escape or click outside the dialog to dismiss a password-manager
+overlay.** Both close the whole Add record modal. The overlay (e.g. Dashlane
+"Identity" on the Name field) disappears once focus moves to another field
+programmatically.
+
 ## Waits
 
 `wait_for_load()` returns while the dash is still hydrating; the whole app is
