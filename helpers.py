@@ -75,7 +75,7 @@ def type_text(text):
     cdp("Input.insertText", text=text)
 
 _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
-    "Enter": (13, "Enter", "\r"), "Tab": (9, "Tab", "\t"), "Backspace": (8, "Backspace", ""),
+    "Enter": (13, "Enter", "\r"), "Tab": (9, "Tab", ""), "Backspace": (8, "Backspace", ""),
     "Escape": (27, "Escape", ""), "Delete": (46, "Delete", ""), " ": (32, "Space", " "),
     "ArrowLeft": (37, "ArrowLeft", ""), "ArrowUp": (38, "ArrowUp", ""),
     "ArrowRight": (39, "ArrowRight", ""), "ArrowDown": (40, "ArrowDown", ""),
