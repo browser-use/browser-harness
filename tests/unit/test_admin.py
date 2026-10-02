@@ -277,6 +277,12 @@ def test_named_daemon_respawn_without_endpoint_remains_strict(monkeypatch, tmp_p
     monkeypatch.setattr(admin, "daemon_alive", lambda name: next(alive))
     admin.ensure_daemon(name="managed", env={"BU_CDP_WS": "ws://cloud.example"}, wait=1)
 
+    # Clear endpoint vars before the no-endpoint spawn: ensure_daemon merges
+    # os.environ into the child env, so host vars would otherwise leak in and
+    # the assertions below would pass without exercising the no-endpoint case.
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+
     with pytest.raises(RuntimeError, match="requires BU_CDP_WS or BU_CDP_URL"):
         admin.ensure_daemon(name="managed", wait=0)
 
@@ -285,8 +291,6 @@ def test_named_daemon_respawn_without_endpoint_remains_strict(monkeypatch, tmp_p
     assert spawned_envs[1].get("BU_CDP_URL") is None
 
     monkeypatch.setattr(daemon, "NAME", spawned_envs[1]["BU_NAME"])
-    monkeypatch.delenv("BU_CDP_WS", raising=False)
-    monkeypatch.delenv("BU_CDP_URL", raising=False)
 
     class _NoProfiles:
         def __iter__(self):
