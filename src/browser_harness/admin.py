@@ -525,8 +525,10 @@ def run_doctor_fix_snap():
 
 
 def ensure_daemon(wait=None, name=None, env=None):
-    """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
-    Chrome, and missing Allow on chrome://inspect."""
+    """Idempotent. Self-heals a stale daemon; for the default daemon only,
+    also recovers closed Chrome (launches it), cold Chrome, and a missing
+    Allow on chrome://inspect. Named managed daemons fail closed instead —
+    no local Chrome launch or chrome://inspect recovery."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
