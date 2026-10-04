@@ -14,4 +14,6 @@ capture_screenshot("/tmp/shot.png", max_dim=1800)
 
 The downscale only happens when the image actually exceeds `max_dim`, so it's safe to leave on for every shot.
 
+Screenshots stay in the background by default and do not change the user's visible tab. If Chrome needs the controlled tab in the foreground to paint the screenshot correctly, pass `activate=True`; this visibly focuses that tab before capture, so use it only when needed.
+
 Use full-page screenshots (`full=True`) only when you need to see content below the fold — they are much larger and slower than viewport-only.
