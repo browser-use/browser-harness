@@ -12,7 +12,7 @@ Writes two files into OUTPUT_DIR, named from the conversation title slug:
     <slug>.json  — {title, source_url, turns: [{role, text}]}
     <slug>.md    — Markdown with ## Human / ## Assistant headers
 """
-import json, os, pathlib, re, sys, time
+import hashlib, json, os, pathlib, re, sys, time
 
 share_url = os.environ.get("CLAUDE_SHARE_URL")
 out_dir = os.environ.get("OUTPUT_DIR")
@@ -52,6 +52,19 @@ slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "claude-share"
 
 out = pathlib.Path(out_dir)
 out.mkdir(parents=True, exist_ok=True)
+
+# Keep the readable title-based name when it is unused. If a different share
+# already owns that name, add a stable URL digest so repeated exports of the
+# same conversation remain in place without replacing another conversation.
+json_path = out / f"{slug}.json"
+if json_path.exists() or (out / f"{slug}.md").exists():
+    try:
+        existing = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing = None
+    if not isinstance(existing, dict) or existing.get("source_url") != share_url:
+        suffix = hashlib.sha256(share_url.encode("utf-8")).hexdigest()[:10]
+        slug = f"{slug}-{suffix}"
 
 payload = {"title": title, "source_url": share_url, "turns": turns}
 (out / f"{slug}.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
