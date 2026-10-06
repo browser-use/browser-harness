@@ -1044,6 +1044,34 @@ def test_frame_seed_does_not_overwrite_same_url_reload(daemon_bridge):
     assert d._document_state["SESSION-MINE"]["loader_id"] == "LOADER-NEW"
 
 
+def test_same_session_switch_keeps_reload_provenance_when_seed_is_stale(daemon_bridge):
+    d, _calls = daemon_bridge
+    d._document_state["SESSION-MINE"].update({
+        "generation": 4, "loader_id": "LOADER-OLD",
+    })
+    original = d.cdp.send_raw
+
+    async def reload_while_seeding(method, params=None, session_id=None):
+        if method == "Page.getFrameTree":
+            d._record_event("Page.frameNavigated", {"frame": {
+                "id": "FRAME-MINE", "loaderId": "LOADER-NEW",
+                "url": "https://owned.example/",
+            }}, session_id)
+            return {"frameTree": {"frame": {
+                "id": "FRAME-MINE", "loaderId": "LOADER-OLD",
+                "url": "https://owned.example/",
+            }}}
+        return await original(method, params, session_id)
+
+    d.cdp.send_raw = reload_while_seeding
+    with pytest.raises(helpers.TabGuardRefused):
+        helpers._read_meta("set_session", session_id="SESSION-MINE", target_id="MINE")
+
+    state = d._document_state["SESSION-MINE"]
+    assert state["generation"] == 1
+    assert state["loader_id"] == "LOADER-NEW"
+
+
 def test_guarded_attach_refuses_and_detaches_when_frame_provenance_cannot_seed(daemon_bridge):
     d, calls = daemon_bridge
     original = d.cdp.send_raw

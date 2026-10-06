@@ -1708,7 +1708,7 @@ class Daemon:
                     self._session_targets[new_session] = self.target_id
                 if owned is not None:
                     old_document_state = self._document_state.get(new_session)
-                    self._document_state[new_session] = {
+                    seeded_document_state = {
                             "target_id": self.target_id,
                             "generation": 0,
                             "url": info.get("url"),
@@ -1717,6 +1717,7 @@ class Daemon:
                             "loader_id": None,
                         "allowed": True,
                     }
+                    self._document_state[new_session] = seeded_document_state
                     registration_generation = 0
                     registration_url = info.get("url")
                     if not await self._seed_document_frame(new_session):
@@ -1745,7 +1746,23 @@ class Daemon:
                         elif old_document_state is None:
                             self._document_state.pop(new_session, None)
                         else:
-                            self._document_state[new_session] = old_document_state
+                            current_document_state = self._document_state.get(new_session)
+                            document_changed_during_seed = (
+                                current_document_state is seeded_document_state
+                                and (current_document_state.get("generation") != registration_generation
+                                     or current_document_state.get("document_url") != registration_url)
+                            )
+                            if (new_session in self._guarded_sessions
+                                    and self._session_targets.get(new_session) == self.target_id
+                                    and document_changed_during_seed):
+                                # A navigation event is newer provenance than
+                                # the stale frame-tree reply; keep its loader.
+                                pass
+                            elif (new_session in self._guarded_sessions
+                                  and self._session_targets.get(new_session) == self.target_id):
+                                self._document_state[new_session] = old_document_state
+                            else:
+                                self._document_state.pop(new_session, None)
                         self.session = old_session
                         self.target_id = old_target_id
                         return {"tab_guard": "refused", "target_id": req.get("target_id")}
