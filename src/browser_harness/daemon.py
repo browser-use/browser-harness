@@ -2070,12 +2070,14 @@ class Daemon:
             if sid is None and method == "Target.attachToTarget":
                 # A run-created target is owned before its first session exists.
                 # Permit that initial attach only from the daemon's ownership
-                # record, with an empty caller snapshot; the live target URL
-                # check below establishes the current document state.
+                # record, with an empty caller snapshot. There is no document
+                # snapshot yet, so bind authorization to the helper's URL and
+                # establish it against live target info below.
                 if (identity["session_id"] is not None
                         or identity["generation"] is not None
-                        or identity["document_url"] != req.get("tab_guard_url")):
+                        or not _guard_url_allowed(req.get("tab_guard_url"))):
                     return None
+                identity["document_url"] = req.get("tab_guard_url")
             else:
                 mapped_state = self._document_state.get(sid)
                 if (not sid or identity["session_id"] != sid

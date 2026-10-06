@@ -1063,6 +1063,27 @@ def test_detach_during_final_attach_validation_does_not_return_session(daemon_br
                for method, params, _ in calls)
 
 
+def test_first_attach_to_run_owned_target_uses_live_url_without_document_state(daemon_bridge):
+    d, _ = daemon_bridge
+    d._revoke_event_ownership(sessions={"SESSION-MINE"})
+    original = d.cdp.send_raw
+    async def first_attach(method, params=None, session_id=None):
+        if method == "Target.getTargetInfo":
+            return {"targetInfo": {"type": "page", "targetId": "MINE",
+                                   "url": "about:blank", "title": ""}}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "SESSION-NEW"}
+        if method == "Page.getFrameTree" and session_id == "SESSION-NEW":
+            return {"frameTree": {"frame": {"id": "FRAME-MINE", "url": "about:blank"}}}
+        return await original(method, params, session_id)
+    d.cdp.send_raw = first_attach
+    result = helpers.cdp("Target.attachToTarget", targetId="MINE", flatten=True)
+    assert result["sessionId"] == "SESSION-NEW"
+    assert "SESSION-NEW" in d._guarded_sessions
+    helpers._read_meta("set_session", target_id="MINE", session_id="SESSION-NEW")
+    assert helpers.current_tab()["targetId"] == "MINE"
+
+
 def test_guarded_metadata_and_switch_reject_privileged_current_url(daemon_bridge, monkeypatch):
     d, calls = daemon_bridge
     original = d.cdp.send_raw
