@@ -505,6 +505,7 @@ class Daemon:
         self._guarded_targets = set()
         self._guarded_contexts = set()
         self._pending_guarded_context_cleanup = set()
+        self._guarded_context_cleanup_lock = asyncio.Lock()
         self._guard_policy_active = os.environ.get("BH_TAB_GUARD") == "1"
         self._guarded_run_id = None
         self._authorization_epoch = 0
@@ -1325,19 +1326,28 @@ class Daemon:
         if marker_tasks:
             await asyncio.gather(*marker_tasks, return_exceptions=True)
             self._marker_tasks.difference_update(marker_tasks)
-        cleanup_errors = []
         for context_id in list(self._pending_guarded_context_cleanup):
+            await self._dispose_guarded_context(context_id)
+        return {"tab_guard": "ok", "tab_guard_run": run_id,
+                "cleanup_pending": len(self._pending_guarded_context_cleanup)}
+
+    async def _dispose_guarded_context(self, context_id):
+        """Dispose one revoked run context without letting diagnostics stop cleanup."""
+        async with self._guarded_context_cleanup_lock:
+            if context_id not in self._pending_guarded_context_cleanup:
+                return True
             try:
                 await self.cdp.send_raw(
                     "Target.disposeBrowserContext", {"browserContextId": context_id}
                 )
-            except Exception as exc:
-                cleanup_errors.append(context_id)
-                log(f"tab guard failed to dispose browser context {context_id}: {exc}")
-            else:
-                self._pending_guarded_context_cleanup.discard(context_id)
-        return {"tab_guard": "ok", "tab_guard_run": run_id,
-                "cleanup_pending": len(cleanup_errors)}
+            except Exception:
+                try:
+                    log("tab guard failed to dispose a run-owned browser context")
+                except Exception:
+                    pass
+                return False
+            self._pending_guarded_context_cleanup.discard(context_id)
+            return True
 
     async def _retry_overflow_cleanup_sessions(self):
         """Retry detaching refused sessions, retaining failures for later cleanup."""
@@ -1812,6 +1822,11 @@ class Daemon:
                     and not await (self._navigation_identity_current(guard_identity)
                                    if navigation_dispatch
                                    else self._dispatch_identity_current(guard_identity))):
+                if method == "Target.createBrowserContext":
+                    context_id = result.get("browserContextId")
+                    if context_id:
+                        self._pending_guarded_context_cleanup.add(context_id)
+                        await self._dispose_guarded_context(context_id)
                 if overflow_attach_lock_held:
                     self._overflow_attach_lock.release()
                     overflow_attach_lock_held = False

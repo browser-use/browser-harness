@@ -2315,6 +2315,68 @@ def test_guard_reset_retains_failed_context_cleanup_for_later_retry(daemon_bridg
     assert sum(call[0] == "Target.disposeBrowserContext" for call in calls) == 2
 
 
+def test_context_created_after_reset_is_disposed_before_refusal(daemon_bridge):
+    d, calls = daemon_bridge
+    original_send = d.cdp.send_raw
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def create_after_pause(method, params=None, session_id=None):
+        if method == "Target.createBrowserContext":
+            entered.set()
+            await release.wait()
+            calls.append((method, params, session_id))
+            return {"browserContextId": "CONTEXT-LATE"}
+        return await original_send(method, params, session_id)
+
+    d.cdp.send_raw = create_after_pause
+    request = _guarded_dispatch_request(d, "Target.createBrowserContext", {})
+
+    async def run():
+        pending_create = asyncio.create_task(d.handle(request))
+        await entered.wait()
+        reset = await d.handle({
+            "meta": "tab_guard_reset", "tab_guard_run": RUN_ID,
+            "tab_guard_epoch": d._authorization_epoch,
+        })
+        release.set()
+        return reset, await pending_create
+
+    reset, created = asyncio.run(run())
+    assert reset["cleanup_pending"] == 0
+    assert created["tab_guard"] == "refused"
+    assert ("Target.disposeBrowserContext", {"browserContextId": "CONTEXT-LATE"}, None) in calls
+    assert d._pending_guarded_context_cleanup == set()
+
+
+def test_context_cleanup_continues_when_diagnostic_logging_fails(daemon_bridge, monkeypatch):
+    d, calls = daemon_bridge
+    d._guarded_contexts.update({"CONTEXT-ONE", "CONTEXT-TWO"})
+    messages = []
+
+    def broken_log(message):
+        messages.append(message)
+        raise OSError("log destination unavailable")
+
+    async def failed_dispose(method, params=None, session_id=None):
+        calls.append((method, params, session_id))
+        if method == "Target.disposeBrowserContext":
+            raise RuntimeError("protocol error contains private context identifier")
+        return {}
+
+    monkeypatch.setattr(daemon, "log", broken_log)
+    d.cdp.send_raw = failed_dispose
+    reset = asyncio.run(d.handle({
+        "meta": "tab_guard_reset", "tab_guard_run": RUN_ID,
+        "tab_guard_epoch": d._authorization_epoch,
+    }))
+
+    assert reset["cleanup_pending"] == 2
+    assert len([call for call in calls if call[0] == "Target.disposeBrowserContext"]) == 2
+    assert d._pending_guarded_context_cleanup == {"CONTEXT-ONE", "CONTEXT-TWO"}
+    assert messages == ["tab guard failed to dispose a run-owned browser context"] * 2
+    assert "CONTEXT-" not in " ".join(messages)
+
+
 def test_shutdown_remains_available_after_guard_latches(daemon_bridge, monkeypatch):
     d, calls = daemon_bridge
     d.stop = asyncio.Event()
@@ -3110,6 +3172,22 @@ def test_run_reset_removes_its_record(owning):
     assert not path.exists()
     assert helpers._owned_ids() == set()
     assert helpers._owned_sessions() == set()
+
+
+def test_run_reset_warns_when_daemon_cleanup_remains_pending(guard, monkeypatch, capsys):
+    def send(request):
+        if request.get("meta") == "guard_epoch":
+            return {"tab_guard": "ok", "tab_guard_epoch": 0}
+        return {"tab_guard": "ok", "tab_guard_run": RUN_ID, "cleanup_pending": 1}
+
+    monkeypatch.setattr(helpers, "_send", send)
+
+    helpers.tab_guard_reset()
+
+    warning = capsys.readouterr().err
+    assert "WARNING" in warning
+    assert "cleanup will be retried" in warning
+    assert "CONTEXT-" not in warning
 
 
 def test_run_reset_propagates_lock_failure(guard, monkeypatch):
