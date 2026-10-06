@@ -47,7 +47,7 @@ def test_save_auth_record_does_not_harden_relative_parent(monkeypatch, tmp_path)
     assert (Path("."), True) not in calls
 
 
-def test_default_auth_save_does_not_harden_config_directory_twice(monkeypatch, tmp_path):
+def test_default_auth_save_repairs_posix_config_directory_mode(monkeypatch, tmp_path):
     config = tmp_path / "config"
     config.mkdir()
     calls = []
@@ -59,9 +59,26 @@ def test_default_auth_save_does_not_harden_config_directory_twice(monkeypatch, t
 
     auth.save_auth_record(auth.AuthRecord(api_key="x" * 24))
 
-    assert not any(path == config and directory for path, directory in calls)
+    hardened_config_dirs = [path for path, directory in calls if path == config and directory]
+    if auth.os.name == "nt":
+        assert not hardened_config_dirs
+    else:
+        assert hardened_config_dirs == [config]
     assert any(path.name.startswith("auth.json.") and path.name.endswith(".tmp")
                for path, _directory in calls)
+
+
+@pytest.mark.skipif(auth.os.name == "nt", reason="POSIX directory mode bits")
+def test_default_auth_save_repairs_permissive_existing_config_directory(monkeypatch, tmp_path):
+    config = tmp_path / "config"
+    config.mkdir(mode=0o777)
+    config.chmod(0o777)
+    monkeypatch.delenv("BH_AUTH_PATH", raising=False)
+    monkeypatch.setattr(auth.paths, "config_dir", lambda: config)
+
+    auth.save_auth_record(auth.AuthRecord(api_key="x" * 24))
+
+    assert config.stat().st_mode & 0o777 == 0o700
 
 
 def test_auth_path_override_hardens_its_parent(monkeypatch, tmp_path):

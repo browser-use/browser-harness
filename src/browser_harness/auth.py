@@ -149,11 +149,10 @@ def save_auth_record(record: AuthRecord, path: Path | None = None) -> None:
     paths.reject_reparse_path(path)
     paths.reject_reparse_path(path.parent)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # auth_path() already calls config_dir(), which ensures the default
-    # config directory is private. Avoid recursively resetting its ACL again
-    # on every default save; caller-selected paths still require hardening.
+    # config_dir() validates the default ACL tree on Windows. On POSIX, ensure
+    # the existing directory mode is repaired before writing credentials.
     default_config_path = caller_path is None and not os.environ.get("BH_AUTH_PATH")
-    if path.parent != Path(".") and not default_config_path:
+    if path.parent != Path(".") and (not default_config_path or os.name != "nt"):
         _chmod_private(path.parent, directory=True)
     existing = load_auth_file(path)
     existing["browser_use"] = record.to_storage()
