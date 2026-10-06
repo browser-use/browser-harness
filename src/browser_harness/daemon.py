@@ -272,6 +272,13 @@ def log(msg):
         stream.write(f"{msg}\n")
 
 
+def _safe_log(msg):
+    try:
+        log(msg)
+    except Exception:
+        pass
+
+
 def _safe_connection_label(url):
     """Log only endpoint topology, never CDP credentials or provider session paths."""
     try:
@@ -1694,22 +1701,29 @@ class Daemon:
                     registration_generation = 0
                     registration_url = info.get("url")
                     if not await self._seed_document_frame(new_session):
-                        if old_document_state is None:
+                        if new_session != old_session:
+                            self._document_state.pop(new_session, None)
+                            self._session_targets.pop(new_session, None)
+                            self._guarded_sessions.discard(new_session)
+                            self._revoked_sessions.add(new_session)
+                            already_detached = new_session in self._pending_detached_sessions
+                            self._pending_detached_sessions.pop(new_session, None)
+                            if not already_detached:
+                                self._overflow_cleanup_sessions[new_session] = None
+                                try:
+                                    await self.cdp.send_raw(
+                                        "Target.detachFromTarget", {"sessionId": new_session}
+                                    )
+                                except Exception:
+                                    _safe_log(
+                                        "tab guard failed to detach a session without frame provenance"
+                                    )
+                                else:
+                                    self._overflow_cleanup_sessions.pop(new_session, None)
+                        elif old_document_state is None:
                             self._document_state.pop(new_session, None)
                         else:
                             self._document_state[new_session] = old_document_state
-                        if new_session != old_session:
-                            try:
-                                await self.cdp.send_raw(
-                                    "Target.detachFromTarget", {"sessionId": new_session}
-                                )
-                            except Exception:
-                                try:
-                                    log("tab guard failed to detach a session without frame provenance")
-                                except Exception:
-                                    pass
-                            self._session_targets.pop(new_session, None)
-                            self._guarded_sessions.discard(new_session)
                         self.session = old_session
                         self.target_id = old_target_id
                         return {"tab_guard": "refused", "target_id": req.get("target_id")}
@@ -1940,15 +1954,22 @@ class Daemon:
                                 or target_id not in self._guarded_targets
                                 or not isinstance(attached_state, dict)
                                 or attached_state.get("allowed") is not True):
-                            try:
-                                await self.cdp.send_raw(
-                                    "Target.detachFromTarget", {"sessionId": attached_session}
-                                )
-                            except Exception as exc:
-                                log(f"tab guard failed to detach stale session {attached_session}: {exc}")
                             self._session_targets.pop(attached_session, None)
                             self._guarded_sessions.discard(attached_session)
                             self._document_state.pop(attached_session, None)
+                            self._revoked_sessions.add(attached_session)
+                            already_detached = attached_session in self._pending_detached_sessions
+                            self._pending_detached_sessions.pop(attached_session, None)
+                            if not already_detached:
+                                self._overflow_cleanup_sessions[attached_session] = None
+                                try:
+                                    await self.cdp.send_raw(
+                                        "Target.detachFromTarget", {"sessionId": attached_session}
+                                    )
+                                except Exception:
+                                    _safe_log("tab guard failed to detach a refused guarded session")
+                                else:
+                                    self._overflow_cleanup_sessions.pop(attached_session, None)
                             if overflow_attach_lock_held:
                                 self._overflow_attach_lock.release()
                                 overflow_attach_lock_held = False

@@ -1043,7 +1043,37 @@ def test_guarded_attach_refuses_and_detaches_when_frame_provenance_cannot_seed(d
                for method, params, _ in calls)
 
 
-def test_set_session_refuses_and_rolls_back_when_frame_provenance_fails(daemon_bridge):
+def test_guarded_attach_revokes_session_when_seed_detach_and_logging_fail(daemon_bridge, monkeypatch):
+    d, calls = daemon_bridge
+    original = d.cdp.send_raw
+
+    async def fail_seed_and_detach(method, params=None, session_id=None):
+        if method == "Target.attachToTarget":
+            return {"sessionId": "SESSION-LEAK-CANDIDATE"}
+        if method == "Page.getFrameTree" and session_id == "SESSION-LEAK-CANDIDATE":
+            raise RuntimeError("frame tree unavailable")
+        if method == "Target.detachFromTarget":
+            calls.append((method, params, session_id))
+            raise OSError("CDP detach failed")
+        return await original(method, params, session_id)
+
+    monkeypatch.setattr(daemon, "log", lambda _message: (_ for _ in ()).throw(OSError("log failed")))
+    d.cdp.send_raw = fail_seed_and_detach
+    with pytest.raises(helpers.TabGuardRefused):
+        helpers.cdp("Target.attachToTarget", targetId="MINE", flatten=True)
+
+    assert "SESSION-LEAK-CANDIDATE" not in d._guarded_sessions
+    assert "SESSION-LEAK-CANDIDATE" not in d._session_targets
+    assert "SESSION-LEAK-CANDIDATE" not in d._document_state
+    assert "SESSION-LEAK-CANDIDATE" in d._revoked_sessions
+    assert "SESSION-LEAK-CANDIDATE" in d._overflow_cleanup_sessions
+
+    d.cdp.send_raw = original
+    asyncio.run(d._retry_overflow_cleanup_sessions())
+    assert "SESSION-LEAK-CANDIDATE" not in d._overflow_cleanup_sessions
+
+
+def test_set_session_refuses_and_rolls_back_when_frame_provenance_fails(daemon_bridge, monkeypatch):
     d, calls = daemon_bridge
     original = d.cdp.send_raw
     d._session_targets["SESSION-NEW"] = "MINE"
@@ -1058,8 +1088,12 @@ def test_set_session_refuses_and_rolls_back_when_frame_provenance_fails(daemon_b
     async def fail_frame_seed(method, params=None, session_id=None):
         if method == "Page.getFrameTree" and session_id == "SESSION-NEW":
             raise RuntimeError("frame tree unavailable")
+        if method == "Target.detachFromTarget":
+            calls.append((method, params, session_id))
+            raise OSError("CDP detach failed")
         return await original(method, params, session_id)
 
+    monkeypatch.setattr(daemon, "log", lambda _message: (_ for _ in ()).throw(OSError("log failed")))
     d.cdp.send_raw = fail_frame_seed
     with pytest.raises(helpers.TabGuardRefused):
         helpers._read_meta("set_session", session_id="SESSION-NEW", target_id="MINE")
@@ -1068,9 +1102,15 @@ def test_set_session_refuses_and_rolls_back_when_frame_provenance_fails(daemon_b
     assert d.target_id == "MINE"
     assert "SESSION-NEW" not in d._guarded_sessions
     assert "SESSION-NEW" not in d._session_targets
+    assert "SESSION-NEW" not in d._document_state
+    assert "SESSION-NEW" in d._revoked_sessions
+    assert "SESSION-NEW" in d._overflow_cleanup_sessions
     assert any(method == "Target.detachFromTarget"
                and params == {"sessionId": "SESSION-NEW"}
                for method, params, _ in calls)
+    d.cdp.send_raw = original
+    asyncio.run(d._retry_overflow_cleanup_sessions())
+    assert "SESSION-NEW" not in d._overflow_cleanup_sessions
 
 
 def test_reset_during_attach_frame_seed_revokes_and_detaches_session(daemon_bridge):
