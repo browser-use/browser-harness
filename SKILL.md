@@ -53,8 +53,11 @@ PY
   itself: on any other tab the sole permitted operations are enumeration
   (`Target.getTargets`, so `list_tabs()` still works) and creation (`new_tab()`).
   Every session-scoped call there is refused, `js()` and screenshots included,
-  and so is a session this run did not attach; a refusal raises
-  `TabGuardRefused` and prints `[tab-guard] REFUSED <method> <targetId> <url>`.
+  and so is a session this run did not attach. Refusals raise `TabGuardRefused`.
+  Helper-side refusals print `[tab-guard] REFUSED <method> <targetId> <url>` to
+  stderr. Daemon-side refusals use `source="daemon"` and include
+  `[tab-guard] REFUSED (daemon) <method>: <reason>` in the exception message,
+  without a separate stderr line.
   It fails closed — if the attached tab cannot be read, the call is refused.
   Leave it unset for interactive work, where driving a tab the human already
   opened is the point.
@@ -79,8 +82,9 @@ PY
   Iframe attachment requires ancestry in the current owned page's frame tree.
   Workers or other targets without that proof are refused. The guard protects
   helper calls, not arbitrary Python or direct IPC access.
-  Set `BH_TAB_GUARD_LOG` to a file path when the
-  supervisor cannot see this process's stderr and still needs to count refusals.
+  Set `BH_TAB_GUARD_LOG` to a file path to append helper-side and daemon-side
+  refusals. Logging is best effort; an unwritable log does not prevent
+  `TabGuardRefused` from being raised.
 - A timeout or page that pauses while hidden is not permission to foreground
   Chrome. Keep using background CDP operations. For a focus-gated page,
   temporarily call `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`,
