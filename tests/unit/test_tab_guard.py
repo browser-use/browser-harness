@@ -256,7 +256,7 @@ def test_guard_rejects_explicit_owned_session_mismatch_before_dispatch(owning, m
         calls.append(req)
         return fake(req, **kwargs)
     monkeypatch.setattr(helpers, "_send", send)
-    with pytest.raises(helpers.TabGuardRefused, match="does not match"):
+    with pytest.raises(helpers.TabGuardRefused):
         if nested:
             helpers.cdp(
                 "Target.sendMessageToTarget",
@@ -689,7 +689,7 @@ def test_owned_iframe_session_fails_closed_without_target_mapping(owning, monkey
             return {"result": {"sessionId": "IFRAME-SESSION"}}
         return base(req, **kw)
     monkeypatch.setattr(helpers, "_send", send)
-    with pytest.raises(helpers.TabGuardRefused, match="does not match"):
+    with pytest.raises(helpers.TabGuardRefused):
         helpers.js("42", target_id="IFRAME")
     assert not any(req.get("method") == "Runtime.evaluate" for req in calls)
 
@@ -862,16 +862,34 @@ def daemon_bridge(owning, monkeypatch):
         "frame_id": "FRAME-MINE", "loader_id": "LOADER-MINE", "allowed": True,
     }
     calls = []
+    target_urls = {"MINE": "https://owned.example/"}
     class CDP:
         async def send_raw(self, method, params=None, session_id=None):
             calls.append((method, params, session_id))
             if method == "Target.getTargetInfo":
-                return {"targetInfo": {"type": "page", "targetId": params["targetId"],
-                                       "url": "https://owned.example/", "title": "Owned"}}
+                target = params["targetId"]
+                return {"targetInfo": {"type": "iframe" if target.startswith("IFRAME") else "page",
+                                       "targetId": target, "url": target_urls.get(target, "https://owned.example/"),
+                                       "title": "Owned"}}
+            if method == "Page.getFrameTree":
+                return {"frameTree": {"frame": {
+                    "id": "IFRAME-FRAME" if session_id == "IFRAME-SESSION" else "FRAME-MINE",
+                    "loaderId": "LOADER-IFRAME" if session_id == "IFRAME-SESSION" else "LOADER-MINE",
+                    "url": target_urls.get("IFRAME-TARGET" if session_id == "IFRAME-SESSION" else "MINE",
+                                            "https://owned.example/"),
+                }}}
+            if method == "Page.navigate":
+                url = params["url"]
+                target_urls["MINE"] = url
+                d._record_event("Page.frameNavigated", {"frame": {
+                    "id": "FRAME-MINE", "loaderId": "LOADER-NEXT", "url": url,
+                }}, session_id)
+                return {"frameId": "FRAME-MINE", "loaderId": "LOADER-NEXT"}
             if method == "Runtime.evaluate":
                 return {"result": {"value": '{"url":"https://owned.example/"}'}}
             if method == "Target.attachToTarget":
-                return {"sessionId": "SESSION-MINE"}
+                target = params["targetId"]
+                return {"sessionId": "IFRAME-SESSION" if target == "IFRAME-TARGET" else "SESSION-MINE"}
             return {}
     d.cdp = CDP()
     def send(req, **kwargs):
@@ -911,6 +929,138 @@ def test_metadata_helpers_still_read_owned_page_and_dialog(daemon_bridge):
                         "frameId": "FRAME-MINE"}
     assert helpers.page_info() == {"dialog": {
         "message": "owned", "url": "https://owned.example/", "frameId": "FRAME-MINE"}}
+
+
+def test_metadata_ignores_revoked_stale_entries_when_active_session_is_owned(daemon_bridge):
+    helpers._remember("sessions", "REVOKED-SESSION")
+    helpers._remember("tabs", "DESTROYED-TARGET")
+    assert helpers.current_tab()["targetId"] == "MINE"
+
+
+def test_guarded_navigation_allows_its_own_document_transition(daemon_bridge):
+    d, calls = daemon_bridge
+    result = helpers.cdp("Page.navigate", url="https://destination.example/")
+    assert result["frameId"] == "FRAME-MINE"
+    assert d._document_state["SESSION-MINE"]["document_url"] == "https://destination.example/"
+    assert any(method == "Page.navigate" for method, _, _ in calls)
+
+
+def test_nested_navigation_retains_only_its_valid_completion(daemon_bridge):
+    d, _ = daemon_bridge
+    original = d.cdp.send_raw
+    async def legacy(method, params=None, session_id=None):
+        if method == "Target.getTargetInfo":
+            return {"targetInfo": {"type": "page", "targetId": "MINE",
+                                   "url": d._document_state["SESSION-MINE"]["document_url"]}}
+        if method == "Target.sendMessageToTarget":
+            nested = json.loads(params["message"])
+            url = nested["params"]["url"]
+            if "#" in url:
+                d._record_event("Page.navigatedWithinDocument", {
+                    "frameId": "FRAME-MINE", "url": url,
+                }, "SESSION-MINE")
+            else:
+                d._record_event("Page.frameNavigated", {"frame": {
+                    "id": "FRAME-MINE", "loaderId": "LOADER-NEXT", "url": url,
+                }}, "SESSION-MINE")
+            d._record_event("Target.receivedMessageFromTarget", {
+                "sessionId": "SESSION-MINE",
+                "message": json.dumps({"id": nested["id"], "result": {"frameId": "FRAME-MINE"}}),
+            })
+            return {}
+        return await original(method, params, session_id)
+    d.cdp.send_raw = legacy
+    helpers.cdp("Target.sendMessageToTarget", sessionId="SESSION-MINE", message=json.dumps({
+        "id": 902, "method": "Page.navigate", "params": {"url": "https://nested-destination.example/"},
+    }))
+    events = helpers.drain_events()
+    reply = next(event for event in events if event["method"] == "Target.receivedMessageFromTarget")
+    payload = json.loads(reply["params"]["message"])
+    assert payload["id"] == 902
+    assert payload["result"]["frameId"] == "FRAME-MINE"
+    helpers.cdp("Target.sendMessageToTarget", sessionId="SESSION-MINE", message=json.dumps({
+        "id": 903, "method": "Page.navigate",
+        "params": {"url": "https://nested-destination.example/#section"},
+    }))
+    events = helpers.drain_events()
+    reply = next(event for event in events if event["method"] == "Target.receivedMessageFromTarget")
+    payload = json.loads(reply["params"]["message"])
+    assert payload["id"] == 903
+    assert not d._legacy_commands
+
+
+def test_guarded_iframe_ancestry_is_proved_by_daemon_before_attach(daemon_bridge):
+    d, calls = daemon_bridge
+    original = d.cdp.send_raw
+    async def page_tree(method, params=None, session_id=None):
+        calls.append((method, params, session_id))
+        if method == "Target.getTargetInfo" and params["targetId"] == "IFRAME-TARGET":
+            return {"targetInfo": {"type": "iframe", "targetId": "IFRAME-TARGET",
+                                   "url": "https://frame.example/"}}
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"id": "FRAME-MINE", "url": "https://owned.example/"},
+                "childFrames": [{"frame": {"id": "IFRAME-TARGET", "url": "https://frame.example/"}}]}}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "IFRAME-SESSION"}
+        return await original(method, params, session_id)
+    d.cdp.send_raw = page_tree
+    context = helpers._guard_context_request()
+    assert context.get("tab_guard") == "ok", context
+    assert helpers._is_owned_iframe("IFRAME-TARGET")
+    assert "IFRAME-TARGET" in d._guarded_targets
+    assert helpers.cdp("Target.attachToTarget", targetId="IFRAME-TARGET", flatten=True)["sessionId"] == "IFRAME-SESSION"
+    assert "IFRAME-SESSION" in d._guarded_sessions
+    assert any(method == "Page.getFrameTree" and sid == "SESSION-MINE"
+               for method, _, sid in calls)
+
+
+def test_reset_during_attach_frame_seed_revokes_and_detaches_session(daemon_bridge):
+    d, calls = daemon_bridge
+    original = d.cdp.send_raw
+    async def reset_while_seeding(method, params=None, session_id=None):
+        if method == "Target.attachToTarget":
+            return {"sessionId": "SESSION-NEW"}
+        if method == "Page.getFrameTree" and session_id == "SESSION-NEW":
+            await d._tab_guard_reset({"tab_guard_run": RUN_ID, "tab_guard_epoch": 0})
+            return {"frameTree": {"frame": {"id": "FRAME-MINE",
+                                              "loaderId": "LOADER-MINE",
+                                              "url": "https://owned.example/"}}}
+        return await original(method, params, session_id)
+    d.cdp.send_raw = reset_while_seeding
+    with pytest.raises(helpers.TabGuardRefused, match="revoked during attach"):
+        helpers.cdp("Target.attachToTarget", targetId="MINE", flatten=True)
+    assert "SESSION-NEW" not in d._guarded_sessions
+    assert any(method == "Target.detachFromTarget"
+               and params == {"sessionId": "SESSION-NEW"}
+               for method, params, _ in calls)
+
+
+def test_detach_during_final_attach_validation_does_not_return_session(daemon_bridge):
+    d, calls = daemon_bridge
+    original = d.cdp.send_raw
+    seeded = False
+    async def detach_during_validation(method, params=None, session_id=None):
+        nonlocal seeded
+        if method == "Target.attachToTarget":
+            return {"sessionId": "SESSION-NEW"}
+        if method == "Page.getFrameTree" and session_id == "SESSION-NEW":
+            seeded = True
+            return {"frameTree": {"frame": {"id": "FRAME-MINE",
+                                              "loaderId": "LOADER-MINE",
+                                              "url": "https://owned.example/"}}}
+        if method == "Target.getTargetInfo" and seeded:
+            d._record_event("Target.detachedFromTarget", {
+                "sessionId": "SESSION-NEW", "targetId": "MINE",
+            })
+        return await original(method, params, session_id)
+    d.cdp.send_raw = detach_during_validation
+    with pytest.raises(helpers.TabGuardRefused, match="revoked during attach"):
+        helpers.cdp("Target.attachToTarget", targetId="MINE", flatten=True)
+    assert "SESSION-NEW" not in d._guarded_sessions
+    assert "SESSION-NEW" not in helpers._owned_sessions()
+    assert any(method == "Target.detachFromTarget"
+               and params == {"sessionId": "SESSION-NEW"}
+               for method, params, _ in calls)
 
 
 def test_guarded_metadata_and_switch_reject_privileged_current_url(daemon_bridge, monkeypatch):

@@ -662,6 +662,22 @@ class Daemon:
                 log(f"enable {d} on {session_id}: {e}")
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
 
+    async def _seed_document_frame(self, session_id):
+        """Restore top-frame correlation after attaching to an existing page."""
+        try:
+            tree = (await self.cdp.send_raw(
+                "Page.getFrameTree", session_id=session_id
+            )).get("frameTree", {})
+        except Exception:
+            return
+        frame = tree.get("frame") if isinstance(tree, dict) else None
+        state = self._document_state.get(session_id)
+        if (not isinstance(frame, dict) or not isinstance(state, dict)
+                or frame.get("url") != state.get("document_url")):
+            return
+        state["frame_id"] = frame.get("id")
+        state["loader_id"] = frame.get("loaderId")
+
     def _record_session_replacement(self, stale_session, replacement_session):
         """Remember which recovered session still controls the same tab."""
         if not stale_session or not replacement_session or stale_session == replacement_session:
@@ -1030,6 +1046,9 @@ class Daemon:
                     key: value for key, value in self._legacy_commands.items()
                     if value.get("session_id") != source
                     or value.get("generation") == state["generation"]
+                    or (value.get("method") == "Page.navigate"
+                        and isinstance(value.get("generation"), int)
+                        and value.get("generation") + 1 == state["generation"])
                 }
             elif inner_method == "Page.navigatedWithinDocument":
                 frame_id = inner_params.get("frameId") if isinstance(inner_params, dict) else None
@@ -1163,11 +1182,25 @@ class Daemon:
                 )
                 command_key = (source, payload.get("id")) if is_response else None
                 command = self._legacy_commands.get(command_key)
+                same_document = (
+                    isinstance(command, dict)
+                    and command.get("generation") == state.get("generation")
+                    and command.get("document_url") == state.get("document_url")
+                )
+                completed_navigation = (
+                    isinstance(command, dict)
+                    and command.get("method") == "Page.navigate"
+                    and isinstance(command.get("generation"), int)
+                    and state.get("generation") in {
+                        command.get("generation"), command.get("generation") + 1,
+                    }
+                    and state.get("allowed") is True
+                    and _guard_url_allowed(state.get("document_url"))
+                )
                 if (not is_response or not isinstance(command, dict)
                         or command.get("run_id") != self._guarded_run_id
                         or command.get("epoch") != self._authorization_epoch
-                        or command.get("generation") != state.get("generation")
-                        or command.get("document_url") != state.get("document_url")
+                        or not (same_document or completed_navigation)
                         or command.get("target_id") != target_id):
                     return
                 self._legacy_commands.pop(command_key, None)
@@ -1308,9 +1341,14 @@ class Daemon:
         tabs, sessions = set(owned.get("tabs", [])), set(owned.get("sessions", []))
         run_id, epoch = req.get("tab_guard_run"), req.get("tab_guard_epoch")
         if (not self._guard_policy_active or run_id != self._guarded_run_id
-                or epoch != self._authorization_epoch
-                or not tabs.issubset(self._guarded_targets)
-                or not sessions.issubset(self._guarded_sessions)):
+                or epoch != self._authorization_epoch):
+            return {"tab_guard": "refused"}
+        # Ownership files can retain sessions revoked by Chrome lifecycle
+        # events. Ignore stale entries, while requiring the active identity
+        # below to be present in both the caller snapshot and daemon state.
+        tabs.intersection_update(self._guarded_targets)
+        sessions.intersection_update(self._guarded_sessions)
+        if not tabs or not sessions:
             return {"tab_guard": "refused"}
         target_id, sid = self.target_id, self.session
         if meta == "drain_events":
@@ -1456,6 +1494,56 @@ class Daemon:
                     context["target_id"] = None
                     context["session_id"] = None
             return context
+        if meta == "guard_iframe":
+            owned = req.get("tab_guard")
+            target_id = req.get("target_id")
+            sid, parent_id = self.session, self.target_id
+            state = self._document_state.get(sid)
+            generation = state.get("generation") if isinstance(state, dict) else None
+            document_url = state.get("document_url") if isinstance(state, dict) else None
+            if (not self._guard_policy_active or not isinstance(owned, dict)
+                    or req.get("tab_guard_run") != self._guarded_run_id
+                    or req.get("tab_guard_epoch") != self._authorization_epoch
+                    or not isinstance(target_id, str) or target_id in self._guarded_targets
+                    or not isinstance(state, dict) or state.get("allowed") is not True
+                    or sid not in owned.get("sessions", [])
+                    or parent_id not in owned.get("tabs", [])
+                    or sid not in self._guarded_sessions
+                    or parent_id not in self._guarded_targets
+                    or self._session_targets.get(sid) != parent_id):
+                return {"tab_guard": "refused"}
+            try:
+                info = (await self.cdp.send_raw(
+                    "Target.getTargetInfo", {"targetId": target_id}
+                )).get("targetInfo", {})
+                tree = (await self.cdp.send_raw(
+                    "Page.getFrameTree", session_id=sid
+                )).get("frameTree", {})
+            except Exception:
+                return {"tab_guard": "refused"}
+            pending = [tree]
+            frame = None
+            while pending:
+                node = pending.pop()
+                candidate = node.get("frame", {}) if isinstance(node, dict) else {}
+                if candidate.get("id") == target_id:
+                    frame = candidate
+                    break
+                pending.extend(node.get("childFrames", []))
+            current = self._document_state.get(sid)
+            if (not isinstance(frame, dict) or info.get("type") != "iframe"
+                    or not _guard_url_allowed(info.get("url"))
+                    or frame.get("url") != info.get("url")
+                    or not isinstance(current, dict)
+                    or req.get("tab_guard_epoch") != self._authorization_epoch
+                    or req.get("tab_guard_run") != self._guarded_run_id
+                    or sid not in self._guarded_sessions
+                    or self._session_targets.get(sid) != parent_id
+                    or current.get("generation") != generation
+                    or current.get("document_url") != document_url):
+                return {"tab_guard": "refused"}
+            self._guarded_targets.add(target_id)
+            return {"tab_guard": "ok", "target_id": target_id}
         if meta == "tab_guard_reset":
             return await self._tab_guard_reset(req)
         if (self._guard_policy_active and meta is not None
@@ -1577,6 +1665,7 @@ class Daemon:
                     }
                     registration_generation = 0
                     registration_url = info.get("url")
+                    await self._seed_document_frame(new_session)
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
             # consumer-side filter in wait_for_network_idle is the actual
@@ -1702,7 +1791,13 @@ class Daemon:
                     "pending detach history overflow; cleanup capacity exhausted"
                 )
             result = await self.cdp.send_raw(method, params, session_id=sid)
-            if guard_identity is not None and not await self._dispatch_identity_current(guard_identity):
+            navigation_dispatch = (
+                guard_identity is not None and guard_identity.get("method") == "Page.navigate"
+            )
+            if (guard_identity is not None
+                    and not await (self._navigation_identity_current(guard_identity)
+                                   if navigation_dispatch
+                                   else self._dispatch_identity_current(guard_identity))):
                 if overflow_attach_lock_held:
                     self._overflow_attach_lock.release()
                     overflow_attach_lock_held = False
@@ -1782,6 +1877,33 @@ class Daemon:
                             "loader_id": None,
                             "allowed": _guard_url_allowed(req.get("tab_guard_url")),
                         }
+                        await self._seed_document_frame(attached_session)
+                        dispatch_current = await self._dispatch_identity_current(guard_identity)
+                        attached_state = self._document_state.get(attached_session)
+                        if (not dispatch_current or not self._guard_policy_active
+                                or guard_identity.get("run_id") != self._guarded_run_id
+                                or guard_identity.get("epoch") != self._authorization_epoch
+                                or attached_session not in self._guarded_sessions
+                                or self._session_targets.get(attached_session) != target_id
+                                or target_id not in self._guarded_targets
+                                or not isinstance(attached_state, dict)
+                                or attached_state.get("allowed") is not True):
+                            try:
+                                await self.cdp.send_raw(
+                                    "Target.detachFromTarget", {"sessionId": attached_session}
+                                )
+                            except Exception as exc:
+                                log(f"tab guard failed to detach stale session {attached_session}: {exc}")
+                            self._session_targets.pop(attached_session, None)
+                            self._guarded_sessions.discard(attached_session)
+                            self._document_state.pop(attached_session, None)
+                            if overflow_attach_lock_held:
+                                self._overflow_attach_lock.release()
+                                overflow_attach_lock_held = False
+                            if guarded_attach_slot_held:
+                                self._guarded_attach_slots.release()
+                                guarded_attach_slot_held = False
+                            return _guard_refusal("tab guard authorization was revoked during attach")
             elif method == "Target.detachFromTarget":
                 detached_session = params.get("sessionId")
                 self._session_targets.pop(detached_session, None)
@@ -2054,6 +2176,38 @@ class Daemon:
         return bool(
             self._dispatch_identity_state_current(identity)
             and info.get("url") == identity.get("live_url")
+            and _guard_url_allowed(info.get("url"))
+        )
+
+    async def _navigation_identity_current(self, identity):
+        """Accept a successful guarded navigation after its own document event."""
+        sid, target_id = identity.get("session_id"), identity.get("target_id")
+        generation = identity.get("generation")
+        if not isinstance(generation, int):
+            return False
+        state = self._document_state.get(sid)
+        if (not self._guard_policy_active or identity.get("run_id") != self._guarded_run_id
+                or identity.get("epoch") != self._authorization_epoch
+                or sid not in self._guarded_sessions or target_id not in self._guarded_targets
+                or self._session_targets.get(sid) != target_id or not isinstance(state, dict)
+                or state.get("allowed") is not True
+                or state.get("generation") not in {generation, generation + 1}):
+            return False
+        try:
+            info = (await self.cdp.send_raw(
+                "Target.getTargetInfo", {"targetId": target_id}
+            )).get("targetInfo", {})
+        except Exception:
+            return False
+        state = self._document_state.get(sid)
+        return bool(
+            self._guard_policy_active and identity.get("run_id") == self._guarded_run_id
+            and identity.get("epoch") == self._authorization_epoch
+            and sid in self._guarded_sessions and target_id in self._guarded_targets
+            and self._session_targets.get(sid) == target_id and isinstance(state, dict)
+            and state.get("allowed") is True
+            and state.get("generation") in {generation, generation + 1}
+            and info.get("url") == state.get("document_url")
             and _guard_url_allowed(info.get("url"))
         )
 

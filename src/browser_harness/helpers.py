@@ -430,6 +430,25 @@ def _is_owned_iframe(target_id):
     OOPIF target IDs are frame IDs. Enumeration, target type, opener IDs and
     URLs alone do not establish ancestry. Workers without proof fail closed.
     """
+    if _tab_guard_on():
+        try:
+            context = _guard_context_request()
+            epoch = context.get("tab_guard_epoch") if isinstance(context, dict) else None
+            if (context.get("tab_guard") != "ok" or not isinstance(epoch, int)
+                    or context.get("session_id") not in _owned_sessions()
+                    or context.get("target_id") not in _owned_ids()):
+                return False
+            result = _send({
+                "meta": "guard_iframe", "tab_guard": _owned_state(),
+                "tab_guard_run": _run_id(), "tab_guard_epoch": epoch,
+                "target_id": target_id,
+            })
+            if result.get("tab_guard") == "ok" and result.get("target_id") == target_id:
+                _remember("tabs", target_id)
+                return True
+        except Exception:
+            pass
+        return False
     try:
         info = _send({"method": "Target.getTargetInfo", "params": {"targetId": target_id}, "session_id": None})
         target_info = info.get("result", {}).get("targetInfo", {})
