@@ -1213,6 +1213,29 @@ def test_set_session_does_not_retry_a_lifecycle_detached_session(daemon_bridge):
                    for method, params, _ in calls)
 
 
+def test_same_session_switch_does_not_restore_lifecycle_detached_session(daemon_bridge):
+    d, _calls = daemon_bridge
+    original = d.cdp.send_raw
+
+    async def detach_during_seed(method, params=None, session_id=None):
+        if method == "Page.getFrameTree" and session_id == "SESSION-MINE":
+            d._record_browser_lifecycle_event("Target.detachedFromTarget", {
+                "sessionId": "SESSION-MINE", "targetId": "MINE",
+            })
+            raise RuntimeError("frame tree unavailable")
+        return await original(method, params, session_id)
+
+    d.cdp.send_raw = detach_during_seed
+    with pytest.raises(helpers.TabGuardRefused):
+        helpers._read_meta("set_session", session_id="SESSION-MINE", target_id="MINE")
+
+    assert d.session is None
+    assert d.target_id is None
+    assert "SESSION-MINE" in d._revoked_sessions
+    assert "SESSION-MINE" not in d._session_targets
+    assert "SESSION-MINE" not in d._document_state
+
+
 def test_reset_during_attach_frame_seed_revokes_and_detaches_session(daemon_bridge):
     d, calls = daemon_bridge
     original = d.cdp.send_raw

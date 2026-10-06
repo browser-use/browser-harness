@@ -1724,7 +1724,7 @@ class Daemon:
                         if new_session != old_session:
                             already_detached = (
                                 new_session in self._pending_detached_sessions
-                                or new_session in self._revoked_sessions
+                                or new_session in self._lifecycle_detached_sessions
                             )
                             self._document_state.pop(new_session, None)
                             self._session_targets.pop(new_session, None)
@@ -1763,8 +1763,16 @@ class Daemon:
                                 self._document_state[new_session] = old_document_state
                             else:
                                 self._document_state.pop(new_session, None)
-                        self.session = old_session
-                        self.target_id = old_target_id
+                        old_session_still_owned = (
+                            old_session is not None
+                            and old_session not in self._revoked_sessions
+                            and (owned is None or (
+                                old_session in self._guarded_sessions
+                                and self._session_targets.get(old_session) == old_target_id
+                            ))
+                        )
+                        self.session = old_session if old_session_still_owned else None
+                        self.target_id = old_target_id if old_session_still_owned else None
                         return {"tab_guard": "refused", "target_id": req.get("target_id")}
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
