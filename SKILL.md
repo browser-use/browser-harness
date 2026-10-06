@@ -71,6 +71,9 @@ PY
   while the guard is enabled, in private files. Enabling it later does not claim
   earlier tabs.
   Call `tab_guard_reset()` after the run's last invocation to remove its record.
+  Guard enforcement remains latched in the daemon after reset. Run
+  `browser-harness --reload` before using that daemon for unrestricted
+  interactive work; changing environment variables alone does not clear it.
   Reload an older daemon before guarded use. Requests pin the checked session;
   if it expires, use `switch_tab()` on an owned tab to attach again.
   Guarded `Target.createTarget` never uses the shared default browser context:
