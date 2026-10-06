@@ -128,6 +128,7 @@ TOGGLE_BOOT_GRACE = 12
 # Cancellation should make an in-flight CDP call finish immediately. Keep the
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
+GUARDED_CONTEXT_DISPOSE_TIMEOUT = 4
 TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
 _NETWORK_REQUEST_METHOD = "Network.requestWillBeSent"
 _NETWORK_REQUEST_CORRELATED_METHODS = frozenset({
@@ -674,6 +675,11 @@ class Daemon:
 
     async def _seed_document_frame(self, session_id):
         """Restore top-frame correlation after attaching to an existing page."""
+        state = self._document_state.get(session_id)
+        if not isinstance(state, dict):
+            return False
+        generation = state.get("generation")
+        document_url = state.get("document_url")
         try:
             tree = (await self.cdp.send_raw(
                 "Page.getFrameTree", session_id=session_id
@@ -681,10 +687,12 @@ class Daemon:
         except Exception:
             return False
         frame = tree.get("frame") if isinstance(tree, dict) else None
-        state = self._document_state.get(session_id)
-        if (not isinstance(frame, dict) or not isinstance(state, dict)
+        current_state = self._document_state.get(session_id)
+        if (not isinstance(frame, dict) or current_state is not state
+                or state.get("generation") != generation
+                or state.get("document_url") != document_url
                 or not isinstance(frame.get("id"), str) or not frame.get("id")
-                or frame.get("url") != state.get("document_url")):
+                or frame.get("url") != document_url):
             return False
         state["frame_id"] = frame.get("id")
         state["loader_id"] = frame.get("loaderId")
@@ -1354,8 +1362,11 @@ class Daemon:
             if context_id not in self._pending_guarded_context_cleanup:
                 return True
             try:
-                await self.cdp.send_raw(
-                    "Target.disposeBrowserContext", {"browserContextId": context_id}
+                await asyncio.wait_for(
+                    self.cdp.send_raw(
+                        "Target.disposeBrowserContext", {"browserContextId": context_id}
+                    ),
+                    timeout=GUARDED_CONTEXT_DISPOSE_TIMEOUT,
                 )
             except Exception:
                 try:

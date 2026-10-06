@@ -1021,6 +1021,29 @@ def test_guarded_iframe_ancestry_is_proved_by_daemon_before_attach(daemon_bridge
                for method, _, sid in calls)
 
 
+def test_frame_seed_does_not_overwrite_same_url_reload(daemon_bridge):
+    d, _calls = daemon_bridge
+    original = d.cdp.send_raw
+
+    async def reload_while_seeding(method, params=None, session_id=None):
+        if method == "Page.getFrameTree":
+            d._record_event("Page.frameNavigated", {"frame": {
+                "id": "FRAME-MINE", "loaderId": "LOADER-NEW",
+                "url": "https://owned.example/",
+            }}, session_id)
+            return {"frameTree": {"frame": {
+                "id": "FRAME-MINE", "loaderId": "LOADER-OLD",
+                "url": "https://owned.example/",
+            }}}
+        return await original(method, params, session_id)
+
+    d.cdp.send_raw = reload_while_seeding
+
+    assert asyncio.run(d._seed_document_frame("SESSION-MINE")) is False
+    assert d._document_state["SESSION-MINE"]["generation"] == 1
+    assert d._document_state["SESSION-MINE"]["loader_id"] == "LOADER-NEW"
+
+
 def test_guarded_attach_refuses_and_detaches_when_frame_provenance_cannot_seed(daemon_bridge):
     d, calls = daemon_bridge
     original = d.cdp.send_raw
@@ -2467,6 +2490,28 @@ def test_guard_reset_retains_failed_context_cleanup_for_later_retry(daemon_bridg
     assert second["cleanup_pending"] == 0
     assert d._pending_guarded_context_cleanup == set()
     assert sum(call[0] == "Target.disposeBrowserContext" for call in calls) == 2
+
+
+def test_guard_reset_times_out_context_disposal_and_retains_for_retry(
+        daemon_bridge, monkeypatch):
+    d, _calls = daemon_bridge
+    d._guarded_contexts.add("CONTEXT-HANGING")
+    monkeypatch.setattr(daemon, "GUARDED_CONTEXT_DISPOSE_TIMEOUT", 0.01)
+
+    async def hang_dispose(method, params=None, session_id=None):
+        if method == "Target.disposeBrowserContext":
+            await asyncio.Event().wait()
+        raise AssertionError(f"unexpected CDP method: {method}")
+
+    d.cdp.send_raw = hang_dispose
+    reset = asyncio.run(d.handle({
+        "meta": "tab_guard_reset", "tab_guard_run": RUN_ID,
+        "tab_guard_epoch": d._authorization_epoch,
+    }))
+
+    assert reset["tab_guard"] == "ok"
+    assert reset["cleanup_pending"] == 1
+    assert d._pending_guarded_context_cleanup == {"CONTEXT-HANGING"}
 
 
 def test_context_created_after_reset_is_disposed_before_refusal(daemon_bridge):
