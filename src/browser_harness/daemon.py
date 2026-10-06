@@ -519,6 +519,7 @@ class Daemon:
         self._legacy_commands = {}
         self._legacy_wire_id = 0
         self._revoked_sessions = set()
+        self._lifecycle_detached_sessions = set()
         # Ordered map gives duplicate suppression plus bounded oldest-first pruning.
         self._pending_detached_sessions = {}
         self._pending_detached_sessions_overflowed = False
@@ -1007,6 +1008,10 @@ class Daemon:
         if method == "Target.detachedFromTarget":
             sid = params.get("sessionId")
             if isinstance(sid, str):
+                if (sid not in self._lifecycle_detached_sessions
+                        and len(self._lifecycle_detached_sessions) >= 256):
+                    self._lifecycle_detached_sessions.pop()
+                self._lifecycle_detached_sessions.add(sid)
                 if sid in self._session_targets or sid in self._guarded_sessions:
                     self._revoke_event_ownership({sid})
                 else:
@@ -1702,11 +1707,14 @@ class Daemon:
                     registration_url = info.get("url")
                     if not await self._seed_document_frame(new_session):
                         if new_session != old_session:
+                            already_detached = (
+                                new_session in self._pending_detached_sessions
+                                or new_session in self._revoked_sessions
+                            )
                             self._document_state.pop(new_session, None)
                             self._session_targets.pop(new_session, None)
                             self._guarded_sessions.discard(new_session)
                             self._revoked_sessions.add(new_session)
-                            already_detached = new_session in self._pending_detached_sessions
                             self._pending_detached_sessions.pop(new_session, None)
                             if not already_detached:
                                 self._overflow_cleanup_sessions[new_session] = None
@@ -1929,6 +1937,7 @@ class Daemon:
                             "Target.attachToTarget session was detached before registration"
                         )
                     self._revoked_sessions.discard(attached_session)
+                    self._lifecycle_detached_sessions.discard(attached_session)
                     self._session_targets[attached_session] = target_id
                     if guard_identity is not None:
                         self._guarded_targets.add(target_id)
@@ -1954,11 +1963,14 @@ class Daemon:
                                 or target_id not in self._guarded_targets
                                 or not isinstance(attached_state, dict)
                                 or attached_state.get("allowed") is not True):
+                            already_detached = (
+                                attached_session in self._pending_detached_sessions
+                                or attached_session in self._lifecycle_detached_sessions
+                            )
                             self._session_targets.pop(attached_session, None)
                             self._guarded_sessions.discard(attached_session)
                             self._document_state.pop(attached_session, None)
                             self._revoked_sessions.add(attached_session)
-                            already_detached = attached_session in self._pending_detached_sessions
                             self._pending_detached_sessions.pop(attached_session, None)
                             if not already_detached:
                                 self._overflow_cleanup_sessions[attached_session] = None

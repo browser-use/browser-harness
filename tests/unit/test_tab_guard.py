@@ -1113,6 +1113,40 @@ def test_set_session_refuses_and_rolls_back_when_frame_provenance_fails(daemon_b
     assert "SESSION-NEW" not in d._overflow_cleanup_sessions
 
 
+def test_set_session_does_not_retry_a_lifecycle_detached_session(daemon_bridge):
+    d, calls = daemon_bridge
+    original = d.cdp.send_raw
+    d._session_targets["SESSION-NEW"] = "MINE"
+    d._guarded_sessions.add("SESSION-NEW")
+    d._document_state["SESSION-NEW"] = {
+        "target_id": "MINE", "generation": 0, "url": "https://owned.example/",
+        "document_url": "https://owned.example/", "frame_id": None,
+        "loader_id": None, "allowed": True,
+    }
+    helpers._remember("sessions", "SESSION-NEW")
+
+    async def detach_during_seed(method, params=None, session_id=None):
+        if method == "Page.getFrameTree" and session_id == "SESSION-NEW":
+            d._record_browser_lifecycle_event("Target.detachedFromTarget", {
+                "sessionId": "SESSION-NEW", "targetId": "MINE",
+            })
+            raise RuntimeError("frame tree unavailable")
+        return await original(method, params, session_id)
+
+    d.cdp.send_raw = detach_during_seed
+    with pytest.raises(helpers.TabGuardRefused):
+        helpers._read_meta("set_session", session_id="SESSION-NEW", target_id="MINE")
+
+    assert d.session == "SESSION-MINE"
+    assert d.target_id == "MINE"
+    assert "SESSION-NEW" in d._revoked_sessions
+    assert "SESSION-NEW" not in d._session_targets
+    assert "SESSION-NEW" not in d._overflow_cleanup_sessions
+    assert not any(method == "Target.detachFromTarget"
+                   and params == {"sessionId": "SESSION-NEW"}
+                   for method, params, _ in calls)
+
+
 def test_reset_during_attach_frame_seed_revokes_and_detaches_session(daemon_bridge):
     d, calls = daemon_bridge
     original = d.cdp.send_raw
@@ -1157,9 +1191,10 @@ def test_detach_during_final_attach_validation_does_not_return_session(daemon_br
         helpers.cdp("Target.attachToTarget", targetId="MINE", flatten=True)
     assert "SESSION-NEW" not in d._guarded_sessions
     assert "SESSION-NEW" not in helpers._owned_sessions()
-    assert any(method == "Target.detachFromTarget"
-               and params == {"sessionId": "SESSION-NEW"}
-               for method, params, _ in calls)
+    assert "SESSION-NEW" not in d._overflow_cleanup_sessions
+    assert not any(method == "Target.detachFromTarget"
+                   and params == {"sessionId": "SESSION-NEW"}
+                   for method, params, _ in calls)
 
 
 def test_first_attach_to_run_owned_target_uses_live_url_without_document_state(daemon_bridge):
