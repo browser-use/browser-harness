@@ -400,6 +400,9 @@ def tab_guard_reset():
     if (response.get("tab_guard") != "ok"
             or response.get("tab_guard_run") != run_id):
         _refuse("tab_guard_reset", None, "", "daemon did not acknowledge run revocation")
+    if response.get("cleanup_pending"):
+        print("[tab-guard] WARNING daemon could not dispose all run-owned browser contexts; "
+              "cleanup will be retried on a later guarded reset", file=sys.stderr, flush=True)
     path = _owned_path()
     with _ownership_lock(path):
         try:

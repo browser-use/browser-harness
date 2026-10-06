@@ -504,6 +504,7 @@ class Daemon:
         self._guarded_sessions = set()
         self._guarded_targets = set()
         self._guarded_contexts = set()
+        self._pending_guarded_context_cleanup = set()
         self._guard_policy_active = os.environ.get("BH_TAB_GUARD") == "1"
         self._guarded_run_id = None
         self._authorization_epoch = 0
@@ -1266,6 +1267,7 @@ class Daemon:
                         "tab_guard_epoch": self._authorization_epoch}
             revoked_sessions = set(self._guarded_sessions)
             revoked_targets = set(self._guarded_targets)
+            self._pending_guarded_context_cleanup.update(self._guarded_contexts)
             # Enforcement stays latched for this daemon's lifetime. A caller
             # cannot escape the guard by resetting and omitting guard fields.
             self._authorization_epoch += 1
@@ -1323,7 +1325,19 @@ class Daemon:
         if marker_tasks:
             await asyncio.gather(*marker_tasks, return_exceptions=True)
             self._marker_tasks.difference_update(marker_tasks)
-        return {"tab_guard": "ok", "tab_guard_run": run_id}
+        cleanup_errors = []
+        for context_id in list(self._pending_guarded_context_cleanup):
+            try:
+                await self.cdp.send_raw(
+                    "Target.disposeBrowserContext", {"browserContextId": context_id}
+                )
+            except Exception as exc:
+                cleanup_errors.append(context_id)
+                log(f"tab guard failed to dispose browser context {context_id}: {exc}")
+            else:
+                self._pending_guarded_context_cleanup.discard(context_id)
+        return {"tab_guard": "ok", "tab_guard_run": run_id,
+                "cleanup_pending": len(cleanup_errors)}
 
     async def _retry_overflow_cleanup_sessions(self):
         """Retry detaching refused sessions, retaining failures for later cleanup."""

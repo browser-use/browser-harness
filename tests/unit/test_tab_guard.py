@@ -2237,7 +2237,8 @@ def test_guard_reset_revokes_queued_and_future_marker_work(monkeypatch):
         return response
 
     response = asyncio.run(run())
-    assert response == {"tab_guard": "ok", "tab_guard_run": RUN_ID}
+    assert response == {"tab_guard": "ok", "tab_guard_run": RUN_ID,
+                        "cleanup_pending": 0}
     assert d._guard_policy_active is True
     assert d._guarded_sessions == set()
     assert d._guarded_targets == set()
@@ -2265,6 +2266,53 @@ def test_reset_leaves_guard_enforcement_latched_for_omitted_fields(daemon_bridge
         response = asyncio.run(d.handle(request))
         assert response.get("tab_guard") == "refused"
     assert not any(call[0] == "Runtime.evaluate" for call in calls)
+
+
+def test_guard_reset_disposes_run_owned_browser_contexts(daemon_bridge):
+    d, calls = daemon_bridge
+    d._guarded_contexts.add("CONTEXT-MINE")
+
+    reset = asyncio.run(d.handle({
+        "meta": "tab_guard_reset", "tab_guard_run": RUN_ID,
+        "tab_guard_epoch": d._authorization_epoch,
+    }))
+
+    assert reset["cleanup_pending"] == 0
+    assert d._guarded_contexts == set()
+    assert d._pending_guarded_context_cleanup == set()
+    assert ("Target.disposeBrowserContext", {"browserContextId": "CONTEXT-MINE"}, None) in calls
+
+
+def test_guard_reset_retains_failed_context_cleanup_for_later_retry(daemon_bridge):
+    d, calls = daemon_bridge
+    d._guarded_contexts.add("CONTEXT-MINE")
+    original_send = d.cdp.send_raw
+    fail_once = True
+
+    async def fail_first_dispose(method, params=None, session_id=None):
+        nonlocal fail_once
+        if method == "Target.disposeBrowserContext" and fail_once:
+            fail_once = False
+            calls.append((method, params, session_id))
+            raise RuntimeError("temporary CDP failure")
+        return await original_send(method, params, session_id)
+
+    d.cdp.send_raw = fail_first_dispose
+    first = asyncio.run(d.handle({
+        "meta": "tab_guard_reset", "tab_guard_run": RUN_ID,
+        "tab_guard_epoch": d._authorization_epoch,
+    }))
+    assert first["cleanup_pending"] == 1
+    assert d._pending_guarded_context_cleanup == {"CONTEXT-MINE"}
+
+    d._guarded_run_id = RUN_ID_2
+    second = asyncio.run(d.handle({
+        "meta": "tab_guard_reset", "tab_guard_run": RUN_ID_2,
+        "tab_guard_epoch": d._authorization_epoch,
+    }))
+    assert second["cleanup_pending"] == 0
+    assert d._pending_guarded_context_cleanup == set()
+    assert sum(call[0] == "Target.disposeBrowserContext" for call in calls) == 2
 
 
 def test_shutdown_remains_available_after_guard_latches(daemon_bridge, monkeypatch):
