@@ -998,6 +998,10 @@ def test_guarded_iframe_ancestry_is_proved_by_daemon_before_attach(daemon_bridge
             return {"targetInfo": {"type": "iframe", "targetId": "IFRAME-TARGET",
                                    "url": "https://frame.example/"}}
         if method == "Page.getFrameTree":
+            if session_id == "IFRAME-SESSION":
+                return {"frameTree": {"frame": {
+                    "id": "IFRAME-TARGET", "url": "https://frame.example/",
+                }}}
             return {"frameTree": {"frame": {"id": "FRAME-MINE", "url": "https://owned.example/"},
                 "childFrames": [{"frame": {"id": "IFRAME-TARGET", "url": "https://frame.example/"}}]}}
         if method == "Target.attachToTarget":
@@ -1006,12 +1010,67 @@ def test_guarded_iframe_ancestry_is_proved_by_daemon_before_attach(daemon_bridge
     d.cdp.send_raw = page_tree
     context = helpers._guard_context_request()
     assert context.get("tab_guard") == "ok", context
+    # The daemon may have committed ownership while the helper timed out before
+    # persisting its local record. Retrying must repeat the ancestry proof.
+    d._guarded_targets.add("IFRAME-TARGET")
     assert helpers._is_owned_iframe("IFRAME-TARGET")
     assert "IFRAME-TARGET" in d._guarded_targets
     assert helpers.cdp("Target.attachToTarget", targetId="IFRAME-TARGET", flatten=True)["sessionId"] == "IFRAME-SESSION"
     assert "IFRAME-SESSION" in d._guarded_sessions
     assert any(method == "Page.getFrameTree" and sid == "SESSION-MINE"
                for method, _, sid in calls)
+
+
+def test_guarded_attach_refuses_and_detaches_when_frame_provenance_cannot_seed(daemon_bridge):
+    d, calls = daemon_bridge
+    original = d.cdp.send_raw
+
+    async def fail_frame_seed(method, params=None, session_id=None):
+        if method == "Target.attachToTarget":
+            return {"sessionId": "SESSION-NEW"}
+        if method == "Page.getFrameTree" and session_id == "SESSION-NEW":
+            raise RuntimeError("frame tree unavailable")
+        return await original(method, params, session_id)
+
+    d.cdp.send_raw = fail_frame_seed
+    with pytest.raises(helpers.TabGuardRefused, match="during attach"):
+        helpers.cdp("Target.attachToTarget", targetId="MINE", flatten=True)
+
+    assert "SESSION-NEW" not in d._guarded_sessions
+    assert "SESSION-NEW" not in d._session_targets
+    assert any(method == "Target.detachFromTarget"
+               and params == {"sessionId": "SESSION-NEW"}
+               for method, params, _ in calls)
+
+
+def test_set_session_refuses_and_rolls_back_when_frame_provenance_fails(daemon_bridge):
+    d, calls = daemon_bridge
+    original = d.cdp.send_raw
+    d._session_targets["SESSION-NEW"] = "MINE"
+    d._guarded_sessions.add("SESSION-NEW")
+    d._document_state["SESSION-NEW"] = {
+        "target_id": "MINE", "generation": 0, "url": "https://owned.example/",
+        "document_url": "https://owned.example/", "frame_id": None,
+        "loader_id": None, "allowed": True,
+    }
+    helpers._remember("sessions", "SESSION-NEW")
+
+    async def fail_frame_seed(method, params=None, session_id=None):
+        if method == "Page.getFrameTree" and session_id == "SESSION-NEW":
+            raise RuntimeError("frame tree unavailable")
+        return await original(method, params, session_id)
+
+    d.cdp.send_raw = fail_frame_seed
+    with pytest.raises(helpers.TabGuardRefused):
+        helpers._read_meta("set_session", session_id="SESSION-NEW", target_id="MINE")
+
+    assert d.session == "SESSION-MINE"
+    assert d.target_id == "MINE"
+    assert "SESSION-NEW" not in d._guarded_sessions
+    assert "SESSION-NEW" not in d._session_targets
+    assert any(method == "Target.detachFromTarget"
+               and params == {"sessionId": "SESSION-NEW"}
+               for method, params, _ in calls)
 
 
 def test_reset_during_attach_frame_seed_revokes_and_detaches_session(daemon_bridge):
@@ -1912,6 +1971,11 @@ def test_set_session_latches_policy_before_target_lookup_and_keeps_it_after_rese
             target_lookup_entered.set()
             await release_lookup.wait()
             return {"targetInfo": {"targetId": "MINE", "url": "https://owned.example/"}}
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {
+                "id": "FRAME-MINE", "loaderId": "LOADER-MINE",
+                "url": "https://owned.example/",
+            }}}
         return {}
 
     async def blocked_enables(_session):

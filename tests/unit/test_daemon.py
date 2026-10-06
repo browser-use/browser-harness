@@ -130,6 +130,11 @@ def test_guard_policy_blocks_unregistered_marker_and_domain_authorization(monkey
             self.calls.append((method, params, session_id))
             if method == "Target.getTargetInfo":
                 return {"targetInfo": {"type": "page", "url": "https://owned.example/"}}
+            if method == "Page.getFrameTree":
+                return {"frameTree": {"frame": {
+                    "id": "FRAME-MINE", "loaderId": "LOADER-MINE",
+                    "url": "https://owned.example/",
+                }}}
             return {}
 
     d = daemon.Daemon()

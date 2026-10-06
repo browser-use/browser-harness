@@ -671,14 +671,16 @@ class Daemon:
                 "Page.getFrameTree", session_id=session_id
             )).get("frameTree", {})
         except Exception:
-            return
+            return False
         frame = tree.get("frame") if isinstance(tree, dict) else None
         state = self._document_state.get(session_id)
         if (not isinstance(frame, dict) or not isinstance(state, dict)
+                or not isinstance(frame.get("id"), str) or not frame.get("id")
                 or frame.get("url") != state.get("document_url")):
-            return
+            return False
         state["frame_id"] = frame.get("id")
         state["loader_id"] = frame.get("loaderId")
+        return True
 
     def _record_session_replacement(self, stale_session, replacement_session):
         """Remember which recovered session still controls the same tab."""
@@ -1528,7 +1530,7 @@ class Daemon:
             if (not self._guard_policy_active or not isinstance(owned, dict)
                     or req.get("tab_guard_run") != self._guarded_run_id
                     or req.get("tab_guard_epoch") != self._authorization_epoch
-                    or not isinstance(target_id, str) or target_id in self._guarded_targets
+                    or not isinstance(target_id, str)
                     or not isinstance(state, dict) or state.get("allowed") is not True
                     or sid not in owned.get("sessions", [])
                     or parent_id not in owned.get("tabs", [])
@@ -1672,12 +1674,14 @@ class Daemon:
                     self._authorization_epoch += 1
                     self._guarded_run_id = guard_run
                 old_session = self.session
+                old_target_id = self.target_id
                 self.session = req.get("session_id")
                 self.target_id = req.get("target_id") or self.target_id
                 new_session = self.session
                 if new_session and self.target_id:
                     self._session_targets[new_session] = self.target_id
                 if owned is not None:
+                    old_document_state = self._document_state.get(new_session)
                     self._document_state[new_session] = {
                             "target_id": self.target_id,
                             "generation": 0,
@@ -1689,7 +1693,26 @@ class Daemon:
                     }
                     registration_generation = 0
                     registration_url = info.get("url")
-                    await self._seed_document_frame(new_session)
+                    if not await self._seed_document_frame(new_session):
+                        if old_document_state is None:
+                            self._document_state.pop(new_session, None)
+                        else:
+                            self._document_state[new_session] = old_document_state
+                        if new_session != old_session:
+                            try:
+                                await self.cdp.send_raw(
+                                    "Target.detachFromTarget", {"sessionId": new_session}
+                                )
+                            except Exception:
+                                try:
+                                    log("tab guard failed to detach a session without frame provenance")
+                                except Exception:
+                                    pass
+                            self._session_targets.pop(new_session, None)
+                            self._guarded_sessions.discard(new_session)
+                        self.session = old_session
+                        self.target_id = old_target_id
+                        return {"tab_guard": "refused", "target_id": req.get("target_id")}
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
             # consumer-side filter in wait_for_network_idle is the actual
@@ -1906,10 +1929,10 @@ class Daemon:
                             "loader_id": None,
                             "allowed": _guard_url_allowed(req.get("tab_guard_url")),
                         }
-                        await self._seed_document_frame(attached_session)
+                        frame_seeded = await self._seed_document_frame(attached_session)
                         dispatch_current = await self._dispatch_identity_current(guard_identity)
                         attached_state = self._document_state.get(attached_session)
-                        if (not dispatch_current or not self._guard_policy_active
+                        if (not frame_seeded or not dispatch_current or not self._guard_policy_active
                                 or guard_identity.get("run_id") != self._guarded_run_id
                                 or guard_identity.get("epoch") != self._authorization_epoch
                                 or attached_session not in self._guarded_sessions
