@@ -35,7 +35,6 @@ def test_origin_port_discovery_keeps_permission_gate(monkeypatch, origin_profile
     monkeypatch.delenv("BU_CDP_WS", raising=False)
     monkeypatch.delenv("BU_CDP_URL", raising=False)
     monkeypatch.setattr(daemon, "REMOTE_ID", None)
-    monkeypatch.setattr(daemon, "_profile_process_owns", lambda base: base == origin_profile)
     owns_endpoint = Mock(return_value=True)
     monkeypatch.setattr(daemon, "_endpoint_owned_by_profile", owns_endpoint)
     monkeypatch.setattr(
