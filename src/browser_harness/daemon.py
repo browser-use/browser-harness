@@ -1012,6 +1012,9 @@ class Daemon:
                         and len(self._lifecycle_detached_sessions) >= 256):
                     self._lifecycle_detached_sessions.pop()
                 self._lifecycle_detached_sessions.add(sid)
+                # Chrome has confirmed the session is gone, so a previously
+                # queued detach retry must not block future guarded attaches.
+                self._overflow_cleanup_sessions.pop(sid, None)
                 if sid in self._session_targets or sid in self._guarded_sessions:
                     self._revoke_event_ownership({sid})
                 else:

@@ -1073,6 +1073,21 @@ def test_guarded_attach_revokes_session_when_seed_detach_and_logging_fail(daemon
     assert "SESSION-LEAK-CANDIDATE" not in d._overflow_cleanup_sessions
 
 
+def test_lifecycle_detach_clears_queued_overflow_cleanup(daemon_bridge):
+    d, calls = daemon_bridge
+    d._overflow_cleanup_sessions["SESSION-DETACHED"] = None
+
+    d._record_browser_lifecycle_event("Target.detachedFromTarget", {
+        "sessionId": "SESSION-DETACHED", "targetId": "MINE",
+    })
+    asyncio.run(d._retry_overflow_cleanup_sessions())
+
+    assert "SESSION-DETACHED" not in d._overflow_cleanup_sessions
+    assert not any(method == "Target.detachFromTarget"
+                   and params == {"sessionId": "SESSION-DETACHED"}
+                   for method, params, _ in calls)
+
+
 def test_set_session_refuses_and_rolls_back_when_frame_provenance_fails(daemon_bridge, monkeypatch):
     d, calls = daemon_bridge
     original = d.cdp.send_raw
