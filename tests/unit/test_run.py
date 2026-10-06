@@ -72,6 +72,8 @@ def test_no_args_empty_stdin_prints_usage():
 
 def test_cloud_bootstrap_on_headless_server(monkeypatch):
     """No daemon, no local Chrome, API key + BU_AUTOSPAWN set -> auto-provision cloud daemon."""
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
     monkeypatch.setenv("BU_AUTOSPAWN", "1")
     with patch.object(sys, "argv", ["browser-harness"]), \
