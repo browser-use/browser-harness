@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "browser-harness"
-version = "0.1.8"
+version = "0.1.13"
 description = "The simplest, thinnest, and most powerful harness to control your real browser with your agent."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,12 +24,16 @@ classifiers = [
 dependencies = [
     "cdp-use==1.4.5",
     "fetch-use==0.4.0",
-    "pillow==12.2.0",
+    "pillow==12.3.0",
     "websockets==15.0.1",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp==2.1.1"]
+
 [project.scripts]
 browser-harness = "browser_harness.run:main"
+browser-harness-mcp = "browser_harness.mcp_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/browser-use/browser-harness"
@@ -38,6 +42,7 @@ Issues = "https://github.com/browser-use/browser-harness/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+py-modules = ["mcp_server"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

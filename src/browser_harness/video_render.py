@@ -332,7 +332,8 @@ def review(recording: Path) -> int:
 
 
 def _start_export(recording: Path, url: str, webm: Path) -> dict:
-    payload = {"url": url, "downloadPath": str(recording), "filename": webm.name, "marker": MARKER}
+    webm.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"url": url, "downloadPath": str(webm.parent.resolve()), "filename": webm.name, "marker": MARKER}
     filename_js = json.dumps(webm.name)
     code = f"""
 import json, time

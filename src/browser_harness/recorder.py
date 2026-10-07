@@ -122,6 +122,8 @@ def stop_recording():
     _marker().unlink(missing_ok=True)
     frames = sum(1 for _ in Path(d).glob("*.jpg"))
     print(f"recording saved: {d} ({frames} frames)")
+    if not frames:
+        print(f"warning: no frames captured — see frame_error in {Path(d) / 'events.jsonl'}")
     return d
 
 
@@ -273,7 +275,15 @@ def _capture(d, helper, args=(), kwargs=None, duration=None):
         if k in event:
             event[k] = _scrub_url(event[k])
     try:
-        shot = helpers.cdp("Page.captureScreenshot", format="jpeg", quality=80)
+        # Same budget capture_screenshot() uses: a cloud screenshot routinely
+        # exceeds the 5s default IPC timeout, and every frame here would time
+        # out and be swallowed below, leaving a recording with no frames.
+        shot = helpers.cdp(
+            "Page.captureScreenshot",
+            _response_timeout=helpers.SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS,
+            format="jpeg",
+            quality=80,
+        )
         number = sum(1 for _ in d.glob("*.jpg")) + 1
         data = base64.b64decode(shot["data"])
         while True:
@@ -285,9 +295,18 @@ def _capture(d, helper, args=(), kwargs=None, duration=None):
             except FileExistsError:
                 number += 1
         event["frame"] = frame
-    except Exception:
-        pass
-    with (d / "events.jsonl").open("a", encoding="utf-8") as f:
+    except Exception as e:
+        # A dropped frame must not break the run, but it must not vanish
+        # either — without this the only symptom is a recording that ends up
+        # with fewer frames than actions, and no way to tell why.
+        # `str(e) or ...` because an exception raised bare (no args) stringifies
+        # to "", which would record a useless "SomeError: " and defeat the point.
+        event["frame_error"] = f"{type(e).__name__}: {str(e) or 'no detail'}"[:200]
+    # Page-controlled strings (document.title etc.) can carry lone surrogates
+    # in through CDP's \uDXXX escapes; they can't encode as UTF-8, and one
+    # would kill the whole trace. Replace with U+FFFD — same medicine run.py
+    # already gives stdout (#124).
+    with (d / "events.jsonl").open("a", encoding="utf-8", errors="replace") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 

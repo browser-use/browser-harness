@@ -31,7 +31,9 @@ body:
       description: Numbered steps. Include the exact command and the output you saw.
       placeholder: |
         1. Chrome 147 on default profile, remote debugging on
-        2. browser-harness -c 'print(page_info())'
+        2. browser-harness <<'PY'
+        print(page_info())
+        PY
         3. RuntimeError: DevTools is not live yet on 127.0.0.1:9222
     validations:
       required: true

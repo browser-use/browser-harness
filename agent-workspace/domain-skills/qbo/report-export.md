@@ -26,7 +26,9 @@ Do not use CDP `Page.printToPDF` for QBO reports. It prints the surrounding QBO 
 Example attachment pattern for a dedicated browser endpoint:
 
 ```bash
-BU_NAME=qbo BU_CDP_URL=http://127.0.0.1:9223 browser-harness -c 'print(page_info())'
+BU_NAME=qbo BU_CDP_URL=http://127.0.0.1:9223 browser-harness <<'PY'
+print(page_info())
+PY
 ```
 
 ## Report State

@@ -1,6 +1,6 @@
 import sys
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,6 +19,19 @@ def test_stdin_executes_code():
         run.main()
 
     assert stdout.getvalue().strip() == "hello from stdin"
+
+
+def test_require_existing_daemon_never_auto_starts(monkeypatch):
+    monkeypatch.setenv("BH_REQUIRE_EXISTING_DAEMON", "1")
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.require_existing_daemon") as mock_require, \
+         patch("browser_harness.run.ensure_daemon") as mock_ensure, \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+
+    mock_require.assert_called_once_with()
+    mock_ensure.assert_not_called()
 
 
 def test_c_flag_is_rejected():
@@ -228,12 +241,23 @@ def test_explicit_cdp_configured_helper_falsy(monkeypatch):
 
 def test_local_chrome_listening_rejects_non_chrome():
     """A bare TCP listener on 9222/9223 must not fool the probe — only a real
-    /json/version response counts as Chrome."""
+    /json/version response with a DevTools WebSocket counts as Chrome."""
     with patch("browser_harness.run.urllib.request.urlopen", side_effect=OSError):
         assert run._local_chrome_listening() is False
-    with patch("browser_harness.run.urllib.request.urlopen") as mock_open:
+    for payload in (b"not JSON", b"{}", b"[]", b'{"webSocketDebuggerUrl": ""}', b'{"webSocketDebuggerUrl": 1}'):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = payload
+        with patch("browser_harness.run.urllib.request.urlopen", return_value=response) as mock_open:
+            assert run._local_chrome_listening() is False
+        assert mock_open.call_count == 2
+
+
+def test_local_chrome_listening_accepts_devtools_response():
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/x"}'
+    with patch("browser_harness.run.urllib.request.urlopen", return_value=response) as mock_open:
         assert run._local_chrome_listening() is True
-        mock_open.assert_called_once()
+    mock_open.assert_called_once()
 
 
 def test_cli_doctor_fix_snap_invokes_guide():
@@ -252,3 +276,26 @@ def test_cli_doctor_rejects_unknown_flags():
             run.main()
     assert ei.value.code == 2
     assert "usage" in err.getvalue().lower()
+
+
+def test_cli_update_rejects_unknown_flags():
+    err = StringIO()
+    with patch.object(sys, "argv", ["browser-harness", "--update", "--bogus"]), \
+         patch("sys.stderr", err), \
+         patch("browser_harness.run.run_update") as m:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+    assert ei.value.code == 2
+    assert "usage" in err.getvalue().lower()
+    m.assert_not_called()
+
+
+@pytest.mark.parametrize("flag,expected_yes", [(None, False), ("-y", True), ("--yes", True)])
+def test_cli_update_forwards_yes_flag(flag, expected_yes):
+    argv = ["browser-harness", "--update"] + ([flag] if flag else [])
+    with patch.object(sys, "argv", argv), \
+         patch("browser_harness.run.run_update", return_value=0) as m:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+    assert ei.value.code == 0
+    m.assert_called_once_with(yes=expected_yes)

@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
       - name: Build distributions
         run: |
-          python -m pip install --upgrade build
+          python -m pip install build==1.6.0
           python -m build
       - name: Publish distributions
         uses: pypa/gh-action-pypi-publish@release/v1

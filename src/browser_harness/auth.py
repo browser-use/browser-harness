@@ -133,11 +133,14 @@ def auth_path() -> Path:
 def load_auth_file(path: Path | None = None) -> dict:
     path = path or auth_path()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise AuthError(f"auth file is not valid JSON: {path}") from e
+    if not isinstance(data, dict):
+        raise AuthError(f"auth file must contain a JSON object: {path}")
+    return data
 
 
 def save_auth_record(record: AuthRecord, path: Path | None = None) -> None:
