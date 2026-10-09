@@ -24,6 +24,11 @@ PY
 ```
 
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
+- **When several sessions share one Chrome, use `harness-iso`** (same usage, `harness-iso` in the repo root). It
+  targets a second Chrome with its own profile and debug port. A dozen concurrent daemons on one port make
+  CDP handshakes time out for minutes at a time, and `BU_NAME` does not help. See
+  `interaction-skills/isolated-instance.md`. Use bare `browser-harness` when the task needs a login that
+  lives in the main Chrome.
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
 - First navigation for a task is `new_tab(url)`, not `goto_url(url)`. The daemon
   preserves the attached tab across separate CLI invocations, so do not call
@@ -267,6 +272,8 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - Omnibox popups are not real work tabs.
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
+- `BU_CDP_WS` also works for a local Chrome on a custom `--user-data-dir`, which file-based discovery cannot find. It is read once, when the daemon starts.
+- One debug port does not scale past ~12 daemons: handshakes start timing out consistently, not intermittently. Give the work its own Chrome with `harness-iso` rather than retrying.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
 
 ## Domain Skills
