@@ -332,17 +332,31 @@ def capture_screenshot(path=None, full=False, max_dim=None):
     """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
     keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
     path = path or str(ipc._TMP / "shot.png")
-    try:
-        r = cdp(
+
+    def capture():
+        return cdp(
             "Page.captureScreenshot",
             _response_timeout=SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS,
             format="png",
             captureBeyondViewport=full,
         )
-    except _IPCResponseTimeout as e:
-        raise RuntimeError(
-            f"Page.captureScreenshot timed out after {SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS:g}s"
-        ) from e
+
+    try:
+        r = capture()
+    except _IPCResponseTimeout:
+        # A live renderer's compositor can idle and wedge screenshots. A brief
+        # low-quality screencast wakes it without changing emulation state.
+        try:
+            cdp("Page.startScreencast", format="jpeg", quality=1)
+            try:
+                time.sleep(0.25)
+            finally:
+                cdp("Page.stopScreencast")
+            r = capture()
+        except _IPCResponseTimeout as e:
+            raise RuntimeError(
+                f"Page.captureScreenshot timed out after {SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS:g}s"
+            ) from e
     open(path, "wb").write(base64.b64decode(r["data"]))
     if max_dim:
         from PIL import Image
