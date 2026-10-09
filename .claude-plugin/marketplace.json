@@ -1,0 +1,25 @@
+{
+  "name": "browser-harness",
+  "description": "Install browser-harness directly from this repo.",
+  "owner": {
+    "name": "Browser Use",
+    "url": "https://browser-use.com"
+  },
+  "plugins": [
+    {
+      "name": "browser-harness",
+      "description": "Direct CDP browser control for agents: coordinate clicks, screenshots, persistent Python session, local Chrome or Browser Use cloud. Ships skills only; the `browser-harness` CLI is a one-time install prerequisite.",
+      "category": "automation",
+      "source": ".",
+      "homepage": "https://github.com/browser-use/browser-harness",
+      "keywords": [
+        "browser",
+        "automation",
+        "cdp",
+        "chrome",
+        "scraping",
+        "screenshot"
+      ]
+    }
+  ]
+}

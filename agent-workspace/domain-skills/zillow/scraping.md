@@ -246,7 +246,7 @@ Because property detail pages are blocked (403), you lose:
 - Nearby comparable sales (comps)
 - Agent contact info
 
-**To get these**, you must navigate to the `/homedetails/` URL in a browser session. The browser is not blocked (Zillow relies on JS challenges and fingerprinting that only trigger in browser context).
+Try the `/homedetails/` URL in an authorized browser session. Browser access can also fail. See the photo-gallery section below for observed alternatives.
 
 ---
 
@@ -414,7 +414,7 @@ If you need property data without scraping Zillow or Redfin at scale:
 
 - **`price` field is `None` for sold and rental multi-unit listings.** Use `unformattedPrice` for for-sale, `hdpData.homeInfo.priceForHDP` for sold, and `minBaseRent`/`maxBaseRent` for rentals.
 
-- **`/homedetails/` is unconditionally blocked.** Tested with full browser headers, Referer, Sec-Fetch-* headers — all return HTTP 403. Only the browser bypasses this.
+- **`/homedetails/` can reject both HTTP clients and browsers.** The observed HTTP requests returned 403 despite browser headers. Verify the actual response before choosing another source.
 
 - **41 listings per page, hardcoded.** Zillow always returns exactly 41 results per page from `listResults`. `mapResults` was empty in all tests (server-side response only).
 
@@ -431,3 +431,30 @@ If you need property data without scraping Zillow or Redfin at scale:
 - **Zillow total count can exceed 800 but pagination caps at page ~20.** Zillow caps search results at around 800 listings even if `totalResultCount` shows 1037. Narrow by ZIP code, neighborhood, or price range to stay within bounds.
 
 - **URL filter syntax for Zillow:** Beds: `3-_beds` prefix; price: `0-1800000_price` suffix; ZIP: use `{zip}_rb` instead of city slug. Test by building the URL in a browser and copying the pattern.
+
+## Photo galleries for a specific address (the /homedetails/ 403 workaround)
+
+Field-tested 2026-07-31. Task: "download all listing photos" for one address when
+`/homedetails/` is PX-walled (curl AND `--headless=new` both get the captcha page).
+
+**Don't fight Zillow — the same MLS gallery is syndicated everywhere.** Ranked by yield:
+
+1. **Movoto — best source, full gallery, no bot wall.** Find the listing URL via a web
+   search for `"<address>" movoto` (their slug embeds an internal ID you can't guess).
+   The listing page (`/for-sale/` variant for sold homes) embeds every gallery image as
+   `https://pi.movoto.com/p/101/<MLS#>_0_<hash>.jpeg` — plain curl with a Chrome UA
+   returns all of them (a 54-photo gallery came back complete). ~1150px is the stored
+   size in that observation; verify current dimensions rather than assuming a maximum.
+2. **Redfin CDN sequential probe — covers only, not the gallery.** Sold-home pages
+   render just photo 1, but the CDN pattern `ssl.cdn-redfin.com/photo/27/bigphoto/<last3-of-MLS>/<MLS#>_<n>.jpg` answers HEAD requests. In practice only `_0`/`_1`
+   exist for sold listings — the rest 404. Don't waste time probing 0-60.
+3. **Compass/Coldwell Banker — server-render one photo only.** Sold-listing galleries
+   lazy-load behind auth'd XHR; `--virtual-time-budget` headless rendering still yields
+   only `img_0`. The `/m/<hash>_img_<n>_<suffix>/origin.jpg` suffix is per-image and
+   not enumerable.
+4. **Estately** — dead for sold homes (redirects to city search). **Wayback** — listing
+   pages are almost never archived (CDX returns empty).
+
+A failed Redfin request does not establish that every `stingray` endpoint fails. Test the documented `/stingray/api/gis` search separately.
+
+Movoto search pages also contain image URLs for other listings. Filter by the target MLS number first. For the observed `/p/101/<MLS#>_0_<hash>.jpeg` shape, use the MLS number and `<hash>` together to identify a photo. Compare dimensions only after confirming that two URLs represent that same photo. Do not merge different photos merely because their dimensions match.

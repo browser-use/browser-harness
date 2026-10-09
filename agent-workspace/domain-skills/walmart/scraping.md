@@ -314,6 +314,44 @@ product = extract_product_detail(html)
 
 ---
 
+## Store / Delivery Location
+
+Results are per store. Ranking, badges ("Best seller", "N+ bought since yesterday"), sellers
+and fulfillment all change with the location Walmart assigns. It picks that location from
+the visitor's IP, so two sessions on different IPs can return the same page in different orders.
+
+### Where the served location is
+
+```
+data.props.pageProps.initialData.pageMetadata.location
+  .postalCode            — "95829"
+  .storeId               — "3081"  (also .pickupStore / .deliveryStore)
+  .city, .stateOrProvinceCode, .intentStrength ("IMPLICIT" = derived, not chosen)
+data.props.pageProps.countryRegion
+  .countryCode           — the visitor's IP country, or "not-available"
+```
+
+`pageMetadata.location` is there on browse (`/browse/...`) and seller (`/seller/<id>`) pages.
+`countryRegion` and `searchResult.paginationV2.pageProperties.stores`, which echoes the store,
+appear on browse pages only.
+
+### Default location for visitors Walmart can't place
+
+In the documented Israeli-exit session, `countryRegion.countryCode` returned `"not-available"`.
+Walmart assigned **ZIP 95829, store 3081 (Sacramento, CA)**.
+The `searchResult.debug.sisUrl` query included `isDefaulted=true` and `zipcode=94066&extended_zipcode=95829`.
+Use `pageMetadata.location.postalCode` for the served ZIP; the internal `zipcode` parameter differs.
+
+This observation covers one session in one country. It does not establish behavior across sessions or countries.
+Check `pageMetadata.location.postalCode` and the store ID on every page.
+For comparisons, keep only pages with the intended ZIP and store ID.
+A fixed proxy country alone does not establish matching locations.
+
+Field-tested 2026-09-26 through the Bright Data Scraping Browser with `-country-il`:
+10 consecutive browse pages in one session all served 95829 / 3081.
+
+---
+
 ## Anti-Bot: PerimeterX
 
 Walmart uses **PerimeterX** (app ID `PXu6b0qd2S`, confirmed in `runtimeConfig.perimeterX`).

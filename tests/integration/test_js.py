@@ -19,6 +19,25 @@ def _evaluated_expression(captured):
     return next(kw["expression"] for m, kw in captured if m == "Runtime.evaluate")
 
 
+def _evaluated_expressions(captured):
+    return [kw["expression"] for m, kw in captured if m == "Runtime.evaluate"]
+
+
+def _illegal_return_then_success():
+    captured = []
+
+    def fake_cdp(method, **kwargs):
+        captured.append((method, kwargs))
+        if method == "Runtime.evaluate" and len(_evaluated_expressions(captured)) == 1:
+            return {
+                "result": {"type": "object", "subtype": "error", "description": "SyntaxError: Illegal return statement"},
+                "exceptionDetails": {"text": "Uncaught SyntaxError: Illegal return statement"},
+            }
+        return {"result": {"value": None}}
+
+    return fake_cdp, captured
+
+
 def test_simple_expression_passes_through():
     fake_cdp, captured = _capture_cdp()
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
@@ -27,10 +46,13 @@ def test_simple_expression_passes_through():
 
 
 def test_return_statement_gets_wrapped():
-    fake_cdp, captured = _capture_cdp()
+    fake_cdp, captured = _illegal_return_then_success()
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         helpers.js("const x = 1; return x")
-    assert _evaluated_expression(captured) == "(function(){const x = 1; return x})()"
+    assert _evaluated_expressions(captured) == [
+        "const x = 1; return x",
+        "(function(){const x = 1; return x})()",
+    ]
 
 
 def test_iife_with_internal_return_is_not_double_wrapped():
@@ -113,10 +135,10 @@ def test_return_word_inside_comment_does_not_trigger_wrapping():
 
 @pytest.mark.parametrize("expr", ["return\t1", "return\n1"])
 def test_top_level_return_with_whitespace_gets_wrapped(expr):
-    fake_cdp, captured = _capture_cdp()
+    fake_cdp, captured = _illegal_return_then_success()
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         helpers.js(expr)
-    assert _evaluated_expression(captured) == f"(function(){{{expr}}})()"
+    assert _evaluated_expressions(captured) == [expr, f"(function(){{{expr}}})()"]
 
 
 @pytest.mark.parametrize(

@@ -1,10 +1,10 @@
-<img src="https://r2.browser-use.com/github/ajsdlasnnalsgasld.png" alt="Browser Harness" width="100%" />
+<img src="https://raw.githubusercontent.com/browser-use/media/main/browser-harness/banner-ink.svg" alt="Browser Harness" width="100%" />
 
 # Browser Harness ♞
 
-The simplest, thinnest, **self-healing** harness that gives LLM **complete freedom** to complete any browser task. Built directly on CDP.
+Connect an LLM directly to your real browser through one editable CDP websocket. The agent writes missing helpers as it works, so the harness improves with every task.
 
-The agent writes what's missing, mid-task, inside `agent-workspace/`. No framework, no recipes, no rails. One websocket to Chrome, nothing between.
+Try browser-harness in [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_campaign=browser-harness-use-in-cloud&utm_source=github) or paste the setup prompt into your coding agent.
 
 ```
   ● agent: wants to upload a file
@@ -18,48 +18,45 @@ The agent writes what's missing, mid-task, inside `agent-workspace/`. No framewo
 
 **You will never use the browser again.**
 
+## See it work
+
+**Task:** "Open my X profile, find my latest 20 video posts, and download them."
+
+[![Download my latest 20 X videos](docs/download-latest-20-x-videos.gif)](https://browser-use.com/showcase/videos/download-latest-20-x-videos.mp4)
+
 ## Setup prompt
 
 Paste into Claude Code or Codex:
 
 ```text
-Set up https://github.com/browser-use/browser-harness for me.
-
-Read `install.md` first to install and connect this repo to my real browser. Then read `SKILL.md` for normal usage. Use `agent-workspace/agent_helpers.py` and `agent-workspace/domain-skills/` for task-specific edits. When you open a setup or verification tab, activate it so I can see the active browser tab. After it is installed, open this repository in my browser and, if I am logged in to GitHub, ask me whether you should star it for me as a quick demo that the interaction works — only click the star if I say yes. If I am not logged in, just go to browser-use.com.
+Install or upgrade browser-harness to the latest stable version with uv using Python 3.12, register the skill from `browser-harness skill`, and connect it to my browser. Ask whether I want local browser recordings enabled; default to no and preserve my existing preference on upgrades. Follow https://github.com/browser-use/browser-harness/blob/main/install.md if setup or connection fails.
 ```
 
-When this page appears, tick the checkbox so the agent can connect to your browser:
+The agent will open `chrome://inspect/#remote-debugging`. On first setup, tick
+the checkbox so the agent can connect to your browser:
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
-See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
+## How it works
 
-## Free remote browsers
+- [`install.md`](install.md) connects the agent to your browser.
+- [`SKILL.md`](SKILL.md) teaches it the browser workflow.
+- [`src/browser_harness/`](src/browser_harness/) stays protected while the agent writes reusable helpers in its local workspace.
 
-Useful for stealth, sub-agents, or deployment.<br>
-**Free tier: 3 concurrent browsers, proxies, captcha solving, and more. No card required.**
+## Scale with Browser Use Cloud
 
-- Grab a key at [cloud.browser-use.com/new-api-key](https://cloud.browser-use.com/new-api-key)
-- Or let the agent sign up itself via [docs.browser-use.com/llms.txt](https://docs.browser-use.com/llms.txt) (setup flow + challenge context included).
+Use your local browser for logged-in, personal work. When you want many browsers in parallel—with live previews, proxies, stealth, CAPTCHA solving, and more—scale with [Browser Use Cloud](https://cloud.browser-use.com/new-api-key).
 
-## How simple is it? (~592 lines of Python)
+## MCP server
 
-- `install.md` — first-time install and browser bootstrap
-- `SKILL.md` — day-to-day usage
-- `src/browser_harness/` — protected core package
-- `agent-workspace/agent_helpers.py` — helper code the agent edits
-- `agent-workspace/domain-skills/` — reusable site-specific skills the agent edits
+`browser-harness-mcp` exposes the browser control helpers as MCP tools over
+stdio, so any MCP client (Claude Code, Devin, Cursor, etc.) can drive the
+browser without writing a second CDP layer. See [docs/MCP.md](docs/MCP.md) for
+setup and client configuration.
 
 ## Contributing
 
-PRs and improvements welcome. The best way to help: **contribute a new domain skill** under [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for a site or task you use often (LinkedIn outreach, ordering on Amazon, filing expenses, etc.). Each skill teaches the agent the selectors, flows, and edge cases it would otherwise have to rediscover.
-
-- **Skills are written by the harness, not by you.** Just run your task with the agent — when it figures something non-obvious out, it files the skill itself (see [SKILL.md](SKILL.md)). Please don't hand-author skill files; agent-generated ones reflect what actually works in the browser.
-- Open a PR with the generated `agent-workspace/domain-skills/<site>/` folder — small and focused is great.
-- Bug fixes, docs tweaks, and helper improvements are equally welcome.
-- Browse existing skills (`github/`, `linkedin/`, `amazon/`, ...) to see the shape.
-
-If you're not sure where to start, open an issue and we'll point you somewhere useful.
+Bug fixes, documentation improvements, and agent-generated domain skills are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

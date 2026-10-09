@@ -8,11 +8,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import _ipc as ipc
+from . import paths
 
 
 CORE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CORE_DIR.parent.parent
-AGENT_WORKSPACE = Path(os.environ.get("BH_AGENT_WORKSPACE", REPO_ROOT / "agent-workspace")).expanduser()
+AGENT_WORKSPACE = paths.workspace_dir()
 
 
 def _load_env():
@@ -24,7 +25,7 @@ def _load_env():
 
 
 def _load_env_file(p):
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -37,25 +38,43 @@ _load_env()
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+IPC_CONNECT_TIMEOUT_SECONDS = 5.0
+DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
+# Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
+# their IPC socket alive within the caller's existing 90-second process budget.
+SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
 
 
-def _send(req):
-    c = ipc.connect(NAME, timeout=5.0)
-    c.sendall((json.dumps(req) + "\n").encode())
-    data = b""
-    while not data.endswith(b"\n"):
-        chunk = c.recv(1 << 20)
-        if not chunk: break
-        data += chunk
-    c.close()
-    r = json.loads(data)
+class _IPCResponseTimeout(TimeoutError):
+    pass
+
+
+def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
+    c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
+    try:
+        c.settimeout(response_timeout)
+        try:
+            r = ipc.request(c, token, req)
+        except TimeoutError as e:
+            # Carry the detail on the exception itself. Raising the bare class
+            # left str(exc) empty, so every caller that reported the error had
+            # to rebuild the context by hand or print nothing useful.
+            label = req.get("method") or req.get("meta") or "request"
+            raise _IPCResponseTimeout(
+                f"{label} timed out after {response_timeout:g}s waiting for the daemon"
+            ) from e
+    finally:
+        c.close()
     if "error" in r: raise RuntimeError(r["error"])
     return r
 
 
-def cdp(method, session_id=None, **params):
+def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
-    return _send({"method": method, "params": params, "session_id": session_id}).get("result", {})
+    return _send(
+        {"method": method, "params": params, "session_id": session_id},
+        response_timeout=_response_timeout,
+    ).get("result", {})
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
@@ -121,47 +140,19 @@ def _runtime_evaluate(expression, session_id=None, await_promise=False):
     return _runtime_value(r, expression)
 
 
-def _has_return_statement(expression):
-    i = 0
-    n = len(expression)
-    state = "code"
-    quote = ""
-    while i < n:
-        ch = expression[i]
-        nxt = expression[i + 1] if i + 1 < n else ""
-        if state == "code":
-            if ch in ("'", '"', "`"):
-                state = "string"; quote = ch; i += 1; continue
-            if ch == "/" and nxt == "/":
-                state = "line_comment"; i += 2; continue
-            if ch == "/" and nxt == "*":
-                state = "block_comment"; i += 2; continue
-            if expression.startswith("return", i):
-                before = expression[i - 1] if i > 0 else ""
-                after = expression[i + 6] if i + 6 < n else ""
-                if not (before == "_" or before.isalnum()) and not (after == "_" or after.isalnum()):
-                    return True
-            i += 1; continue
-        if state == "line_comment":
-            if ch == "\n":
-                state = "code"
-            i += 1; continue
-        if state == "block_comment":
-            if ch == "*" and nxt == "/":
-                state = "code"; i += 2; continue
-            i += 1; continue
-        if state == "string":
-            if ch == "\\":
-                i += 2; continue
-            if ch == quote:
-                state = "code"; quote = ""
-            i += 1; continue
-    return False
+def _wrap_js_function(expression):
+    return f"(function(){{{expression}}})()"
+
+
+def _is_illegal_return_error(exc):
+    return "Illegal return statement" in str(exc)
 
 
 # --- navigation / page ---
 def goto_url(url):
     r = cdp("Page.navigate", url=url)
+    if os.environ.get("BH_DOMAIN_SKILLS") != "1":
+        return r
     labels = (urlparse(url).hostname or "").removeprefix("www.").split(".")
     # first label wins as before; subdomain hosts (item.taobao.com, docs.github.com) fall back to later labels
     d = next((p for p in (AGENT_WORKSPACE / "domain-skills" / l for l in labels[:-1] or labels) if p.is_dir()), None)
@@ -207,6 +198,56 @@ def click_at_xy(x, y, button="left", clicks=1):
 def type_text(text):
     cdp("Input.insertText", text=text)
 
+_SELECT_ALL_MODIFIER = None
+def _select_all_modifier():
+    """Select-all modifier by the browser's OS (not this process's): 4=Meta on macOS, else 2=Ctrl."""
+    global _SELECT_ALL_MODIFIER
+    if _SELECT_ALL_MODIFIER is None:
+        ua = cdp("Browser.getVersion").get("userAgent", "")
+        _SELECT_ALL_MODIFIER = 4 if "Mac OS X" in ua or "Macintosh" in ua else 2
+    return _SELECT_ALL_MODIFIER
+
+def fill_input(selector, text, clear_first=True, timeout=0.0):
+    """Fill a framework-managed input (React controlled, Vue v-model, Ember tracked).
+
+    type_text() uses Input.insertText which bypasses framework event listeners and leaves
+    submit buttons disabled. This helper focuses the element, clears it, types via real
+    key events, then fires synthetic input+change events so the framework sees the update.
+
+    Raises RuntimeError if the element is not found. Pass timeout>0 to wait for
+    late-rendered elements (e.g. after a route change) before typing.
+    """
+    if timeout > 0:
+        if not wait_for_element(selector, timeout=timeout):
+            raise RuntimeError(f"fill_input: element not found: {selector!r}")
+    focused = js(
+        f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+        f"if(!e)return false;e.focus();return true;}})()"
+    )
+    if not focused:
+        raise RuntimeError(f"fill_input: element not found: {selector!r}")
+    if clear_first:
+        # Dispatch select-all directly — NOT via press_key, which always emits a
+        # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
+        # makes Chrome treat the input as a printable "a" instead of firing the
+        # select-all shortcut, leaving the field uncleared.
+        mods = _select_all_modifier()
+        select_all = {"key": "a", "code": "KeyA", "modifiers": mods,
+                      "windowsVirtualKeyCode": 65, "nativeVirtualKeyCode": 65,
+                      "commands": ["SelectAll"]}
+        cdp("Input.dispatchKeyEvent", type="rawKeyDown", **select_all)
+        cdp("Input.dispatchKeyEvent", type="keyUp",
+            **{k: v for k, v in select_all.items() if k != "commands"})
+        press_key("Backspace")
+    for ch in text:
+        press_key(ch)
+    js(
+        f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+        f"if(!e)return;"
+        f"e.dispatchEvent(new Event('input',{{bubbles:true}}));"
+        f"e.dispatchEvent(new Event('change',{{bubbles:true}}));}})();"
+    )
+
 _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "Enter": (13, "Enter", "\r"), "Tab": (9, "Tab", "\t"), "Backspace": (8, "Backspace", ""),
     "Escape": (27, "Escape", ""), "Delete": (46, "Delete", ""), " ": (32, "Space", " "),
@@ -215,14 +256,72 @@ _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "Home": (36, "Home", ""), "End": (35, "End", ""),
     "PageUp": (33, "PageUp", ""), "PageDown": (34, "PageDown", ""),
 }
+# US-layout physical keys for printable ASCII punctuation: char → (code, virtual key).
+# `code` names the physical key, so it is layout-independent and never the
+# character itself; the virtual key code is the Win32 VK_OEM_* value, which is
+# unrelated to ord(char) for everything except A-Z and 0-9.
+_PUNCTUATION_KEYS = {
+    "`": ("Backquote", 192), "-": ("Minus", 189), "=": ("Equal", 187),
+    "[": ("BracketLeft", 219), "]": ("BracketRight", 221), "\\": ("Backslash", 220),
+    ";": ("Semicolon", 186), "'": ("Quote", 222), ",": ("Comma", 188),
+    ".": ("Period", 190), "/": ("Slash", 191),
+}
+# Characters a US layout only produces with Shift held, mapped to the unshifted
+# character that shares their physical key.
+_SHIFTED_CHARS = {
+    "~": "`", "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+    "&": "7", "*": "8", "(": "9", ")": "0", "_": "-", "+": "=",
+    "{": "[", "}": "]", "|": "\\", ":": ";", '"': "'", "<": ",", ">": ".", "?": "/",
+}
+
+
+def _printable_key(char):
+    """(code, virtual key, needs_shift) for one printable ASCII char on a US layout.
+
+    None when the character has no US physical key — accented letters, CJK,
+    emoji. Those still insert from the char event's text, and inventing a
+    keyboard key for them would just be a different wrong answer.
+    """
+    unshifted = _SHIFTED_CHARS.get(char, char)
+    needs_shift = char in _SHIFTED_CHARS or char.isupper()
+    if unshifted.isascii() and "a" <= unshifted.lower() <= "z":
+        return f"Key{unshifted.upper()}", ord(unshifted.upper()), needs_shift
+    if unshifted.isdigit() and unshifted.isascii():
+        return f"Digit{unshifted}", ord(unshifted), needs_shift
+    if unshifted in _PUNCTUATION_KEYS:
+        code, vk = _PUNCTUATION_KEYS[unshifted]
+        return code, vk, needs_shift
+    return None
+
+
 def press_key(key, modifiers=0):
     """Modifiers bitfield: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift.
-    Special keys (Enter, Tab, Arrow*, Backspace, etc.) carry their virtual key codes
-    so listeners checking e.keyCode / e.key all fire."""
-    vk, code, text = _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
+
+    Named keys (Enter, Tab, Arrow*, Backspace, ...) and printable characters alike
+    carry the physical `code` and virtual key code a real US keyboard sends, so
+    listeners reading e.key, e.code and e.keyCode all agree. A character that
+    needs Shift on that layout (uppercase, !@#$...) sets the Shift modifier too,
+    unless the caller is already composing a shortcut with Alt/Ctrl/Meta — there,
+    the caller's intent wins over the physical truth.
+    """
+    if key in _KEYS:
+        vk, code, text = _KEYS[key]
+    elif len(key) == 1:
+        text = key
+        resolved = _printable_key(key)
+        if resolved:
+            code, vk, needs_shift = resolved
+            if needs_shift and not modifiers & (1 | 2 | 4):
+                modifiers |= 8
+        else:
+            code, vk = "", 0
+    else:
+        vk, code, text = 0, key, ""
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
-    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
-    if text and len(text) == 1:
+    shortcut_modifiers = modifiers & (1 | 2 | 4)  # Alt/Ctrl/Meta turn single keys into shortcuts.
+    printable_char = len(key) == 1 and bool(text) and not shortcut_modifiers
+    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({} if printable_char or not text else {"text": text}))
+    if printable_char:
         cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
@@ -235,7 +334,17 @@ def capture_screenshot(path=None, full=False, max_dim=None):
     """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
     keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
     path = path or str(ipc._TMP / "shot.png")
-    r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
+    try:
+        r = cdp(
+            "Page.captureScreenshot",
+            _response_timeout=SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS,
+            format="png",
+            captureBeyondViewport=full,
+        )
+    except _IPCResponseTimeout as e:
+        raise RuntimeError(
+            f"Page.captureScreenshot timed out after {SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS:g}s"
+        ) from e
     open(path, "wb").write(base64.b64decode(r["data"]))
     if max_dim:
         from PIL import Image
@@ -247,32 +356,73 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 
 
 # --- tabs ---
+def _is_agent_startup_placeholder(title, url):
+    url = str(url or "")
+    return str(title or "").startswith("Starting agent ") and (
+        url in ("", "about:blank") or url.startswith("about:blank#")
+    )
+
+
 def list_tabs(include_chrome=True):
     out = []
     for t in cdp("Target.getTargets")["targetInfos"]:
         if t["type"] != "page": continue
         url = t.get("url", "")
+        if _is_agent_startup_placeholder(t.get("title", ""), url): continue
         if not include_chrome and url.startswith(INTERNAL): continue
-        out.append({"targetId": t["targetId"], "title": t.get("title", ""), "url": url})
+        out.append({
+            "targetId": t["targetId"],
+            "target_id": t["targetId"],
+            "title": t.get("title", ""),
+            "url": url,
+        })
     return out
 
 def current_tab():
-    t = cdp("Target.getTargetInfo").get("targetInfo", {})
-    return {"targetId": t.get("targetId"), "url": t.get("url", ""), "title": t.get("title", "")}
+    r = _send({"meta": "current_tab"})
+    return {
+        "targetId": r["targetId"],
+        "target_id": r["targetId"],
+        "url": r["url"],
+        "title": r["title"],
+    }
 
 def _mark_tab():
-    """Prepend 🟢 to tab title so the user can see which tab the agent controls."""
-    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title")
+    """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
+    if os.environ.get("BH_TAB_MARKER", "").strip().lower() in {"0", "false", "no", "off"}:
+        return
+    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
     except Exception: pass
 
-def switch_tab(target):
+def _target_id(target):
+    """Accept a raw target id or a tab dict returned by the helpers."""
+    return (target.get("targetId") or target.get("target_id")) if isinstance(target, dict) else target
+
+def activate_tab(target):
+    """Make a target the visible Chrome tab.
+
+    This is intentionally separate from switch_tab(): attaching the agent to a
+    target does not require taking over the user's visible Chrome tab.
+    """
+    target_id = _target_id(target)
+    cdp("Target.activateTarget", targetId=target_id)
+    return target_id
+
+def switch_tab(target, activate=False):
+    """Attach the agent without changing Chrome's visible tab by default.
+
+    Pass activate=True only when Chrome must visibly show the target. The horse
+    marker still moves to the attached target so the user can find it.
+    """
     # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
     # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
-    target_id = target.get("targetId") if isinstance(target, dict) else target
-    # Unmark old tab
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F7E2 '))document.title=document.title.slice(2)")
+    target_id = _target_id(target)
+    # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
+    # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
+    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
     except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+    if activate:
+        activate_tab(target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
@@ -282,11 +432,34 @@ def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
+    if url != "about:blank":
+        try:
+            cur = current_tab()
+            cur_url = cur.get("url") or ""
+            # Reuse attached tab when it's blank
+            if (
+                cur_url in ("", "about:blank", "data:text/html,")
+                or cur_url.startswith("about:blank#")
+                or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
+            ):
+                goto_url(url)
+                return cur.get("targetId") or cur.get("target_id")
+        except Exception:
+            pass
+    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
     return tid
+
+def close_tab(target=None):
+    """Close a tab. If `target` is omitted, closes the currently attached tab.
+    Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
+    target_id = _target_id(target)
+    if target_id is None:
+        target_id = current_tab()["targetId"]
+    cdp("Target.closeTarget", targetId=target_id)
+
 
 def ensure_real_tab():
     """Switch to a real user tab if current is chrome:// / internal / stale."""
@@ -322,16 +495,115 @@ def wait_for_load(timeout=15.0):
         time.sleep(0.3)
     return False
 
+def wait_for_element(selector, timeout=10.0, visible=False):
+    """Poll until querySelector(selector) exists in the DOM, or timeout.
+
+    wait_for_load() misses SPAs — the document is 'complete' before the framework renders.
+    Use this after actions that trigger async rendering (route changes, data fetches).
+    Set visible=True to also require the element to be non-hidden and in-layout.
+    Returns True if found, False on timeout.
+    """
+    if visible:
+        # checkVisibility walks the ancestor chain and respects display:none /
+        # visibility:hidden / opacity:0 on parents, which a getComputedStyle
+        # check on the element alone misses (it returns the descendant's own
+        # style, not the inherited "is this rendered" state). Falls back to
+        # the per-element CSS check on older Chrome that lacks checkVisibility.
+        check = (
+            f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+            f"if(!e)return false;"
+            f"if(typeof e.checkVisibility==='function')"
+            f"return e.checkVisibility({{checkOpacity:true,checkVisibilityCSS:true}});"
+            f"const s=getComputedStyle(e);"
+            f"return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'}})()"
+        )
+    else:
+        check = f"!!document.querySelector({json.dumps(selector)})"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if js(check): return True
+        time.sleep(0.3)
+    return False
+
+def wait_for_network_idle(timeout=10.0, idle_ms=500):
+    """Wait until all in-flight requests finish and no Network.* events arrive for idle_ms ms.
+
+    Useful after form submits, SPA route transitions, and any action that triggers
+    XHR/fetch without a visible DOM change. Builds on drain_events() — no daemon changes.
+    Returns True if idle window reached, False on timeout.
+
+    Events are filtered to the active session — a previously-attached background
+    tab (e.g. a polling/SSE page the agent switched away from) keeps emitting
+    Network events into the daemon's global event buffer; without this filter
+    they would poison the idle check on the current tab.
+    """
+    deadline = time.time() + timeout
+    last_activity = time.time()
+    inflight = set()
+    active_session = _send({"meta": "session"}).get("session_id")
+    while time.time() < deadline:
+        for e in drain_events():
+            if e.get("session_id") != active_session:
+                continue
+            method = e.get("method", "")
+            params = e.get("params", {})
+            if method == "Network.requestWillBeSent":
+                inflight.add(params.get("requestId"))
+                last_activity = time.time()
+            elif method in ("Network.loadingFinished", "Network.loadingFailed"):
+                inflight.discard(params.get("requestId"))
+                last_activity = time.time()
+            elif method.startswith("Network."):
+                last_activity = time.time()
+        if not inflight and (time.time() - last_activity) * 1000 >= idle_ms:
+            return True
+        time.sleep(0.1)
+    return False
+
 def js(expression, target_id=None):
     """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
 
-    Expressions with top-level `return` are automatically wrapped in an IIFE, so both
-    `document.title` and `const x = 1; return x` are valid inputs.
+    Expressions are evaluated as-is first. If Chrome reports an illegal top-level
+    `return`, the snippet is retried inside a function wrapper, so both
+    `document.title` and `const x = 1; return x` work without mis-wrapping nested
+    functions that contain their own returns.
     """
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
-    if _has_return_statement(expression) and not expression.strip().startswith("("):
-        expression = f"(function(){{{expression}}})()"
-    return _runtime_evaluate(expression, session_id=sid, await_promise=True)
+    try:
+        result = _js_evaluate(expression, sid)
+    except BaseException:
+        # Keep the evaluation error; a detach failure here must not replace it.
+        if sid:
+            try:
+                _detach_iframe_session(sid)
+            except BaseException:
+                pass
+        raise
+    if sid:
+        _detach_iframe_session(sid)
+    return result
+
+
+def _js_evaluate(expression, sid):
+    try:
+        return _runtime_evaluate(expression, session_id=sid, await_promise=True)
+    except RuntimeError as e:
+        if _is_illegal_return_error(e):
+            return _runtime_evaluate(_wrap_js_function(expression), session_id=sid, await_promise=True)
+        raise
+
+
+def _detach_iframe_session(sid):
+    """Release the session js(target_id=...) attached so polling loops do not
+    accumulate one live session (and one event stream) per call. A session that
+    Chrome already dropped (iframe navigated or closed) is not a leak."""
+    try:
+        cdp("Target.detachFromTarget", sessionId=sid)
+    except Exception as e:
+        message = str(e).lower()
+        if "no session with given id" in message or "session with given id not found" in message:
+            return
+        raise
 
 
 _KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
@@ -373,6 +645,11 @@ def http_get(url, headers=None, timeout=20.0):
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
         return data.decode()
+
+
+# Imported at the bottom so recorder's own `from . import helpers` sees a
+# fully-defined module. Exposes the recording helpers via `from .helpers import *`.
+from .recorder import start_recording, stop_recording, recording_dir
 
 
 def _load_agent_helpers():

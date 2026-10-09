@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or how-to
+    url: https://github.com/browser-use/browser-harness/discussions/categories/q-a
+    about: Ask in Discussions Q&A, not Issues.
+  - name: Install or setup troubleshooting
+    url: https://github.com/browser-use/browser-harness/blob/main/install.md
+    about: Most install and "DevTools not live" errors are covered here.

@@ -15,7 +15,7 @@ scroll loop after ~5 posts. Stay signed in.
 1. Pull the N most recent posts from a named FB Page (brand, publisher, local business)
 2. Harvest every external URL the Page has linked out to
 3. Grab Page metadata — follower count, category, website, verified status
-4. Hand the outbound URL list to Firecrawl (or `http_get`) for downstream extraction
+4. Hand the outbound URL list to `http_get` or another downstream extractor
 
 It is NOT for: leaving comments, reacting, messaging the Page, or any write action.
 
@@ -145,17 +145,17 @@ def decode_fb_link(href):
     return unquote(q["u"][0]) if "u" in q else href
 ```
 
-## Handoff to Firecrawl
+## Handoff for outbound URLs
 
 Same pattern as groups — Pages are the walled-garden surface that Harness is
 good at; the external URLs the Page has shared are public and better suited to
-Firecrawl's schema-native extraction.
+ordinary HTTP clients or downstream extractors.
 
 ```python
 external_urls = sorted({decode_fb_link(x) for p in seen.values() for x in p["externals"]})
 print(f"harvested {len(external_urls)} unique external URLs from Page")
 # In the calling conversation:
-#   firecrawl_extract(urls=external_urls, prompt="...", schema={...})
+#   send external_urls to the downstream extractor that matches the task schema
 ```
 
 ## Rate-limit discipline
@@ -270,7 +270,7 @@ PY
 ```
 
 The stdout JSON is the handoff payload — parse it in the calling agent and
-route `external_urls` into `firecrawl_extract`, route `meta` into a
+route `external_urls` into a downstream extractor, route `meta` into a
 competitor-intel table, or feed `posts` into keyword matching.
 
 ## When to reach for pages.md vs groups.md
