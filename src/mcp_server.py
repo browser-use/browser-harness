@@ -136,9 +136,9 @@ def _tool(fn):
 
 
 @_tool
-def browser_new_tab(url: str = "about:blank"):
-    """Open a new browser tab. Returns the new tab's targetId."""
-    return {"targetId": new_tab(url)}
+def browser_new_tab(url: str = "about:blank", new_window: bool = False):
+    """Open a tab, or a separate background window when `new_window` is true."""
+    return {"targetId": new_tab(url, new_window=new_window)}
 
 
 @_tool

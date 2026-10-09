@@ -43,16 +43,17 @@ Default to no. Run `browser-harness recordings enable` only after yes; otherwise
 run `browser-harness recordings disable`. Preserve an existing `(config)` or
 `(BH_RECORD)` preference during upgrades instead of asking again.
 
-## If Chrome Blocks It
+## If Chrome or Brave Blocks It
 
-In Chrome:
+In Chrome or Brave:
 
 1. Open `chrome://inspect/#remote-debugging`.
 2. Tick "Allow remote debugging for this browser instance".
 3. Retry `page_info()`.
 
+If the browser shows an "Allow remote debugging?" sheet, click **Allow** once.
 If that reports `permission-blocked` on macOS, handle the per-connection Allow
-sheet without bringing Chrome to the foreground:
+sheet without bringing the browser to the foreground:
 
 ```bash
 browser-harness mac-approve
@@ -60,10 +61,17 @@ browser-harness mac-approve
 
 Continue browser work when the helper returns `ready`; otherwise follow its
 printed instruction. The first checkbox is intentionally a one-time manual
-Chrome setup step; it is not exposed to the harness until CDP is available.
+browser setup step; it is not exposed to the harness until CDP is available.
 
 The helper requires Accessibility permission for the app launching the CLI
-(for example Terminal, iTerm, Codex, or an IDE) in System Settings.
+(for example Terminal, iTerm, Codex, or an IDE) in System Settings > Privacy &
+Security > Accessibility.
+
+## Security
+
+Local CDP gives the harness access to the attached browser profile, including
+its cookies and logged-in sessions. Use a separate browser profile for agents
+that are not fully trusted.
 
 ## Cloud Browsers
 
