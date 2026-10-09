@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 
 from browser_harness import helpers, recorder
 
@@ -94,3 +95,81 @@ def test_frame_error_stays_useful_for_a_message_less_exception(tmp_path, monkeyp
     recorder._capture(tmp_path, "click_at_xy", (10, 20), {})
 
     assert _events(tmp_path)[0]["frame_error"] == "RuntimeError: no detail"
+
+
+def _auto_recording(tmp_path):
+    directory = tmp_path / "session"
+    directory.mkdir()
+    (directory / "meta.json").write_text(
+        json.dumps({"name": "session", "auto": True}),
+        encoding="utf-8",
+    )
+    return directory
+
+
+def test_auto_recording_stales_from_events_when_all_frames_drop(tmp_path, monkeypatch):
+    directory = _auto_recording(tmp_path)
+    events = directory / "events.jsonl"
+    events.write_text('{"frame_error":"timeout"}\n', encoding="utf-8")
+    os.utime(events, (700, 700))
+
+    monkeypatch.setattr(recorder.time, "time", lambda: 1000)
+    monkeypatch.setattr(recorder, "_auto_idle_gap", lambda: 180)
+
+    assert recorder._auto_is_stale(directory) is True
+
+
+def test_recent_event_keeps_auto_recording_fresh_after_old_frame(tmp_path, monkeypatch):
+    directory = _auto_recording(tmp_path)
+    frame = directory / "0001.jpg"
+    frame.write_bytes(b"jpeg")
+    os.utime(frame, (700, 700))
+
+    events = directory / "events.jsonl"
+    events.write_text(
+        '{"frame":"0001.jpg"}\n{"frame_error":"timeout"}\n',
+        encoding="utf-8",
+    )
+    os.utime(events, (950, 950))
+
+    monkeypatch.setattr(recorder.time, "time", lambda: 1000)
+    monkeypatch.setattr(recorder, "_auto_idle_gap", lambda: 180)
+
+    assert recorder._auto_is_stale(directory) is False
+
+
+def test_recent_frame_keeps_auto_recording_fresh_after_stale_events(tmp_path, monkeypatch):
+    directory = _auto_recording(tmp_path)
+    events = directory / "events.jsonl"
+    events.write_text('{"frame_error":"timeout"}\n', encoding="utf-8")
+    os.utime(events, (700, 700))
+
+    frame = directory / "0001.jpg"
+    frame.write_bytes(b"jpeg")
+    os.utime(frame, (950, 950))
+
+    monkeypatch.setattr(recorder.time, "time", lambda: 1000)
+    monkeypatch.setattr(recorder, "_auto_idle_gap", lambda: 180)
+
+    assert recorder._auto_is_stale(directory) is False
+
+
+def test_jpg_only_auto_recording_uses_frame_mtime(tmp_path, monkeypatch):
+    directory = _auto_recording(tmp_path)
+    frame = directory / "0001.jpg"
+    frame.write_bytes(b"jpeg")
+    os.utime(frame, (700, 700))
+
+    monkeypatch.setattr(recorder.time, "time", lambda: 1000)
+    monkeypatch.setattr(recorder, "_auto_idle_gap", lambda: 180)
+
+    assert recorder._auto_is_stale(directory) is True
+
+
+def test_empty_auto_recording_never_stales(tmp_path, monkeypatch):
+    directory = _auto_recording(tmp_path)
+
+    monkeypatch.setattr(recorder.time, "time", lambda: 1000)
+    monkeypatch.setattr(recorder, "_auto_idle_gap", lambda: 180)
+
+    assert recorder._auto_is_stale(directory) is False
