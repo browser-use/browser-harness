@@ -58,6 +58,7 @@ _LINUX_PROFILES = (
     ".var/app/org.chromium.Chromium/config/chromium",
     ".var/app/com.google.Chrome/config/google-chrome",
     ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
+    ".config/BraveSoftware/Brave-Origin",
     ".var/app/com.microsoft.Edge/config/microsoft-edge",
 )
 _WINDOWS_PROFILES = (  # relative to %LOCALAPPDATA%; SxS = Canary channel

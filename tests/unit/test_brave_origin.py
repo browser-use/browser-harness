@@ -24,6 +24,17 @@ def test_origin_running_without_google_chrome(origin_profile):
     assert daemon.supported_browser_running()
 
 
+def test_linux_origin_profile_is_discovered(monkeypatch, tmp_path):
+    monkeypatch.setattr(daemon.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    profile = tmp_path / ".config/BraveSoftware/Brave-Origin"
+    profile.mkdir(parents=True)
+    (profile / "SingletonLock").symlink_to(f"test-host-{os.getpid()}")
+    monkeypatch.setattr(daemon, "PROFILES", daemon.profile_dirs())
+
+    assert daemon.supported_browser_running()
+
+
 def test_origin_directory_alone_is_not_a_running_browser(origin_profile):
     assert not daemon.supported_browser_running()
 
