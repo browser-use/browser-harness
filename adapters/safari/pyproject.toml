@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "safari-harness"
+version = "0.1.0"
+description = "Safari scripting adapter with browser-harness-style Python helpers"
+requires-python = ">=3.12"
+
+[project.scripts]
+safari-harness = "safari_harness:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["safari_harness"]
