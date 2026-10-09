@@ -1,22 +1,9 @@
 # Scrolling
 
-Separate page scroll, nested containers, virtualized lists, and dropdown menus, and identify which element is actually consuming wheel events before scrolling.
+Separate page scrolling from scrolling inside a nested container or iframe.
 
-## Hidden tabs
+## Inside an iframe
 
-Start with the normal `scroll(...)` helper. Chrome on Windows can leave a
-mouse-wheel command unanswered when the attached tab is not visible. If that
-scroll times out:
+`scroll(x, y, dy=...)` sends `Input.dispatchMouseEvent` (`mouseWheel`) at compositor level, so a wheel over an iframe scrolls the iframe's own document, cross-origin and sandboxed (`srcdoc`, opaque origin) frames included. Verified on a `sandbox="allow-scripts"` srcdoc frame inside an `overflow:hidden` box: one `scroll(..., dy=400)` moved the frame's `scrollY` to ~630.
 
-1. Do not call `activate_tab()`; a timeout is not permission to foreground
-   Chrome.
-2. Temporarily call
-   `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`, retry the same
-   `scroll(...)` once, and re-read the page or container scroll position.
-3. Disable focus emulation in a `finally` block.
-
-If background scrolling still fails, stop and name that exact limitation.
-Call `activate_tab()` only when the user explicitly asks to see or visibly
-switch to the tab. Do not replace wheel input with custom `Runtime.evaluate`
-scrolling or a cross-frame JavaScript walker; those paths change page semantics
-and require context the agent does not have.
+Other automation may not: a browser extension's synthetic wheel (e.g. an extension-driven "scroll" action) can scroll the top page while never reaching the iframe, which looks like "this frame cannot scroll". Before concluding a frame is broken, check it directly: for a same-origin frame, `contentDocument.scrollingElement.scrollHeight > clientHeight` and setting `scrollTop` works; for a cross-origin one, use `scroll()` here.
