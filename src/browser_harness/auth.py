@@ -5,26 +5,26 @@ or tells the agent to run `browser-harness auth login`. OAuth details live here.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import argparse
 import base64
 import getpass
 import hashlib
 import json
 import os
-from pathlib import Path
 import secrets
 import stat
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 from . import paths
-
 
 AUTH_BASE = "https://api.browser-use.com"
 # Browser Use currently exposes this registered CLI OAuth client. Keep an env
@@ -144,27 +144,33 @@ def load_auth_file(path: Path | None = None) -> dict:
 
 
 def save_auth_record(record: AuthRecord, path: Path | None = None) -> None:
+    caller_path = path
     path = path or auth_path()
+    paths.reject_reparse_path(path)
+    paths.reject_reparse_path(path.parent)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _chmod_private(path.parent, directory=True)
+    # config_dir() validates the default ACL tree on Windows. On POSIX, ensure
+    # the existing directory mode is repaired before writing credentials.
+    default_config_path = caller_path is None and not os.environ.get("BH_AUTH_PATH")
+    if path.parent != Path(".") and (not default_config_path or os.name != "nt"):
+        _chmod_private(path.parent, directory=True)
     existing = load_auth_file(path)
     existing["browser_use"] = record.to_storage()
-    tmp = path.with_name(path.name + ".tmp")
-    _write_private_json(tmp, existing)
+    tmp, fd = _new_auth_temp(path)
+    _write_private_json(tmp, existing, fd=fd)
     os.replace(tmp, path)
-    _chmod_private(path)
 
 
 def clear_auth(path: Path | None = None) -> bool:
     path = path or auth_path()
+    paths.reject_reparse_path(path)
     data = load_auth_file(path)
     existed = bool(data.get("browser_use"))
     data.pop("browser_use", None)
     if data:
-        tmp = path.with_name(path.name + ".tmp")
-        _write_private_json(tmp, data)
+        tmp, fd = _new_auth_temp(path)
+        _write_private_json(tmp, data, fd=fd)
         os.replace(tmp, path)
-        _chmod_private(path)
     else:
         try:
             path.unlink()
@@ -465,27 +471,54 @@ def _read_manual_api_key(input_stream=None) -> str:
     return key
 
 
-def _write_private_json(path: Path, data: dict) -> None:
+def _write_private_json(path: Path, data: dict, *, fd: int | None = None) -> None:
     raw = (json.dumps(data, indent=2) + "\n").encode()
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
+    if fd is None:
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
     try:
-        with os.fdopen(fd, "wb") as f:
+        paths.reject_reparse_path(path)
+        opened = os.fstat(fd)
+        current = path.lstat()
+        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise PermissionError(f"auth temp path changed before ACL hardening: {path}")
+        _chmod_private(path)
+        current = path.lstat()
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise PermissionError(f"auth temp path changed during ACL hardening: {path}")
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        with os.fdopen(fd, "wb", closefd=False) as f:
             f.write(raw)
+            f.flush()
     except BaseException:
+        # Path-based unlink cannot be made conditional on the opened file's
+        # identity. A replacement can appear after lstat() and before unlink().
+        # Clear the file through the handle we created instead; leave the
+        # private temp entry behind rather than risk deleting another entry.
+        try:
+            os.ftruncate(fd, 0)
+        except OSError:
+            pass
+        raise
+    finally:
         try:
             os.close(fd)
         except OSError:
             pass
-        raise
+
+
+def _new_auth_temp(path: Path) -> tuple[Path, int]:
+    fd, name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
+    return Path(name), fd
 
 
 def _chmod_private(path: Path, *, directory=False) -> None:
-    mode = stat.S_IRWXU if directory else stat.S_IRUSR | stat.S_IWUSR
-    try:
-        os.chmod(path, mode)
-    except OSError:
-        pass
+    paths.harden_private_path(path, directory=directory)
 
 
 def _one(qs: dict[str, list[str]], key: str) -> str | None:
