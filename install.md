@@ -110,6 +110,9 @@ has a live browser connection. It never starts or discovers another browser.
 
 If this still fails, inspect `src/browser_harness/admin.py`, `src/browser_harness/daemon.py`, and `src/browser_harness/_ipc.py`.
 
+If macOS Brave still accepts CDP but new pages crash after an application update,
+check its live renderer files using [browser-update recovery](interaction-skills/browser-updates.md).
+
 Useful:
 
 ```bash
