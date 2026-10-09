@@ -15,6 +15,7 @@ import json
 import math
 import os
 import sys
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -25,6 +26,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from PIL import Image
 
+from browser_harness import recorder
 from browser_harness.admin import ensure_daemon
 from browser_harness.helpers import (
     capture_screenshot,
@@ -53,6 +55,25 @@ from browser_harness.helpers import (
 )
 
 SERVER = MCPServer("browser-harness")
+
+# recorder._details() interprets args positionally/by helper parameter name, so
+# mapped MCP tools must preserve the underlying helper argument names/order.
+_RECORDED_MCP_ACTIONS = {
+    "browser_new_tab": "new_tab",
+    "browser_goto": "goto_url",
+    "browser_click": "click_at_xy",
+    "browser_type": "type_text",
+    "browser_fill": "fill_input",
+    "browser_press": "press_key",
+    "browser_scroll": "scroll",
+    "browser_switch_tab": "switch_tab",
+    "browser_close_tab": "close_tab",
+    "browser_ensure_real_tab": "ensure_real_tab",
+    "browser_wait": "wait",
+    "browser_wait_for_load": "wait_for_load",
+    "browser_wait_for_element": "wait_for_element",
+    "browser_upload_file": "upload_file",
+}
 
 
 def _normalize(value: Any) -> Any:
@@ -126,8 +147,17 @@ def _tool(fn):
     def wrapper(*args, **kwargs):
         try:
             ensure_daemon()
+            step_start = time.monotonic()
             with _stderr_stdout():
                 result = fn(*args, **kwargs)
+            helper_name = _RECORDED_MCP_ACTIONS.get(fn.__name__)
+            if helper_name is not None:
+                recorder.observe(
+                    helper_name,
+                    args,
+                    kwargs,
+                    round(time.monotonic() - step_start, 3),
+                )
             return _dump(result)
         except Exception as exc:  # noqa: BLE001 -- browser failures must reach the MCP client.
             raise ToolError(str(exc)) from exc
