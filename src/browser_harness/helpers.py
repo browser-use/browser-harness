@@ -69,8 +69,26 @@ def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
     return r
 
 
-def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
+_UNSET = object()
+
+
+def cdp(method, session_id=_UNSET, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
+    # CDP spells the routing parameter "sessionId"; our keyword is "session_id".
+    # A caller using the camelCase name would otherwise have it absorbed into
+    # **params, never read, so the command ran against the default tab session
+    # instead of the attached target — silently returning the wrong frame.
+    #
+    # Browser-level Target.* methods are excluded on purpose: the daemon sends
+    # them with no routing session, and for Target.detachFromTarget "sessionId"
+    # is a real command parameter (see _detach_iframe_session) that must reach
+    # the browser untouched.
+    if "sessionId" in params and not method.startswith("Target."):
+        if session_id is not _UNSET:
+            raise TypeError("cdp() got both session_id and camelCase sessionId")
+        session_id = params.pop("sessionId")
+    if session_id is _UNSET:
+        session_id = None
     return _send(
         {"method": method, "params": params, "session_id": session_id},
         response_timeout=_response_timeout,
