@@ -111,6 +111,113 @@ def test_tab_marker_can_be_disabled_before_set_session_schedules_it(monkeypatch,
     assert not [call for call in d.cdp.calls if call[0] == "Runtime.evaluate"]
 
 
+def test_guarded_startup_does_not_attach_existing_page(monkeypatch):
+    monkeypatch.setenv("BH_TAB_GUARD", "1")
+    d = _fresh_daemon()
+
+    assert asyncio.run(d.attach_first_page()) is None
+    assert d.session is None
+    assert d.target_id is None
+    assert d.cdp.calls == []
+
+
+def test_guard_policy_blocks_unregistered_marker_and_domain_authorization(monkeypatch):
+    monkeypatch.delenv("BH_TAB_GUARD", raising=False)
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+
+    class _PolicyCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargetInfo":
+                return {"targetInfo": {"type": "page", "url": "https://owned.example/"}}
+            if method == "Page.getFrameTree":
+                return {"frameTree": {"frame": {
+                    "id": "FRAME-MINE", "loaderId": "LOADER-MINE",
+                    "url": "https://owned.example/",
+                }}}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _PolicyCDP()
+    d.session = "owned-session"
+    d.target_id = "owned-target"
+    d._session_targets["owned-session"] = "owned-target"
+    d._guard_policy_active = True
+    d._guarded_run_id = "123e4567-e89b-42d3-a456-426614174000"
+    d._guarded_sessions = {"owned-session"}
+    d._guarded_targets = {"owned-target"}
+    d._document_state["owned-session"] = {
+        "target_id": "owned-target", "generation": 0,
+        "url": "https://owned.example/", "document_url": "https://owned.example/",
+        "frame_id": None, "loader_id": None, "allowed": True,
+    }
+
+    async def register():
+        return await d.handle({
+            "meta": "set_session",
+            "session_id": "owned-session",
+            "target_id": "owned-target",
+            "tab_guard": {"tabs": ["owned-target"], "sessions": ["owned-session"]},
+            "tab_guard_run": "123e4567-e89b-42d3-a456-426614174000",
+            "tab_guard_epoch": d._authorization_epoch,
+        })
+
+    assert asyncio.run(register()) == {"session_id": "owned-session", "tab_guard": "ok"}
+    d._document_state["owned-session"].update({
+        "document_url": "https://owned.example/", "frame_id": "FRAME-MINE",
+    })
+    monkeypatch.delenv("BH_TAB_MARKER")
+    d.cdp.calls.clear()
+
+    async def exercise():
+        d._record_event("Page.loadEventFired", {"frameId": "FRAME-MINE"}, "foreign-session")
+        d._record_event("Page.loadEventFired", {"frameId": "FRAME-MINE"}, "owned-session")
+        await d._enable_default_domains("foreign-session")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+    assert not any(call[2] == "foreign-session" for call in d.cdp.calls)
+    assert [call for call in d.cdp.calls if call[0] == "Runtime.evaluate"] == [
+        ("Runtime.evaluate", {"expression": daemon.TAB_MARKER_JS}, "owned-session")
+    ]
+
+
+def test_guard_context_resolves_explicit_session_to_its_target(monkeypatch):
+    class _MappedCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargetInfo":
+                return {"targetInfo": {
+                    "targetId": params["targetId"],
+                    "type": "iframe",
+                    "url": "https://frame.example/",
+                }}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _MappedCDP()
+    d._session_targets["iframe-session"] = "iframe-target"
+
+    context = asyncio.run(d.handle({"meta": "guard_context", "session_id": "iframe-session"}))
+    assert context == {
+        "target_id": "iframe-target",
+        "session_id": "iframe-session",
+        "url": "https://frame.example/",
+        "tab_guard": "ok",
+        "tab_guard_epoch": 0,
+        "document_generation": None,
+        "document_url": None,
+    }
+    mismatched = asyncio.run(d.handle({
+        "meta": "guard_context",
+        "session_id": "iframe-session",
+        "target_id": "other-target",
+    }))
+    assert mismatched["target_id"] is None
+    assert "url" not in mismatched
+
+
 def test_tab_marker_stays_enabled_by_default(monkeypatch):
     monkeypatch.delenv("BH_TAB_MARKER", raising=False)
     d = _fresh_daemon()
@@ -142,6 +249,83 @@ def test_tab_marker_disabled_on_page_load_events(monkeypatch, value):
 
     d._record_event("Page.loadEventFired", {}, "loaded-session")
 
+    assert not [call for call in d.cdp.calls if call[0] == "Runtime.evaluate"]
+
+
+def test_guarded_event_marker_uses_origin_session_and_owned_target(monkeypatch):
+    monkeypatch.setenv("BH_TAB_GUARD", "1")
+    monkeypatch.delenv("BH_TAB_MARKER", raising=False)
+
+    class _MarkerCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargetInfo":
+                return {"targetInfo": {"type": "page", "url": "https://owned.example/"}}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _MarkerCDP()
+    d._guard_policy_active = True
+    d._guarded_sessions = {"event-session"}
+    d._guarded_targets = {"event-target"}
+    d._session_targets = {"event-session": "event-target"}
+    d._document_state["event-session"] = {
+        "target_id": "event-target", "generation": 0,
+        "url": "https://owned.example/", "document_url": "https://owned.example/",
+        "frame_id": "FRAME-MINE", "allowed": True,
+    }
+    d.session = "current-session"
+    d.target_id = "current-target"
+
+    async def run():
+        d._record_event("Page.loadEventFired", {"frameId": "FRAME-MINE"}, "event-session")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert [call for call in d.cdp.calls if call[0] == "Runtime.evaluate"] == [
+        ("Runtime.evaluate", {"expression": daemon.TAB_MARKER_JS}, "event-session")
+    ]
+    assert not any(call[2] == "current-session" for call in d.cdp.calls)
+
+
+@pytest.mark.parametrize("event_session,target_url", [
+    ("foreign-session", "https://owned.example/"),
+    ("event-session", "chrome://settings"),
+])
+def test_guarded_event_marker_fails_closed_for_foreign_or_privileged_source(
+    monkeypatch, event_session, target_url
+):
+    monkeypatch.setenv("BH_TAB_GUARD", "1")
+    monkeypatch.delenv("BH_TAB_MARKER", raising=False)
+
+    class _MarkerCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Target.getTargetInfo":
+                return {"targetInfo": {"type": "page", "url": target_url}}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _MarkerCDP()
+    d._guard_policy_active = True
+    d._guarded_sessions = {"event-session"}
+    d._session_targets = {"event-session": "event-target"}
+    d._guarded_targets = {"event-target"}
+    d._document_state["event-session"] = {
+        "target_id": "event-target", "generation": 0,
+        "url": "https://owned.example/", "document_url": "https://owned.example/",
+        "frame_id": "FRAME-MINE", "allowed": True,
+    }
+    d.session = "current-session"
+    d.target_id = "current-target"
+
+    async def run():
+        d._record_event("Page.domContentEventFired", {"frameId": "FRAME-MINE"}, event_session)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
     assert not [call for call in d.cdp.calls if call[0] == "Runtime.evaluate"]
 
 
