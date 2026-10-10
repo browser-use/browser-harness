@@ -1535,14 +1535,14 @@ def run_update(yes=False):
     if mode != "git" and cur and latest and not newer:
         print(f"browser-harness is up to date ({cur}).")
         return 0
-    if newer:
-        print(f"updating browser-harness: {cur} -> {latest}")
-    elif mode == "git":
-        print("pulling the latest commits.")
-    elif latest:
-        print(f"installed version unknown; will try to update to {latest}.")
-    else:
-        print("could not reach PyPI; will try to update anyway.")
+    # The git branch announces its pull below, once the working tree is clean.
+    if mode != "git":
+        if newer:
+            print(f"updating browser-harness: {cur} -> {latest}")
+        elif latest:
+            print(f"installed version unknown; will try to update to {latest}.")
+        else:
+            print("could not reach PyPI; will try to update anyway.")
 
     if mode == "git":
         repo = _repo_dir()
@@ -1554,6 +1554,7 @@ def run_update(yes=False):
             print(f"refusing to update: uncommitted changes in {repo}", file=sys.stderr)
             print("commit or stash them first, or run `git -C %s pull` yourself." % repo, file=sys.stderr)
             return 1
+        print("pulling the latest commits.")
         r = subprocess.run(["git", "-C", str(repo), "pull", "--ff-only"])
         if r.returncode != 0:
             return r.returncode
