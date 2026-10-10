@@ -80,7 +80,13 @@ approval prompt is acceptable. It creates another controller and dedicated tab
 in the same local Chrome profile, not another Chrome profile or process.
 
 If the default daemon becomes stale, use its built-in reattachment/recovery
-first. A command timeout, truncated output, site change, closed tab, or new task
+first. Recovery and daemon restart keep the saved target ID. `TabLost` means
+the selected tab disappeared, the browser changed, or the saved binding is
+unreadable. Inspect `list_tabs()` and explicitly `switch_tab(targetId)` or
+`new_tab()`; an interrupted action is never replayed on a different tab.
+Named local daemon shutdown still closes its owned tab, so a later restart
+requires explicit tab selection if that was the saved target.
+A command timeout, truncated output, site change, closed tab, or new task
 is not a reason to create another daemon. Run `browser-harness --doctor` and
 restart or replace the default daemon only when it is actually dead or cannot
 recover.
@@ -186,7 +192,8 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
-- If the current tab is stale or internal, call `ensure_real_tab()`.
+- For an internal page, explicitly choose a working tab with `ensure_real_tab()`.
+  For `TabLost`, inspect and select the intended target explicitly before acting.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
