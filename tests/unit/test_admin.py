@@ -1188,7 +1188,7 @@ def test_ensure_daemon_waits_for_the_parked_daemon_instead_of_spawning(tmp_path,
     from browser_harness import admin as admin_mod
 
     _park_daemon(tmp_path, monkeypatch, os.getpid())
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
 
     spawned = []
@@ -1209,7 +1209,7 @@ def test_ensure_daemon_returns_when_the_parked_daemon_finishes(tmp_path, monkeyp
     from browser_harness import admin as admin_mod
 
     _park_daemon(tmp_path, monkeypatch, os.getpid())
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     calls = {"n": 0}
 
     def alive(name=None):
@@ -1231,7 +1231,7 @@ def test_ensure_daemon_does_not_replace_pending_approval_that_exited(tmp_path, m
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
     monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
     pending = iter([os.getpid(), None])
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: next(pending, None))
@@ -1260,7 +1260,7 @@ def test_dead_pending_cleanup_does_not_unlink_successor(tmp_path, monkeypatch):
     log_file.write_text("handshake-wait: click Allow")
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
     pending = iter([111, None])
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: next(pending, None))
@@ -1294,7 +1294,7 @@ def test_permission_blocked_exit_is_not_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
     monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
     monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: None)
@@ -1329,7 +1329,7 @@ def test_cold_spawn_publishes_child_before_releasing_lock(tmp_path, monkeypatch)
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
     monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
     monkeypatch.setattr(admin_mod, "_is_daemon_process", lambda pid: pid == 4321)
