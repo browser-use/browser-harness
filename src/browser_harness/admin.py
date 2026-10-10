@@ -346,9 +346,11 @@ def _chrome_not_running(msg):
     return "chrome-not-running" in (msg or "").lower()
 
 
-def _is_local_chrome_mode(env=None):
-    """True when the daemon discovers a local Chrome instead of a remote CDP WS."""
+def _is_local_chrome_mode(env=None, name=None):
+    """True when the default daemon discovers local Chrome."""
     env = env or {}
+    if (name or env.get("BU_NAME") or os.environ.get("BU_NAME") or NAME) != "default":
+        return False
     return not (
         env.get("BU_CDP_WS")
         or env.get("BU_CDP_URL")
@@ -523,8 +525,10 @@ def run_doctor_fix_snap():
 
 
 def ensure_daemon(wait=None, name=None, env=None):
-    """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
-    Chrome, and missing Allow on chrome://inspect."""
+    """Idempotent. Self-heals a stale daemon; for the default daemon only,
+    also recovers closed Chrome (launches it), cold Chrome, and a missing
+    Allow on chrome://inspect. Named managed daemons fail closed instead —
+    no local Chrome launch or chrome://inspect recovery."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
@@ -551,7 +555,7 @@ def ensure_daemon(wait=None, name=None, env=None):
             restart_daemon(name)
 
     import subprocess, sys
-    local = _is_local_chrome_mode(env)
+    local = _is_local_chrome_mode(env, name)
     startup_wait, approval_wait = _daemon_wait_windows(wait, local)
     # Remote/CDP daemons retain the normal 60s startup bound. Only a local
     # Chrome handshake displaying the per-connection approval sheet removes a
@@ -559,7 +563,7 @@ def ensure_daemon(wait=None, name=None, env=None):
     launched_browser = None
     opened_inspect = False
     for _ in range(3):
-        e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+        e = {**os.environ, **(env or {}), **({"BU_NAME": name} if name else {})}
         try:
             stderr_sink = open(ipc.log_path(name or NAME), "ab")
         except OSError:
