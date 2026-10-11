@@ -8,3 +8,4 @@
 - At least three cover images are required. Image inputs disappear/reorder after upload; re-query them for each file. Use separate actual project views rather than duplicate images.
 - Save Draft persists the filled form before editing the profile elsewhere. Completing the product fields does not constitute a launch.
 - Submit Product can redirect to `/upgrade?product_id=...`, offering free and paid plans. Join Queue on the free plan can reveal a mandatory five-other-product upvote gate. Inspect this final gate before claiming a free launch was accepted.
+- A public maker/brand profile at `/<username>` can already contain website links while the separate product launch is gated. Verify it anonymously and inspect robots metadata and anchor rel attributes; report the brand profile and unsubmitted product launch as different outcomes.
