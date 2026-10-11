@@ -16,4 +16,5 @@
 - A persisted draft displays a banner stating that it is not scheduled for launch. It is not evidence of publication.
 - **Schedule** opens a date picker. Inspect the displayed local/PT conversion before confirming. The final action is **Confirm scheduled date**.
 - Scheduling is separate from draft creation. Keep the accepted launch date and verify the public page after that date.
+- The public product profile can become anonymously accessible before the scheduled launch. Check its robots metadata separately: an accessible profile can still carry `noindex, nofollow`. Website anchors can use `rel="noreferrer noopener ugc"`. Public accessibility alone does not establish an indexable backlink.
 - Account-age guidance may differ from what the current flow permits. Report the actual enforced state instead of assuming an advertised wait has blocked the account.
