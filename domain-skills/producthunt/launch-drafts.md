@@ -18,3 +18,8 @@
 - Scheduling is separate from draft creation. Keep the accepted launch date and verify the public page after that date.
 - The public product profile can become anonymously accessible before the scheduled launch. Check its robots metadata separately: an accessible profile can still carry `noindex, nofollow`. Website anchors can use `rel="noreferrer noopener ugc"`. Public accessibility alone does not establish an indexable backlink.
 - Account-age guidance may differ from what the current flow permits. Report the actual enforced state instead of assuming an advertised wait has blocked the account.
+
+## Publisher identity
+
+- The public maker/comment-author links can expose the account username even if the display name is initials. Inspect both link text and `href` when the intended identity is a brand.
+- Profile settings are at `/my/details/edit`, with `name`, `username`, `headline` and `about` fields. After saving, reload the product page and verify author links point to the intended username.
