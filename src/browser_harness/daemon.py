@@ -318,7 +318,12 @@ def get_ws_url():
         # Closed browser leaves stale DevToolsActivePort files
         now = time.time()
         if now >= next_liveness_check:
-            if not supported_browser_running():
+            toggle_profiles = remote_debugging_toggle_profiles()
+            if toggle_profiles and platform.system() != "Windows":
+                browser_running = any(browser_running_for_profile(base) for base in toggle_profiles)
+            else:
+                browser_running = supported_browser_running()
+            if not browser_running:
                 raise RuntimeError(
                     "chrome-not-running: no supported Chromium-family browser is running -- start Chrome, then retry"
                 )
