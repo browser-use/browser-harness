@@ -40,19 +40,29 @@ def test_safe_connection_label_removes_credentials_paths_and_queries(url, label)
     assert daemon._safe_connection_label(url) == label
 
 
-def test_get_ws_url_detects_closed_toggle_profile_when_other_browser_is_running(monkeypatch, tmp_path):
+def test_get_ws_url_checks_stale_toggle_profile_when_another_toggle_profile_is_running(monkeypatch, tmp_path):
     monkeypatch.delenv("BU_CDP_WS", raising=False)
     monkeypatch.delenv("BU_CDP_URL", raising=False)
-    monkeypatch.setattr(daemon, "PROFILES", [tmp_path])
-    monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", lambda: [tmp_path])
-    monkeypatch.setattr(daemon, "browser_running_for_profile", lambda _profile: False)
+    closed_profile = tmp_path / "chrome"
+    other_profile = tmp_path / "brave"
+    closed_profile.mkdir()
+    other_profile.mkdir()
+    (closed_profile / "DevToolsActivePort").write_text("9222\n/devtools/browser/stale\n")
+    monkeypatch.setattr(daemon, "PROFILES", [closed_profile, other_profile])
+    monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", lambda: [closed_profile, other_profile])
+    monkeypatch.setattr(daemon, "browser_running_for_profile", lambda profile: profile == other_profile)
     monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
     monkeypatch.setattr(daemon.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(daemon.time, "time", lambda: 100.0)
     monkeypatch.setattr(
+        daemon.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("stale port")),
+    )
+    monkeypatch.setattr(
         daemon.time,
         "sleep",
-        lambda _seconds: pytest.fail("closed toggle profile should trigger recovery immediately"),
+        lambda _seconds: pytest.fail("closed stale profile should trigger recovery immediately"),
     )
 
     with pytest.raises(RuntimeError, match="^chrome-not-running:"):

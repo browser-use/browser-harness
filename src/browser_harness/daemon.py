@@ -291,11 +291,13 @@ def get_ws_url():
     deadline = time.time() + 30
     next_liveness_check = 0.0
     while time.time() < deadline:
+        profiles_with_devtools_file = []
         for base in PROFILES:
             try:
                 active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
             except (FileNotFoundError, NotADirectoryError):
                 continue
+            profiles_with_devtools_file.append(base)
             port = active[0].strip() if active else ""
             ws_path = active[1].strip() if len(active) > 1 else ""
             if not port:
@@ -320,7 +322,11 @@ def get_ws_url():
         if now >= next_liveness_check:
             toggle_profiles = remote_debugging_toggle_profiles()
             if toggle_profiles and platform.system() != "Windows":
-                browser_running = any(browser_running_for_profile(base) for base in toggle_profiles)
+                active_toggle_profiles = [
+                    base for base in toggle_profiles if base in profiles_with_devtools_file
+                ]
+                liveness_profiles = active_toggle_profiles or toggle_profiles
+                browser_running = any(browser_running_for_profile(base) for base in liveness_profiles)
             else:
                 browser_running = supported_browser_running()
             if not browser_running:
