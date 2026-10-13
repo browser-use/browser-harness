@@ -327,9 +327,12 @@ def get_ws_url(timeout=WS_URL_STARTUP_TIMEOUT_SECONDS):
                     "chrome-not-running: no supported Chromium-family browser is running -- start Chrome, then retry"
                 )
             next_liveness_check = now + 2
-        # The browser is running but the port isn't up; waiting 30s
+        # The browser is running but the port isn't up; the grace window lets
+        # a toggling browser finish its remote-debugging prompt. Derive the
+        # cutoff from `timeout` (not a literal 30) so custom startup windows
+        # keep the intended phasing instead of breaking on the first pass.
         grace = TOGGLE_BOOT_GRACE if remote_debugging_toggle_profiles() else NO_TOGGLE_GRACE
-        if now > deadline - 30 + grace:
+        if now > deadline - timeout + grace:
             break
         time.sleep(0.2)
     for probe_port in (9222, 9223):

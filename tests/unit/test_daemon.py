@@ -895,15 +895,23 @@ def test_start_resolves_ws_url_off_event_loop(monkeypatch, tmp_path):
         d = daemon.Daemon()
         ticker_task = asyncio.ensure_future(ticker())
         await d.start()
+        # The 0.2s lookup must not have stalled the loop: ticks must already
+        # have happened while start() was awaiting the worker thread. (Awaiting
+        # ticker_task only after start() returns would let all 20 ticks land
+        # afterwards even with the loop frozen, so count-before-await is the
+        # assertion that actually detects the regression.)
+        ticks_during_lookup = len(ticks)
         await ticker_task
-        return ticks
+        return ticks, ticks_during_lookup
 
     import asyncio as _asyncio
 
-    ticks = _asyncio.run(main())
+    ticks, ticks_during_lookup = _asyncio.run(main())
 
     assert seen["timeout"] == daemon.WS_URL_STARTUP_TIMEOUT_SECONDS
     assert seen["thread"] is not loop_thread, "get_ws_url() ran on the event loop thread"
-    # The 0.2s lookup must not have stalled the loop: the ticker keeps ~1s of
-    # 50ms ticks while start() runs.
+    assert ticks_during_lookup > 0, (
+        "event loop was blocked during the endpoint lookup: "
+        f"{ticks_during_lookup} ticks ran while start() awaited it"
+    )
     assert len(ticks) == 20

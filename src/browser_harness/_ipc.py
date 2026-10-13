@@ -200,14 +200,17 @@ def best_effort_unlink(p, tries=10, delay=0.1):
     errors. On Windows a just-SIGTERM'd daemon can still hold the endpoint
     file handle, so the first unlink() raises PermissionError (WinError 5)
     instead of deleting — retry briefly before giving up (#893)."""
-    for _ in range(tries):
+    for attempt in range(tries):
         try:
             p.unlink()
             return
         except FileNotFoundError:
             return
-        except OSError:  # PermissionError: handle not yet released
-            time.sleep(delay)
+        except PermissionError:  # transient: handle not yet released
+            if attempt < tries - 1:  # no sleep after the final attempt
+                time.sleep(delay)
+        except OSError:
+            return  # not transient; retrying cannot help
 
 
 def cleanup_endpoint(name):  # best-effort; silent if already gone
