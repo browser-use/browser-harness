@@ -1511,23 +1511,19 @@ def test_restart_daemon_unlinks_stale_pid_file(monkeypatch, tmp_path):
 
 def test_restart_daemon_skips_pid_cleanup_when_spawn_lock_held(monkeypatch, tmp_path):
     """If another process is mid-spawn (holds _spawn_lock), restart_daemon()
-    must not unlink the pid file it can't verify ownership of."""
-    import fcntl
+    must not unlink the pid file it can't verify ownership of.
+
+    Uses the production _spawn_lock (msvcrt on Windows, fcntl on POSIX)
+    instead of raw fcntl — the lock file layout is the same file the
+    restart cleanup path contends on."""
     import json
-    import os as _os
 
     live_pid = 4242
     pid_path = _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid)
     pid_path.write_text(json.dumps({"pid": live_pid}))
 
-    lock_path = pid_path.with_suffix(".spawnlock")
-    holder = _os.open(str(lock_path), _os.O_CREAT | _os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(holder, fcntl.LOCK_EX)
+    with admin._spawn_lock("default", timeout=1.0):
         admin.restart_daemon("default")
-    finally:
-        fcntl.flock(holder, fcntl.LOCK_UN)
-        _os.close(holder)
 
     assert pid_path.exists(), (
         "restart_daemon unlinked the pid file while a concurrent spawn "
