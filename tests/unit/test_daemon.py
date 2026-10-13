@@ -845,3 +845,65 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_start_resolves_ws_url_off_event_loop(monkeypatch, tmp_path):
+    """Regression for #893 P0: async start() called the blocking get_ws_url()
+    (up to 30s of 1s sleeps) directly, freezing every concurrent IPC request
+    for the whole wait window. The lookup must run in a worker thread while
+    the loop keeps ticking."""
+    import threading
+    import time as _time
+
+    monkeypatch.setattr(daemon, "LOG", str(tmp_path / "daemon.log"))
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "remote")
+
+    loop_thread = threading.current_thread()
+    seen = {}
+
+    def slow_get_ws_url(timeout=daemon.WS_URL_STARTUP_TIMEOUT_SECONDS):
+        seen["thread"] = threading.current_thread()
+        seen["timeout"] = timeout
+        _time.sleep(0.2)  # simulate a slow endpoint wait
+        return "ws://127.0.0.1:9999/devtools/browser/x"
+
+    monkeypatch.setattr(daemon, "get_ws_url", slow_get_ws_url)
+
+    class FakeCDP:
+        def __init__(self, url):
+            self.url = url
+            self._event_registry = type("R", (), {"handle_event": lambda *a, **k: None})()
+
+        async def start(self):
+            pass
+
+    monkeypatch.setattr(daemon, "CDPClient", FakeCDP)
+
+    async def noop_attach(self, replaces_session=None, enable_domains=True):
+        pass
+
+    monkeypatch.setattr(daemon.Daemon, "attach_first_page", noop_attach)
+
+    async def main():
+        ticks = []
+
+        async def ticker():
+            for _ in range(20):
+                ticks.append(1)
+                await asyncio.sleep(0.05)
+
+        d = daemon.Daemon()
+        ticker_task = asyncio.ensure_future(ticker())
+        await d.start()
+        await ticker_task
+        return ticks
+
+    import asyncio as _asyncio
+
+    ticks = _asyncio.run(main())
+
+    assert seen["timeout"] == daemon.WS_URL_STARTUP_TIMEOUT_SECONDS
+    assert seen["thread"] is not loop_thread, "get_ws_url() ran on the event loop thread"
+    # The 0.2s lookup must not have stalled the loop: the ticker keeps ~1s of
+    # 50ms ticks while start() runs.
+    assert len(ticks) == 20

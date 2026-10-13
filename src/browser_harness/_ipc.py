@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, json, os, re, secrets, socket, subprocess, sys, time
 from pathlib import Path
 
 from . import paths
@@ -195,7 +195,21 @@ def expected_token():
     return _server_token
 
 
+def best_effort_unlink(p, tries=10, delay=0.1):
+    """Remove *p* best-effort: silent if already gone, retry on transient
+    errors. On Windows a just-SIGTERM'd daemon can still hold the endpoint
+    file handle, so the first unlink() raises PermissionError (WinError 5)
+    instead of deleting — retry briefly before giving up (#893)."""
+    for _ in range(tries):
+        try:
+            p.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:  # PermissionError: handle not yet released
+            time.sleep(delay)
+
+
 def cleanup_endpoint(name):  # best-effort; silent if already gone
     p = _sock_path(name) if not IS_WINDOWS else port_path(name)
-    try: p.unlink()
-    except FileNotFoundError: pass
+    best_effort_unlink(p)

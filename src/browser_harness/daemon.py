@@ -121,6 +121,10 @@ BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") 
 # connection and another prompt. Chrome/process death and explicit cancellation
 # still terminate the pending connection.
 LOCAL_HANDSHAKE_TIMEOUT = None
+# How long get_ws_url() keeps polling for a browser endpoint before giving up.
+# Passed explicitly into the off-loop lookup in start() so the startup wait
+# window is one named constant instead of two buried `+ 30` literals.
+WS_URL_STARTUP_TIMEOUT_SECONDS = 30
 # How long get_ws_url() keeps waiting for DevToolsActivePort before giving up
 NO_TOGGLE_GRACE = 3
 TOGGLE_BOOT_GRACE = 12
@@ -261,14 +265,14 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     return None
 
 
-def get_ws_url():
+def get_ws_url(timeout=WS_URL_STARTUP_TIMEOUT_SECONDS):
     if url := os.environ.get("BU_CDP_WS"):
         return url
     if url := os.environ.get("BU_CDP_URL"):
         # HTTP DevTools endpoint (e.g. http://127.0.0.1:9333) — resolve to ws via /json/version.
         # Use this for a dedicated automation Chrome on a non-default profile, which avoids the
         # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
-        deadline = time.time() + 30
+        deadline = time.time() + timeout
         last_err = None
         base_url = url.rstrip("/")
         while time.time() < deadline:
@@ -287,8 +291,8 @@ def get_ws_url():
         hint = "is the dedicated automation Chrome running? Launch it with --remote-debugging-port=<port> --user-data-dir=<dedicated dir>"
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
-        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
-    deadline = time.time() + 30
+        raise RuntimeError(f"BU_CDP_URL={url} unreachable after {timeout:g}s: {last_err} -- {hint}")
+    deadline = time.time() + timeout
     next_liveness_check = 0.0
     while time.time() < deadline:
         for base in PROFILES:
@@ -634,7 +638,10 @@ class Daemon:
 
     async def start(self):
         self.stop = asyncio.Event()
-        url = get_ws_url()
+        # get_ws_url() is a blocking poll (up to WS_URL_STARTUP_TIMEOUT_SECONDS
+        # of 1s sleeps); running it on the loop freezes every concurrent IPC
+        # request for the whole wait window (#893).
+        url = await asyncio.to_thread(get_ws_url, WS_URL_STARTUP_TIMEOUT_SECONDS)
         log(f"connecting to {_safe_connection_label(url)}")
         self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
         if BROWSER_KIND == "local":

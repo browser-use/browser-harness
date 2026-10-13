@@ -810,10 +810,9 @@ def restart_daemon(name=None, require_clean=False):
             except (ProcessLookupError, OSError, SystemError, OverflowError):
                 pass
             ipc.cleanup_endpoint(name)
-            try:
-                os.unlink(pid_path)
-            except FileNotFoundError:
-                pass
+            # Same narrow-except hazard as cleanup_endpoint: a stale handle
+            # raises PermissionError, not FileNotFoundError (#893).
+            ipc.best_effort_unlink(Path(pid_path))
         return
     # Snapshot the daemon's process start-time as a secondary identity check.
     # The IPC socket can disappear before the process exits (e.g. the shutdown
