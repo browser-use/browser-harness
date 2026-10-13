@@ -1583,7 +1583,10 @@ def test_restart_daemon_preserves_successor_endpoint_file(monkeypatch, tmp_path)
 
     endpoint = tmp_path / "daemon.sock"
     endpoint.write_text("old-daemon")
-    monkeypatch.setattr(admin.ipc, "_sock_path", lambda name: endpoint)
+    # Patch endpoint_path (not _sock_path): on Windows the endpoint is the
+    # .port file, so routing through endpoint_path exercises the real cleanup
+    # target on both platforms.
+    monkeypatch.setattr(admin.ipc, "endpoint_path", lambda name: endpoint)
 
     attempts = {"n": 0}
     real_unlink = Path.unlink
