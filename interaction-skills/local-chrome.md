@@ -1,30 +1,26 @@
 # Local Chrome
 
-The default daemon can keep many tabs and visit many sites; browser-harness has
-no per-site, screenshot, or result-count limit that requires a new daemon.
-Chrome memory and page complexity are the practical limits. Reuse matching tabs
-with `list_tabs()` and `switch_tab()`.
+The default daemon holds the one browser connection, so Chrome asks to Allow
+once per Chrome run. It keeps many tabs and many agents at once; browser-harness
+has no per-site, screenshot, or result-count limit that requires a new daemon.
 
-One daemon has one mutable attached/current tab. Many agents can share it when
-their browser operations are serialized: treat local Chrome as one shared
-browser lane while non-browser work continues in parallel. Sequential tab
-switching, input, and screenshot capture are safe. Do not create another local
-daemon merely because several agents exist.
+Agents running at the same time share it safely: each owner (`BH_OWNER`, else
+the agent's session id) has its own tabs, current tab, events and dialogs, and a
+command on another owner's tab fails with `tab-taken`. Sub-agents need their own
+`BH_OWNER`, since they inherit their parent's session id. Do not create another
+local daemon for isolation: it adds another Allow prompt and isolates nothing more.
 
-Two agents that switch tabs and act simultaneously can race, causing one to act
-on or capture the other's tab. For truly simultaneous interactive work, use
-separate remote browsers when Browser Use Cloud authentication is already
-available. Otherwise serialize browser operations through the default local
-daemon. A named local daemon is a last resort when simultaneous isolation is
-required, remote auth is unavailable or unsuitable, and the extra Chrome
-approval prompt is acceptable. It creates another controller and dedicated tab
-in the same local Chrome profile, not another Chrome profile or process.
+Timers, in seconds, set in the daemon's environment:
 
-If the default daemon becomes stale, use its built-in reattachment/recovery
-first. A command timeout, truncated output, site change, closed tab, or new task
-is not a reason to create another daemon. Run `browser-harness --doctor` and
-restart or replace the default daemon only when it is actually dead or cannot
-recover.
+- `BH_OWNER_IDLE` (1800): after this long without a command, an agent's tabs other than its current one are given back (left open; unmarked ones get a clean title), and its current tab can be taken by another agent.
+- `BH_OWNER_FORGET` (86400): after this long idle, the agent's current tab is given back too (detached, clean title, left open).
+- `BH_CLOSE_IDLE_TABS=1`: also close the unmarked tabs the idle agent opened itself. Off by default.
+- `BH_IDLE_EXIT` (1800): an unused named local daemon exits. A `BU_CDP_URL`/`BU_CDP_WS` daemon exits on idle only when this is set for it. The default local daemon, Cloud daemons, and daemons used with `BH_REQUIRE_EXISTING_DAEMON=1` never exit on idle.
+
+A command timeout, truncated output, site change, closed tab, or new task is not
+a reason to restart the daemon. Updating browser-harness does not restart it
+either. Run `browser-harness --doctor` and restart it only when it is actually
+dead or cannot recover.
 
 If the daemon cannot connect, run diagnostics:
 

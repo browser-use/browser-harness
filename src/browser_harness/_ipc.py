@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, json, os, re, secrets, socket, subprocess, sys, time
 from pathlib import Path
 
 from . import paths
@@ -24,6 +24,15 @@ _RUNTIME = paths.ensure_private_dir(Path(BH_RUNTIME_DIR).expanduser().resolve())
 _TMP.mkdir(parents=True, exist_ok=True)
 _RUNTIME.mkdir(parents=True, exist_ok=True)
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+# Bump only when the client/daemon request format changes. A client with the
+# same protocol uses the running daemon as is, whatever its package version.
+PROTOCOL = 2
+
+
+def owner():
+    """Which agent is calling: BH_OWNER, else the host agent's session id, else default.
+    Sub-agents inherit their parent's session id, so they need their own BH_OWNER."""
+    return os.environ.get("BH_OWNER") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or "default"
 
 # Set by serve() on Windows. Daemon's handle() requires every request to carry
 # this token (TCP loopback has no chmod-equivalent so any local process could
@@ -52,6 +61,16 @@ def log_path(name):   return _TMP / f"{_tmp_stem(name)}.log"
 def pid_path(name):   return _RUNTIME / f"{_runtime_stem(name)}.pid"
 def port_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.port"  # Windows-only: holds {"port","token"} JSON
 def _sock_path(name): return _RUNTIME / f"{_runtime_stem(name)}.sock"
+def state_path(name): return _RUNTIME / f"{_runtime_stem(name)}.owners.json"
+
+
+def endpoint_label(env=os.environ):
+    """Which browser an env points at: "local" or the CDP host:port, never credentials."""
+    url = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
+    if not url: return "local"
+    from urllib.parse import urlparse
+    p = urlparse(url)
+    return f"{'127.0.0.1' if p.hostname == 'localhost' else p.hostname}:{p.port or ''}"
 
 
 def _read_port_file(name):
@@ -197,6 +216,23 @@ async def serve(name, handler):
 def expected_token():
     """The token the running daemon will accept, or None on POSIX."""
     return _server_token
+
+
+def sweep_dead_endpoints(min_age=60):
+    """Remove sockets nobody listens on, left behind by daemons that died without cleanup."""
+    if IS_WINDOWS: return
+    for p in _RUNTIME.glob("bu*.sock"):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.2)
+        try:
+            if time.time() - p.stat().st_mtime > min_age:
+                s.connect(str(p))
+        except ConnectionRefusedError:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+        finally:
+            s.close()
 
 
 def cleanup_endpoint(name):  # best-effort; silent if already gone

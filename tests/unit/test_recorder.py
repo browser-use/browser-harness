@@ -94,3 +94,18 @@ def test_frame_error_stays_useful_for_a_message_less_exception(tmp_path, monkeyp
     recorder._capture(tmp_path, "click_at_xy", (10, 20), {})
 
     assert _events(tmp_path)[0]["frame_error"] == "RuntimeError: no detail"
+
+
+def test_each_owner_has_its_own_active_recording(tmp_path, monkeypatch):
+    """Agents sharing the default daemon recorded into each other's recording."""
+    monkeypatch.setattr(recorder, "_recordings_root", lambda: tmp_path)
+    monkeypatch.delenv("BU_NAME", raising=False)
+    markers = {}
+    for owner in ("agent-a", "agent b/..", None):
+        for k in ("BH_OWNER", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"):
+            monkeypatch.delenv(k, raising=False)
+        if owner:
+            monkeypatch.setenv("BH_OWNER", owner)
+        markers[owner] = recorder._marker().name
+
+    assert markers == {"agent-a": ".active-default-agent-a", "agent b/..": ".active-default-agent_b___", None: ".active-default"}

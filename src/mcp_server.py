@@ -38,9 +38,12 @@ from browser_harness.helpers import (
     http_get,
     js,
     list_tabs,
+    mark_tab,
+    name_session,
     new_tab,
     page_info,
     press_key,
+    release_tabs,
     scroll,
     start_recording,
     stop_recording,
@@ -202,7 +205,7 @@ def browser_screenshot(
 
 @_tool
 def browser_list_tabs():
-    """List open page tabs."""
+    """List open tabs with their owner: "you", null (the person's) or "taken" (another agent's)."""
     return list_tabs()
 
 
@@ -214,21 +217,41 @@ def browser_current_tab():
 
 @_tool
 def browser_switch_tab(target: str):
-    """Switch to tab by `targetId` or URL substring. Returns the sessionId."""
+    """Take a tab by `targetId` and make it your current one. Returns the sessionId."""
     return {"sessionId": switch_tab(target)}
 
 
 @_tool
 def browser_close_tab(target: str | None = None):
-    """Close a tab. Without `target`, closes the active tab."""
+    """Close one of your tabs. Without `target`, closes your current tab."""
     close_tab(target)
     return {"ok": True}
 
 
 @_tool
 def browser_ensure_real_tab():
-    """Switch to a real (non-internal) tab if the current one is chrome:// or stale."""
+    """Return your current tab, opening your own background tab if you have none."""
     return ensure_real_tab()
+
+
+@_tool
+def browser_mark_tab(mark: str | None, target: str | None = None):
+    """Mark one of your tabs (default: the current one). "deliverable": it stays open for
+    the person when you are done. "handoff": the person should act in it now. null clears."""
+    return {"mark": mark_tab(target, mark)}
+
+
+@_tool
+def browser_release_tabs():
+    """Call when done: closes the unmarked tabs you opened, gives back tabs you took, keeps marked tabs open."""
+    release_tabs()
+    return {"ok": True}
+
+
+@_tool
+def browser_name_session(name: str):
+    """Name your session; your tabs' titles show it to the person."""
+    return {"name": name_session(name)}
 
 
 @_tool

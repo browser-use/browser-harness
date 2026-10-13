@@ -1,4 +1,27 @@
+import os, shutil, socket, tempfile, time
+
 from browser_harness import _ipc as ipc
+
+
+def test_sweep_removes_only_old_sockets_nobody_listens_on(monkeypatch):
+    runtime = tempfile.mkdtemp(prefix="bh", dir="/tmp")  # AF_UNIX paths must stay short
+    monkeypatch.setattr(ipc, "_RUNTIME", ipc.Path(runtime))
+    socks = {}
+    for name in ("dead", "fresh-dead", "live"):
+        socks[name] = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        socks[name].bind(f"{runtime}/bu-{name}.sock")
+    socks["live"].listen()
+    socks["dead"].close()
+    socks["fresh-dead"].close()
+    old = time.time() - 120
+    for name in ("dead", "live"):
+        os.utime(f"{runtime}/bu-{name}.sock", (old, old))
+    try:
+        ipc.sweep_dead_endpoints()
+        assert sorted(os.listdir(runtime)) == ["bu-fresh-dead.sock", "bu-live.sock"]
+    finally:
+        socks["live"].close()
+        shutil.rmtree(runtime)
 
 
 def test_runtime_stem_uses_name_in_shared_runtime_dir(monkeypatch):

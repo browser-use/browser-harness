@@ -25,37 +25,13 @@ PY
 
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
-- First navigation for a task is `new_tab(url)`, not `goto_url(url)`. The daemon
-  preserves the attached tab across separate CLI invocations, so do not call
-  `new_tab()` again in every script.
-- Keep one working tab per task/site. Before opening another, inspect
-  `current_tab()` and `list_tabs()` and use `switch_tab()` to reuse a matching
-  tab. Do not leave duplicate tabs on the same URL or close tabs you did not
-  create.
-- At task completion, close tabs created for the task that are no longer needed.
-  Keep a tab open if the user needs to see it, it is needed for a known follow-up,
-  or closing it could discard unsaved work or other important state.
-- `new_tab()` and `switch_tab()` attach and move the horse marker without
-  changing Chrome's visible tab. Screenshots and normal CDP input work in the
-  background. Never call `activate_tab(target)` automatically: it brings Chrome
-  to the foreground. Call it only when the user explicitly asks to see or
-  visibly switch to that tab. Do not pair `switch_tab()` with `activate_tab()`.
-- A local daemon is a connection to the whole Chrome instance, not to one site,
-  task, card, or agent. Omit `BU_NAME` and reuse the default daemon for normal
-  sequential local work across websites, tabs, screenshots, and Codex turns.
-  Do not invent per-job names such as `gmail1375` or `slack1371`: every new
-  local daemon opens another browser-level CDP connection and Chrome may show
-  another Allow prompt.
-- Set `BH_TAB_MARKER=0` before starting the daemon to leave page titles unchanged.
-  The horse marker remains enabled by default.
-- A timeout or page that pauses while hidden is not permission to foreground
-  Chrome. Keep using background CDP operations. For a focus-gated page,
-  temporarily call `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`,
-  perform and verify the operation, then disable it in a `finally` block. If
-  background control still cannot work, report that limitation instead of
-  activating the tab. Do not invent a `Runtime.evaluate` scroll replacement or
-  a cross-frame JS walker.
-- The normal local flow attaches to the running Chrome/Chromium CDP endpoint. No browser ids or local profile selection.
+- You drive only your own tabs. Your first command opens a background tab for you, never the person's. First navigation is `new_tab(url)`; your current tab persists across calls.
+- `list_tabs()` shows each tab's `owner`: `"you"`, `None` (the person's; `switch_tab()` takes it) or `"taken"` (another agent's, off limits). Errors such as `tab-closed` or `tab-taken` say what to do next.
+- Parallel agents and sub-agents each prefix commands with their own `BH_OWNER=<name>`; the same owner means shared tabs.
+- `mark_tab(tab, "deliverable")` the tabs the person should keep (`"handoff"`: they should act in it now). Call `release_tabs()` only when the whole task is finished and no follow-up or approval is pending: it closes the unmarked tabs you opened and gives back the ones you took. Nothing closes by itself.
+- Everything runs in the background. Call `activate_tab(tab)` only when the user asks to see a tab: it brings Chrome to the front. For a focus-gated page, wrap the step in `cdp("Emulation.setFocusEmulationEnabled", enabled=True)` and disable it in `finally`; if that fails, report it instead of activating.
+- One daemon per browser. Omit `BU_NAME` for the local Chrome and never invent per-job names: each new local daemon makes Chrome ask to Allow again. `list_browsers()` shows the running ones; `use_browser(name)` switches for the rest of one call only, so use `BU_NAME=<name>` for later calls.
+- Titles of your tabs start with 🐴 plus your `name_session("...")` name; `BH_TAB_MARKER=0` leaves titles unchanged.
 
 ## Page Workflow
 
@@ -63,7 +39,6 @@ PY
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
-- If the current tab is stale or internal, call `ensure_real_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - Proof of work: after you change something on a site, or when you ask for approval, save one screenshot with `capture_screenshot(path)` and cite its path in your reply.
 - File inputs: `upload_file(selector or backendNodeId, path)`. It also works on cloud browsers, where raw `DOM.setFileInputFiles` rejects paths outside the browser's downloads folder.
