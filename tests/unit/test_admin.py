@@ -633,7 +633,7 @@ def test_restart_daemon_does_not_signal_when_daemon_unreachable(monkeypatch, tmp
     monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: None)
     monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
-    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
 
     # Should not raise, should not signal, should still clean up the pid file.
     admin.restart_daemon("default")
@@ -676,7 +676,7 @@ def test_restart_daemon_signals_pid_returned_by_identify_not_pid_file(monkeypatc
             return {"ok": True}
         def pid_path(self, name):
             return pid_path
-        def cleanup_endpoint(self, name):
+        def cleanup_endpoint(self, name, identity=None):
             pass
 
     fake = FakeIPC()
@@ -722,7 +722,7 @@ def test_restart_daemon_sends_shutdown_to_pre_upgrade_daemon_without_pid_in_ping
     monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: ("conn", "tok"))
     monkeypatch.setattr(admin.ipc, "request", fake_request)
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
-    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
 
     admin.restart_daemon("default")
 
@@ -768,7 +768,7 @@ def test_restart_daemon_skips_sigterm_if_pid_was_reused_during_wait(monkeypatch,
     monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: ("conn", "tok"))
     monkeypatch.setattr(admin.ipc, "request", lambda conn, tok, msg: {"ok": True})
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
-    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
     # Speed up the wait loop so the test finishes quickly. The loop polls 75
     # times at 0.2s = 15s; with sleep neutralized it runs in microseconds.
     monkeypatch.setattr(admin.time, "sleep", lambda _s: None)
@@ -816,7 +816,7 @@ def test_restart_daemon_sigterms_via_start_time_fingerprint_when_socket_gone(mon
     monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: ("conn", "tok"))
     monkeypatch.setattr(admin.ipc, "request", lambda conn, tok, msg: {"ok": True})
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
-    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
     monkeypatch.setattr(admin.time, "sleep", lambda _s: None)
 
     admin.restart_daemon("default")
@@ -854,7 +854,7 @@ def test_restart_daemon_skips_sigterm_when_start_time_changed_during_wait(monkey
     monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: ("conn", "tok"))
     monkeypatch.setattr(admin.ipc, "request", lambda conn, tok, msg: {"ok": True})
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
-    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
     monkeypatch.setattr(admin.time, "sleep", lambda _s: None)
 
     admin.restart_daemon("default")
@@ -1366,7 +1366,7 @@ def test_restart_daemon_stops_exact_fingerprinted_pending_approval(tmp_path, mon
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "identify", lambda *a, **k: None)
     monkeypatch.setattr(admin_mod.ipc, "ping", lambda *a, **k: False)
-    monkeypatch.setattr(admin_mod.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin_mod.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
     monkeypatch.setattr(admin_mod, "_log_tail", lambda name=None: "handshake-wait: click Allow")
     monkeypatch.setattr(admin_mod, "_process_start_time", lambda pid: "same-start")
     signals = []
@@ -1386,7 +1386,7 @@ def test_restart_daemon_never_signals_reused_pending_pid(tmp_path, monkeypatch):
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "identify", lambda *a, **k: None)
     monkeypatch.setattr(admin_mod.ipc, "ping", lambda *a, **k: False)
-    monkeypatch.setattr(admin_mod.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin_mod.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
     monkeypatch.setattr(admin_mod, "_log_tail", lambda name=None: "handshake-wait: click Allow")
     monkeypatch.setattr(admin_mod, "_process_start_time", lambda pid: "new-start")
     monkeypatch.setattr(
@@ -1431,7 +1431,7 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "identify", lambda *a, **k: None)
     monkeypatch.setattr(admin_mod.ipc, "ping", lambda *a, **k: False)
-    monkeypatch.setattr(admin_mod.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin_mod.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
     monkeypatch.setattr(admin_mod, "_log_tail", lambda name=None: "handshake-wait: click Allow")
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: 111)
     generations = iter([(111, "old-start"), (222, "new-start")])
@@ -1470,7 +1470,7 @@ def _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid):
     monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: live_pid)
     monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: (_ for _ in ()).throw(ConnectionRefusedError()))
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
-    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name, **kwargs: None)
     return pid_path
 
 
@@ -1482,7 +1482,11 @@ def test_restart_daemon_preserves_live_successor_pid_file(monkeypatch, tmp_path)
     import json
     import os as _os
 
-    live_pid = 4242
+    # The successor record below uses _os.getpid() as its "verifiably alive"
+    # PID, so the daemon PID must never collide with the test process's own:
+    # if pytest itself ran as PID 4242, _own_pid_record() would treat the
+    # successor as the original daemon and unlink its record.
+    live_pid = _os.getpid() + 1
     pid_path = _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid)
     # Successor published its own record; use a PID that is verifiably alive.
     pid_path.write_text(json.dumps({"pid": _os.getpid()}))
@@ -1556,4 +1560,51 @@ def test_restart_daemon_preserves_pid_reused_by_live_process(monkeypatch, tmp_pa
     assert pid_path.exists(), (
         "restart_daemon unlinked a pid record whose start-time fingerprint "
         "no longer matches the killed daemon — PID reuse by a live process"
+    )
+
+
+def test_restart_daemon_preserves_successor_endpoint_file(monkeypatch, tmp_path):
+    """Same race as the pid record, but for the IPC endpoint itself: a
+    concurrent ensure_daemon() may publish a successor's socket/port file
+    while restart_daemon() sleeps in the shutdown/kill loops. The endpoint
+    cleanup must be guarded by the pre-shutdown identity snapshot, not run
+    unconditionally — the endpoint is what keeps the successor discoverable,
+    so an orphaned live endpoint is exactly the bug _own_pid_record() claims
+    to prevent for the pid record.
+    """
+    import os
+    from pathlib import Path
+
+    live_pid = 4242
+    real_cleanup_endpoint = admin.ipc.cleanup_endpoint
+    pid_path = _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid)
+    # The helper stubs cleanup_endpoint; this test needs the real one.
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", real_cleanup_endpoint)
+
+    endpoint = tmp_path / "daemon.sock"
+    endpoint.write_text("old-daemon")
+    monkeypatch.setattr(admin.ipc, "_sock_path", lambda name: endpoint)
+
+    attempts = {"n": 0}
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self):
+        attempts["n"] += 1
+        if attempts["n"] == 1 and self == endpoint:
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self)
+
+    def publish_successor(s):
+        new = tmp_path / "daemon.sock.new"
+        new.write_text("successor-daemon")
+        os.replace(new, endpoint)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(admin.ipc.time, "sleep", publish_successor)
+
+    admin.restart_daemon("default")
+
+    assert endpoint.read_text() == "successor-daemon", (
+        "restart_daemon unlinked a successor daemon's live endpoint file — "
+        "the next ensure_daemon() would orphan it"
     )

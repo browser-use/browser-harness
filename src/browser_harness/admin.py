@@ -843,6 +843,12 @@ def restart_daemon(name=None, require_clean=False):
     # force-kill behavior for slow shutdowns without re-opening the
     # PID-reuse hole — a reused PID would have a different start-time.
     daemon_start = _process_start_time(daemon_pid)
+    # Snapshot the endpoint's file identity before the shutdown/kill loops: a
+    # concurrent ensure_daemon() may publish a successor's endpoint at the
+    # same path while we sleep, and cleanup must not unlink the successor's
+    # live endpoint even when _own_pid_record() preserves its pid record —
+    # the endpoint is what keeps the successor discoverable (#893).
+    endpoint_identity = ipc.file_identity(ipc.endpoint_path(name))
 
     if daemon_alive:
         c = None
@@ -896,7 +902,11 @@ def restart_daemon(name=None, require_clean=False):
                 except (ProcessLookupError, OSError, SystemError, OverflowError):
                     pass
 
-    ipc.cleanup_endpoint(name)
+    # The endpoint cleanup carries the same successor hazard as the pid unlink
+    # below: it is guarded by the pre-shutdown identity snapshot, so a
+    # successor published while we slept in the retry/kill loops keeps its
+    # live endpoint — the endpoint is what keeps it discoverable (#893).
+    ipc.cleanup_endpoint(name, identity=endpoint_identity)
     # Same transient-PermissionError hazard as cleanup_endpoint on Windows:
     # a stale handle raises PermissionError, not FileNotFoundError (#893).
     # Serialize the pid cleanup with publishers and only remove the record of
