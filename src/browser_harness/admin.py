@@ -634,10 +634,8 @@ def ensure_daemon(wait=None, name=None, env=None):
             # successor while this caller was leaving its wait loop.
             with _spawn_lock(name, timeout=1.0) as cleanup_lock:
                 if cleanup_lock.fd is not None and _pid_number(ipc.pid_path(name or NAME)) == pending_pid:
-                    try:
-                        ipc.pid_path(name or NAME).unlink()
-                    except FileNotFoundError:
-                        pass
+                    # Transient PermissionError if a stale handle is still open (#893).
+                    ipc.best_effort_unlink(ipc.pid_path(name or NAME))
             if permission_wait:
                 # A denied/expired approval may already have dropped its sheet.
                 # Never auto-spawn a replacement here: that would immediately
@@ -876,10 +874,9 @@ def restart_daemon(name=None, require_clean=False):
                     pass
 
     ipc.cleanup_endpoint(name)
-    try:
-        os.unlink(pid_path)
-    except FileNotFoundError:
-        pass
+    # Same transient-PermissionError hazard as cleanup_endpoint on Windows:
+    # a stale handle raises PermissionError, not FileNotFoundError (#893).
+    ipc.best_effort_unlink(Path(pid_path))
 
 
 def _browser_use(path, method, body=None):

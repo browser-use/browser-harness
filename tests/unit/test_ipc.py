@@ -181,4 +181,7 @@ def test_cleanup_endpoint_routes_through_best_effort_unlink(monkeypatch):
     seen = {}
     monkeypatch.setattr(ipc, "best_effort_unlink", lambda p: seen.setdefault("path", p))
     ipc.cleanup_endpoint("default")
-    assert seen["path"] == ipc._sock_path("default")
+    # cleanup_endpoint() targets the socket file on POSIX but the port file
+    # on Windows; assert the platform-appropriate path.
+    expected = ipc.port_path("default") if ipc.IS_WINDOWS else ipc._sock_path("default")
+    assert seen["path"] == expected
