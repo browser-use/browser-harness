@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+import asyncio, json, os, platform, socket, sys, threading, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -265,7 +265,27 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     return None
 
 
-def get_ws_url(timeout=WS_URL_STARTUP_TIMEOUT_SECONDS):
+def _poll_cancelled(stop):
+    """True when the worker-thread poll was asked to stop early."""
+    return stop is not None and stop.is_set()
+
+
+def _poll_sleep(stop, seconds):
+    """Sleep between poll attempts; wakes early when *stop* is set so a
+    cancelled Daemon.start() doesn't make asyncio.run() wait out the whole
+    startup timeout (#893)."""
+    if stop is None:
+        time.sleep(seconds)
+    else:
+        stop.wait(seconds)
+
+
+def get_ws_url(timeout=WS_URL_STARTUP_TIMEOUT_SECONDS, stop=None):
+    """Resolve the browser's CDP WebSocket URL, polling up to *timeout*
+    seconds. When *stop* (a threading.Event) is set, the poll aborts
+    promptly with RuntimeError instead of sleeping out the remaining
+    timeout — lets a cancelled Daemon.start() release asyncio.run()
+    without waiting for the worker thread (#893)."""
     if url := os.environ.get("BU_CDP_WS"):
         return url
     if url := os.environ.get("BU_CDP_URL"):
@@ -276,6 +296,8 @@ def get_ws_url(timeout=WS_URL_STARTUP_TIMEOUT_SECONDS):
         last_err = None
         base_url = url.rstrip("/")
         while time.time() < deadline:
+            if _poll_cancelled(stop):
+                raise RuntimeError("get_ws_url() cancelled")
             try:
                 return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
@@ -284,10 +306,10 @@ def get_ws_url(timeout=WS_URL_STARTUP_TIMEOUT_SECONDS):
                     raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
                 if e.code == 404 and (ws := _ws_from_devtools_active_port(url)):
                     return ws
-                time.sleep(1)
+                _poll_sleep(stop, 1)
             except Exception as e:
                 last_err = e
-                time.sleep(1)
+                _poll_sleep(stop, 1)
         hint = "is the dedicated automation Chrome running? Launch it with --remote-debugging-port=<port> --user-data-dir=<dedicated dir>"
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
@@ -295,6 +317,8 @@ def get_ws_url(timeout=WS_URL_STARTUP_TIMEOUT_SECONDS):
     deadline = time.time() + timeout
     next_liveness_check = 0.0
     while time.time() < deadline:
+        if _poll_cancelled(stop):
+            raise RuntimeError("get_ws_url() cancelled")
         for base in PROFILES:
             try:
                 active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
@@ -334,7 +358,7 @@ def get_ws_url(timeout=WS_URL_STARTUP_TIMEOUT_SECONDS):
         grace = TOGGLE_BOOT_GRACE if remote_debugging_toggle_profiles() else NO_TOGGLE_GRACE
         if now > deadline - timeout + grace:
             break
-        time.sleep(0.2)
+        _poll_sleep(stop, 0.2)
     for probe_port in (9222, 9223):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
@@ -643,8 +667,19 @@ class Daemon:
         self.stop = asyncio.Event()
         # get_ws_url() is a blocking poll (up to WS_URL_STARTUP_TIMEOUT_SECONDS
         # of 1s sleeps); running it on the loop freezes every concurrent IPC
-        # request for the whole wait window (#893).
-        url = await asyncio.to_thread(get_ws_url, WS_URL_STARTUP_TIMEOUT_SECONDS)
+        # request for the whole wait window (#893). Cancelling this await does
+        # not stop the worker thread — asyncio.run() would then wait for the
+        # executor before exiting, delaying Ctrl-C by the remaining startup
+        # timeout when BU_CDP_URL is unreachable — so signal the worker to
+        # abort its poll cooperatively.
+        poll_stop = threading.Event()
+        try:
+            url = await asyncio.to_thread(
+                get_ws_url, WS_URL_STARTUP_TIMEOUT_SECONDS, stop=poll_stop
+            )
+        except asyncio.CancelledError:
+            poll_stop.set()
+            raise
         log(f"connecting to {_safe_connection_label(url)}")
         self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
         if BROWSER_KIND == "local":
