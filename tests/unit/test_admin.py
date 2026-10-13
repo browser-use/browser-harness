@@ -845,7 +845,9 @@ def test_restart_daemon_skips_sigterm_when_start_time_changed_during_wait(monkey
     identify_responses = iter([live_pid, None])
     # First start-time read at top of restart_daemon: "ORIGINAL".
     # Second start-time read in the safety gate: "DIFFERENT" — proof of reuse.
-    start_time_responses = iter(["ORIGINAL", "DIFFERENT"])
+    # Third read in the pid-cleanup ownership check (_pid_alive on the stale
+    # "99999" record): None — the bogus PID has no process.
+    start_time_responses = iter(["ORIGINAL", "DIFFERENT", None])
     monkeypatch.setattr(admin, "_process_start_time", lambda pid: next(start_time_responses))
     monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: next(identify_responses))
     monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: True)
@@ -1448,3 +1450,114 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+# --- restart_daemon: don't unlink a successor's pid record (cubic round-2) ---
+
+def _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid):
+    """Drive restart_daemon() to the final pid-file cleanup section: the
+    daemon answers identify() with live_pid, refuses the shutdown connection,
+    and its process is already gone (os.kill probe -> ProcessLookupError)."""
+    pid_path = tmp_path / "default.pid"
+
+    def fake_kill(pid, sig):
+        assert pid == live_pid
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "")
+    monkeypatch.setattr(admin.os, "kill", fake_kill)
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: live_pid)
+    monkeypatch.setattr(admin.ipc, "connect", lambda name, timeout: (_ for _ in ()).throw(ConnectionRefusedError()))
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_path)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    return pid_path
+
+
+def test_restart_daemon_preserves_live_successor_pid_file(monkeypatch, tmp_path):
+    """A concurrent ensure_daemon() may publish a healthy successor's pid
+    record while restart_daemon() sleeps in the cleanup retry loops. The
+    pid unlink must verify the record still belongs to the killed daemon
+    before removing it."""
+    import json
+    import os as _os
+
+    live_pid = 4242
+    pid_path = _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid)
+    # Successor published its own record; use a PID that is verifiably alive.
+    pid_path.write_text(json.dumps({"pid": _os.getpid()}))
+
+    admin.restart_daemon("default")
+
+    assert pid_path.exists(), (
+        "restart_daemon unlinked a live successor daemon's pid record — "
+        "the next ensure_daemon() would spawn a duplicate and orphan it"
+    )
+
+
+def test_restart_daemon_unlinks_stale_pid_file(monkeypatch, tmp_path):
+    """A pid record whose process is dead is stale, even when it disagrees
+    with identify() — cleanup proceeds exactly as before."""
+    import json
+
+    live_pid = 4242
+    pid_path = _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid)
+    pid_path.write_text(json.dumps({"pid": live_pid}))
+
+    admin.restart_daemon("default")
+
+    assert not pid_path.exists(), "stale pid record should be cleaned up"
+
+
+def test_restart_daemon_skips_pid_cleanup_when_spawn_lock_held(monkeypatch, tmp_path):
+    """If another process is mid-spawn (holds _spawn_lock), restart_daemon()
+    must not unlink the pid file it can't verify ownership of."""
+    import fcntl
+    import json
+    import os as _os
+
+    live_pid = 4242
+    pid_path = _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid)
+    pid_path.write_text(json.dumps({"pid": live_pid}))
+
+    lock_path = pid_path.with_suffix(".spawnlock")
+    holder = _os.open(str(lock_path), _os.O_CREAT | _os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        admin.restart_daemon("default")
+    finally:
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        _os.close(holder)
+
+    assert pid_path.exists(), (
+        "restart_daemon unlinked the pid file while a concurrent spawn "
+        "held _spawn_lock — cleanup could not be serialized with the publisher"
+    )
+
+
+def test_restart_daemon_preserves_pid_reused_by_live_process(monkeypatch, tmp_path):
+    """Same PID number, live process, but a different start-time fingerprint:
+    the OS reused the killed daemon's PID for an unrelated process (or a
+    successor). The record must be preserved."""
+    import json
+
+    live_pid = 4242
+    pid_path = _restart_to_pid_cleanup(monkeypatch, tmp_path, live_pid)
+    pid_path.write_text(json.dumps({"pid": live_pid}))
+    # daemon_start (snapshotted at kill time) is 1234.5; the live process at
+    # that PID now has a different fingerprint.
+    calls = {"n": 0}
+
+    def fake_fst(pid):
+        calls["n"] += 1
+        return 1234.5 if calls["n"] == 1 else 7777.0
+
+    monkeypatch.setattr(admin, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(admin, "_process_start_time", fake_fst)
+
+    admin.restart_daemon("default")
+
+    assert pid_path.exists(), (
+        "restart_daemon unlinked a pid record whose start-time fingerprint "
+        "no longer matches the killed daemon — PID reuse by a live process"
+    )

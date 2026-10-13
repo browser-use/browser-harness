@@ -219,6 +219,29 @@ def _pid_number(path):
         return None
 
 
+def _pid_alive(pid):
+    """True if a process with *pid* observably exists right now. Implemented
+    via the start-time fingerprint (no signals sent), so it stays honest even
+    when os.kill is stubbed in tests."""
+    return _process_start_time(pid) is not None
+
+
+def _own_pid_record(record_pid, daemon_pid, daemon_start):
+    """True if the pid file record is safe to remove: it is missing, stale
+    (its process is dead), or verifiably the daemon we just killed. A live
+    record that isn't ours means a concurrent ensure_daemon() published a
+    successor — removing it would orphan that daemon."""
+    if record_pid is None or daemon_pid is None:
+        return True  # nothing verifiable to protect / pre-upgrade daemon
+    if not _pid_alive(record_pid):
+        return True  # stale record of a dead process
+    if record_pid != daemon_pid:
+        return False  # live successor
+    # Same PID number but a live process: only ours if the start-time
+    # fingerprint still matches (guards against PID reuse).
+    return daemon_start is None or _process_start_time(record_pid) == daemon_start
+
+
 def _publish_pid(path, pid):
     fingerprint = _process_start_time(pid)
     value = json.dumps({"pid": pid, "started": fingerprint}, sort_keys=True, separators=(",", ":"))
@@ -876,7 +899,15 @@ def restart_daemon(name=None, require_clean=False):
     ipc.cleanup_endpoint(name)
     # Same transient-PermissionError hazard as cleanup_endpoint on Windows:
     # a stale handle raises PermissionError, not FileNotFoundError (#893).
-    ipc.best_effort_unlink(Path(pid_path))
+    # Serialize the pid cleanup with publishers and only remove the record of
+    # the daemon we killed: a concurrent ensure_daemon() may have published a
+    # healthy successor while this caller slept in the retry loops above, and
+    # deleting its pid file would orphan it.
+    with _spawn_lock(name, timeout=1.0) as cleanup_lock:
+        if cleanup_lock.fd is not None and _own_pid_record(
+            _pid_number(Path(pid_path)), daemon_pid, daemon_start
+        ):
+            ipc.best_effort_unlink(Path(pid_path))
 
 
 def _browser_use(path, method, body=None):
