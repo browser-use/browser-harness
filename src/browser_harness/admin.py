@@ -645,6 +645,15 @@ def ensure_daemon(wait=None, name=None, env=None):
                 # subprocess is still alive, so launch-and-retry from here
                 # instead of respawning the same doomed daemon up to the
                 # retry limit. Permission-blocked behavior is untouched.
+                #
+                # Revalidate before signaling: a concurrent ensure_daemon()
+                # caller may have published a healthy successor between the
+                # cleanup lock above and now. An unscoped restart_daemon()
+                # would stop that successor, so rescue only when the endpoint
+                # is gone or still holds the generation we observed.
+                current_pid = _pid_number(ipc.pid_path(name or NAME))
+                if current_pid is not None and current_pid != pending_pid:
+                    continue
                 restart_daemon(name)
                 launched_browser = _launch_browser()
                 if launched_browser is None:
