@@ -1506,7 +1506,7 @@ def test_cold_start_daemon_exit_launches_browser_before_retry(monkeypatch, tmp_p
     monkeypatch.setattr(admin, "_parked_daemon_pid", lambda name: None)
     monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: None)
     monkeypatch.setattr(admin, "_publish_pid", lambda path, pid: None)
-    monkeypatch.setattr(admin, "_pid_number", lambda path: 0)
+    monkeypatch.setattr(admin, "_pid_number", lambda path: None)  # endpoint unlinked
     monkeypatch.setattr(admin, "_pending_pid_record", lambda path: None)
     monkeypatch.setattr(admin, "_cleanup_unattached_browser_launch", lambda obj: None)
     monkeypatch.setattr(admin, "_needs_chrome_permission_popup", lambda msg: False)
@@ -1521,3 +1521,77 @@ def test_cold_start_daemon_exit_launches_browser_before_retry(monkeypatch, tmp_p
 
     assert launched == [1], "cold-start daemon exit must call _launch_browser() exactly once"
     assert restarts, "cold-start daemon exit must restart the daemon before the retry"
+
+
+def test_cold_start_rescue_skipped_when_successor_published(monkeypatch, tmp_path):
+    """Cubic review follow-up: if a concurrent ensure_daemon() caller published
+    a successor after our cleanup lock was released, the cold-start rescue must
+    NOT call restart_daemon()/_launch_browser() -- an unscoped restart would
+    stop that healthy successor. Instead, adopt it via the normal retry loop."""
+    import types
+    from contextlib import contextmanager
+
+    log_msg = (
+        "fatal: chrome-not-running: no supported Chromium-family browser is "
+        "running -- start Chrome, then retry"
+    )
+
+    class DeadProc:
+        pid = 4242
+
+        def poll(self):
+            return 1
+
+    class FakeIPC:
+        def log_path(self, name):
+            return tmp_path / f"{name or 'default'}.log"
+
+        def pid_path(self, name):
+            return tmp_path / f"{name or 'default'}.pid"
+
+        @staticmethod
+        def spawn_kwargs():
+            return {}
+
+    launched = []
+    restarts = []
+    calls = {"n": 0}
+
+    @contextmanager
+    def fake_spawn_lock(name, timeout=1.0):
+        yield types.SimpleNamespace(fd=999)
+
+    def fake_pid_number(path):
+        # A successor daemon (pid 7777) has been published by another caller.
+        return 7777
+
+    def fake_launch_browser():
+        launched.append(1)
+        return (DeadProc(), "profile")
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env=None: True)
+    monkeypatch.setattr(admin, "_daemon_wait_windows", lambda wait, local: (0.05, None))
+    monkeypatch.setattr(admin, "_log_tail", lambda name=None: log_msg)
+    monkeypatch.setattr(admin, "_launch_browser", fake_launch_browser)
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarts.append(name))
+    monkeypatch.setattr(admin, "_spawn_lock", fake_spawn_lock)
+    monkeypatch.setattr(admin, "_parked_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_publish_pid", lambda path, pid: None)
+    monkeypatch.setattr(admin, "_pid_number", fake_pid_number)
+    monkeypatch.setattr(admin, "_pending_pid_record", lambda path: None)
+    monkeypatch.setattr(admin, "_cleanup_unattached_browser_launch", lambda obj: None)
+    monkeypatch.setattr(admin, "_needs_chrome_permission_popup", lambda msg: False)
+    monkeypatch.setattr(admin, "_needs_chrome_remote_debugging_prompt", lambda msg: False)
+    monkeypatch.setattr(admin, "ipc", FakeIPC())
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: DeadProc())
+
+    import browser_harness.daemon as daemon_mod
+    monkeypatch.setattr(daemon_mod, "supported_browser_running", lambda: True)
+
+    with pytest.raises(RuntimeError, match="didn't come up"):
+        admin.ensure_daemon()
+
+    assert launched == [], "rescue must not launch a browser when a successor owns the endpoint"
+    assert restarts == [], "rescue must not restart when a successor owns the endpoint"
