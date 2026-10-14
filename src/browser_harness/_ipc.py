@@ -31,7 +31,9 @@ _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 # is the boundary.
 _server_token = None
 # Owned scope this process is latched to. A module global rather than an env
-# var so subprocesses never inherit it. No unbind: a closed scope refuses.
+# var so subprocesses never inherit it. Runtime leaves it bound after end so
+# late helper threads still stamp the closed lease (which refuses). Post-run
+# pings pass stamp_scope=False. Tests may call unbind_scope() to reset.
 _scope = None
 
 
@@ -96,11 +98,14 @@ def connect(name, timeout=1.0):
     s.settimeout(timeout); return s, token
 
 
-def request(c, token, req):
+def request(c, token, req, *, stamp_scope=True):
     """One-shot send + recv + parse on an open socket. Injects token on Windows.
-    Returns the parsed JSON response. Caller closes the socket."""
+    Returns the parsed JSON response. Caller closes the socket.
+
+    stamp_scope=False skips the process latch (post-run identity pings that must
+    reach the daemon after the owned lease has ended but the latch remains)."""
     if token: req = {**req, "token": token}
-    if _scope is not None: req = {**req, "scope": _scope}
+    if stamp_scope and _scope is not None: req = {**req, "scope": _scope}
     c.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
@@ -118,6 +123,7 @@ def bind_scope(scope_id):
 
 
 def unbind_scope():
+    """Clear the process latch. Runtime never calls this; tests reset between cases."""
     global _scope
     _scope = None
 

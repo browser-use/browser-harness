@@ -505,13 +505,20 @@ def test_owned_target_sys_exit_survives_cleanup_failure_and_reports_it(monkeypat
         "browser-harness: owned target cleanup failed: daemon 'default' is not the one that opened the scope\n")
 
 
-def test_owned_target_unbinds_so_post_run_ping_reaches_the_daemon(monkeypatch):
+def test_owned_target_keeps_scope_bound_and_post_run_ping_is_unscoped(monkeypatch):
     wire = _OwnedDaemonWire(monkeypatch)
 
     _run_owned(monkeypatch, "print('body ran')")
 
+    assert _ipc.scope_bound()
     assert run.daemon_browser_kind() == daemon.BROWSER_KIND
     assert wire.log()[-1] == ("ping", False)
+    # Late helper-style CDP still stamps the closed lease (refused), never unscoped.
+    c, token = _ipc.connect("default")
+    closed = _ipc.request(c, token, {"method": "Target.getTargets", "params": {}})
+    c.close()
+    assert closed == {"error": "owned-scope: scope-closed"}
+    assert wire.log()[-1] == ("Target.getTargets", True)
 
 
 def test_owned_target_body_error_keeps_traceback_and_still_ends(monkeypatch):

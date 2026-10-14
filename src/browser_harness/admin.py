@@ -381,7 +381,7 @@ def daemon_browser_kind(name=None):
     c = None
     try:
         c, token = ipc.connect(name or NAME, timeout=1.0)
-        response = ipc.request(c, token, {"meta": "ping"})
+        response = ipc.request(c, token, {"meta": "ping"}, stamp_scope=False)
         kind = response.get("browser_kind") if isinstance(response, dict) else None
         return kind if kind in {"cloud", "cdp", "local"} else None
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, ValueError):
@@ -792,8 +792,6 @@ def open_owned_target(name=None):
             if body_error is None:
                 raise
             body_error.add_note(f"browser-harness: {cleanup_error}")
-        finally:
-            ipc.unbind_scope()
 
 
 def stop_remote_daemon(name="remote"):

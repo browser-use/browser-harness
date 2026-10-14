@@ -155,6 +155,28 @@ def test_failed_enable_cancels_sibling_enables_before_disposing():
     ]
 
 
+def test_cancelled_provisioning_disposes_partial_context_then_reraises():
+    browser = RecordingBrowser(stall={"Network.enable"})
+    table = ScopeTable(browser.send_raw, PING)
+
+    async def run():
+        task = asyncio.create_task(table.begin())
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if any(m == "Network.enable" for m, _, _ in browser.sent):
+                break
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    assert ("Target.disposeBrowserContext", {"browserContextId": "ctx-1"}, None) in browser.sent
+    assert table._open == {}
+    browser.stall.clear()
+    assert "owned_target" in asyncio.run(table.begin())
+
+
 def test_stalled_provisioning_times_out_disposes_and_frees_the_table(monkeypatch):
     monkeypatch.setattr(owned_scope, "PROVISION_TIMEOUT_S", 0.05)
     browser = RecordingBrowser(stall={"Target.createTarget"})

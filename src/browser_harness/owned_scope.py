@@ -170,7 +170,7 @@ class ScopeTable:
                             task.cancel()
                         await asyncio.gather(*enables, return_exceptions=True)
                         raise
-            except Exception as e:
+            except BaseException as e:
                 if scope_id is not None:
                     self._open.pop(scope_id, None)
                 if context_id is not None:
@@ -181,6 +181,8 @@ class ScopeTable:
                         )
                     except Exception:
                         pass
+                if not isinstance(e, Exception):
+                    raise
                 if isinstance(e, TimeoutError):
                     return {"error": "owned target provisioning timed out"}
                 return {"error": str(e) or type(e).__name__}
