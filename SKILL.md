@@ -258,6 +258,13 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - Trusted orchestrators that already provisioned an exact named daemon can set
   `BH_REQUIRE_EXISTING_DAEMON=1`. Each CLI call then health-checks and reuses
   that daemon or fails closed; it never auto-starts or discovers another Chrome.
+- `BH_OWNED_TARGET=1` runs one CLI call on a target that call creates for
+  itself, in a fresh browser context on an existing daemon. It never spawns a
+  daemon and never lists other targets. Helpers see exactly one tab: the first
+  `new_tab(url)` navigates it, and `list_tabs()`, `switch_tab()`, a second tab,
+  and `Storage.*` raise `RuntimeError("owned-scope: <reason>")`. The context is
+  disposed on exit, even if the script raised. Older daemons need a restart to
+  gain the capability.
 - Core helpers stay short. Put task-specific helper additions in `$BH_AGENT_WORKSPACE/agent_helpers.py`.
 
 ## Gotchas
