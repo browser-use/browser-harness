@@ -117,6 +117,11 @@ def bind_scope(scope_id):
     _scope = scope_id
 
 
+def unbind_scope():
+    global _scope
+    _scope = None
+
+
 def scope_bound():
     return _scope is not None
 

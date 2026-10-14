@@ -403,6 +403,10 @@ def _run(args):
         except OwnedTargetError as e:
             print(f"browser-harness: {e}", file=sys.stderr)
             sys.exit(1)
+        except SystemExit as e:
+            for note in getattr(e, "__notes__", ()):
+                print(note, file=sys.stderr)
+            raise
         return
     if not cloud_admin:
         require_existing = os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"

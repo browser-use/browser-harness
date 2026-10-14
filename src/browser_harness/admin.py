@@ -782,7 +782,7 @@ def open_owned_target(name=None):
     body_error = None
     try:
         yield lease
-    except Exception as e:
+    except BaseException as e:
         body_error = e
         raise
     finally:
@@ -792,6 +792,8 @@ def open_owned_target(name=None):
             if body_error is None:
                 raise
             body_error.add_note(f"browser-harness: {cleanup_error}")
+        finally:
+            ipc.unbind_scope()
 
 
 def stop_remote_daemon(name="remote"):

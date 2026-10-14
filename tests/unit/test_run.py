@@ -491,6 +491,29 @@ def test_owned_target_cleanup_skips_dispose_when_daemon_pid_changed(monkeypatch,
     assert "Target.disposeBrowserContext" not in wire.cdp_methods()
 
 
+def test_owned_target_sys_exit_survives_cleanup_failure_and_reports_it(monkeypatch, capsys):
+    _OwnedDaemonWire(
+        monkeypatch,
+        ping_override=lambda req: {"pong": True, "pid": os.getpid() + 1} if "scope" in req else None,
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        _run_owned(monkeypatch, "import sys; sys.exit(3)")
+
+    assert exc.value.code == 3
+    assert capsys.readouterr().err == (
+        "browser-harness: owned target cleanup failed: daemon 'default' is not the one that opened the scope\n")
+
+
+def test_owned_target_unbinds_so_post_run_ping_reaches_the_daemon(monkeypatch):
+    wire = _OwnedDaemonWire(monkeypatch)
+
+    _run_owned(monkeypatch, "print('body ran')")
+
+    assert run.daemon_browser_kind() == daemon.BROWSER_KIND
+    assert wire.log()[-1] == ("ping", False)
+
+
 def test_owned_target_body_error_keeps_traceback_and_still_ends(monkeypatch):
     wire = _OwnedDaemonWire(monkeypatch)
 
