@@ -638,6 +638,25 @@ def ensure_daemon(wait=None, name=None, env=None):
                         ipc.pid_path(name or NAME).unlink()
                     except FileNotFoundError:
                         pass
+            if launched_browser is None and _chrome_not_running(msg):
+                # Cold start (#786): the daemon exited on its first liveness
+                # check because zero supported browser processes exist. The
+                # chrome-not-running rescue below only fires while the daemon
+                # subprocess is still alive, so launch-and-retry from here
+                # instead of respawning the same doomed daemon up to the
+                # retry limit. Permission-blocked behavior is untouched.
+                restart_daemon(name)
+                launched_browser = _launch_browser()
+                if launched_browser is None:
+                    raise RuntimeError(
+                        "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+                    )
+                print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
+                from .daemon import supported_browser_running
+                boot_deadline = time.time() + 15
+                while time.time() < boot_deadline and not supported_browser_running():
+                    time.sleep(0.3)
+                continue
             if permission_wait:
                 # A denied/expired approval may already have dropped its sheet.
                 # Never auto-spawn a replacement here: that would immediately
