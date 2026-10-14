@@ -7,11 +7,13 @@ import subprocess
 import sys
 import time
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .owned_scope import OWNED_CAPABILITY, PROTOCOL as OWNED_PROTOCOL, parse_scope_id
 
 
 def _process_start_time(pid):
@@ -728,6 +730,68 @@ def require_existing_daemon(name=None):
         raise RuntimeError(f"required daemon {daemon_name!r} is unhealthy: {exc}") from exc
     if not isinstance(resp, dict) or "result" not in resp:
         raise RuntimeError(f"required daemon {daemon_name!r} failed its CDP health check")
+
+
+class OwnedTargetError(RuntimeError):
+    """Owned-target preflight or cleanup failure. The script body never raises it."""
+
+
+def _owned_request(name, req):
+    s, token = ipc.connect(name, timeout=10.0)
+    try:
+        resp = ipc.request(s, token, req)
+    finally:
+        s.close()
+    return resp if isinstance(resp, dict) else {"error": f"malformed daemon reply {resp!r}"}
+
+
+def _end_owned_target(name, pid):
+    after = ipc.ping_status(name)
+    if after is None or after.get("pid") != pid:
+        raise OwnedTargetError(f"owned target cleanup failed: daemon {name!r} is not the one that opened the scope")
+    try:
+        resp = _owned_request(name, {"meta": "end_owned_target"})
+    except (OSError, ValueError) as e:
+        raise OwnedTargetError(f"owned target cleanup failed: {e}") from e
+    if resp.get("ok") is not True:
+        raise OwnedTargetError(f"owned target cleanup failed: {resp.get('error') or resp}")
+
+
+@contextmanager
+def open_owned_target(name=None):
+    """Open one owned scope on an existing daemon, bind this process, always end it.
+
+    Ping-only preflight: never spawns, restarts, or enumerates targets. Cleanup
+    disposes the scope only when a fresh ping shows the daemon pid that opened it.
+    """
+    daemon_name = name or NAME
+    status = ipc.ping_status(daemon_name)
+    if status is None:
+        raise OwnedTargetError(f"required daemon {daemon_name!r} is not running")
+    if OWNED_CAPABILITY not in (status.get("capabilities") or ()):
+        raise OwnedTargetError(f"daemon {daemon_name!r} does not support owned targets; restart it on this version")
+    try:
+        resp = _owned_request(daemon_name, {"meta": "begin_owned_target"})
+    except (OSError, ValueError) as e:
+        raise OwnedTargetError(f"could not open owned target: {e}") from e
+    lease = resp.get("owned_target")
+    if not isinstance(lease, dict) or lease.get("protocol") != OWNED_PROTOCOL \
+            or parse_scope_id(lease.get("scope_id")) is None:
+        raise OwnedTargetError(f"could not open owned target: {resp.get('error') or resp}")
+    ipc.bind_scope(lease["scope_id"])
+    body_error = None
+    try:
+        yield lease
+    except Exception as e:
+        body_error = e
+        raise
+    finally:
+        try:
+            _end_owned_target(daemon_name, status.get("pid"))
+        except OwnedTargetError as cleanup_error:
+            if body_error is None:
+                raise
+            body_error.add_note(f"browser-harness: {cleanup_error}")
 
 
 def stop_remote_daemon(name="remote"):
