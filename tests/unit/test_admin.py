@@ -1527,7 +1527,8 @@ def test_cold_start_rescue_skipped_when_successor_published(monkeypatch, tmp_pat
     """Cubic review follow-up: if a concurrent ensure_daemon() caller published
     a successor after our cleanup lock was released, the cold-start rescue must
     NOT call restart_daemon()/_launch_browser() -- an unscoped restart would
-    stop that healthy successor. Instead, adopt it via the normal retry loop."""
+    stop that healthy successor. Instead, the retry loop must adopt the live
+    successor and ensure_daemon() must return normally."""
     import types
     from contextlib import contextmanager
 
@@ -1555,7 +1556,6 @@ def test_cold_start_rescue_skipped_when_successor_published(monkeypatch, tmp_pat
 
     launched = []
     restarts = []
-    calls = {"n": 0}
 
     @contextmanager
     def fake_spawn_lock(name, timeout=1.0):
@@ -1569,7 +1569,17 @@ def test_cold_start_rescue_skipped_when_successor_published(monkeypatch, tmp_pat
         launched.append(1)
         return (DeadProc(), "profile")
 
-    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    probes = {"n": 0}
+
+    def fake_daemon_alive(name=None):
+        # Call order: (1) ensure_daemon() top-of-function probe -> no daemon
+        # yet; (2) loop iteration 1 lock probe -> still none, so we spawn the
+        # doomed daemon; (3) loop iteration 2 lock probe -> the successor
+        # published by the concurrent caller is alive.
+        probes["n"] += 1
+        return probes["n"] >= 3
+
+    monkeypatch.setattr(admin, "daemon_alive", fake_daemon_alive)
     monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env=None: True)
     monkeypatch.setattr(admin, "_daemon_wait_windows", lambda wait, local: (0.05, None))
     monkeypatch.setattr(admin, "_log_tail", lambda name=None: log_msg)
@@ -1590,8 +1600,10 @@ def test_cold_start_rescue_skipped_when_successor_published(monkeypatch, tmp_pat
     import browser_harness.daemon as daemon_mod
     monkeypatch.setattr(daemon_mod, "supported_browser_running", lambda: True)
 
-    with pytest.raises(RuntimeError, match="didn't come up"):
-        admin.ensure_daemon()
+    # The rescue path skips (no launch, no restart), and on the next loop
+    # iteration the live successor is adopted: ensure_daemon() returns.
+    admin.ensure_daemon()
 
+    assert probes["n"] >= 3, "successor must be adopted via the retry loop"
     assert launched == [], "rescue must not launch a browser when a successor owns the endpoint"
     assert restarts == [], "rescue must not restart when a successor owns the endpoint"
