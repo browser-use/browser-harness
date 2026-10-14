@@ -15,7 +15,7 @@ from websockets.asyncio.server import serve as ws_serve
 from websockets.exceptions import ConnectionClosed
 
 CHROME = sys.argv[1] if len(sys.argv) > 1 else "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-CLI = str(Path(sys.executable).with_name("browser-harness"))
+CLI = [sys.executable, "-m", "browser_harness.run"]
 UNRELATED_TITLE = "unrelated-target-7f3a"
 OWNED_URL = "data:text/html,<title>owned-target-page</title>owned"
 
@@ -116,7 +116,7 @@ def main():
         wait_for(lambda: sock.exists(), 20, "daemon socket")
 
         before = len(log)
-        owned = subprocess.run([CLI], input=BODY, env={**env, "BH_OWNED_TARGET": "1"},
+        owned = subprocess.run(CLI, input=BODY, env={**env, "BH_OWNED_TARGET": "1"},
                                capture_output=True, text=True, timeout=60)
         during = log[before:]
         print("owned run rc:", owned.returncode)
@@ -139,7 +139,7 @@ def main():
         assert tabs[unrelated["id"]]["title"] == UNRELATED_TITLE, tabs[unrelated["id"]]["title"]
         assert result["tid"] not in tabs, "owned target survived the run"
 
-        missing = subprocess.run([CLI], input="print('body ran')",
+        missing = subprocess.run(CLI, input="print('body ran')",
                                  env={**env, "BU_NAME": "owned-missing", "BH_OWNED_TARGET": "1",
                                       "BH_RUNTIME_DIR": str(root / "rt-missing")},
                                  capture_output=True, text=True, timeout=30)
