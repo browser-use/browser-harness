@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from browser_harness import owned_scope
 from browser_harness.owned_scope import (
     MAX_OPEN_SCOPES,
     BrowserLevelForOwnedTarget,
@@ -75,15 +76,22 @@ PING = {"pong": True, "pid": 4242, "browser_kind": "local", "capabilities": ["ow
 class RecordingBrowser:
     """send_raw fake. Records every call; replies per method; can fail by method."""
 
-    def __init__(self, fail=None):
+    def __init__(self, fail=None, stall=()):
         self.sent = []
         self.fail = dict(fail or {})
+        self.stall = set(stall)
         self._n = 0
 
     async def send_raw(self, method, params=None, session_id=None):
         self.sent.append((method, params, session_id))
         if method in self.fail:
             raise RuntimeError(self.fail[method])
+        if method in self.stall:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.sent.append(("cancelled", method, session_id))
+                raise
         self._n += 1
         if method == "Target.createBrowserContext":
             return {"browserContextId": f"ctx-{self._n}"}
@@ -132,6 +140,52 @@ def test_begin_failure_disposes_context_and_registers_nothing():
     assert reply == {"error": "Page.enable failed"}
     assert browser.sent[-1] == ("Target.disposeBrowserContext", {"browserContextId": "ctx-1"}, None)
     assert table.absorb_event("Page.loadEventFired", {}, "owned-session-3") is False
+
+
+def test_failed_enable_cancels_sibling_enables_before_disposing():
+    browser = RecordingBrowser(fail={"Page.enable": "Page.enable failed"}, stall={"Network.enable"})
+    table = ScopeTable(browser.send_raw, PING)
+
+    reply = asyncio.run(table.begin())
+
+    assert reply == {"error": "Page.enable failed"}
+    assert browser.sent[-2:] == [
+        ("cancelled", "Network.enable", "owned-session-3"),
+        ("Target.disposeBrowserContext", {"browserContextId": "ctx-1"}, None),
+    ]
+
+
+def test_stalled_provisioning_times_out_disposes_and_frees_the_table(monkeypatch):
+    monkeypatch.setattr(owned_scope, "PROVISION_TIMEOUT_S", 0.05)
+    browser = RecordingBrowser(stall={"Target.createTarget"})
+    table = ScopeTable(browser.send_raw, PING)
+
+    reply = asyncio.run(table.begin())
+    browser.stall.clear()
+    retried = asyncio.run(table.begin())
+
+    assert reply == {"error": "owned target provisioning timed out"}
+    assert browser.sent[1:4] == [
+        ("Target.createTarget", {"url": "about:blank", "background": True, "browserContextId": "ctx-1"}, None),
+        ("cancelled", "Target.createTarget", None),
+        ("Target.disposeBrowserContext", {"browserContextId": "ctx-1"}, None),
+    ]
+    assert "owned_target" in retried
+
+
+def test_stalled_dispose_times_out_and_keeps_scope_closing_for_retry(monkeypatch):
+    monkeypatch.setattr(owned_scope, "DISPOSE_TIMEOUT_S", 0.05)
+    browser = RecordingBrowser()
+    table = ScopeTable(browser.send_raw, PING)
+    scope = _begin(table)["scope_id"]
+    browser.stall.add("Target.disposeBrowserContext")
+
+    stalled = asyncio.run(table.handle({"scope": scope, "meta": "end_owned_target"}))
+    browser.stall.clear()
+    retried = asyncio.run(table.handle({"scope": scope, "meta": "end_owned_target"}))
+
+    assert stalled == {"error": "dispose failed: timed out"}
+    assert retried == {"ok": True, "closed": "disposed"}
 
 
 def test_begin_refuses_past_capacity_without_cdp():

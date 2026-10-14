@@ -14,6 +14,10 @@ PROTOCOL = 1
 MAX_OPEN_SCOPES = 8
 SCOPE_EVENT_BUF = 500
 ENABLE_TIMEOUT_S = 4.0
+# Provisioning plus dispose stays under the client's 10s IPC socket timeout,
+# so _lock is always released and the caller gets a reply, not a socket error.
+PROVISION_TIMEOUT_S = 6.0
+DISPOSE_TIMEOUT_S = 3.0
 OWNED_CAPABILITY = "owned_target"
 
 ScopeId = NewType("ScopeId", str)
@@ -138,32 +142,47 @@ class ScopeTable:
             context_id = None
             scope_id = None
             try:
-                context_id = (await self._send(
-                    "Target.createBrowserContext", {"disposeOnDetach": True}
-                ))["browserContextId"]
-                target_id = (await self._send(
-                    "Target.createTarget",
-                    {"url": "about:blank", "background": True, "browserContextId": context_id},
-                ))["targetId"]
-                session_id = (await self._send(
-                    "Target.attachToTarget", {"targetId": target_id, "flatten": True}
-                ))["sessionId"]
-                scope_id = ScopeId(secrets.token_hex(16))
-                # Registered before the enables so the first Page/Runtime event
-                # is already absorbed here, never into the daemon's global buffer.
-                self._open[scope_id] = OwnedScope(OwnedTarget(scope_id, context_id, target_id, session_id))
-                await asyncio.gather(*(
-                    asyncio.wait_for(self._send(f"{d}.enable", session_id=session_id), ENABLE_TIMEOUT_S)
-                    for d in ("Page", "DOM", "Runtime", "Network")
-                ))
+                async with asyncio.timeout(PROVISION_TIMEOUT_S):
+                    context_id = (await self._send(
+                        "Target.createBrowserContext", {"disposeOnDetach": True}
+                    ))["browserContextId"]
+                    target_id = (await self._send(
+                        "Target.createTarget",
+                        {"url": "about:blank", "background": True, "browserContextId": context_id},
+                    ))["targetId"]
+                    session_id = (await self._send(
+                        "Target.attachToTarget", {"targetId": target_id, "flatten": True}
+                    ))["sessionId"]
+                    scope_id = ScopeId(secrets.token_hex(16))
+                    # Registered before the enables so the first Page/Runtime event
+                    # is already absorbed here, never into the daemon's global buffer.
+                    self._open[scope_id] = OwnedScope(OwnedTarget(scope_id, context_id, target_id, session_id))
+                    enables = [
+                        asyncio.create_task(asyncio.wait_for(
+                            self._send(f"{d}.enable", session_id=session_id), ENABLE_TIMEOUT_S
+                        ))
+                        for d in ("Page", "DOM", "Runtime", "Network")
+                    ]
+                    try:
+                        await asyncio.gather(*enables)
+                    except BaseException:
+                        for task in enables:
+                            task.cancel()
+                        await asyncio.gather(*enables, return_exceptions=True)
+                        raise
             except Exception as e:
                 if scope_id is not None:
                     self._open.pop(scope_id, None)
                 if context_id is not None:
                     try:
-                        await self._send("Target.disposeBrowserContext", {"browserContextId": context_id})
+                        await asyncio.wait_for(
+                            self._send("Target.disposeBrowserContext", {"browserContextId": context_id}),
+                            DISPOSE_TIMEOUT_S,
+                        )
                     except Exception:
                         pass
+                if isinstance(e, TimeoutError):
+                    return {"error": "owned target provisioning timed out"}
                 return {"error": str(e) or type(e).__name__}
             return {"owned_target": {"protocol": PROTOCOL, "scope_id": scope_id, "target_id": target_id}}
 
@@ -238,7 +257,12 @@ class ScopeTable:
                 return Refusal.UNKNOWN_SCOPE.reply()
             scope.state = ScopeState.CLOSING
             try:
-                await self._send("Target.disposeBrowserContext", {"browserContextId": scope.target.context_id})
+                await asyncio.wait_for(
+                    self._send("Target.disposeBrowserContext", {"browserContextId": scope.target.context_id}),
+                    DISPOSE_TIMEOUT_S,
+                )
+            except TimeoutError:
+                return {"error": "dispose failed: timed out"}
             except Exception as e:
                 return {"error": f"dispose failed: {e}"}
             del self._open[scope_id]
