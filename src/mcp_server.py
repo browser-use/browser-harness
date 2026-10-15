@@ -7,7 +7,7 @@ Run:
     uv run python -m mcp_server
 
 The server starts on stdio and exposes one MCP tool per browser-harness
-helper. Each tool ensures the daemon is running, calls the existing helper,
+helper. Browser tools ensure the daemon is running, call the existing helper,
 and returns JSON text. Helper failures use MCP's tool-error channel.
 """
 import functools
@@ -113,19 +113,23 @@ def _stderr_stdout():
         sys.stdout = saved
 
 
-def _tool(fn):
+def _tool(fn=None, *, requires_browser=True):
     """Wrap a helper so it is exposed as an MCP tool and returns JSON text.
 
-    Ensures the daemon is up, runs the helper, and converts operational failures
+    Ensures the daemon is up when required, runs the helper, and converts operational failures
     (including daemon startup failures) into MCP tool errors. Tool name and
     description are taken from the wrapped function so the schema matches the
     parameter annotations.
     """
 
+    if fn is None:
+        return functools.partial(_tool, requires_browser=requires_browser)
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
-            ensure_daemon()
+            if requires_browser:
+                ensure_daemon()
             with _stderr_stdout():
                 result = fn(*args, **kwargs)
             return _dump(result)
@@ -272,7 +276,7 @@ def browser_upload_file(selector: str, path: str):
     return {"ok": True}
 
 
-@_tool
+@_tool(requires_browser=False)
 def browser_http_get(url: str, timeout: float = 20.0, headers: dict | None = None):
     """HTTP GET `url` (browser-less). Returns the response body. Optional
     `headers` dict for authentication or custom request headers."""
