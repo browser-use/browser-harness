@@ -1,7 +1,7 @@
 import os
 import tempfile
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PIL import Image
@@ -47,6 +47,20 @@ def test_send_keeps_connect_timeout_short_and_sets_response_budget():
 
     connect.assert_called_once_with(helpers.NAME, timeout=helpers.IPC_CONNECT_TIMEOUT_SECONDS)
     assert socket.timeouts == [60.0]
+
+
+def test_send_raises_daemon_error_carrying_wire_class():
+    def send(reply):
+        with patch("browser_harness.helpers.ipc.connect", return_value=(MagicMock(), None)), \
+             patch("browser_harness.helpers.ipc.request", return_value=reply):
+            with pytest.raises(RuntimeError) as info:
+                helpers._send({"meta": "ping"})
+        return info.value
+
+    e = send({"error": "x", "class": "session_stale"})
+    assert isinstance(e, helpers.DaemonError)
+    assert (str(e), e.cls) == ("x", "session_stale")
+    assert send({"error": "x"}).cls == "unknown"
 
 
 def test_screenshot_uses_long_response_timeout_without_forwarding_it_to_cdp(fake_png, tmp_path):
