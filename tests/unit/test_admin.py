@@ -167,6 +167,35 @@ def test_local_chrome_mode_is_false_when_env_provides_remote_cdp():
     assert not admin._is_local_chrome_mode({"BU_CDP_WS": "ws://example.test/devtools/browser/1"})
 
 
+def test_ensure_daemon_spawn_env_lets_explicit_name_win_over_env_bu_name(monkeypatch):
+    """Regression test: ensure_daemon(name="managed", env={"BU_NAME": "default"})
+    must spawn a daemon with BU_NAME=managed, not "default". The env dict was
+    previously merged in after the explicit name, so a caller-supplied
+    BU_NAME in env silently won -- defeating callers, and the fail-closed
+    guard in get_ws_url(), that rely on `name` to say what the spawned
+    daemon's identity actually is."""
+    process = FakeProcess()
+    alive_calls = []
+
+    def fake_daemon_alive(_name):
+        alive_calls.append(_name)
+        return len(alive_calls) > 1
+
+    monkeypatch.setattr(admin, "daemon_alive", fake_daemon_alive)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda _env: True)
+    captured_env = {}
+
+    def fake_popen(*_args, env, **_kwargs):
+        captured_env.update(env)
+        return process
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    admin.ensure_daemon(name="managed", env={"BU_NAME": "default"})
+
+    assert captured_env["BU_NAME"] == "managed"
+
+
 def test_require_existing_daemon_fails_without_spawning(monkeypatch):
     monkeypatch.setattr(admin, "daemon_alive", lambda _name: False)
 
