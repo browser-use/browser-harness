@@ -143,7 +143,7 @@ def browser_new_tab(url: str = "about:blank"):
 
 @_tool
 def browser_goto(url: str):
-    """Navigate the current tab to `url`. Returns the navigation result."""
+    """Navigate to `url`; errors raise. Success and downloads return the CDP navigation result."""
     return goto_url(url)
 
 
