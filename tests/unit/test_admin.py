@@ -252,6 +252,217 @@ def test_stale_websocket_does_not_open_chrome_inspect():
     assert not admin._needs_chrome_remote_debugging_prompt(msg)
 
 
+def test_open_chrome_inspect_uses_running_edge_on_macos(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: (
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge\n"
+        ),
+    )
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+    monkeypatch.setattr(admin, "_mac_app_installed", lambda app: True)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert admin._open_chrome_inspect()
+    assert calls == [
+        ["open", "-a", "Microsoft Edge", "edge://inspect/#remote-debugging"],
+    ]
+
+
+def test_open_chrome_inspect_does_not_substring_match_process_names(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: (
+            "/usr/libexec/searchpartyd\n"
+            "/Applications/Dia.app/Contents/MacOS/Dia\n"
+        ),
+    )
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+    monkeypatch.setattr(admin, "_mac_app_installed", lambda app: True)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert admin._open_chrome_inspect()
+    assert calls[:1] == [
+        ["open", "-a", "Dia", "chrome://inspect/#remote-debugging"],
+    ]
+
+
+def test_open_chrome_inspect_uses_running_brave_on_macos(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: (
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser\n"
+        ),
+    )
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+    monkeypatch.setattr(admin, "_mac_app_installed", lambda app: True)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert admin._open_chrome_inspect()
+    assert calls == [
+        ["open", "-a", "Brave Browser", "chrome://inspect/#remote-debugging"],
+    ]
+
+
+def test_open_chrome_inspect_supports_running_edge_beta_on_macos(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: "/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta\n",
+    )
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+    monkeypatch.setattr(admin, "_mac_app_installed", lambda app: True)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert admin._open_chrome_inspect()
+    assert calls == [
+        ["open", "-a", "Microsoft Edge Beta", "edge://inspect/#remote-debugging"],
+    ]
+
+
+def test_open_chrome_inspect_does_not_fall_back_to_safari_on_macos(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: "Safari\n")
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/open" if command == "open" else None)
+    monkeypatch.setattr(admin, "_mac_app_installed", lambda app: False)
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: pytest.fail("must not shell out once no supported browser is installed"),
+    )
+    monkeypatch.setattr(
+        "webbrowser.open",
+        lambda *args, **kwargs: pytest.fail("macOS must not send chrome:// URLs to the default browser"),
+    )
+
+    assert not admin._open_chrome_inspect()
+
+
+def test_mac_app_installed_finds_app_in_home_applications_without_shelling_out(monkeypatch, tmp_path):
+    (tmp_path / "Applications").mkdir()
+    (tmp_path / "Applications" / "Zzz Fake Browser For Tests.app").mkdir()
+    monkeypatch.setattr(admin.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: pytest.fail("must not shell out when the app is found on disk"),
+    )
+
+    assert admin._mac_app_installed("Zzz Fake Browser For Tests")
+
+
+def test_mac_app_installed_falls_back_to_mdfind(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.Path, "home", lambda: tmp_path)
+
+    class Result:
+        stdout = "/Volumes/External/Zzz Fake Browser For Tests.app\n"
+
+    def fake_run(args, **kwargs):
+        assert args == ["mdfind", "-name", "Zzz Fake Browser For Tests.app"]
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert admin._mac_app_installed("Zzz Fake Browser For Tests")
+
+
+def test_mac_app_installed_returns_false_when_not_found_anywhere(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.Path, "home", lambda: tmp_path)
+
+    class Result:
+        stdout = ""
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Result())
+
+    assert not admin._mac_app_installed("Zzz Fake Browser For Tests")
+
+
+def test_mac_app_installed_survives_unresolvable_home_directory(monkeypatch):
+    def raise_no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(admin.Path, "home", raise_no_home)
+
+    class Result:
+        stdout = "/Applications/Zzz Fake Browser For Tests.app\n"
+
+    def fake_run(args, **kwargs):
+        assert args == ["mdfind", "-name", "Zzz Fake Browser For Tests.app"]
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    # Path.home() raising must not propagate - it should degrade to the
+    # mdfind fallback instead of crashing the whole browser probe loop.
+    assert admin._mac_app_installed("Zzz Fake Browser For Tests")
+
+
+def test_mac_app_installed_survives_permission_error_on_exists(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin.Path, "home", lambda: tmp_path)
+
+    def raise_permission_error(self):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(admin.Path, "exists", raise_permission_error)
+
+    class Result:
+        stdout = "/Applications/Zzz Fake Browser For Tests.app\n"
+
+    def fake_run(args, **kwargs):
+        assert args == ["mdfind", "-name", "Zzz Fake Browser For Tests.app"]
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    # A base dir's .exists() raising PermissionError must not propagate - it
+    # should skip that base and degrade to the mdfind fallback instead of
+    # crashing the whole browser probe loop.
+    assert admin._mac_app_installed("Zzz Fake Browser For Tests")
+
+
 def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", None)  # shared-tmpdir mode
@@ -648,7 +859,6 @@ def test_restart_daemon_does_not_signal_when_daemon_unreachable(monkeypatch, tmp
 def test_restart_daemon_signals_pid_returned_by_identify_not_pid_file(monkeypatch, tmp_path):
     """The PID we signal must come from the live daemon's self-report, never
     from the pid file. If a stale pid file disagrees, the live daemon's PID wins."""
-    import signal
 
     pid_path = tmp_path / "default.pid"
     pid_path.write_text("99999")  # bogus stale value — must be ignored
@@ -869,7 +1079,8 @@ def test_restart_daemon_skips_sigterm_when_start_time_changed_during_wait(monkey
 def test_process_start_time_returns_stable_fingerprint_for_self():
     """The start-time of the current process should be readable on Linux,
     macOS, and Windows, and stable across two reads."""
-    import os as _os, sys
+    import os as _os
+    import sys
     if sys.platform.startswith("linux") or sys.platform == "darwin" or sys.platform == "win32":
         pid = _os.getpid()
         first = admin._process_start_time(pid)
