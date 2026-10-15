@@ -54,6 +54,17 @@ stdio, so any MCP client (Claude Code, Devin, Cursor, etc.) can drive the
 browser without writing a second CDP layer. See [docs/MCP.md](docs/MCP.md) for
 setup and client configuration.
 
+## Browser Use CLI
+
+`browser-harness` is the browser layer. The [Browser Use CLI](https://docs.browser-use.com/open-source/browser-use-cli) is the packaged way to install and run it:
+
+```bash
+uv tool install browser-use
+browser-use skill install
+```
+
+That is one command per agent, and it is the shortest path to giving a chat agent a browser. A Telegram bot, a Slack bot, a cron job, a support inbox: anything that already takes text in and runs a coding agent. [Browser Use Box](https://github.com/browser-use/bux) is that pattern end to end: a $5 VPS, one install script, and you text your agent from Telegram while it drives a real Chrome.
+
 ## Contributing
 
 Bug fixes, documentation improvements, and agent-generated domain skills are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
