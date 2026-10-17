@@ -169,6 +169,57 @@ For bulk scraping, add a 1–2 s delay between requests to be safe.
 
 ---
 
+## Category Listings at Scale: the `Browse` GraphQL Query
+
+Page 2+ of any `/browse/...` or `/search` page comes from a persisted GraphQL query. Calling it yourself returns
+compact JSON (~100–160 KB per call all in, vs a full page load) and exposes filters the URL doesn't.
+Field-tested 2026-10-09/10 on the Food department (`976759`).
+
+### Request
+
+- `GET https://www.walmart.com/orchestra/snb/graphql/Browse/<sha256>/browse?variables=<url-encoded JSON>`.
+  Past ~8 KB of URL, `POST` the same path with body `{"variables": …}`: that works too.
+- The hash is in one of the page's `_next/static/chunks/*.js` files as `name:"Browse",hash:"<64 hex>"` (chunk
+  `74258-*.js` in 2026-10; the number changes with deploys, so search the chunks). After a deploy, an old hash
+  answers `PERSISTED_QUERY_NOT_FOUND`.
+- Variables: start from the loaded page's `__NEXT_DATA__.props.pageProps.initialSearchQueryVariables`. They hold a
+  top-level set plus `fitmentSearchParams` and `searchParams` copies, so set `page`, `ps`, `sort`, `cat_id`,
+  `min_price`/`max_price` and `facet` in all three.
+- Headers the page itself sends (missing the `x-o-*` group fails): `x-apollo-operation-name: Browse`,
+  `x-o-gql-query: query Browse`, `x-o-platform: rweb`, `x-o-platform-version: <runtimeConfig.appVersion>`,
+  `x-o-bu: WALMART-US`, `x-o-mart: B2C`, `x-o-segment: oaoh`, `x-o-ccm: server`, `tenant-id: elh9ie`, `wm_mp: true`,
+  plus per-request correlation ids.
+- Run it as `fetch()` from inside a loaded walmart.com page (same origin, the page's PerimeterX cookies). From a
+  plain HTTP client the same request got only ~3–6 answers per PerimeterX window. The Android app's headers, which
+  work for the product query `ItemById`, got a 412 on every `Browse` call.
+- Set `additionalQueryParams.isMoreOptionsTileEnabled = false`. When it is on, a product's variants fold into one
+  tile and ~15% of a listing never shows.
+
+### What a query returns
+
+- `aggregatedCount` plus up to `ps` results a page. `ps` accepts 40, 48 or 60; 80+ silently falls back to 40.
+  Pages can carry more tiles than `ps` (variants).
+- **~400-result cap**: a result set of up to ~1,000 serves nothing past its ~390th result, whatever
+  `paginationV2.maxPage` says. Pages 1–10 at ps 40 and 1–7 at ps 60 both end there, and the `pap` parameter in
+  `searchResult.debug.sisUrl` shows `ms_max_page_within_rerank: 10`. Bigger result sets page on to 26; 27+ repeat
+  a page and 101+ answer "SIS failed". To enumerate a category, slice it until each query has at most ~380 results.
+- **`aggregatedCount` is not a coverage target**:
+  - About 95% of a slice's count shows up in its pages. Out-of-stock items mostly never do.
+  - Some merchandising shelves carry phantom counts. Food's "Seasonal Grocery" (`976759_1567409`) claimed 1.1M of
+    the department's 1.4M, yet all its slices together showed ~15K distinct items.
+- Sorts seen working: `best_match`, `price_low`, `price_high`, `new`.
+
+### Filters (slicing tools)
+
+- `min_price` / `max_price`: whole dollars only, both bounds inclusive. A decimal bound gives 0 results.
+- `facet: "brand:A||brand:B"` ORs brands. The brand facet in the answer lists only a slice's top 200 brands.
+- The "Departments" facet (`cat_id` values like `976759_976794`) mixes real sub-categories with merchandising
+  shelves that repeat them ("Shop All Candy"). It also omits some real children: collect child ids from the items'
+  own `categoryPathId` (`0:976759:976794:…`) too.
+- A `cat_id` Walmart can't browse answers with its parent's items and count, not an error.
+
+---
+
 ## Product Detail Page
 
 ### URL pattern
@@ -350,6 +401,18 @@ A fixed proxy country alone does not establish matching locations.
 Field-tested 2026-09-26 through the Bright Data Scraping Browser with `-country-il`:
 10 consecutive browse pages in one session all served 95829 / 3081.
 
+### What changes with the store (Food department, field-tested 2026-10)
+
+- An IP-placed session searches a primary store plus 8 nearby ones: `searchResult.debug.sisUrl` carries
+  `stores=<id>&multiStoreIds=<8 ids>`. A proxy's US state-level targeting got the default above (95829 / 3081)
+  instead of a store in that state.
+- Writing the `assortmentStoreId` and `isoLoc` cookies with `document.cookie` from inside the page pinned the store
+  for later requests. Some remote-browser providers reject cookie writes sent over CDP.
+- How much the location matters depends on the department. Across 3 locations, the Food department's total moved
+  ~0.2%. Only the store-assortment departments moved, by 1–28% (alcohol most): dairy & eggs, frozen, produce,
+  meat & seafood, deli, bakery & bread, alcohol, international. Two pinned stores shared only 69–80% of their fresh
+  produce. The rest of Food moved under 0.6%.
+
 ---
 
 ## Anti-Bot: PerimeterX
@@ -372,6 +435,16 @@ if "Robot or human" in html:
 
 If `http_get` starts returning the challenge after a run of successful fetches, switch to the
 browser harness (see below).
+
+
+### In remote browser sessions (field-tested 2026-10)
+
+- About 50–70% of fresh remote-browser sessions landed on "Robot or human?" when loading a browse page (Bright Data
+  Browser API reports it as the CDP event `Captcha.detected`). Its solver took 2–5 min and often failed. Dropping
+  the session and opening a new one (another exit IP) was faster: ~20 s when clean.
+- A 412 on an in-page `fetch()`: reload the page and retry; if the reload is challenged too, drop the session.
+- Block images, fonts and media with `Network.setBlockedURLs`, which keeps the HTTP cache (request interception
+  turns it off). Don't block CSS: without it the challenge stopped getting solved.
 
 ---
 
