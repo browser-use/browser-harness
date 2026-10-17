@@ -50,9 +50,14 @@ Tradeoffs:
 
 Fires when navigating away from a page with unsaved changes (forms, editors, upload pages). The page freezes until the user clicks Leave/Stay.
 
+Chrome does not answer `Page.navigate` while the prompt is open, so `goto_url()` raises a timeout after 5 s. Catch it, then answer the prompt.
+
 ```python
 # Option A: dismiss after navigating (CDP-level, safe)
-goto_url("https://new-url.com")
+try:
+    goto_url("https://new-url.com")
+except TimeoutError:
+    pass  # Page.navigate waits for the open prompt
 try:
     cdp("Page.handleJavaScriptDialog", accept=True)  # click "Leave"
 except:
