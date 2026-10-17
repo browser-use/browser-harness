@@ -1448,3 +1448,84 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+def test_restart_daemon_retries_pid_unlink_on_permission_error(tmp_path, monkeypatch):
+    """Regression for issue #893: restart_daemon must retry os.unlink(pid_path)
+    when a terminating daemon still briefly holds the .pid file handle on Windows."""
+    pid_file = tmp_path / "default.pid"
+    pid_file.write_text("99999")
+    real_unlink = os.unlink
+    attempts = []
+    sleeps = []
+
+    def flaky_unlink(path):
+        attempts.append(path)
+        if len(attempts) < 3:
+            raise PermissionError(5, "Access is denied", str(path))
+        return real_unlink(path)
+
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_file)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.os, "unlink", flaky_unlink)
+    monkeypatch.setattr(admin.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    admin.restart_daemon("default")
+
+    assert len(attempts) == 3
+    assert sleeps == [0.1, 0.1]
+    assert not pid_file.exists()
+
+
+def test_restart_daemon_swallows_persistent_pid_unlink_oserror(tmp_path, monkeypatch):
+    pid_file = tmp_path / "default.pid"
+    pid_file.write_text("99999")
+    attempts = []
+    sleeps = []
+
+    def locked_unlink(path):
+        attempts.append(path)
+        raise PermissionError(5, "Access is denied", str(path))
+
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=5.0: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_file)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin.os, "unlink", locked_unlink)
+    monkeypatch.setattr(admin.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    admin.restart_daemon("default")
+
+    assert len(attempts) == 10
+    assert sleeps == [0.1] * 9
+
+
+def test_restart_daemon_pending_branch_retries_pid_unlink_on_permission_error(tmp_path, monkeypatch):
+    pid_file = tmp_path / "daemon.pid"
+    pid_file.write_text(json.dumps({"pid": 4321, "started": "same-start"}))
+    real_unlink = os.unlink
+    pid_attempts = []
+
+    def flaky_unlink(path):
+        if str(path) == str(pid_file):
+            pid_attempts.append(path)
+            if len(pid_attempts) < 3:
+                raise PermissionError(5, "Access is denied", str(path))
+        return real_unlink(path)
+
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_file)
+    monkeypatch.setattr(admin.ipc, "identify", lambda *a, **k: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda *a, **k: False)
+    monkeypatch.setattr(admin.ipc, "cleanup_endpoint", lambda name: None)
+    monkeypatch.setattr(admin, "_log_tail", lambda name=None: "handshake-wait: click Allow")
+    monkeypatch.setattr(admin, "_process_start_time", lambda pid: "same-start")
+    monkeypatch.setattr(admin.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(admin.os, "unlink", flaky_unlink)
+    monkeypatch.setattr(admin.time, "sleep", lambda _seconds: None)
+
+    admin.restart_daemon("pending")
+
+    assert len(pid_attempts) == 3
+    assert not pid_file.exists()
