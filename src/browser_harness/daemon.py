@@ -437,6 +437,7 @@ class Daemon:
         self._session_replacements = {}
         self.events = deque(maxlen=BUF)
         self.dialog = None
+        self.dialog_session = None
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
@@ -627,7 +628,12 @@ class Daemon:
         self.events.append({"method": method, "params": params, "session_id": session_id})
         if method == "Page.javascriptDialogOpening":
             self.dialog = params
+            self.dialog_session = session_id
         elif method == "Page.javascriptDialogClosed":
+            self.dialog = None
+        elif method == "Target.detachedFromTarget" and params.get("sessionId") == self.dialog_session:
+            # No Closed event comes after the session or its tab is gone, so
+            # page_info() would report this dialog until the daemon restarts.
             self.dialog = None
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
