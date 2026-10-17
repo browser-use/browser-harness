@@ -1007,7 +1007,8 @@ def test_failed_upgrade_tells_a_pip_install_how_to_upgrade(tmp_path, monkeypatch
     assert admin.run_update(yes=True) == 1
     assert "uv tool install --python 3.12 --upgrade --force browser-harness" in capsys.readouterr().err
 
-def test_failed_upgrade_stays_quiet_for_a_uv_managed_install(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("separator", [" ", "\t"])
+def test_failed_upgrade_stays_quiet_for_a_uv_managed_install(tmp_path, monkeypatch, capsys, separator):
     """When uv owns the tool the failure is uv's own (offline, auth), so a pip hint
     would only mislead."""
     import subprocess
@@ -1016,7 +1017,7 @@ def test_failed_upgrade_stays_quiet_for_a_uv_managed_install(tmp_path, monkeypat
 
     def fake_run(command, *args, **kwargs):
         if list(command)[:3] == ["uv", "tool", "list"]:
-            return subprocess.CompletedProcess(command, 0, "browser-harness v0.1.0\n", "")
+            return subprocess.CompletedProcess(command, 0, f"\n browser-harness{separator}v0.1.0\n- bh\n", "")
         return subprocess.CompletedProcess(command, 1, "", "network unreachable")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -1448,3 +1449,116 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+@pytest.mark.parametrize("standalone_also_installed", [False, True])
+@pytest.mark.parametrize("separator", [" ", "\t"])
+def test_update_dependency_install_points_to_owning_tool(
+    tmp_path, monkeypatch, capsys, standalone_also_installed, separator
+):
+    """A dependency install should point users to its owning uv tool."""
+    commands = []
+    tools_dir = tmp_path / "uv-tools"
+    listing = f"\n browser-use{separator}v0.13.10\n- browser-use\n"
+    if standalone_also_installed:
+        listing += "browser-harness v0.1.13\n- browser-harness\n"
+
+    def fake_run(args, **kwargs):
+        commands.append(args)
+
+        if args == ["uv", "tool", "upgrade", "browser-harness"]:
+            return subprocess.CompletedProcess(
+                args, 7, stdout="", stderr="upgrade failed"
+            )
+
+        if args == ["uv", "tool", "list"]:
+            return subprocess.CompletedProcess(
+                args, 0,
+                stdout=listing,
+                stderr="",
+            )
+
+        if args == ["uv", "tool", "dir"]:
+            return subprocess.CompletedProcess(
+                args, 0, stdout=f"{tools_dir}\n", stderr=""
+            )
+
+        raise AssertionError(f"Unexpected command: {args}")
+
+    monkeypatch.setattr(
+        admin, "check_for_update",
+        lambda: ("0.1.9", "0.1.13", True),
+    )
+    monkeypatch.setattr(admin, "_install_mode", lambda: "pypi")
+    monkeypatch.setattr("sys.prefix", str(tools_dir / "browser-use"))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    exit_code = admin.run_update()
+    guidance = capsys.readouterr().err
+
+    assert exit_code == 7
+    assert "uv tool upgrade browser-use" in guidance
+    assert "uv tool install" not in guidance
+    assert [cmd for cmd in commands if cmd[:3] == ["uv", "tool", "upgrade"]] == [
+        ["uv", "tool", "upgrade", "browser-harness"]
+    ]
+
+
+@pytest.mark.parametrize("scenario", [
+    "outside-tools-dir", "nested-environment", "unregistered-owner",
+    "executable-only", "standalone", "empty-dir", "relative-dir",
+    "dir-failure", "dir-unavailable", "list-failure", "list-unavailable",
+])
+def test_failed_update_does_not_guess_a_dependency_owner(tmp_path, monkeypatch, capsys, scenario):
+    """Incomplete or unrelated installation evidence must not suggest an owner upgrade."""
+    tools_dir = tmp_path / "uv-tools"
+    prefix = tools_dir / "browser-use"
+    directory = str(tools_dir)
+    listing = "browser-use v0.13.10\n- browser-use\n"
+    if scenario == "outside-tools-dir":
+        prefix = tmp_path / "project" / "browser-use"
+    elif scenario == "nested-environment":
+        prefix = tools_dir / "browser-use" / ".venv"
+    elif scenario == "standalone":
+        prefix = tools_dir / "browser-harness"
+        listing = "browser-harness v0.1.13\n- browser-harness\n"
+    elif scenario == "unregistered-owner":
+        listing = "browser-use-wrapper v1.0.0\n- wrapper\n"
+    elif scenario == "executable-only":
+        listing = "another-tool v1.0.0\n- browser-use\n"
+    elif scenario == "empty-dir":
+        directory = ""
+    elif scenario == "relative-dir":
+        directory = "uv-tools"
+
+    commands = []
+
+    def fake_run(args, **kwargs):
+        commands.append(args)
+        if args == ["uv", "tool", "upgrade", "browser-harness"]:
+            return subprocess.CompletedProcess(args, 7, "", "upgrade failed")
+        if args == ["uv", "tool", "dir"]:
+            if scenario == "dir-unavailable":
+                raise OSError("cannot run uv")
+            return subprocess.CompletedProcess(args, int(scenario == "dir-failure"), directory, "")
+        if args == ["uv", "tool", "list"]:
+            if scenario == "list-unavailable":
+                raise OSError("cannot run uv")
+            return subprocess.CompletedProcess(args, int(scenario == "list-failure"), listing, "")
+        raise AssertionError(f"Unexpected command: {args}")
+
+    monkeypatch.setattr(admin, "check_for_update", lambda: ("0.1.9", "0.1.13", True))
+    monkeypatch.setattr(admin, "_install_mode", lambda: "pypi")
+    monkeypatch.setattr("sys.prefix", str(prefix))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert admin.run_update() == 7
+    guidance = capsys.readouterr().err
+    assert "Upgrade the owning tool" not in guidance
+    if scenario in {"standalone", "list-failure", "list-unavailable"}:
+        assert guidance == ""
+    else:
+        assert "uv tool install" in guidance
+    assert [cmd for cmd in commands if cmd[:3] == ["uv", "tool", "upgrade"]] == [
+        ["uv", "tool", "upgrade", "browser-harness"]
+    ]
