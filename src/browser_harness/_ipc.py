@@ -162,6 +162,10 @@ def identify(name, timeout=1.0):
         except OSError: pass
 
 
+# One request is one line. asyncio's default 64 KiB cut off file uploads of about 48 KB.
+LINE_LIMIT = 256 << 20
+
+
 async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
     global _server_token
@@ -170,12 +174,12 @@ async def serve(name, handler):
         if os.path.exists(path): os.unlink(path)
         # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
         old_umask = os.umask(0o077)
-        try: server = await asyncio.start_unix_server(handler, path=path)
+        try: server = await asyncio.start_unix_server(handler, path=path, limit=LINE_LIMIT)
         finally: os.umask(old_umask)
         _server_token = None
         async with server: await asyncio.Event().wait()
         return
-    server = await asyncio.start_server(handler, "127.0.0.1", 0)
+    server = await asyncio.start_server(handler, "127.0.0.1", 0, limit=LINE_LIMIT)
     port = server.sockets[0].getsockname()[1]
     _server_token = secrets.token_hex(32)
     pf = port_path(name)

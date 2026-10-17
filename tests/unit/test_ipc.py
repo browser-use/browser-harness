@@ -126,3 +126,39 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
         assert ipc.ping("default", timeout=0.0) is False, (
             f"ping() should require pong is exactly True; got: {resp!r}"
         )
+
+
+def test_a_5_mb_upload_fits_in_one_request(monkeypatch):
+    """The cloud upload fallback sends the file as base64 inside one request line;
+    asyncio's default 64 KiB line limit cut off anything above about 48 KB."""
+    import asyncio, base64, os, shutil, tempfile
+    if ipc.IS_WINDOWS:
+        return
+    runtime = tempfile.mkdtemp(prefix="bh", dir="/tmp")  # AF_UNIX paths must stay short
+    monkeypatch.setattr(ipc, "_RUNTIME", ipc.Path(runtime))
+    payload = base64.b64encode(os.urandom(5 << 20)).decode()
+
+    async def handler(reader, writer):
+        request = ipc.json.loads(await reader.readline())
+        writer.write((ipc.json.dumps({"received": len(request["params"]["arguments"][0]["value"][0][1])}) + "\n").encode())
+        await writer.drain()
+        writer.close()
+
+    def upload():
+        c, token = ipc.connect("t", timeout=5)
+        try:
+            return ipc.request(c, token, {"method": "Runtime.callFunctionOn", "params": {"arguments": [{"value": [["f.pdf", payload, "application/pdf"]]}]}})
+        finally:
+            c.close()
+
+    async def go():
+        serving = asyncio.create_task(ipc.serve("t", handler))
+        await asyncio.sleep(0.2)
+        try:
+            return await asyncio.to_thread(upload)
+        finally:
+            serving.cancel()
+    try:
+        assert asyncio.run(go()) == {"received": len(payload)}
+    finally:
+        shutil.rmtree(runtime)
