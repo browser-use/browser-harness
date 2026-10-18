@@ -44,6 +44,10 @@ DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
 # their IPC socket alive within the caller's existing 90-second process budget.
 SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
 
+# One CLI process only needs to remember its tab. The daemon owns and reuses the
+# CDP session for that target over its single browser-level WebSocket.
+_TARGET_ID = None
+
 
 class _IPCResponseTimeout(TimeoutError):
     pass
@@ -72,12 +76,24 @@ def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
 def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
     return _send(
-        {"method": method, "params": params, "session_id": session_id},
+        {
+            "method": method,
+            "params": params,
+            "session_id": session_id,
+            "target_id": _TARGET_ID,
+        },
         response_timeout=_response_timeout,
     ).get("result", {})
 
 
-def drain_events():  return _send({"meta": "drain_events"})["events"]
+def drain_events():
+    """Drain events for this CLI process's selected tab only."""
+    return _send({"meta": "drain_events", "target_id": _TARGET_ID})["events"]
+
+
+def _set_client_tab(target_id):
+    global _TARGET_ID
+    _TARGET_ID = target_id
 
 
 def _js_snippet(expression, limit=160):
@@ -162,7 +178,10 @@ def page_info():
     If a native dialog (alert/confirm/prompt/beforeunload) is open, returns
     {dialog: {type, message, ...}} instead — the page's JS thread is frozen
     until the dialog is handled (see interaction-skills/dialogs.md)."""
-    dialog = _send({"meta": "pending_dialog"}).get("dialog")
+    dialog = _send({
+        "meta": "pending_dialog",
+        "target_id": _TARGET_ID,
+    }).get("dialog")
     if dialog:
         return {"dialog": dialog}
     expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
@@ -377,7 +396,16 @@ def list_tabs(include_chrome=True):
     return out
 
 def current_tab():
-    r = _send({"meta": "current_tab"})
+    if _TARGET_ID is None:
+        r = _send({"meta": "current_tab"})
+        _set_client_tab(r["targetId"])
+    else:
+        info = cdp("Target.getTargetInfo", targetId=_TARGET_ID)["targetInfo"]
+        r = {
+            "targetId": info["targetId"],
+            "url": info.get("url", ""),
+            "title": info.get("title", ""),
+        }
     return {
         "targetId": r["targetId"],
         "target_id": r["targetId"],
@@ -417,20 +445,21 @@ def switch_tab(target, activate=False):
     target_id = _target_id(target)
     # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
     # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
-    except Exception: pass
+    if _TARGET_ID:
+        try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
+        except Exception: pass
     if activate:
         activate_tab(target_id)
-    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    prepared = _send({"meta": "prepare_target", "target_id": target_id})
+    _set_client_tab(target_id)
     _mark_tab()
-    return sid
+    return prepared["session_id"]
 
 def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
+    if url != "about:blank" and _TARGET_ID is not None:
         try:
             cur = current_tab()
             cur_url = cur.get("url") or ""
@@ -538,10 +567,13 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
     deadline = time.time() + timeout
     last_activity = time.time()
     inflight = set()
-    active_session = _send({"meta": "session"}).get("session_id")
+    active_target = _TARGET_ID
+    active_session = None if active_target else _send({"meta": "session"}).get("session_id")
     while time.time() < deadline:
         for e in drain_events():
-            if e.get("session_id") != active_session:
+            if active_target and e.get("target_id") != active_target:
+                continue
+            if active_session and e.get("session_id") != active_session:
                 continue
             method = e.get("method", "")
             params = e.get("params", {})
