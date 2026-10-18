@@ -639,6 +639,15 @@ class Daemon:
         except asyncio.TimeoutError:
             pass
 
+        try:
+            stop_remote(strict=True)
+        except Exception as e:
+            # Keep this daemon available as a retryable cleanup authority. In
+            # particular, do not let serve() remove its endpoint and PID file
+            # while a billable remote browser may still be running.
+            log(f"CDP disconnected and remote stop failed; keeping daemon for retry: {e}")
+            return
+
         self._shutting_down = True
         self.stop.set()
 

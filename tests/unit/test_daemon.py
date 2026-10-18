@@ -854,9 +854,16 @@ def test_cdp_monitor_stops_daemon_after_handler_closes(monkeypatch):
         d.cdp = type("CDP", (), {})()
         d.cdp._message_handler_task = asyncio.create_task(asyncio.sleep(0))
         monkeypatch.setattr(daemon, "CDP_DISCONNECT_GRACE", 0.01)
+        stop_calls = []
+        monkeypatch.setattr(
+            daemon,
+            "stop_remote",
+            lambda strict=False: stop_calls.append(strict) or True,
+        )
 
         await d._monitor_cdp()
 
+        assert stop_calls == [True]
         assert d.stop.is_set()
         assert d._shutting_down
 
@@ -885,18 +892,65 @@ def test_cdp_monitor_does_not_stop_daemon_while_handler_is_alive(monkeypatch):
 def test_cdp_monitor_yields_to_orderly_shutdown(monkeypatch):
     async def run():
         d = daemon.Daemon()
-        d.stop = asyncio.Event()
+        stopped = asyncio.Event()
+        grace_wait_started = asyncio.Event()
+
+        class _ObservedStop:
+            def is_set(self):
+                return stopped.is_set()
+
+            def set(self):
+                stopped.set()
+
+            async def wait(self):
+                grace_wait_started.set()
+                await stopped.wait()
+
+        d.stop = _ObservedStop()
         d.cdp = type("CDP", (), {})()
         d.cdp._message_handler_task = asyncio.create_task(asyncio.sleep(0))
         monkeypatch.setattr(daemon, "CDP_DISCONNECT_GRACE", 1)
 
         monitor = asyncio.create_task(d._monitor_cdp())
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await grace_wait_started.wait()
         d.stop.set()
         await monitor
 
         assert d.stop.is_set()
         assert not d._shutting_down
+
+    asyncio.run(run())
+
+
+def test_cdp_monitor_keeps_daemon_running_when_remote_stop_fails(monkeypatch):
+    async def run():
+        d = daemon.Daemon()
+        d.stop = asyncio.Event()
+        d.cdp = type("CDP", (), {})()
+        d.cdp._message_handler_task = asyncio.create_task(asyncio.sleep(0))
+        monkeypatch.setattr(daemon, "CDP_DISCONNECT_GRACE", 0)
+        stop_calls = []
+
+        def fail_strict_remote_stop(strict=False):
+            stop_calls.append(strict)
+            assert strict is True
+            if len(stop_calls) == 1:
+                raise RuntimeError("temporary cloud cleanup failure")
+            return True
+
+        monkeypatch.setattr(daemon, "stop_remote", fail_strict_remote_stop)
+
+        await d._monitor_cdp()
+
+        assert stop_calls == [True]
+        assert not d.stop.is_set()
+        assert not d._shutting_down
+
+        result = await d.handle({"meta": "shutdown"})
+
+        assert result == {"ok": True}
+        assert stop_calls == [True, True]
+        assert d.stop.is_set()
+        assert d._shutting_down
 
     asyncio.run(run())
