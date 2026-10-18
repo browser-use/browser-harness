@@ -845,3 +845,58 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_cdp_monitor_stops_daemon_after_handler_closes(monkeypatch):
+    async def run():
+        d = daemon.Daemon()
+        d.stop = asyncio.Event()
+        d.cdp = type("CDP", (), {})()
+        d.cdp._message_handler_task = asyncio.create_task(asyncio.sleep(0))
+        monkeypatch.setattr(daemon, "CDP_DISCONNECT_GRACE", 0.01)
+
+        await d._monitor_cdp()
+
+        assert d.stop.is_set()
+        assert d._shutting_down
+
+    asyncio.run(run())
+
+
+def test_cdp_monitor_does_not_stop_daemon_while_handler_is_alive(monkeypatch):
+    async def run():
+        d = daemon.Daemon()
+        d.stop = asyncio.Event()
+        d.cdp = type("CDP", (), {})()
+        d.cdp._message_handler_task = asyncio.create_task(asyncio.sleep(0.05))
+        monkeypatch.setattr(daemon, "CDP_DISCONNECT_GRACE", 0.01)
+
+        monitor = asyncio.create_task(d._monitor_cdp())
+        await asyncio.sleep(0)
+        assert not d.stop.is_set()
+        await d.cdp._message_handler_task
+        await monitor
+
+        assert d.stop.is_set()
+
+    asyncio.run(run())
+
+
+def test_cdp_monitor_yields_to_orderly_shutdown(monkeypatch):
+    async def run():
+        d = daemon.Daemon()
+        d.stop = asyncio.Event()
+        d.cdp = type("CDP", (), {})()
+        d.cdp._message_handler_task = asyncio.create_task(asyncio.sleep(0))
+        monkeypatch.setattr(daemon, "CDP_DISCONNECT_GRACE", 1)
+
+        monitor = asyncio.create_task(d._monitor_cdp())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        d.stop.set()
+        await monitor
+
+        assert d.stop.is_set()
+        assert not d._shutting_down
+
+    asyncio.run(run())
