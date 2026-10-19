@@ -21,6 +21,14 @@ A working request with `limitPerAssociationType: 100` can return capped activity
 
 A contact may have multiple company associations. Inspect the associated-object results for the `Primary` label rather than choosing the first company in an unordered list.
 
+## Internal sales recommendations
+
+Association summaries may include object type `0-113`, labeled Sales recommendation (`SALES_TASK`). It can be absent from connector schema discovery. These are generated suggestions, such as meeting preparation or reminder recommendations, rather than ordinary user-created tasks.
+
+The app's `AssociatedObjectsGatewayRpc/getAssociatedObjectsPaged` can read these links using the source record type/id, `toObjectTypeId: "0-113"`, `propertyNames`, `pageLength` and the returned `offset` cursor. Obtain definitions from `/api/properties/v4/groups/0-113/properties?portalId={portalId}` with the same CSRF header. Request all returned property names and paginate until `hasMore` is false. A recommendation may appear through several linked records; deduplicate by object ID, but preserve association labels per source record because those labels differ by relationship.
+
+For archival migrations, retain the recommendation properties and source links without converting generated suggestions into actionable tasks or starting automations.
+
 ## Original attachments
 
 `/api/filemanager/api/v2/files/{id}` returns file metadata; `/api/filemanager/api/v2/files/{id}/signed-url` returns a temporary download URL. Download the original bytes, compare the size with source metadata and record a checksum. Use temporary URLs internally; they are unsuitable as permanent migration links.
