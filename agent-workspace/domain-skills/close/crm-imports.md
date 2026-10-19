@@ -8,6 +8,7 @@ Prefer a working connector or API key. The logged-in `app.close.com` tab can cal
 - POST/PUT requests need `organization_id` in the JSON body; a query parameter alone did not satisfy creation requests.
 - Read the `_csrf_token` cookie inside the page, decode it, and pass it as `X-CSRFToken`. Never print or export cookies.
 - Use an explicit CDP session for the existing Close tab when another site is attached as the default harness tab.
+- Existing tabs can cache pipeline/status metadata. If a correctly assigned opportunity renders “Select status,” reload the page and verify the label before changing any records.
 - Read existing pipelines, statuses, fields and records before creating them. Journal returned IDs and reconcile an interrupted request before retrying.
 
 ## Historical email imports
@@ -22,7 +23,7 @@ Received emails require a sender. When the source lacks one, do not invent it: p
 
 ## Notes and files
 
-Note rich text is restricted XHTML. `<body>` cannot directly contain non-whitespace text or inline elements; wrap them in a paragraph. Arbitrary source HTML must be normalized, with the original retained separately.
+Note rich text is restricted XHTML. `<body>` cannot directly contain non-whitespace text or inline elements; wrap them in a paragraph. Arbitrary source HTML must be normalized, with the original retained separately. Treat plain meeting text as text: angle-bracketed URLs can otherwise be parsed as unknown tags. Use an HTML-aware parser to repair malformed nesting and ensure void elements such as `br` have no child content.
 
 For files:
 
