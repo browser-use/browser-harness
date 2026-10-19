@@ -19,6 +19,8 @@ Observed creation behavior for `sent`: `date_sent` and the returned `activity_at
 
 `message_ids` was returned but ignored when supplied on creation. `date_sent` was also ignored on update. Do not claim those read-only fields were preserved natively; retain original message IDs and source metadata in an archive. Match existing synced mail by message ID when available, with exact sender/recipient/subject/timestamp matching as a fallback. Never deduplicate on subject alone.
 
+While email sync is active, a previously imported activity ID can become unavailable while a matching RFC message remains under another ID. Reconcile against current messages on the expected lead before recreating anything. Verify identity and content before removing only migration-created duplicates, and retain exact source attachment versions when synced files have different names or sizes.
+
 Received emails require a sender. When the source lacks one, do not invent it: preserve the message as an explicitly labeled historical note, including recipients, content, source ID, date and attachments.
 
 ## Notes and files
