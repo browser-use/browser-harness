@@ -41,7 +41,12 @@ worked). Use the value Walmart sets for your IP rather than a hard-coded one.
 ```python
 import json, re, gzip, urllib.request
 
-_isoloc = None  # e.g. "US_CA_t3", set by Walmart on the first response
+_isoloc = None  # e.g. "US_CA_t3", set by Walmart on the first response from this IP
+
+def reset_walmart_session():
+    """Call after switching to a new IP or proxy session: isoLoc follows the IP."""
+    global _isoloc
+    _isoloc = None
 
 def _get(url, cookie=None):
     headers = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
@@ -58,7 +63,8 @@ def fetch_walmart(url):
     Fetch any walmart.com page.
     Returns decoded HTML string.
     Raises RuntimeError if Walmart redirects to /blocked (PerimeterX);
-    retry those from a fresh IP. Sends only the isoLoc cookie.
+    retry those from a fresh IP after reset_walmart_session().
+    Sends only the isoLoc cookie.
     """
     global _isoloc
     if _isoloc is None:
@@ -188,7 +194,8 @@ for page in range(1, min(max_page, 10) + 1):
 Walmart serves at most **10 pages per query**. From page 11 on, `itemStacks` is empty and
 `aggregatedCount` is 0, even when `paginationV2.maxPage` is higher (seen 2026-10-20:
 `maxPage=13`, 4,866 results, pages 11 and 12 empty in a real browser too). Split larger
-result sets with `sort` or price filters.
+result sets with disjoint filters such as non-overlapping price ranges, and deduplicate by
+`usItemId`. A different `sort` only reorders the same capped set.
 
 Page responses average ~2.5 s each. No rate-limiting was observed across 3 sequential requests.
 For bulk scraping, add a 1–2 s delay between requests to be safe. On 2026-10-20 the block
