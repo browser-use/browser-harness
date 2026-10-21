@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, json, os, re, secrets, socket, subprocess, sys, time
 from pathlib import Path
 
 from . import paths
@@ -86,20 +86,29 @@ def connect(name, timeout=1.0):
     if not IS_WINDOWS:
         # uv-Python on Windows lacks socket.AF_UNIX, so this branch must be gated.
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(timeout); s.connect(str(_sock_path(name))); return s, None
+        try:
+            s.settimeout(timeout); s.connect(str(_sock_path(name))); return s, None
+        except BaseException:
+            s.close()
+            raise
     port, token = _read_port_file(name)
     if port is None: raise FileNotFoundError(str(port_path(name)))
     s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
     s.settimeout(timeout); return s, token
 
 
-def request(c, token, req):
+def request(c, token, req, *, deadline=None):
     """One-shot send + recv + parse on an open socket. Injects token on Windows.
     Returns the parsed JSON response. Caller closes the socket."""
     if token: req = {**req, "token": token}
     c.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("request deadline exceeded")
+            c.settimeout(remaining)
         chunk = c.recv(1 << 16)
         if not chunk: break
         data += chunk
