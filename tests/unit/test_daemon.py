@@ -40,6 +40,21 @@ def test_safe_connection_label_removes_credentials_paths_and_queries(url, label)
     assert daemon._safe_connection_label(url) == label
 
 
+def test_http_endpoint_is_derived_from_the_connected_local_browser(monkeypatch):
+    monkeypatch.setattr(daemon, "REMOTE_ID", "")
+    assert daemon.http_endpoint_from_ws(
+        "ws://127.0.0.1:18792/devtools/browser/id?token=secret"
+    ) == "http://127.0.0.1:18792"
+    assert daemon.http_endpoint_from_ws(
+        "wss://[::1]:9222/devtools/browser/id"
+    ) == "https://[::1]:9222"
+
+
+def test_remote_browser_does_not_expose_a_local_http_endpoint(monkeypatch):
+    monkeypatch.setattr(daemon, "REMOTE_ID", "browser-1")
+    assert daemon.http_endpoint_from_ws("wss://provider.example/session/id") is None
+
+
 def test_remote_stop_retries_and_succeeds(monkeypatch):
     attempts = []
     monkeypatch.setattr(daemon, "REMOTE_ID", "browser-1")
