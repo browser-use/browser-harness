@@ -28,6 +28,8 @@ PY
 - First navigation for a task is `new_tab(url)`, not `goto_url(url)`. The daemon
   preserves the attached tab across separate CLI invocations, so do not call
   `new_tab()` again in every script.
+- Use `new_tab(url, new_window=True)` only when the task needs a separate browser
+  window. It is created in the background and is not activated automatically.
 - Keep one working tab per task/site. Before opening another, inspect
   `current_tab()` and `list_tabs()` and use `switch_tab()` to reuse a matching
   tab. Do not leave duplicate tabs on the same URL or close tabs you did not
@@ -56,6 +58,8 @@ PY
   activating the tab. Do not invent a `Runtime.evaluate` scroll replacement or
   a cross-frame JS walker.
 - The normal local flow attaches to the running Chrome/Chromium CDP endpoint. No browser ids or local profile selection.
+- The attached profile's cookies and logged-in sessions are shared with the
+  harness. Use local CDP only with a trusted agent process.
 
 ## Local Chrome
 
@@ -262,8 +266,8 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 
 ## Gotchas
 
-- `chrome://inspect/#remote-debugging` must be enabled for local Chrome control.
-- On macOS, if local Chrome shows an "Allow remote debugging?" popup, call `mac-approve` once with the same `BU_NAME` while the original browser command waits. Do not poll or rerun the browser command; remote and cloud browsers do not use this helper.
+- `chrome://inspect/#remote-debugging` must be enabled for local Chrome or Brave control.
+- On macOS, if local Chrome or Brave shows an "Allow remote debugging?" popup, call `mac-approve` once with the same `BU_NAME` while the original browser command waits. Do not poll or rerun the browser command; remote and cloud browsers do not use this helper.
 - Omnibox popups are not real work tabs.
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
