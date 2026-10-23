@@ -127,6 +127,7 @@ TOGGLE_BOOT_GRACE = 12
 # Cancellation should make an in-flight CDP call finish immediately. Keep the
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
+CDP_DISCONNECT_GRACE = 3
 TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
 
 
@@ -610,6 +611,46 @@ class Daemon:
                 return False
         return self._recoveries_idle.is_set()
 
+    async def _monitor_cdp(self):
+        """Stop this daemon when its CDP WebSocket message handler exits.
+
+        Keep the daemon available briefly for orderly shutdown to win the
+        race. cdp-use doesn't support restarting a started client, so a
+        closed handler cannot be reconnected in-place; serve() performs
+        best-effort cleanup of daemon-owned targets when this stop event is
+        set.
+        """
+        handler = getattr(self.cdp, "_message_handler_task", None)
+        if handler is None:
+            return
+        try:
+            await handler
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log(f"CDP message handler stopped: {e}")
+
+        if self.stop is None or self.stop.is_set():
+            return
+        log(f"CDP connection closed; exiting after {CDP_DISCONNECT_GRACE}s grace")
+        try:
+            await asyncio.wait_for(self.stop.wait(), timeout=CDP_DISCONNECT_GRACE)
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            stop_remote(strict=True)
+        except Exception as e:
+            # Keep this daemon available as a retryable cleanup authority. In
+            # particular, do not let serve() remove its endpoint and PID file
+            # while a billable remote browser may still be running.
+            log(f"CDP disconnected and remote stop failed; keeping daemon for retry: {e}")
+            return
+
+        self._shutting_down = True
+        self.stop.set()
+
     def _schedule_tab_marker(self, session_id):
         """Mark the controlled tab without extending the synchronous IPC path."""
         if not tab_marker_enabled():
@@ -661,6 +702,7 @@ class Daemon:
             self._record_event(method, params, session_id)
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+        self._cdp_monitor = asyncio.create_task(self._monitor_cdp())
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
