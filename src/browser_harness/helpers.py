@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, time, urllib.request
+import base64, importlib.util, json, math, mimetypes, os, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -43,6 +43,8 @@ DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
 # Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
 # their IPC socket alive within the caller's existing 90-second process budget.
 SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
+# Megabytes of file bytes travel to a cloud browser inside one request.
+UPLOAD_IPC_RESPONSE_TIMEOUT_SECONDS = 120.0
 
 
 class _IPCResponseTimeout(TimeoutError):
@@ -618,12 +620,27 @@ def dispatch_key(selector, key="Enter", event="keypress"):
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});if(e){{e.focus();e.dispatchEvent(new KeyboardEvent({json.dumps(event)},{{key:{json.dumps(key)},code:{json.dumps(key)},keyCode:{kc},which:{kc},bubbles:true}}));}}}})()"
     )
 
-def upload_file(selector, path):
-    """Set files on a file input via CDP DOM.setFileInputFiles. `path` is an absolute filepath (use tempfile.mkstemp if needed)."""
-    doc = cdp("DOM.getDocument", depth=-1)
-    nid = cdp("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector=selector)["nodeId"]
-    if not nid: raise RuntimeError(f"no element for {selector}")
-    cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
+def upload_file(target, path):
+    """Set files on a file input. `target` is a CSS selector or a backendNodeId (from the AX tree; reaches shadow
+    roots and frames). `path` is an absolute filepath or a list of them. A cloud browser only takes paths in its own
+    downloads folder, so there the bytes go through the page as File objects (input and change fire, untrusted)."""
+    paths = [path] if isinstance(path, str) else list(path)
+    if isinstance(target, str):
+        doc = cdp("DOM.getDocument", depth=-1)
+        nid = cdp("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector=target)["nodeId"]
+        if not nid: raise RuntimeError(f"no element for {target}")
+        node = {"nodeId": nid}
+    else:
+        node = {"backendNodeId": target}
+    try:
+        return cdp("DOM.setFileInputFiles", files=paths, **node)
+    except RuntimeError as e:
+        if "downloads directory" not in str(e): raise
+    files = [[os.path.basename(p), base64.b64encode(Path(p).read_bytes()).decode(), mimetypes.guess_type(p)[0] or ""] for p in paths]
+    cdp("Runtime.callFunctionOn", objectId=cdp("DOM.resolveNode", **node)["object"]["objectId"], arguments=[{"value": files}],
+        _response_timeout=UPLOAD_IPC_RESPONSE_TIMEOUT_SECONDS,
+        functionDeclaration="function(fs){const d=new DataTransfer();for(const[n,b,t]of fs)d.items.add(new File([Uint8Array.from(atob(b),c=>c.charCodeAt(0))],n,{type:t}));"
+                            "this.files=d.files;for(const t of['input','change'])this.dispatchEvent(new Event(t,{bubbles:true}))}")
 
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.

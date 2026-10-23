@@ -738,3 +738,46 @@ def test_js_keeps_base_exception_from_evaluation_when_detach_also_raises():
         KeyboardInterrupt, match="evaluation interrupted"
     ):
         helpers.js("7", target_id="iframe-target")
+
+
+def _upload(tmp_path, set_files_error=None, target="input[type=file]"):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "DOM.getDocument":
+            return {"root": {"nodeId": 1}}
+        if method == "DOM.querySelector":
+            return {"nodeId": 7}
+        if method == "DOM.setFileInputFiles" and set_files_error:
+            raise RuntimeError(set_files_error)
+        if method == "DOM.resolveNode":
+            return {"object": {"objectId": "obj-1"}}
+        return {}
+
+    path = tmp_path / "cv.txt"
+    path.write_bytes(b"text")
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.upload_file(target, str(path))
+    return calls
+
+
+def test_upload_file_sets_paths_when_the_browser_takes_them(tmp_path):
+    calls = _upload(tmp_path)
+    assert calls[-1] == ("DOM.setFileInputFiles", {"files": [str(tmp_path / "cv.txt")], "nodeId": 7})
+
+
+def test_upload_file_sends_bytes_through_the_page_when_the_browser_rejects_the_path(tmp_path):
+    calls = _upload(tmp_path, "{'code': -32602, 'message': 'Files must exist in the downloads directory'}", target=42)
+    assert calls[0] == ("DOM.setFileInputFiles", {"files": [str(tmp_path / "cv.txt")], "backendNodeId": 42})
+    assert calls[1] == ("DOM.resolveNode", {"backendNodeId": 42})
+    method, kwargs = calls[2]
+    assert method == "Runtime.callFunctionOn" and kwargs["objectId"] == "obj-1"
+    assert kwargs["arguments"] == [{"value": [["cv.txt", "dGV4dA==", "text/plain"]]}]
+    assert kwargs["_response_timeout"] == helpers.UPLOAD_IPC_RESPONSE_TIMEOUT_SECONDS
+    assert "new File([Uint8Array.from(atob(b),c=>c.charCodeAt(0))],n,{type:t})" in kwargs["functionDeclaration"]
+
+
+def test_upload_file_keeps_other_errors(tmp_path):
+    with pytest.raises(RuntimeError, match="No node"):
+        _upload(tmp_path, "No node with given id")

@@ -533,20 +533,24 @@ def ensure_daemon(wait=None, name=None, env=None):
         for last in (False, True):
             try:
                 s, token = ipc.connect(name or NAME, timeout=3.0)
-                resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+                try:
+                    resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+                finally:
+                    s.close()
                 if "result" in resp: return
             except Exception:
                 pass
             if not last: time.sleep(0.5)
         browser_kind = daemon_browser_kind(name)
         if browser_kind in {"cloud", None}:
-            # A stale Cloud daemon still owns a billable browser. Its shutdown
-            # handler stops that browser before acknowledging, and stays alive
-            # when the Cloud stop fails so a later call can retry cleanup. Treat
-            # an unknown kind the same way: the health failure that made the
-            # daemon stale may also prevent classification, and replacing an
-            # unclassified daemon best-effort could orphan a Cloud browser.
-            stop_remote_daemon(name or NAME)
+            # A failed CDP probe can be temporary. Shutdown destroys the Cloud
+            # session; this caller may not have its transport to reconnect.
+            # Unknown kind may also own a Cloud browser. Leave cleanup explicit.
+            raise RuntimeError(
+                f"daemon {name or NAME!r} is unhealthy; existing browser preserved. "
+                f"Retry after it recovers, or explicitly stop_remote_daemon({name or NAME!r}) "
+                "when finished; the Cloud browser still bills until stopped or timed out."
+            )
         else:
             restart_daemon(name)
 
