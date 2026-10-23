@@ -48,6 +48,46 @@ PY
   another Allow prompt.
 - Set `BH_TAB_MARKER=0` before starting the daemon to leave page titles unchanged.
   The horse marker remains enabled by default.
+- Set `BH_TAB_GUARD=1` for an **unattended** run (a scheduled job, a cron tick,
+  anything nobody is watching). The run may then act only on tabs it opened
+  itself: on any other tab the sole permitted operations are enumeration
+  (`Target.getTargets`, so `list_tabs()` still works) and creation (`new_tab()`).
+  Every session-scoped call there is refused, `js()` and screenshots included,
+  and so is a session this run did not attach. Refusals raise `TabGuardRefused`.
+  Helper-side refusals print `[tab-guard] REFUSED <method> <targetId> <url>` to
+  stderr. Daemon-side refusals use `source="daemon"` and include
+  `[tab-guard] REFUSED (daemon) <method>: <reason>` in the exception message,
+  without a separate stderr line.
+  It fails closed — if the attached tab cannot be read, the call is refused.
+  Leave it unset for interactive work, where driving a tab the human already
+  opened is the point.
+  `BH_TAB_GUARD_RUN` is required and must be a fresh canonical UUID4 generated
+  for each run. Human-readable job IDs and other low-entropy IDs are refused
+  before any ownership file is opened. UUID4 freshness is a caller contract, not
+  a mechanically enforced property: reusing a UUID4 intentionally reopens that
+  run's ownership record. Callers must generate a fresh UUID4 for each run.
+  Ownership is scoped to its full value and the daemon,
+  so distinct runs cannot consume each other's list. Ownership is recorded only
+  while the guard is enabled, in private files. Enabling it later does not claim
+  earlier tabs.
+  Call `tab_guard_reset()` after the run's last invocation to remove its record.
+  Guard enforcement remains latched in the daemon after reset. Run
+  `browser-harness --reload` before using that daemon for unrestricted
+  interactive work; changing environment variables alone does not clear it.
+  Reload an older daemon before guarded use. Requests pin the checked session;
+  if it expires, use `switch_tab()` on an owned tab to attach again.
+  Guarded `Target.createTarget` never uses the shared default browser context:
+  the first create call makes and records a run-owned context, and later calls
+  reuse it. A caller-supplied `browserContextId` must already belong to this
+  run. `Target.createBrowserContext` remains unavailable as a public guarded
+  operation.
+  Metadata reads require ownership; events are filtered to owned sessions.
+  Iframe attachment requires ancestry in the current owned page's frame tree.
+  Workers or other targets without that proof are refused. The guard protects
+  helper calls, not arbitrary Python or direct IPC access.
+  Set `BH_TAB_GUARD_LOG` to a file path to append helper-side and daemon-side
+  refusals. Logging is best effort; an unwritable log does not prevent
+  `TabGuardRefused` from being raised.
 - A timeout or page that pauses while hidden is not permission to foreground
   Chrome. Keep using background CDP operations. For a focus-gated page,
   temporarily call `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`,
