@@ -427,6 +427,12 @@ def switch_tab(target, activate=False):
     return sid
 
 def new_tab(url="about:blank"):
+    # Under an owned scope the scope's own blank target is the only tab; a
+    # blank new_tab() falls through to createTarget, which the daemon refuses.
+    if ipc.scope_bound() and url != "about:blank":
+        tid = _send({"meta": "claim_owned_page"})["targetId"]
+        goto_url(url)
+        return tid
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.

@@ -30,6 +30,11 @@ _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 # otherwise issue CDP commands). Stays None on POSIX where AF_UNIX + chmod 600
 # is the boundary.
 _server_token = None
+# Owned scope this process is latched to. A module global rather than an env
+# var so subprocesses never inherit it. Runtime leaves it bound after end so
+# late helper threads still stamp the closed lease (which refuses). Post-run
+# pings pass stamp_scope=False. Tests may call unbind_scope() to reset.
+_scope = None
 
 
 def _check(name):  # path-traversal guard for BU_NAME
@@ -93,10 +98,14 @@ def connect(name, timeout=1.0):
     s.settimeout(timeout); return s, token
 
 
-def request(c, token, req):
+def request(c, token, req, *, stamp_scope=True):
     """One-shot send + recv + parse on an open socket. Injects token on Windows.
-    Returns the parsed JSON response. Caller closes the socket."""
+    Returns the parsed JSON response. Caller closes the socket.
+
+    stamp_scope=False skips the process latch (post-run identity pings that must
+    reach the daemon after the owned lease has ended but the latch remains)."""
     if token: req = {**req, "token": token}
+    if stamp_scope and _scope is not None: req = {**req, "scope": _scope}
     c.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
@@ -106,22 +115,44 @@ def request(c, token, req):
     return json.loads(data or b"{}")
 
 
+def bind_scope(scope_id):
+    global _scope
+    if _scope is not None:
+        raise RuntimeError("this process is already bound to an owned scope")
+    _scope = scope_id
+
+
+def unbind_scope():
+    """Clear the process latch. Runtime never calls this; tests reset between cases."""
+    global _scope
+    _scope = None
+
+
+def scope_bound():
+    return _scope is not None
+
+
 def ping(name, timeout=1.0):
     """True iff a live daemon answers our ping. Defends against stale .port files
     + port reuse: a bare TCP connect can succeed against an unrelated process that
     grabbed the port after our daemon crashed; only our daemon answers {"pong":true}."""
+    return ping_status(name, timeout) is not None
+
+
+def ping_status(name, timeout=1.0):
+    """The live daemon's parsed ping reply, or None when no daemon of ours answers."""
     try:
         c, token = connect(name, timeout=timeout)
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError):
-        return False
+        return None
     try:
         resp = request(c, token, {"meta": "ping"})
         # request() returns parsed JSON, which may be any valid value (a list,
         # scalar, etc. from a stale or hostile endpoint). Anything that isn't
         # a {pong: true} dict counts as "not our daemon" — never .get() blindly.
-        return isinstance(resp, dict) and resp.get("pong") is True
+        return resp if isinstance(resp, dict) and resp.get("pong") is True else None
     except (OSError, ValueError, AttributeError):
-        return False
+        return None
     finally:
         try: c.close()
         except OSError: pass
