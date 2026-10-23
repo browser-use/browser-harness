@@ -261,34 +261,36 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     return None
 
 
-def get_ws_url():
+def get_ws_url(wait=None):
+    timeout = 30 if wait is None else wait
     if url := os.environ.get("BU_CDP_WS"):
         return url
     if url := os.environ.get("BU_CDP_URL"):
         # HTTP DevTools endpoint (e.g. http://127.0.0.1:9333) — resolve to ws via /json/version.
         # Use this for a dedicated automation Chrome on a non-default profile, which avoids the
         # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
-        deadline = time.time() + 30
+        deadline = time.time() + timeout
         last_err = None
         base_url = url.rstrip("/")
-        while time.time() < deadline:
+        while (remaining := deadline - time.time()) > 0:
             try:
-                return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+                return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=min(5, remaining)).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
                 last_err = e
                 if e.code == 403:
                     raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
                 if e.code == 404 and (ws := _ws_from_devtools_active_port(url)):
                     return ws
-                time.sleep(1)
             except Exception as e:
                 last_err = e
-                time.sleep(1)
+            sleep_for = min(1, deadline - time.time())
+            if sleep_for > 0:
+                time.sleep(sleep_for)
         hint = "is the dedicated automation Chrome running? Launch it with --remote-debugging-port=<port> --user-data-dir=<dedicated dir>"
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
-        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
-    deadline = time.time() + 30
+        raise RuntimeError(f"BU_CDP_URL={url} unreachable after {timeout}s: {last_err} -- {hint}")
+    deadline = time.time() + timeout
     next_liveness_check = 0.0
     while time.time() < deadline:
         for base in PROFILES:
@@ -304,8 +306,11 @@ def get_ws_url():
             # alongside the port in DevToolsActivePort: if Chrome was previously launched
             # with a different --user-data-dir on the same port, that file is left behind
             # with a stale browser UUID and the WS upgrade returns 404.
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
             try:
-                return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
+                return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=min(1, remaining)).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
                 if e.code == 403:
                     raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
@@ -325,12 +330,17 @@ def get_ws_url():
             next_liveness_check = now + 2
         # The browser is running but the port isn't up; waiting 30s
         grace = TOGGLE_BOOT_GRACE if remote_debugging_toggle_profiles() else NO_TOGGLE_GRACE
-        if now > deadline - 30 + grace:
+        if wait is None and now > deadline - 30 + grace:
             break
-        time.sleep(0.2)
+        sleep_for = min(0.2, deadline - time.time())
+        if sleep_for > 0:
+            time.sleep(sleep_for)
     for probe_port in (9222, 9223):
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
+            with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=min(1, remaining)) as r:
                 return json.loads(r.read())["webSocketDebuggerUrl"]
         except urllib.error.HTTPError as e:
             if e.code == 403:
@@ -632,9 +642,9 @@ class Daemon:
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
 
-    async def start(self):
+    async def start(self, wait=None):
         self.stop = asyncio.Event()
-        url = get_ws_url()
+        url = await (asyncio.to_thread(get_ws_url) if wait is None else asyncio.to_thread(get_ws_url, wait))
         log(f"connecting to {_safe_connection_label(url)}")
         self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
         if BROWSER_KIND == "local":
