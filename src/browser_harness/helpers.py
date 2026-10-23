@@ -40,6 +40,7 @@ SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 IPC_CONNECT_TIMEOUT_SECONDS = 5.0
 DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
+NAVIGATE_IPC_RESPONSE_TIMEOUT_SECONDS = 30.0
 # Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
 # their IPC socket alive within the caller's existing 90-second process budget.
 SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
@@ -150,7 +151,11 @@ def _is_illegal_return_error(exc):
 
 # --- navigation / page ---
 def goto_url(url):
-    r = cdp("Page.navigate", url=url)
+    r = cdp(
+        "Page.navigate",
+        _response_timeout=NAVIGATE_IPC_RESPONSE_TIMEOUT_SECONDS,
+        url=url,
+    )
     if os.environ.get("BH_DOMAIN_SKILLS") != "1":
         return r
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
