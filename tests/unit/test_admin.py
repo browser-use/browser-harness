@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from browser_harness import admin
+from browser_harness import admin, daemon
 
 
 class FakeSocket:
@@ -232,6 +232,96 @@ def test_local_chrome_mode_is_false_when_process_env_provides_remote_cdp(monkeyp
     monkeypatch.setenv("BU_CDP_WS", "ws://example.test/devtools/browser/1")
 
     assert not admin._is_local_chrome_mode()
+
+
+def test_named_daemon_without_endpoint_is_not_local_chrome_mode(monkeypatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+
+    assert not admin._is_local_chrome_mode(name="managed")
+
+
+def test_named_daemon_failure_does_not_trigger_local_recovery(monkeypatch, tmp_path):
+    class _ExitedProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "chrome-not-running: strict named daemon failure")
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / "managed.log")
+    monkeypatch.setattr(admin.subprocess, "Popen", lambda *args, **kwargs: _ExitedProcess())
+    monkeypatch.setattr(admin, "_launch_browser", lambda: (_ for _ in ()).throw(AssertionError("local Chrome launch attempted")))
+    monkeypatch.setattr(admin, "_open_chrome_inspect_once", lambda: (_ for _ in ()).throw(AssertionError("chrome://inspect recovery attempted")))
+
+    with pytest.raises(RuntimeError, match="chrome-not-running"):
+        admin.ensure_daemon(name="managed", wait=0)
+
+
+def test_named_daemon_respawn_without_endpoint_remains_strict(monkeypatch, tmp_path):
+    spawned_envs = []
+
+    class _Process:
+        def poll(self):
+            return None
+
+    def fake_popen(*args, **kwargs):
+        spawned_envs.append(kwargs["env"])
+        return _Process()
+
+    monkeypatch.setattr(admin.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / f"{name}.log")
+    monkeypatch.setattr(admin, "restart_daemon", lambda name: None)
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "BU_NAME='managed' requires BU_CDP_WS or BU_CDP_URL")
+
+    alive = iter([False, True, False])
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: next(alive))
+    admin.ensure_daemon(name="managed", env={"BU_CDP_WS": "ws://cloud.example"}, wait=1)
+
+    # Clear endpoint vars before the no-endpoint spawn: ensure_daemon merges
+    # os.environ into the child env, so host vars would otherwise leak in and
+    # the assertions below would pass without exercising the no-endpoint case.
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="requires BU_CDP_WS or BU_CDP_URL"):
+        admin.ensure_daemon(name="managed", wait=0)
+
+    assert spawned_envs[0]["BU_CDP_WS"] == "ws://cloud.example"
+    assert spawned_envs[1].get("BU_CDP_WS") is None
+    assert spawned_envs[1].get("BU_CDP_URL") is None
+
+    monkeypatch.setattr(daemon, "NAME", spawned_envs[1]["BU_NAME"])
+
+    class _NoProfiles:
+        def __iter__(self):
+            raise AssertionError("respawned named daemon must not scan local profiles")
+
+    monkeypatch.setattr(daemon, "PROFILES", _NoProfiles())
+
+    with pytest.raises(RuntimeError, match="requires BU_CDP_WS or BU_CDP_URL"):
+        daemon.get_ws_url()
+
+
+def test_requested_daemon_name_wins_over_child_environment(monkeypatch, tmp_path):
+    spawned_envs = []
+
+    class _ExitedProcess:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda name: False)
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "BU_NAME='managed' requires BU_CDP_WS or BU_CDP_URL")
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / "managed.log")
+    monkeypatch.setattr(
+        admin.subprocess,
+        "Popen",
+        lambda *args, **kwargs: spawned_envs.append(kwargs["env"]) or _ExitedProcess(),
+    )
+
+    with pytest.raises(RuntimeError, match="requires BU_CDP_WS or BU_CDP_URL"):
+        admin.ensure_daemon(name="managed", env={"BU_NAME": "default"}, wait=0)
+
+    assert spawned_envs[0]["BU_NAME"] == "managed"
 
 
 def test_handshake_timeout_needs_chrome_remote_debugging_prompt():
@@ -1098,7 +1188,7 @@ def test_ensure_daemon_waits_for_the_parked_daemon_instead_of_spawning(tmp_path,
     from browser_harness import admin as admin_mod
 
     _park_daemon(tmp_path, monkeypatch, os.getpid())
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
 
     spawned = []
@@ -1119,7 +1209,7 @@ def test_ensure_daemon_returns_when_the_parked_daemon_finishes(tmp_path, monkeyp
     from browser_harness import admin as admin_mod
 
     _park_daemon(tmp_path, monkeypatch, os.getpid())
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     calls = {"n": 0}
 
     def alive(name=None):
@@ -1141,7 +1231,7 @@ def test_ensure_daemon_does_not_replace_pending_approval_that_exited(tmp_path, m
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
     monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
     pending = iter([os.getpid(), None])
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: next(pending, None))
@@ -1170,7 +1260,7 @@ def test_dead_pending_cleanup_does_not_unlink_successor(tmp_path, monkeypatch):
     log_file.write_text("handshake-wait: click Allow")
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
     pending = iter([111, None])
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: next(pending, None))
@@ -1204,7 +1294,7 @@ def test_permission_blocked_exit_is_not_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
     monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
     monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: None)
@@ -1239,7 +1329,7 @@ def test_cold_spawn_publishes_child_before_releasing_lock(tmp_path, monkeypatch)
     monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: pid_file)
     monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: log_file)
     monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
-    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env, name=None: True)
     monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: False)
     monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
     monkeypatch.setattr(admin_mod, "_is_daemon_process", lambda pid: pid == 4321)
