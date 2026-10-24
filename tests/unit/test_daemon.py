@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from browser_harness import daemon
+from browser_harness import _tab_marker, daemon
 
 
 def test_publish_own_pid_never_truncates_parent_record(tmp_path, monkeypatch):
@@ -132,6 +132,10 @@ def test_tab_marker_stays_enabled_by_default(monkeypatch):
             "session-with-marker",
         )
     ]
+
+
+def test_tab_marker_js_is_the_shared_prefix_expression():
+    assert daemon.TAB_MARKER_JS == _tab_marker.expression(daemon.NAME)
 
 
 @pytest.mark.parametrize("value", ["0", "false", "NO", "off"])

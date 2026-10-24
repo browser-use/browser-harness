@@ -14,6 +14,12 @@ print(current_tab())
 print(page_info())
 ```
 
+The attached tab's title is prefixed with `🐴` for the default daemon, or
+`🐴 [BU_NAME]` for a named daemon (for example `🐴 [research-7f3a] Example
+Domain`), so parallel daemons need distinct names. The name is visible to page
+scripts in that tab; set `BH_TAB_MARKER=0` before starting the daemon to leave
+titles unchanged.
+
 What CDP is good at:
 - attach to a tab
 - open a tab
