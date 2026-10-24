@@ -146,11 +146,13 @@ def load_auth_file(path: Path | None = None) -> dict:
 def save_auth_record(record: AuthRecord, path: Path | None = None) -> None:
     path = path or auth_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    _chmod_private(path.parent, directory=True)
+    if path.parent != Path("."):
+        _chmod_private(path.parent, directory=True)
     existing = load_auth_file(path)
     existing["browser_use"] = record.to_storage()
     tmp = path.with_name(path.name + ".tmp")
     _write_private_json(tmp, existing)
+    _chmod_private(tmp)
     os.replace(tmp, path)
     _chmod_private(path)
 
@@ -163,6 +165,7 @@ def clear_auth(path: Path | None = None) -> bool:
     if data:
         tmp = path.with_name(path.name + ".tmp")
         _write_private_json(tmp, data)
+        _chmod_private(tmp)
         os.replace(tmp, path)
         _chmod_private(path)
     else:
@@ -481,9 +484,8 @@ def _write_private_json(path: Path, data: dict) -> None:
 
 
 def _chmod_private(path: Path, *, directory=False) -> None:
-    mode = stat.S_IRWXU if directory else stat.S_IRUSR | stat.S_IWUSR
     try:
-        os.chmod(path, mode)
+        paths.harden_private_path(path, directory=directory)
     except OSError:
         pass
 
