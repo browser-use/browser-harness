@@ -47,7 +47,11 @@ PY
   local daemon opens another browser-level CDP connection and Chrome may show
   another Allow prompt.
 - Set `BH_TAB_MARKER=0` before starting the daemon to leave page titles unchanged.
-  The horse marker remains enabled by default.
+  The horse marker remains enabled by default. The default daemon prefixes
+  titles with `🐴`; a named daemon uses `🐴 [BU_NAME] Title` so parallel daemons
+  are distinguishable. Page scripts in the marked tab can read `document.title`,
+  so a named daemon exposes its `BU_NAME` to every page it visits in that tab.
+  Use `BH_TAB_MARKER=0` or a non-descriptive name if that matters.
 - A timeout or page that pauses while hidden is not permission to foreground
   Chrome. Keep using background CDP operations. For a focus-gated page,
   temporarily call `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`,

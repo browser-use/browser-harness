@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
-from browser_harness import helpers
+from browser_harness import _tab_marker, helpers
 
 
 def _run(fake_png, width, height, **kwargs):
@@ -437,6 +437,35 @@ def test_mark_tab_can_be_disabled(monkeypatch, value):
     helpers._mark_tab()
 
     assert calls == []
+
+
+def test_mark_tab_uses_named_prefix_marker(monkeypatch):
+    calls = []
+    monkeypatch.delenv("BH_TAB_MARKER", raising=False)
+    monkeypatch.setattr(helpers, "NAME", "research-7f3a")
+    monkeypatch.setattr(helpers, "cdp", lambda method, **kwargs: calls.append((method, kwargs)))
+
+    helpers._mark_tab()
+
+    assert calls == [("Runtime.evaluate", {"expression": _tab_marker.expression("research-7f3a")})]
+
+
+def test_switch_tab_unmarks_old_tab_first(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    helpers.switch_tab("target-new")
+
+    assert calls[0] == ("Runtime.evaluate", {"expression": _tab_marker.unmark_expression()})
 
 
 def test_switch_tab_keeps_visible_tab_unchanged_by_default(monkeypatch):

@@ -5,6 +5,7 @@ from collections import deque
 from pathlib import Path
 
 from . import _ipc as ipc
+from . import _tab_marker
 from . import auth
 from . import paths
 from cdp_use.client import CDPClient
@@ -127,7 +128,7 @@ TOGGLE_BOOT_GRACE = 12
 # Cancellation should make an in-flight CDP call finish immediately. Keep the
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
-TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
+TAB_MARKER_JS = _tab_marker.expression(NAME)
 
 
 def tab_marker_enabled():
@@ -732,8 +733,8 @@ class Daemon:
                 tasks.append(disable_old())
             tasks.append(self._enable_default_domains(new_session))
             await asyncio.gather(*tasks)
-            # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
-            # it doesn't add to the synchronous IPC budget.
+            # 🐴 [BU_NAME] tab-marker title prefix is purely cosmetic — fire-and-forget
+            # so it doesn't add to the synchronous IPC budget.
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
