@@ -1498,6 +1498,15 @@ def _prompt_yes(question, default_yes=True, yes=False):
     return ans.startswith("y")
 
 
+def _uv_tool_list_contains(output, name):
+    """Match a tool entry in uv's listing, ignoring executable and blank lines."""
+    for line in (output or "").splitlines():
+        entry = line.strip()
+        if entry and not entry.startswith("-") and entry.split()[0] == name:
+            return True
+    return False
+
+
 def _uv_manages_browser_harness():
     """True when `uv tool list` shows browser-harness, i.e. `uv tool upgrade` owns it.
 
@@ -1510,16 +1519,40 @@ def _uv_manages_browser_harness():
         return True
     if listed.returncode != 0:
         return True
-    # `uv tool list` prints one "name vX.Y.Z" line per tool, then its executables as
-    # "- exe" lines. Match the entry name, so a tool merely containing our name (say
-    # my-browser-harness-wrapper) cannot silence the hint for a real pip install.
-    for line in (listed.stdout or "").splitlines():
-        entry = line.strip()
-        if entry.startswith("-"):
-            continue
-        if entry.split(" ", 1)[0] == "browser-harness":
-            return True
-    return False
+    return _uv_tool_list_contains(listed.stdout, "browser-harness")
+
+
+def _uv_dependency_owner():
+    """Return the owning uv tool for a dependency install, if identifiable."""
+    try:
+        result = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True)
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        tools_dir = Path(result.stdout.strip())
+        if not tools_dir.is_absolute():
+            return None
+
+        environment = Path(sys.prefix).resolve()
+        if environment.parent != tools_dir.resolve():
+            return None
+
+        owner = environment.name
+        if owner == "browser-harness":
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", owner):
+            return None
+
+        listed = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True)
+        if listed.returncode != 0:
+            return None
+
+        if _uv_tool_list_contains(listed.stdout, owner):
+            return owner
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    return None
 
 
 def run_update(yes=False):
@@ -1557,12 +1590,16 @@ def run_update(yes=False):
     elif mode == "pypi":
         tool_upgrade = subprocess.run(["uv", "tool", "upgrade", "browser-harness"])
         if tool_upgrade.returncode != 0:
-            # `uv tool upgrade` only manages what `uv tool install` put there, so a pip
-            # or pipx install fails here with "`browser-harness` is not installed" and
-            # no way forward. Point only those users at the documented install: when the
-            # tool IS uv-managed the failure is uv's own (offline, auth) and its message
-            # already stands, so adding a pip hint there would just mislead.
-            if not _uv_manages_browser_harness():
+            # A dependency belongs to its owning tool's environment.
+            # Identify that owner before offering standalone install guidance.
+            owner = _uv_dependency_owner()
+            if owner:
+                print(
+                    f"browser-harness is installed as a dependency of {owner}. "
+                    f"Upgrade the owning tool with: uv tool upgrade {owner}",
+                    file=sys.stderr,
+                )
+            elif not _uv_manages_browser_harness():
                 print(
                     "if you installed with pip or pipx, upgrade with: "
                     "uv tool install --python 3.12 --upgrade --force browser-harness",
