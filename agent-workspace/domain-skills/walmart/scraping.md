@@ -3,49 +3,76 @@
 Field-tested against walmart.com on 2026-04-18 using `http_get` (no browser required).
 All code blocks were run and outputs verified against live responses.
 
+Re-tested 2026-10-20 from US IPs (residential proxies from two providers and a datacenter
+VPN): the bare-UA rule no longer works on its own. Requests now need the `isoLoc` cookie (see below). The
+fetch helper, the search extractor and pagination were re-run on that date.
+
 ---
 
 ## Fastest Approach: `http_get` with `__NEXT_DATA__`
 
 Walmart's Next.js SSR embeds the full search or product payload as JSON in a
 `<script id="__NEXT_DATA__">` tag. **No browser needed for search or product detail pages.**
-~2–3 s per page fetch; no CAPTCHA or session cookies required.
+~2–3 s per page fetch; no CAPTCHA, but one cookie (`isoLoc`) is required.
 
-### Critical UA rule
+### Critical cookie rule: `isoLoc` (2026-10-20)
 
-| User-Agent | Result |
+Without an `isoLoc` cookie, search requests are redirected `307 → /blocked` (the PerimeterX
+"Robot or human?" page), whatever the User-Agent. Walmart sets `isoLoc` on **any** response,
+including `/robots.txt` and the 307 itself. Its value is the IP's location, e.g. `US_CA_t3`.
+Send it back and the same request returns the full SSR page.
+
+| Request from a US IP (2026-10-20) | Result |
 |---|---|
-| `Mozilla/5.0` (bare) | Full HTML + `__NEXT_DATA__` — **use this** |
-| `Mozilla/5.0 ... Chrome/120 ...` (full) | PerimeterX "Robot or human?" challenge (200, 15 KB) |
-| `Safari/17` full UA | Works (full HTML, ~1.15 MB) |
-| `curl/7.x` | PerimeterX challenge |
-| `python-requests/2.31` | PerimeterX challenge |
+| `Mozilla/5.0` (bare), no cookie | `307 → /blocked` (every request, residential and datacenter) |
+| Full Safari 17 UA, no cookie | Unreliable: 14/20 full pages on residential IPs, blocked on datacenter IPs |
+| Any UA (bare, Safari, Chrome) + `isoLoc` | Full HTML + `__NEXT_DATA__` when not blocked (see below) |
 
-The bare `Mozilla/5.0` string bypasses PerimeterX. Any UA that looks like a headless
-client or includes a recognizable browser fingerprint triggers the JS challenge page.
+The cookie is necessary, not sufficient. On US residential IPs from two providers, requests
+with `isoLoc` passed 10/10 when each IP made one or two requests, but only 14/36 when each IP
+made three to six requests 3 s apart: the first one or two pages usually passed, later ones
+mostly did not. Rotate to a fresh IP every page or two, and retry blocked pages there.
+
+The value is only loosely checked: the `_t3` suffix is ignored (`_t1`, `_t9` and no suffix all
+worked). Use the value Walmart sets for your IP rather than a hard-coded one.
 
 ### Base fetch helper
 
 ```python
 import json, re, gzip, urllib.request
 
+_isoloc = None  # e.g. "US_CA_t3", set by Walmart on the first response from this IP
+
+def reset_walmart_session():
+    """Call after switching to a new IP or proxy session: isoLoc follows the IP."""
+    global _isoloc
+    _isoloc = None
+
+def _get(url, cookie=None):
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
+    if cookie:
+        headers["Cookie"] = cookie
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
+        data = r.read()
+        if r.headers.get("Content-Encoding") == "gzip":
+            data = gzip.decompress(data)
+        return r.geturl(), r.headers.get_all("Set-Cookie") or [], data.decode()
+
 def fetch_walmart(url):
     """
     Fetch any walmart.com page.
     Returns decoded HTML string.
-    Raises RuntimeError if PerimeterX bot challenge is returned.
+    Raises RuntimeError if Walmart redirects to /blocked (PerimeterX);
+    retry those from a fresh IP after reset_walmart_session().
+    Sends only the isoLoc cookie.
     """
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"},
-    )
-    with urllib.request.urlopen(req, timeout=20) as r:
-        data = r.read()
-        if r.headers.get("Content-Encoding") == "gzip":
-            data = gzip.decompress(data)
-        html = data.decode()
-    if "Robot or human" in html:
-        raise RuntimeError(f"PerimeterX challenge triggered: {url}")
+    global _isoloc
+    if _isoloc is None:
+        _, set_cookies, _ = _get("https://www.walmart.com/robots.txt")  # any response sets isoLoc
+        _isoloc = next(c.split(";")[0].split("=", 1)[1] for c in set_cookies if c.startswith("isoLoc="))
+    final_url, _, html = _get(url, cookie=f"isoLoc={_isoloc}")
+    if "/blocked" in final_url or "Robot or human" in html:
+        raise RuntimeError(f"PerimeterX block: {url}")
     return html
 
 def parse_next_data(html):
@@ -158,14 +185,22 @@ organic = [i for i in items if not i["isSponsored"]]
 ### Pagination
 
 ```python
-for page in range(1, max_page + 1):
+for page in range(1, min(max_page, 10) + 1):
     html = fetch_walmart(f"https://www.walmart.com/search?q=laptop&page={page}")
     items, _, _ = extract_search_results(html)
     # process items...
 ```
 
+Walmart serves at most **10 pages per query**. From page 11 on, `itemStacks` is empty and
+`aggregatedCount` is 0, even when `paginationV2.maxPage` is higher (seen 2026-10-20:
+`maxPage=13`, 4,866 results, pages 11 and 12 empty in a real browser too). Split larger
+result sets with disjoint filters such as non-overlapping price ranges, and deduplicate by
+`usItemId`. A different `sort` only reorders the same capped set.
+
 Page responses average ~2.5 s each. No rate-limiting was observed across 3 sequential requests.
-For bulk scraping, add a 1–2 s delay between requests to be safe.
+For bulk scraping, add a 1–2 s delay between requests to be safe. On 2026-10-20 the block
+rate per IP varied a lot: one datacenter IP served ~70 requests in 40 minutes before
+occasional 307s, while other IPs were blocked within two or three requests.
 
 ---
 
@@ -350,6 +385,13 @@ A fixed proxy country alone does not establish matching locations.
 Field-tested 2026-09-26 through the Bright Data Scraping Browser with `-country-il`:
 10 consecutive browse pages in one session all served 95829 / 3081.
 
+### Canadian visitors
+
+From a Quebec IP on 2026-10-20, `countryRegion` was
+`{"countryCode": "not-available", "regionCode": "QC"}` and plain search pages came back with
+0 items (`aggregatedCount: 0`). In a real browser, Walmart redirected the same search to
+`&facet=fulfillment_method%3AShipping`, which returned results. Use a US IP, or add that facet.
+
 ---
 
 ## Anti-Bot: PerimeterX
@@ -359,14 +401,17 @@ Walmart uses **PerimeterX** (app ID `PXu6b0qd2S`, confirmed in `runtimeConfig.pe
 | Signal | Detail |
 |---|---|
 | Bot detector | PerimeterX |
-| Challenge page | "Robot or human?" — 200 OK, 15 KB HTML |
-| Triggered by | Full browser UA strings (Chrome, curl, python-requests) |
-| Bypassed by | `User-Agent: Mozilla/5.0` (bare prefix only) |
+| Challenge page | "Robot or human?" — 200 OK, 15 KB HTML, reached via `307 → /blocked?url=…` |
+| Triggered by | No `isoLoc` cookie on the request (re-tested 2026-10-20, any UA) |
+| Bypassed by | Sending back the `isoLoc` cookie Walmart sets on any response |
 | No JS execution | SSR response is complete — no JS challenge to solve |
+
+Walmart also loads Akamai Bot Manager (`/akam/…`, cookies `ak_bmsc`, `bm_sv`) and sets
+F5-style `TS01…` cookies. Neither was needed for plain HTTP search pages on 2026-10-20.
 
 Detection in code:
 ```python
-if "Robot or human" in html:
+if "/blocked" in final_url or "Robot or human" in html:
     raise RuntimeError("PerimeterX challenge — switch to browser harness")
 ```
 
@@ -443,8 +488,10 @@ The `__NEXT_DATA__` SSR approach replaces any need for the official API for read
 
 ## Gotchas
 
-- **UA must be `Mozilla/5.0` bare**: Any fuller string (Chrome, Safari, curl, requests) hits
-  PerimeterX. This is counterintuitive — the *shorter*, less realistic UA is the one that works.
+- **Send the `isoLoc` cookie, and only that one**: since at least 2026-10-20, the bare
+  `Mozilla/5.0` UA alone gets `307 → /blocked`. Walmart sets `isoLoc` on any response; send it
+  back (as in `fetch_walmart`). With the cookie, the UA no longer matters. Replaying the full
+  cookie jar Walmart sets (`_pxhd`, `ACID`, `vtc`, `xp*`, …) did no better in tests.
 
 - **Regex must use `id=` attribute match**: The regex
   `r'<script id="__NEXT_DATA__" type="application/json">...'` fails because the actual tag is
@@ -474,9 +521,10 @@ The `__NEXT_DATA__` SSR approach replaces any need for the official API for read
 - **Page sizes vary**: Page 1 returned 66 items across 2 stacks; page 2 returned 55.
   Do not assume a fixed items-per-page count.
 
-- **`http_get` default already sends `Mozilla/5.0`**: `helpers.http_get()` uses
-  `"User-Agent": "Mozilla/5.0"` by default — no override needed when calling it directly.
-  Only pass a custom `headers=` if you need to change something else.
+- **`http_get` does not keep cookies**: `helpers.http_get()` sends `Mozilla/5.0` but no
+  cookie, so on its own it now gets the block page. Pass the cookie yourself, e.g.
+  `http_get(url, headers={"Cookie": "isoLoc=US_CA_t3"})`, with the value Walmart set on a
+  first response.
 
 - **`developer.api.walmart.com`** returns HTTP 403 without an API key. Not usable for
   unauthenticated scraping.
