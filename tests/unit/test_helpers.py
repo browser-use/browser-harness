@@ -738,3 +738,16 @@ def test_js_keeps_base_exception_from_evaluation_when_detach_also_raises():
         KeyboardInterrupt, match="evaluation interrupted"
     ):
         helpers.js("7", target_id="iframe-target")
+
+
+def test_goto_url_finds_domain_skills_for_subdomain_hosts(tmp_path, monkeypatch):
+    monkeypatch.setenv("BH_DOMAIN_SKILLS", "1")
+    for site in ("taobao", "github", "item"):
+        (tmp_path / "domain-skills" / site).mkdir(parents=True)
+        (tmp_path / "domain-skills" / site / f"{site}.md").write_text("x")
+    with patch("browser_harness.helpers.cdp", return_value={}), \
+         patch("browser_harness.helpers.AGENT_WORKSPACE", tmp_path):
+        assert helpers.goto_url("https://cart.taobao.com/cart.htm")["domain_skills"] == ["taobao.md"]
+        assert helpers.goto_url("https://www.github.com/x")["domain_skills"] == ["github.md"]
+        assert helpers.goto_url("https://item.taobao.com/item.htm")["domain_skills"] == ["item.md"]  # first label still wins
+        assert "domain_skills" not in helpers.goto_url("https://example.com/")
