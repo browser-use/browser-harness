@@ -259,7 +259,7 @@ def test_close_tab_current_closes_fallback_when_single_tab_close_fails(failure_m
     assert browser.session_id == "session-current"
 
 
-def test_close_tab_cleanup_survives_failed_session_rollback():
+def test_close_tab_keeps_fallback_when_session_rollback_fails():
     browser = _FakeTabs(
         [{"targetId": "current", "url": "https://current.example/", "title": "Current"}],
         current="current",
@@ -279,8 +279,10 @@ def test_close_tab_cleanup_survives_failed_session_rollback():
         with pytest.raises(RuntimeError, match="close failed"):
             helpers.close_tab()
 
-    assert [t["targetId"] for t in browser.tabs] == ["current"]
-    assert browser.closed == ["new-tab-1"]
+    # The session could not move back, so it stays on the live fallback tab.
+    assert [t["targetId"] for t in browser.tabs] == ["current", "new-tab-1"]
+    assert browser.closed == []
+    assert browser.session_target_id == "new-tab-1"
 
 
 # --- fill_input ---

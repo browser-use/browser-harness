@@ -388,7 +388,8 @@ def close_tab(target=None):
         try:
             switch_tab(cur)
         except Exception:
-            pass
+            # Still attached to the fallback; closing it would leave a dead session.
+            raise close_error
         if fallback_id is not None:
             try:
                 _close_target(fallback_id)
