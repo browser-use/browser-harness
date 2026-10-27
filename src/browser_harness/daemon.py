@@ -504,12 +504,15 @@ class Daemon:
             ))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
+        # Recovery should keep the daemon on its selected tab when multiple
+        # pages are open; only fall back to the first usable page if it vanished.
+        page = next((t for t in pages if t["targetId"] == self.target_id), pages[0])
         self.session = (await self.cdp.send_raw(
-            "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
+            "Target.attachToTarget", {"targetId": page["targetId"], "flatten": True}
         ))["sessionId"]
         self._record_session_replacement(replaces_session, self.session)
-        self.target_id = pages[0]["targetId"]
-        log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
+        self.target_id = page["targetId"]
+        log(f"attached {page['targetId']} ({page.get('url','')[:80]}) session={self.session}")
         if take_over:
             try:
                 await self.cdp.send_raw("Page.navigate", {"url": "about:blank"}, session_id=self.session)
@@ -520,7 +523,7 @@ class Daemon:
             await self._close_inspect_tabs(targets)
         if enable_domains:
             await self._enable_default_domains(self.session)
-        return pages[0]
+        return page
 
     async def _close_inspect_tabs(self, targets):
         """Close chrome://inspect tabs left open by the permission recovery flow"""

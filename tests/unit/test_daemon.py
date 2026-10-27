@@ -751,18 +751,24 @@ def test_delayed_stale_request_follows_recovery_during_domain_enable(monkeypatch
 
 def test_not_attached_page_error_reattaches_and_retries_request(monkeypatch):
     class _DetachedPageCDP(_FakeCDP):
+        attached_target = None
+
         async def send_raw(self, method, params=None, session_id=None):
             self.calls.append((method, params, session_id))
             if method == "Page.captureScreenshot" and session_id == "stale-session":
                 raise RuntimeError("{'code': -32000, 'message': 'Not attached to an active page'}")
             if method == "Target.getTargets":
                 return {"targetInfos": [
+                    {"targetId": "other-tab", "url": "https://other.example/", "type": "page"},
                     {"targetId": "current-tab", "url": "file:///fixture.html", "type": "page"}
                 ]}
             if method == "Target.attachToTarget":
+                self.attached_target = params["targetId"]
                 return {"sessionId": "replacement-session"}
             if method == "Page.captureScreenshot" and session_id == "replacement-session":
-                return {"data": "screenshot"}
+                if self.attached_target == "current-tab":
+                    return {"data": "screenshot"}
+                raise RuntimeError("screenshot was redirected to the wrong tab")
             return {}
 
     monkeypatch.setattr(daemon, "NAME", "default")
@@ -776,7 +782,9 @@ def test_not_attached_page_error_reattaches_and_retries_request(monkeypatch):
 
     assert result == {"result": {"data": "screenshot"}}
     assert d.session == "replacement-session"
+    assert d.target_id == "current-tab"
     assert d._session_replacements == {"stale-session": "replacement-session"}
+    assert d.cdp.attached_target == "current-tab"
     assert [call for call in d.cdp.calls if call[0] == "Page.captureScreenshot"] == [
         ("Page.captureScreenshot", {}, "stale-session"),
         ("Page.captureScreenshot", {}, "replacement-session"),
