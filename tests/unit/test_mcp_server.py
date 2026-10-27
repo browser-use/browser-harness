@@ -9,8 +9,8 @@ from mcp_types import CallToolRequestParams
 import mcp_server
 
 
-def _call_tool(name: str):
-    params = CallToolRequestParams(name=name, arguments={})
+def _call_tool(name: str, arguments=None):
+    params = CallToolRequestParams(name=name, arguments=arguments or {})
     return asyncio.run(mcp_server.SERVER._handle_call_tool(None, params))
 
 
@@ -36,3 +36,23 @@ def test_helper_success_remains_a_normal_tool_result(monkeypatch):
 
     assert result.is_error is False
     assert result.content[0].text == '{"url": "https://example.com"}'
+
+
+def test_browser_new_tab_exposes_background_window_option(monkeypatch):
+    monkeypatch.setattr(mcp_server, "ensure_daemon", lambda: None)
+    calls = []
+
+    def fake_new_tab(url, new_window=False):
+        calls.append((url, new_window))
+        return "target-window"
+
+    monkeypatch.setattr(mcp_server, "new_tab", fake_new_tab)
+
+    result = _call_tool(
+        "browser_new_tab",
+        {"url": "https://example.com", "new_window": True},
+    )
+
+    assert result.is_error is False
+    assert result.content[0].text == '{"targetId": "target-window"}'
+    assert calls == [("https://example.com", True)]
