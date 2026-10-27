@@ -769,7 +769,12 @@ class Daemon:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
             msg = str(e)
-            if "Session with given id not found" in msg and sid:
+            # Navigation can invalidate the attached page with this CDP error.
+            stale_session_error = (
+                "Session with given id not found" in msg
+                or "Not attached to an active page" in msg
+            )
+            if stale_session_error and sid:
                 # Explicit session callers asked for that exact session; do not
                 # silently redirect them to the daemon's current tab.
                 if req.get("session_id"):

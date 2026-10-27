@@ -749,6 +749,40 @@ def test_delayed_stale_request_follows_recovery_during_domain_enable(monkeypatch
     assert d._session_replacements == {"stale-session": "replacement-session"}
 
 
+def test_not_attached_page_error_reattaches_and_retries_request(monkeypatch):
+    class _DetachedPageCDP(_FakeCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Page.captureScreenshot" and session_id == "stale-session":
+                raise RuntimeError("{'code': -32000, 'message': 'Not attached to an active page'}")
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"targetId": "current-tab", "url": "file:///fixture.html", "type": "page"}
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "replacement-session"}
+            if method == "Page.captureScreenshot" and session_id == "replacement-session":
+                return {"data": "screenshot"}
+            return {}
+
+    monkeypatch.setattr(daemon, "NAME", "default")
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cdp")
+    d = daemon.Daemon()
+    d.cdp = _DetachedPageCDP()
+    d.session = "stale-session"
+    d.target_id = "current-tab"
+
+    result = asyncio.run(d.handle({"method": "Page.captureScreenshot", "params": {}}))
+
+    assert result == {"result": {"data": "screenshot"}}
+    assert d.session == "replacement-session"
+    assert d._session_replacements == {"stale-session": "replacement-session"}
+    assert [call for call in d.cdp.calls if call[0] == "Page.captureScreenshot"] == [
+        ("Page.captureScreenshot", {}, "stale-session"),
+        ("Page.captureScreenshot", {}, "replacement-session"),
+    ]
+
+
 def test_tab_switch_waits_for_recovery_and_keeps_old_action_on_old_tab(monkeypatch):
     """A switch during target discovery cannot redirect the recovered action."""
     class _SwitchRaceCDP(_FakeCDP):
@@ -824,12 +858,19 @@ def test_tab_switch_waits_for_recovery_and_keeps_old_action_on_old_tab(monkeypat
     assert redirected == []
 
 
-def test_explicit_stale_session_is_not_redirected():
+@pytest.mark.parametrize(
+    "error_message",
+    [
+        "Session with given id not found",
+        "{'code': -32000, 'message': 'Not attached to an active page'}",
+    ],
+)
+def test_explicit_stale_session_is_not_redirected(error_message):
     """Explicit session requests retain their exact-session semantics."""
     class _AlwaysStaleCDP(_FakeCDP):
         async def send_raw(self, method, params=None, session_id=None):
             self.calls.append((method, params, session_id))
-            raise RuntimeError("Session with given id not found")
+            raise RuntimeError(error_message)
 
     d = daemon.Daemon()
     d.cdp = _AlwaysStaleCDP()
@@ -841,7 +882,7 @@ def test_explicit_stale_session_is_not_redirected():
         "session_id": "explicit-stale-session",
     }))
 
-    assert result == {"error": "Session with given id not found"}
+    assert result == {"error": error_message}
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
