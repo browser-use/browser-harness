@@ -1,3 +1,7 @@
+from types import SimpleNamespace
+
+import pytest
+
 from browser_harness import _ipc as ipc
 
 
@@ -126,3 +130,189 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
         assert ipc.ping("default", timeout=0.0) is False, (
             f"ping() should require pong is exactly True; got: {resp!r}"
         )
+
+
+
+class _EndpointProbe:
+    def __init__(self, outcome=None, response=b'{"pong": true}\n'):
+        self.outcome = outcome
+        self.response = response
+        self.timeout = None
+        self.closed = False
+        self.sent = b""
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def connect(self, _path):
+        if self.outcome is not None:
+            raise self.outcome
+
+    def sendall(self, data):
+        self.sent += data
+
+    def recv(self, _size):
+        response, self.response = self.response, b""
+        return response
+
+    def close(self):
+        self.closed = True
+
+
+def test_prepare_unix_endpoint_preserves_listening_socket(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe()
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    with pytest.raises(RuntimeError, match="already listening"):
+        ipc._prepare_unix_endpoint("default")
+
+    assert socket_path.exists()
+    assert probe.timeout == 1.0
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_removes_refused_stale_socket(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(ConnectionRefusedError())
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    assert ipc._prepare_unix_endpoint("default") == socket_path
+    assert not socket_path.exists()
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_preserves_indeterminate_timeout(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(ipc.socket.timeout())
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    with pytest.raises(RuntimeError, match="did not answer"):
+        ipc._prepare_unix_endpoint("default")
+
+    assert socket_path.exists()
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_preserves_unknown_listener(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(response=b'{"service": "other"}\n')
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    with pytest.raises(RuntimeError, match="unknown listener"):
+        ipc._prepare_unix_endpoint("default")
+
+    assert socket_path.exists()
+    assert b'"meta": "ping"' in probe.sent
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_handles_socket_vanishing_during_connect(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(FileNotFoundError())
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    assert ipc._prepare_unix_endpoint("default") == socket_path
+    assert socket_path.exists()
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_preserves_unclassified_oserror(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    socket_path.touch()
+    probe = _EndpointProbe(OSError("permission denied"))
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(ipc.socket, "socket", lambda *_args: probe)
+
+    with pytest.raises(RuntimeError, match="cannot safely classify"):
+        ipc._prepare_unix_endpoint("default")
+
+    assert socket_path.exists()
+    assert probe.closed is True
+
+
+def test_prepare_unix_endpoint_accepts_missing_socket(monkeypatch, tmp_path):
+    socket_path = tmp_path / "bu-default.sock"
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: socket_path)
+    monkeypatch.setattr(
+        ipc.socket,
+        "socket",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not probe a missing socket")),
+    )
+
+    assert ipc._prepare_unix_endpoint("default") == socket_path
+
+
+class _CleanupEndpointPath:
+    def __init__(self, stat_result=None, stat_error=None):
+        self.stat_result = stat_result
+        self.stat_error = stat_error
+        self.unlinked = False
+
+    def stat(self):
+        if self.stat_error is not None:
+            raise self.stat_error
+        return self.stat_result
+
+    def unlink(self):
+        self.unlinked = True
+
+
+def test_cleanup_endpoint_does_not_unlink_successor_socket(monkeypatch):
+    path = _CleanupEndpointPath(SimpleNamespace(st_dev=1, st_ino=22, st_ctime_ns=300))
+    monkeypatch.setattr(ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: path)
+    monkeypatch.setattr(ipc, "_server_unix_endpoint_identity", (path, 1, 11, 200))
+
+    ipc.cleanup_endpoint("default")
+
+    assert path.unlinked is False
+    assert ipc._server_unix_endpoint_identity == (path, 1, 11, 200)
+
+
+def test_cleanup_endpoint_unlinks_own_socket_generation(monkeypatch):
+    path = _CleanupEndpointPath(SimpleNamespace(st_dev=1, st_ino=11, st_ctime_ns=200))
+    monkeypatch.setattr(ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: path)
+    monkeypatch.setattr(ipc, "_server_unix_endpoint_identity", (path, 1, 11, 200))
+
+    ipc.cleanup_endpoint("default")
+
+    assert path.unlinked is True
+    assert ipc._server_unix_endpoint_identity is None
+
+
+def test_cleanup_endpoint_preserves_different_recorded_path(monkeypatch):
+    current_path = _CleanupEndpointPath(SimpleNamespace(st_dev=1, st_ino=22, st_ctime_ns=300))
+    owned_path = _CleanupEndpointPath(SimpleNamespace(st_dev=1, st_ino=11, st_ctime_ns=200))
+    identity = (owned_path, 1, 11, 200)
+    monkeypatch.setattr(ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: current_path)
+    monkeypatch.setattr(ipc, "_server_unix_endpoint_identity", identity)
+
+    ipc.cleanup_endpoint("default")
+
+    assert current_path.unlinked is False
+    assert ipc._server_unix_endpoint_identity == identity
+
+
+def test_cleanup_endpoint_clears_identity_when_owned_socket_is_already_gone(monkeypatch):
+    path = _CleanupEndpointPath(stat_error=FileNotFoundError())
+    monkeypatch.setattr(ipc, "IS_WINDOWS", False)
+    monkeypatch.setattr(ipc, "_sock_path", lambda _name: path)
+    monkeypatch.setattr(ipc, "_server_unix_endpoint_identity", (path, 1, 11, 200))
+
+    ipc.cleanup_endpoint("default")
+
+    assert path.unlinked is False
+    assert ipc._server_unix_endpoint_identity is None
