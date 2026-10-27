@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEV_ID="$(printf '%s' "$ROOT" | cksum | awk '{print $1}')"
+NAME="${BU_NAME:-default}"
+
+case "$NAME" in
+  ""|*[!A-Za-z0-9_-]*)
+    echo "invalid BU_NAME: $NAME" >&2
+    exit 2
+    ;;
+esac
+
+export BH_HOME="${BH_HOME:-$ROOT/.browser-harness-dev}"
+if [ -z "${BH_RUNTIME_DIR:-}" ]; then
+  export BH_RUNTIME_DIR="/tmp/bh-dev-$DEV_ID/runtime"
+  export BH_RUNTIME_DIR_SHARED="${BH_RUNTIME_DIR_SHARED:-1}"
+fi
+if [ -z "${BH_TMP_DIR:-}" ]; then
+  export BH_TMP_DIR="$BH_HOME/tmp"
+  export BH_TMP_DIR_SHARED="${BH_TMP_DIR_SHARED:-1}"
+fi
+
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  exec "$ROOT/.venv/bin/python" -m browser_harness.run "$@"
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  exec uv --directory "$ROOT" run python -m browser_harness.run "$@"
+fi
+
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m browser_harness.run "$@"

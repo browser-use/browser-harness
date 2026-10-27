@@ -1,0 +1,13 @@
+{
+  "name": "browser-harness",
+  "version": "0.1.0",
+  "description": "Direct browser control via CDP. Drives the user's real Chrome (or a Browser Use cloud browser) with coordinate clicks, screenshots, and Python helpers — no selector hunting. Requires the one-time `browser-harness` CLI install (see the skill's references/install.md).",
+  "author": {
+    "name": "Browser Use",
+    "url": "https://browser-use.com"
+  },
+  "homepage": "https://github.com/browser-use/browser-harness",
+  "repository": "https://github.com/browser-use/browser-harness",
+  "license": "MIT",
+  "keywords": ["browser", "automation", "cdp", "chrome", "scraping", "screenshot", "browser-use", "browser-harness"]
+}

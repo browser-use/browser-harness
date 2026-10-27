@@ -3,7 +3,7 @@
 Usage (run inside browser-harness):
     CLAUDE_SHARE_URL=https://claude.ai/share/<uuid> \
     OUTPUT_DIR=/path/to/transcripts \
-    bh -c "$(cat agent-workspace/domain-skills/claude-ai/extract-share-transcript.py)"
+    browser-harness < agent-workspace/domain-skills/claude-ai/extract-share-transcript.py
 
 Requires: the user's running Chrome must be signed into claude.ai (share pages
 render the conversation only for authenticated viewers — see share-export.md).

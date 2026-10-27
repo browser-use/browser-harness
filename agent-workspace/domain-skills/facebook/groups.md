@@ -9,7 +9,7 @@ views serve a stripped landing page with no post content.
 
 1. Pull the N most recent posts from a named FB group
 2. Harvest every external URL that members have shared
-3. Hand that URL list to Firecrawl (or `http_get`) for structured scraping at scale
+3. Hand that URL list to `http_get` or another downstream extractor for structured scraping at scale
 4. Cache post text + author + timestamp for downstream keyword matching
 
 It is NOT for: replying in groups, DMing members, or any write action.
@@ -101,11 +101,11 @@ def decode_fb_link(href):
     return unquote(q["u"][0]) if "u" in q else href
 ```
 
-## Handoff to Firecrawl (for the public outbound URLs)
+## Handoff for the public outbound URLs
 
 Once you have the harvested external list, those URLs are outside FB's walled
-garden — public, scrapable by anything. Firecrawl's schema-native extraction
-shines here because you want typed results across heterogeneous sources.
+garden — public, scrapable by ordinary HTTP clients or downstream extractors.
+Typed extraction is useful here because the sources are heterogeneous.
 
 ```python
 # After the scroll loop:
@@ -116,17 +116,13 @@ for p in seen.values():
 external_urls = sorted(set(external_urls))
 print(f"harvested {len(external_urls)} unique external URLs")
 
-# Hand off to Firecrawl MCP in the calling conversation:
-#   firecrawl_extract(
-#       urls=external_urls,
-#       prompt="Extract product/listing name, price, location, year, and key features.",
-#       schema={...}
-#   )
+# Hand off to a downstream extractor in the calling conversation with whatever
+# schema matches the task, such as product/listing name, price, location, year,
+# and key features.
 ```
 
-When Firecrawl isn't available or the pages are simple, `http_get(url)` from
-Harness itself is fine — it does a plain HTTP fetch without a browser, works
-for static pages, and is the fastest option for bulk.
+For simple or static pages, `http_get(url)` from Harness itself is fine — it
+does a plain HTTP fetch without a browser and is the fastest option for bulk.
 
 
 ## Rate-limit discipline
@@ -226,8 +222,8 @@ PY
 ```
 
 The JSON on stdout is the handoff payload — parse it in the calling agent and
-route `external_urls` into `firecrawl_extract` with whatever schema matches the
-downstream task (competitor inventory, pricing intel, boat listings, etc).
+route `external_urls` into the downstream extractor that matches the task
+(competitor inventory, pricing intel, boat listings, etc).
 
 ## Gotchas log (append when you hit something new)
 

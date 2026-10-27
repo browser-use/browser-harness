@@ -1,25 +1,81 @@
 import sys
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from browser_harness import run
 
 
-def test_c_flag_executes_code():
+def test_stdin_executes_code():
     stdout = StringIO()
-    with patch.object(sys, "argv", ["browser-harness", "-c", "print('hello from -c')"]), \
+    fake_stdin = StringIO("print('hello from stdin')")
+
+    with patch.object(sys, "argv", ["browser-harness"]), \
          patch("browser_harness.run.ensure_daemon"), \
          patch("browser_harness.run.print_update_banner"), \
+         patch("sys.stdin", fake_stdin), \
          patch("sys.stdout", stdout):
         run.main()
-    assert stdout.getvalue().strip() == "hello from -c"
+
+    assert stdout.getvalue().strip() == "hello from stdin"
+
+
+def test_require_existing_daemon_never_auto_starts(monkeypatch):
+    monkeypatch.setenv("BH_REQUIRE_EXISTING_DAEMON", "1")
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.require_existing_daemon") as mock_require, \
+         patch("browser_harness.run.ensure_daemon") as mock_ensure, \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+
+    mock_require.assert_called_once_with()
+    mock_ensure.assert_not_called()
+
+
+def test_c_flag_is_rejected():
+    with patch.object(sys, "argv", ["browser-harness", "-c", "print('old path')"]), \
+         patch("sys.stdin", StringIO("print('ignored')")):
+        try:
+            run.main()
+        except SystemExit as e:
+            assert "browser-harness <<'PY'" in str(e)
+        else:
+            raise AssertionError("-c should be rejected")
+
+
+def test_no_args_interactive_stdin_prints_usage():
+    fake_stdin = StringIO("")
+    fake_stdin.isatty = lambda: True
+
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", fake_stdin):
+        try:
+            run.main()
+        except SystemExit as e:
+            assert "browser-harness <<'PY'" in str(e)
+        else:
+            raise AssertionError("interactive no-args invocation should exit with usage")
+
+
+def test_no_args_empty_stdin_prints_usage():
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("")):
+        try:
+            run.main()
+        except SystemExit as e:
+            assert "browser-harness <<'PY'" in str(e)
+        else:
+            raise AssertionError("empty stdin should exit with usage")
 
 
 def test_cloud_bootstrap_on_headless_server(monkeypatch):
     """No daemon, no local Chrome, API key + BU_AUTOSPAWN set -> auto-provision cloud daemon."""
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
     monkeypatch.setenv("BU_AUTOSPAWN", "1")
-    with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
          patch("browser_harness.run.daemon_alive", return_value=False), \
          patch("browser_harness.run._local_chrome_listening", return_value=False), \
          patch("browser_harness.run.start_remote_daemon") as mock_start, \
@@ -37,7 +93,8 @@ def test_explicit_bu_cdp_url_blocks_cloud_bootstrap(monkeypatch):
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
     monkeypatch.setenv("BU_AUTOSPAWN", "1")
-    with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
          patch("browser_harness.run.daemon_alive", return_value=False), \
          patch("browser_harness.run._local_chrome_listening", return_value=False), \
          patch("browser_harness.run.start_remote_daemon") as mock_start, \
@@ -54,7 +111,8 @@ def test_explicit_bu_cdp_ws_blocks_cloud_bootstrap(monkeypatch):
     monkeypatch.setenv("BU_CDP_WS", "ws://example.test/devtools/browser/abc")
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
     monkeypatch.setenv("BU_AUTOSPAWN", "1")
-    with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
          patch("browser_harness.run.daemon_alive", return_value=False), \
          patch("browser_harness.run._local_chrome_listening", return_value=False), \
          patch("browser_harness.run.start_remote_daemon") as mock_start, \
@@ -71,7 +129,8 @@ def test_empty_bu_cdp_url_does_not_block_bootstrap(monkeypatch):
     monkeypatch.setenv("BU_CDP_URL", "")
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
     monkeypatch.setenv("BU_AUTOSPAWN", "1")
-    with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
          patch("browser_harness.run.daemon_alive", return_value=False), \
          patch("browser_harness.run._local_chrome_listening", return_value=False), \
          patch("browser_harness.run.start_remote_daemon") as mock_start, \
@@ -79,6 +138,21 @@ def test_empty_bu_cdp_url_does_not_block_bootstrap(monkeypatch):
          patch("browser_harness.run.print_update_banner"):
         run.main()
     mock_start.assert_called_once()
+
+
+def test_bad_stored_cloud_auth_does_not_bootstrap_or_crash(monkeypatch):
+    monkeypatch.setenv("BU_AUTOSPAWN", "1")
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.daemon_alive", return_value=False), \
+         patch("browser_harness.run._local_chrome_listening", return_value=False), \
+         patch("browser_harness.run.auth.get_browser_use_api_key", side_effect=run.auth.AuthError("auth file is not valid JSON")), \
+         patch("browser_harness.run.start_remote_daemon") as mock_start, \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+
+    mock_start.assert_not_called()
 
 
 def test_both_bu_cdp_url_and_bu_cdp_ws_set_blocks_bootstrap(monkeypatch):
@@ -89,7 +163,8 @@ def test_both_bu_cdp_url_and_bu_cdp_ws_set_blocks_bootstrap(monkeypatch):
     monkeypatch.setenv("BU_CDP_WS", "ws://example.test/devtools/browser/abc")
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
     monkeypatch.setenv("BU_AUTOSPAWN", "1")
-    with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
          patch("browser_harness.run.daemon_alive", return_value=False), \
          patch("browser_harness.run._local_chrome_listening", return_value=False), \
          patch("browser_harness.run.start_remote_daemon") as mock_start, \
@@ -106,7 +181,8 @@ def test_explicit_endpoint_does_not_break_daemon_alive_short_circuit(monkeypatch
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
     monkeypatch.setenv("BU_AUTOSPAWN", "1")
-    with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
          patch("browser_harness.run.daemon_alive", return_value=True), \
          patch("browser_harness.run._local_chrome_listening", return_value=False), \
          patch("browser_harness.run.start_remote_daemon") as mock_start, \
@@ -124,7 +200,8 @@ def test_explicit_endpoint_does_not_break_local_chrome_short_circuit(monkeypatch
     monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
     monkeypatch.setenv("BU_AUTOSPAWN", "1")
-    with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO("x = 1")), \
          patch("browser_harness.run.daemon_alive", return_value=False), \
          patch("browser_harness.run._local_chrome_listening", return_value=True), \
          patch("browser_harness.run.start_remote_daemon") as mock_start, \
@@ -164,23 +241,61 @@ def test_explicit_cdp_configured_helper_falsy(monkeypatch):
 
 def test_local_chrome_listening_rejects_non_chrome():
     """A bare TCP listener on 9222/9223 must not fool the probe — only a real
-    /json/version response counts as Chrome."""
+    /json/version response with a DevTools WebSocket counts as Chrome."""
     with patch("browser_harness.run.urllib.request.urlopen", side_effect=OSError):
         assert run._local_chrome_listening() is False
-    with patch("browser_harness.run.urllib.request.urlopen") as mock_open:
+    for payload in (b"not JSON", b"{}", b"[]", b'{"webSocketDebuggerUrl": ""}', b'{"webSocketDebuggerUrl": 1}'):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = payload
+        with patch("browser_harness.run.urllib.request.urlopen", return_value=response) as mock_open:
+            assert run._local_chrome_listening() is False
+        assert mock_open.call_count == 2
+
+
+def test_local_chrome_listening_accepts_devtools_response():
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/x"}'
+    with patch("browser_harness.run.urllib.request.urlopen", return_value=response) as mock_open:
         assert run._local_chrome_listening() is True
-        mock_open.assert_called_once()
+    mock_open.assert_called_once()
 
 
-def test_c_flag_does_not_read_stdin():
-    stdin_read = []
-    fake_stdin = StringIO("should not be read")
-    fake_stdin.read = lambda: stdin_read.append(True) or ""
+def test_cli_doctor_fix_snap_invokes_guide():
+    with patch.object(sys, "argv", ["browser-harness", "doctor", "--fix-snap"]), \
+         patch("browser_harness.run.run_doctor_fix_snap", return_value=0) as m:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+    assert ei.value.code == 0
+    m.assert_called_once()
 
-    with patch.object(sys, "argv", ["browser-harness", "-c", "x = 1"]), \
-         patch("browser_harness.run.ensure_daemon"), \
-         patch("browser_harness.run.print_update_banner"), \
-         patch("sys.stdin", fake_stdin):
-        run.main()
 
-    assert not stdin_read, "stdin should not be read when -c is passed"
+def test_cli_doctor_rejects_unknown_flags():
+    err = StringIO()
+    with patch.object(sys, "argv", ["browser-harness", "doctor", "--bogus"]), patch("sys.stderr", err):
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+    assert ei.value.code == 2
+    assert "usage" in err.getvalue().lower()
+
+
+def test_cli_update_rejects_unknown_flags():
+    err = StringIO()
+    with patch.object(sys, "argv", ["browser-harness", "--update", "--bogus"]), \
+         patch("sys.stderr", err), \
+         patch("browser_harness.run.run_update") as m:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+    assert ei.value.code == 2
+    assert "usage" in err.getvalue().lower()
+    m.assert_not_called()
+
+
+@pytest.mark.parametrize("flag,expected_yes", [(None, False), ("-y", True), ("--yes", True)])
+def test_cli_update_forwards_yes_flag(flag, expected_yes):
+    argv = ["browser-harness", "--update"] + ([flag] if flag else [])
+    with patch.object(sys, "argv", argv), \
+         patch("browser_harness.run.run_update", return_value=0) as m:
+        with pytest.raises(SystemExit) as ei:
+            run.main()
+    assert ei.value.code == 0
+    m.assert_called_once_with(yes=expected_yes)

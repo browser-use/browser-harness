@@ -27,7 +27,7 @@ Traps to avoid:
 - `document.querySelector("h1, h2")` picks up sidebar `Starred` etc — not the chat title
 - Each assistant block contains an `H2.sr-only` reading "Claude responded:" — screen-reader only, but `innerText` includes it. Selecting `.font-claude-response` skips it.
 - User blocks render a "You said: <preview>" heading separate from the body — `[data-testid=user-message]` returns just the body, so use it directly. Don't use the wrapping turn div's `innerText` or you'll get the preview duplicated.
-- `js()` shares a global scope across calls in the same `bh -c` invocation. Wrap extraction in an IIFE — `const`/`let` at top level will collide on re-run. (General bh gotcha, but bites here because you'll iterate selectors.)
+- `js()` shares a global scope across calls in the same `browser-harness` invocation. Wrap extraction in an IIFE — `const`/`let` at top level will collide on re-run. (General harness gotcha, but bites here because you'll iterate selectors.)
 
 ## Container-walk pattern
 
@@ -50,10 +50,10 @@ A working script lives next to this file: `extract-share-transcript.py`. Run it 
 ```bash
 CLAUDE_SHARE_URL=https://claude.ai/share/<uuid> \
 OUTPUT_DIR=/path/to/transcripts \
-bh -c "$(cat agent-workspace/domain-skills/claude-ai/extract-share-transcript.py)"
+browser-harness < agent-workspace/domain-skills/claude-ai/extract-share-transcript.py
 ```
 
-The script reads both via env vars (browser-harness's `-c` doesn't forward extra `argv`, so env vars are the cleanest passthrough).
+The script reads both via env vars (browser-harness runs the script it reads on stdin and forwards no extra `argv`, so env vars are the cleanest passthrough).
 
 It produces two files in the output dir, named from the conversation title slug:
 

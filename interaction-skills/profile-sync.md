@@ -10,7 +10,7 @@ curl -fsSL https://browser-use.com/profile.sh | sh
 
 Downloads `profile-use` (macOS / Linux, x64 / arm64). The Python helpers shell out to it; you don't run `profile-use` directly.
 
-## Python API (pre-imported in `browser-harness -c`)
+## Python API (pre-imported in `browser-harness`)
 
 ```python
 list_cloud_profiles()
