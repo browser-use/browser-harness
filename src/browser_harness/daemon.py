@@ -127,6 +127,14 @@ TOGGLE_BOOT_GRACE = 12
 # Cancellation should make an in-flight CDP call finish immediately. Keep the
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
+CDP_DISCONNECT_GRACE = 3
+# When the strict Cloud stop fails in the monitor, the daemon stays up as a
+# retryable cleanup authority and retries in the background: REMOTE_STOP_MAX_
+# RETRIES passes, REMOTE_STOP_RETRY_INTERVAL apart, then it gives up and the
+# daemon remains as a cleanup-only holder (ping exposes the CDP state so
+# callers can tell).
+REMOTE_STOP_RETRY_INTERVAL = 30
+REMOTE_STOP_MAX_RETRIES = 5
 TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
 
 
@@ -438,6 +446,7 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        self._remote_stop_retry = None  # background retry task, set by _monitor_cdp
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -610,6 +619,112 @@ class Daemon:
                 return False
         return self._recoveries_idle.is_set()
 
+    def _cdp_handler_task(self):
+        if self.cdp is None:
+            return None
+        return getattr(self.cdp, "_message_handler_task", None)
+
+    def _cdp_handler_alive(self):
+        task = self._cdp_handler_task()
+        return bool(task and not task.done())
+
+    def _handler_exit_reason(self):
+        """Why the message handler ended: closed socket, or a crash with the socket still open."""
+        ws = getattr(self.cdp, "ws", None)
+        if ws is None:
+            return "ws unavailable"
+        state = getattr(ws, "state", None)
+        state_name = getattr(state, "name", "") if state is not None else ""
+        if state_name.startswith("CLOSED") or getattr(ws, "closed", False):
+            return "connection closed"
+        return f"handler exited with ws open ({state_name or 'unknown state'})"
+
+    async def _retry_remote_stop(self):
+        """Retry the failed strict Cloud stop so a billable browser does not leak.
+
+        Runs in the background while the daemon stays up as a cleanup authority:
+        each pass gives an orderly shutdown REMOTE_STOP_RETRY_INTERVAL to win,
+        then retries the stop. Gives up after REMOTE_STOP_MAX_RETRIES failures
+        (ping then shows a dead CDP so callers can tell), and returns as soon
+        as the daemon shuts down for any other reason.
+        """
+        for _ in range(REMOTE_STOP_MAX_RETRIES):
+            try:
+                await asyncio.wait_for(self.stop.wait(), timeout=REMOTE_STOP_RETRY_INTERVAL)
+                return  # orderly shutdown won; nothing left to retry
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await asyncio.to_thread(stop_remote, strict=True)
+            except Exception as e:
+                log(f"remote stop retry failed; keeping daemon for retry: {e}")
+                continue
+            if self._shutting_down or self.stop.is_set():
+                return
+            log("remote browser stopped by monitor retry; shutting down")
+            self._shutting_down = True
+            self.stop.set()
+            return
+
+    async def _monitor_cdp(self):
+        """Stop this daemon when its CDP WebSocket message handler exits.
+
+        Keep the daemon available briefly for orderly shutdown to win the
+        race. cdp-use doesn't support restarting a started client, so a
+        closed handler cannot be reconnected in-place; serve() performs
+        best-effort cleanup of daemon-owned targets when this stop event is
+        set.
+        """
+        handler = self._cdp_handler_task()
+        if handler is None:
+            # The attribute is private to cdp-use (and comes from the upstream
+            # CDPClient for remote browsers); a silent return would turn this
+            # monitor into a no-op after a cdp-use bump.
+            log("CDP monitor: client exposes no message handler task; monitor is a no-op")
+            return
+        try:
+            await handler
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log(f"CDP message handler stopped: {e}")
+        else:
+            log(f"CDP message handler stopped: {self._handler_exit_reason()}")
+        # The handler can exit on any exception while the socket is still open
+        # (malformed frame, event-callback error). Stop the client best-effort
+        # so a later send_raw fails fast instead of awaiting a reply nothing
+        # will ever read.
+        client_stop = getattr(self.cdp, "stop", None)
+        if callable(client_stop):
+            try:
+                await asyncio.wait_for(client_stop(), timeout=RECOVERY_CANCEL_DRAIN_TIMEOUT)
+            except Exception as e:
+                log(f"CDP client stop after handler exit: {e}")
+
+        if self.stop is None or self.stop.is_set():
+            return
+        log(f"CDP connection closed; exiting after {CDP_DISCONNECT_GRACE}s grace")
+        try:
+            await asyncio.wait_for(self.stop.wait(), timeout=CDP_DISCONNECT_GRACE)
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            # stop_remote blocks for up to ~46s (3 x urlopen(15s) + backoff);
+            # run it off the event loop so live IPC handlers keep answering.
+            await asyncio.to_thread(stop_remote, strict=True)
+        except Exception as e:
+            # Keep this daemon available as a retryable cleanup authority. In
+            # particular, do not let serve() remove its endpoint and PID file
+            # while a billable remote browser may still be running.
+            log(f"CDP disconnected and remote stop failed; keeping daemon for retry: {e}")
+            self._remote_stop_retry = asyncio.create_task(self._retry_remote_stop())
+            return
+
+        self._shutting_down = True
+        self.stop.set()
+
     def _schedule_tab_marker(self, session_id):
         """Mark the controlled tab without extending the synchronous IPC path."""
         if not tab_marker_enabled():
@@ -661,6 +776,7 @@ class Daemon:
             self._record_event(method, params, session_id)
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+        self._cdp_monitor = asyncio.create_task(self._monitor_cdp())
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -674,7 +790,7 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
+        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND, "cdp": self._cdp_handler_alive()}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
@@ -852,8 +968,15 @@ async def serve(d):
                 async with d._dedicated_target_lock:
                     if d.dedicated_target_id and d.cdp:
                         try:
-                            await d.cdp.send_raw(
-                                "Target.closeTarget", {"targetId": d.dedicated_target_id}
+                            # The handler can have exited with the socket still
+                            # open, leaving send_raw awaiting a reply nothing
+                            # will ever read. Bound the cleanup so shutdown
+                            # always reaches ipc.cleanup_endpoint.
+                            await asyncio.wait_for(
+                                d.cdp.send_raw(
+                                    "Target.closeTarget", {"targetId": d.dedicated_target_id}
+                                ),
+                                timeout=RECOVERY_CANCEL_DRAIN_TIMEOUT,
                             )
                             d.dedicated_target_id = None
                         except Exception as e:
