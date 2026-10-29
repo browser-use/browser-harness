@@ -27,7 +27,7 @@ URL patterns:
   - `最多收藏`
 - The `排序依据` row can render duplicate DOM nodes for the same pill text, including non-interactive clones.
 - Raw global text search for `最新` can hit the wrong node first. Scope to the `排序依据` section and then choose the visible interactive `.tags` node.
-- Prefer semantic filtering such as `aria-hidden != "true"` or section-scoped visible `.tags` selection over style-specific checks.
+- `aria-hidden != "true"` alone is not a safe discriminator: it only works while the clone carries that attribute, and a clone could omit it or be hidden through an ancestor. The clone is also *rendered* (absolutely positioned over the real pill with `opacity: 1e-05; z-index: -1`, re-checked 2026-10-28), so `getClientRects()` / `offsetParent` alone do not exclude it either. Scope to the section and require the node that is opaque, outside any `aria-hidden` subtree, and wins the hit test (see Interaction notes).
 - When `最新` is active, the `筛选` trigger changes to `已筛选`.
 - The rendered feed and the `已筛选` / active-pill UI are more reliable than `window.__INITIAL_STATE__.search.searchContext.sort` for confirming latest sort.
 
@@ -46,10 +46,11 @@ URL patterns:
   - search within that block for `.tags`
   - choose the one whose text is `最新` and which is the visible interactive node
   - call `.click()` on that visible node
-- Example selector strategy:
+- Example selector strategy (re-checked 2026-10-28, logged in):
   - find `.filters` whose first label is `排序依据`
-  - inside it, pick `.tags` where `textContent.trim() === "最新"` and `el.getAttribute("aria-hidden") !== "true"`
-- `getClientRects().length > 0` alone may be insufficient to distinguish the working node from a duplicate.
+  - inside it, pick `.tags` where `textContent.trim() === "最新"` and the node is the real, interactive pill: `el.scrollIntoView({block: "center"}); const r = el.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);` then require `!el.closest('[aria-hidden="true"]') && parseFloat(getComputedStyle(el).opacity) > 0.5 && el.getClientRects().length > 0 && (hit === el || el.contains(hit))`. Scroll first: `elementFromPoint` returns `null` for a point outside the viewport, so on a scrolled results page every candidate fails the hit test
+  - exactly one node should survive; `.click()` it, then confirm the `筛选` trigger changed to `已筛选` (and the pill has class `active`). If not, the clone was hit — fall back to the coordinate click below
+- Observed structure: every sort pill has two `.tags` siblings. The clone carries `aria-hidden="true"`, `tabindex="-1"` and inline `position: absolute; opacity: 1e-05; z-index: -1`, sitting exactly over the real pill, so it has client rects and an `offsetParent` like the real one; only the opacity, the `aria-hidden` subtree and the hit test tell them apart. No single check is enough — `getClientRects().length > 0` alone keeps both, and `aria-hidden` alone breaks the day the clone drops the attribute.
 - A broad `document.querySelectorAll("*")` text match for `最新` is not reliable on this page because it may click the hidden duplicate instead of the visible control.
 - Coordinate click on the visible `最新` pill also worked and remains a valid fallback if DOM targeting gets confused by future UI changes.
 - After selecting `最新`, the grid briefly showed skeleton placeholders before the refreshed results appeared.
