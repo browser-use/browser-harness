@@ -152,9 +152,9 @@ for j in result["jobs"]:
 
 ### Pagination
 
-The API uses `hasMore` (boolean), not a total count. **Page-based pagination is unreliable** — `page=2` often returns 0 results even when `page=1` says `hasMore: true` (re-checked 2026-10-28: `page=1` → 15 jobs, `hasMore: true`; `page=2` and `page=3` → 0 jobs). A `for page in ...` loop therefore stops after page 1 and looks like a complete result. Use the page 1 results and widen the filters (e.g., smaller `pageSize`, different city) rather than paginating.
+The API uses `hasMore` (boolean), not a total count. **Page-based pagination is unreliable** — `page=2` often returns 0 results even when `page=1` says `hasMore: true` (re-checked 2026-10-28: `page=1` → 15 jobs, `hasMore: true`; `page=2` and `page=3` → 0 jobs). A `for page in ...` loop therefore stops after page 1 and looks like a complete result. Use the page 1 results and vary valid filters (e.g., a different `city`) rather than paginating.
 
-The actual job search page loads recommendations once at `page=1` and lazy-loads more via scroll, which triggers a different API path. For bulk extraction, take page 1 of several filter combinations (city, experience, salary) and dedupe by `encryptJobId`. This is best-effort — it does not enumerate every job:
+The actual job search page loads recommendations once at `page=1` and lazy-loads more via scroll, which triggers a different API path. For bulk extraction, take page 1 for several cities and dedupe by `encryptJobId`; non-default `experience` / `salary` / `degree` filters need a valid `encryptExpectId` (see Gotchas), so leave `filter_sets` at its default unless you have one. This is best-effort — it does not enumerate every job:
 
 ```python
 def fetch_jobs_best_effort(cities=("101020100",), filter_sets=({},), page_size=15):
