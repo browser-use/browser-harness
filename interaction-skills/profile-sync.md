@@ -4,11 +4,9 @@ Make a remote Browser Use browser start already logged in, by uploading cookies 
 
 ## One-time install
 
-```bash
-curl -fsSL https://browser-use.com/profile.sh | sh
-```
+Download the `profile-use` binary for your platform from the [official releases](https://github.com/browser-use/profile-use-releases/releases/latest), put it on your `PATH`, and verify it with `profile-use --help`.
 
-Downloads `profile-use` (macOS / Linux, x64 / arm64). The Python helpers shell out to it; you don't run `profile-use` directly.
+The Python helpers shell out to `profile-use`; you don't run it directly.
 
 ## Python API (pre-imported in `browser-harness`)
 

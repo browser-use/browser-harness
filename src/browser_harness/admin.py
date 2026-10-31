@@ -1040,7 +1040,7 @@ def list_local_profiles():
     """Detected local browser profiles on this machine. Shells out to `profile-use list --json`."""
     import json, shutil, subprocess
     if not shutil.which("profile-use"):
-        raise RuntimeError("profile-use not installed -- curl -fsSL https://browser-use.com/profile.sh | sh")
+        raise RuntimeError("profile-use not installed -- download it from https://github.com/browser-use/profile-use-releases/releases/latest and put it on PATH")
     return json.loads(subprocess.check_output(["profile-use", "list", "--json"], text=True, encoding="utf-8", errors="replace"))
 
 
@@ -1065,7 +1065,7 @@ def sync_local_profile(profile_name, browser=None, cloud_profile_id=None,
                           before `include_domains` so exclude wins on overlap."""
     import shutil, subprocess, sys
     if not shutil.which("profile-use"):
-        raise RuntimeError("profile-use not installed -- curl -fsSL https://browser-use.com/profile.sh | sh")
+        raise RuntimeError("profile-use not installed -- download it from https://github.com/browser-use/profile-use-releases/releases/latest and put it on PATH")
     key = auth.get_browser_use_api_key()
     cmd = ["profile-use", "sync", "--profile", profile_name]
     if browser:
