@@ -7,7 +7,7 @@ robots.txt (fetched 2026-10-31) has no rule matching `/stock?t=<T>`, so stock pa
 ## Quick summary
 
 - **Stock page** `https://finviz.com/stock?t=<T>` is server-rendered: 6 `table.js-snapshot-table` tables hold 84 label/value cells (valuation, growth, ownership, margins, technicals, performance), plus a header with company, sector, industry, country, exchange, website and last price. A `<script id="income-breakdown-init-data-0">` JSON block adds a 2-year annual income statement summary.
-- The old `/quote.ashx?t=AAPL` 301s to `/quote?t=AAPL`, which 301s to `/stock?t=AAPL`; the browser lands on `/stock?t=AAPL&p=d`.
+- The old `/quote.ashx?t=AAPL` redirects to `/quote?t=AAPL`, which redirects to `/stock?t=AAPL`; the browser lands on `/stock?t=AAPL&p=d`.
 - **Preset screeners**: each page embeds its rows in a `<script type="application/json">` block (`"screenerType"` key). Views `v=340` (snapshot) and `v=320` (news) carry 10 rows per page with price, change %, volume, avg volume, market cap. View `v=210` (charts) carries 12 tickers per page with company, industry, country and market cap only.
 - Only the 35 presets robots.txt names are usable, each with its fixed view. Changing `v`, adding filters `f=` or sort `o=` turns it into a disallowed custom screener.
 - Plain Python `urllib` gets HTTP 403 (Cloudflare error 1010) on stock and screener pages. Use the browser.
@@ -315,10 +315,10 @@ saved <tempdir>/finviz_presets.json
 
 ## Gotchas
 
-- CDP calls on Finviz sometimes exceed browser-harness's 5 s daemon timeout while ads load. The helpers retry (`js_retry`) and treat a timed-out `Page.navigate` as still running. With several Finviz tabs left open the cloud browser stopped answering ("required daemon ... is unhealthy: timed out") and had to be restarted; after closing the tab in `finally`, 6 consecutive runs of the two blocks below completed (25 to 39 s each).
+- CDP calls on Finviz sometimes exceed browser-harness's 5 s daemon timeout while ads load. The helpers retry (`js_retry`) and treat a timed-out `Page.navigate` as still running. With several Finviz tabs left open the cloud browser stopped answering ("required daemon ... is unhealthy: timed out") and had to be restarted; after closing the tab in `finally`, 6 consecutive runs of the two blocks above completed (25 to 39 s each).
 - `ta_topgainers` rows come in descending `change_pct` order (20 of 20 rows checked across 2 pages).
 - `ta_unusualvolume` reported `totalCount` 200 on 2026-10-31.
-- `/screener?v=340&s=ta_topgainers` 302s to `/screener/stocks?v=340&s=ta_topgainers`; robots.txt allows the same 35 presets under both paths. The helper requests the `/screener/stocks` form directly and refuses to read a page whose final URL differs from the one requested.
+- `/screener?v=340&s=ta_topgainers` redirects to `/screener/stocks?v=340&s=ta_topgainers`; robots.txt allows the same 35 presets under both paths. The helper requests the `/screener/stocks` form directly and refuses to read a page whose final URL differs from the one requested.
 - On a weekend the header shows "Last Close" for the last session (Oct 30 on Saturday Oct 31) and the aftermarket close.
 - Chart images on screener pages come from `charts2-node.finviz.com`; the helpers do not fetch them (`/chart` on finviz.com is disallowed).
 - No Cloudflare challenge appeared in more than 40 browser page loads at 2 to 3 s spacing. If one does, the helpers raise: stop and tell the user.
