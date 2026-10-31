@@ -177,8 +177,10 @@ real Chrome once, then retry.
   resolves; don't cache across calls.
 - **`_browser_use` has a 60s timeout** in `admin.py`; long-running ops
   (large profile sync) need their own polling.
-- **`profile-use` CLI is a separate install**:
-  `curl -fsSL https://browser-use.com/profile.sh | sh`.
+- **`profile-use` CLI is a separate install**: download the platform asset from the
+  [official releases](https://github.com/browser-use/profile-use-releases/releases/latest),
+  rename it to `profile-use` (or `profile-use.exe` on Windows), run `chmod +x profile-use`
+  on Unix, and put it on your `PATH`.
 - **`pageSize` caps at 100** silently — paginate via `pageNumber`.
   `totalItems` in the envelope lets you size loops up front.
 - **`proxyCountryCode` defaults to `"us"`** when omitted; pass `None` to
