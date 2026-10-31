@@ -4,7 +4,7 @@ Make a remote Browser Use browser start already logged in, by uploading cookies 
 
 ## One-time install
 
-Download the `profile-use` binary for your platform from the [official releases](https://github.com/browser-use/profile-use-releases/releases/latest), put it on your `PATH`, and verify it with `profile-use --help`.
+Download the platform asset from the [official releases](https://github.com/browser-use/profile-use-releases/releases/latest), rename it to `profile-use` (or `profile-use.exe` on Windows), make it executable on Unix with `chmod +x profile-use`, put it on your `PATH`, and verify it with `profile-use --help`.
 
 The Python helpers shell out to `profile-use`; you don't run it directly.
 
