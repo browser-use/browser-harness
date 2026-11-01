@@ -29,11 +29,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp==2.1.1"]
+# Kept so existing `browser-harness[mcp]` installs keep working; the server is in the Go core.
+mcp = []
 
 [project.scripts]
 browser-harness = "browser_harness.cli:main"
-browser-harness-mcp = "browser_harness.mcp_cli:main"
+browser-harness-mcp = "browser_harness.cli:mcp"
 
 [project.urls]
 Homepage = "https://github.com/browser-use/browser-harness"
@@ -42,7 +43,6 @@ Issues = "https://github.com/browser-use/browser-harness/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["mcp_server"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

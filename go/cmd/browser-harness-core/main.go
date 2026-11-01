@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/browser-use/browser-harness/go/internal/cli"
+	"github.com/browser-use/browser-harness/go/internal/mcpserver"
 	"github.com/browser-use/browser-harness/go/internal/paths"
 	"github.com/browser-use/browser-harness/go/internal/telemetry"
 )
@@ -29,6 +30,8 @@ func dispatch(cmd string, args []string) int {
 		return runCall(args)
 	case "cli":
 		return cli.Main(args)
+	case "mcp":
+		return mcpserver.Run(os.Getenv("BH_VERSION"))
 	case "telemetry-send":
 		return telemetry.RunSender()
 	}
