@@ -5,7 +5,7 @@ description: "Control a real browser via CDP: clicking, typing, navigation, logg
 
 # browser-harness
 
-Direct browser control via CDP. For task-specific edits, use `agent-workspace/agent_helpers.py`. For setup, install, or connection problems, read https://github.com/browser-use/browser-harness/blob/main/install.md.
+Direct browser control via CDP. For task-specific edits, use `agent-workspace/agent_helpers.js`. For setup, install, or connection problems, read https://github.com/browser-use/browser-harness/blob/main/install.md.
 
 ## When Not to Use
 
@@ -18,13 +18,19 @@ Domain skills are off by default. Set `BH_DOMAIN_SKILLS=1` to enable them; see t
 ## Usage
 
 ```bash
-browser-harness <<'PY'
+browser-harness <<'JS'
 print(page_info())
-PY
+JS
 ```
 
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
-- Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
+- Snippets are JavaScript. Helpers are globals and the CLI ensures the daemon first.
+- Helpers are synchronous: they return values directly. There is no `await`,
+  `setTimeout`, `require`, `fetch` or Node API; use `wait(seconds)`,
+  `http_get(url)`, `read_file(path)`, `write_file(path, text)` and `env(name)`.
+- Options go in a trailing object: `capture_screenshot(path, {max_dim: 1800})`,
+  `list_tabs({include_chrome: false})`. `print(...)` prints strings as-is and
+  other values as JSON; `console.log` is the same.
 - First navigation for a task is `new_tab(url)`, not `goto_url(url)`. The daemon
   preserves the attached tab across separate CLI invocations, so do not call
   `new_tab()` again in every script.
@@ -50,7 +56,7 @@ PY
   The horse marker remains enabled by default.
 - A timeout or page that pauses while hidden is not permission to foreground
   Chrome. Keep using background CDP operations. For a focus-gated page,
-  temporarily call `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`,
+  temporarily call `cdp("Emulation.setFocusEmulationEnabled", {enabled: true})`,
   perform and verify the operation, then disable it in a `finally` block. If
   background control still cannot work, report that limitation instead of
   activating the tab. Do not invent a `Runtime.evaluate` scroll replacement or
@@ -164,27 +170,27 @@ printf '%s' "$BROWSER_USE_API_KEY" | browser-harness auth login --api-key-stdin
 Pick a short made-up name; `r7k2` below is just a placeholder:
 
 ```bash
-browser-harness <<'PY'
+browser-harness <<'JS'
 start_remote_daemon("r7k2")
-PY
+JS
 
-BU_NAME=r7k2 browser-harness <<'PY'
+BU_NAME=r7k2 browser-harness <<'JS'
 new_tab("https://example.com")
 print(page_info())
-PY
+JS
 ```
 
 When the task is done and a cloud browser is still running, ask directly: "Should I close this browser now?" If yes, run `stop_remote_daemon(name)`. Remote daemons bill until they stop or time out.
 
 Do not start a remote daemon and then keep using the default daemon. Use the same name for `BU_NAME`.
 
-Cloud browsers ignore viewport and device emulation (`Emulation.setDeviceMetricsOverride`, touch, window bounds) unless started with `start_remote_daemon(name, allowResizing=True)`.
+Cloud browsers ignore viewport and device emulation (`Emulation.setDeviceMetricsOverride`, touch, window bounds) unless started with `start_remote_daemon(name, {allowResizing: true})`.
 
 Cloud profile cookie sync reference: https://github.com/browser-use/browser-harness/blob/main/interaction-skills/profile-sync.md.
 
 ## Page Workflow
 
-- Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree")["nodes"]` has every element's role, name, and `backendDOMNodeId` — filter in Python before printing (it is thousands of nodes). Coordinates: `q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
+- Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree").nodes` has every element's role, name, and `backendDOMNodeId` — filter in JavaScript before printing (it is thousands of nodes). Coordinates: `const q = cdp("DOM.getBoxModel", {backendNodeId: n}).model.content; const x = (q[0] + q[2] + q[4] + q[6]) / 4, y = (q[1] + q[3] + q[5] + q[7]) / 4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
@@ -192,10 +198,9 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
-- Raw CDP is available with `cdp("Domain.method", ...)`.
-  Pass CDP parameters as keywords: `cdp("Input.insertText", text="hello")`.
-  The second positional argument is a session ID, not a parameters dictionary.
-  When targeting an explicit session, use `session_id="..."` alongside the keywords.
+- Raw CDP is available with `cdp("Domain.method", {...params})`:
+  `cdp("Input.insertText", {text: "hello"})`. To target an explicit session,
+  add `session_id: "..."` to the same object.
 
 ## Recordings and Videos
 
@@ -211,7 +216,7 @@ browser-harness recordings
 natural nudge to “record,” “show,” “demo,” or “make a video” opts in that task;
 significant work alone does not.
 
-Before browser work, call `start_recording(name, title=...)`, retain its exact
+Before browser work, call `start_recording(name, {title: ...})`, retain its exact
 returned directory, and call `stop_recording()` after verifying the result.
 Never replace that path with `recordings --latest`. For a request made after
 the task, use:
@@ -260,7 +265,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - Trusted orchestrators that already provisioned an exact named daemon can set
   `BH_REQUIRE_EXISTING_DAEMON=1`. Each CLI call then health-checks and reuses
   that daemon or fails closed; it never auto-starts or discovers another Chrome.
-- Core helpers stay short. Put task-specific helper additions in `$BH_AGENT_WORKSPACE/agent_helpers.py`.
+- Core helpers stay short. Put task-specific helper functions in `$BH_AGENT_WORKSPACE/agent_helpers.js`; every snippet loads it first.
 
 ## Gotchas
 
