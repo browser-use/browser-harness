@@ -20,6 +20,7 @@ import (
 	"github.com/browser-use/browser-harness/go/internal/auth"
 	"github.com/browser-use/browser-harness/go/internal/recorder"
 	"github.com/browser-use/browser-harness/go/internal/telemetry"
+	"github.com/browser-use/browser-harness/go/internal/video"
 )
 
 const help = `Browser Harness
@@ -64,9 +65,6 @@ const usage = `Usage:
   print(page_info())
   PY
 `
-
-// VideoCLI is set by the video package to avoid an import cycle.
-var VideoCLI func(args []string) int
 
 type exit struct {
 	code int
@@ -248,10 +246,7 @@ func run(args []string) result {
 	case "recordings":
 		return done(recordings(args[1:]))
 	case "video":
-		if VideoCLI == nil {
-			return done(pythonModule("browser_harness.video", args[1:]))
-		}
-		return done(VideoCLI(args[1:]))
+		return done(video.CLI(args[1:]))
 	case "--update":
 		for _, a := range args[1:] {
 			if a != "-y" && a != "--yes" {
@@ -411,24 +406,6 @@ func runSnippet(code string) result {
 	r := runPython(code)
 	r.task = &code
 	return r
-}
-
-// pythonModule runs a Python module of the package with inherited stdio.
-func pythonModule(module string, args []string) int {
-	py := os.Getenv("BH_PYTHON")
-	if py == "" {
-		py = "python3"
-	}
-	cmd := exec.Command(py, append([]string{"-m", module}, args...)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return ee.ExitCode()
-		}
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	return 0
 }
 
 // runPython executes the snippet in the Python runner and collects its helper trace.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -16,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,90 +27,47 @@ import (
 	"golang.org/x/image/math/fixed"
 
 	"github.com/browser-use/browser-harness/go/internal/admin"
-	"github.com/browser-use/browser-harness/go/internal/pyjson"
 )
 
 const marker = "__BH_VIDEO_RESULT__="
 
-var reviewArtifacts = []string{"composition.js", "edit-brief.json", "recording-summary.json", sourceManifest, "video.html"}
+// reviewed are the files whose hashes export checks against the review.
+var reviewed = []string{"composition.js", "edit-brief.json", "recording-summary.json", "video-source.json", "video.html"}
 
-var obsoleteReviewFiles = []string{
-	"privacy-contact-sheet.jpg", "renderer-normal-contact-sheet.jpg", "renderer-reduced-contact-sheet.jpg",
-	"renderer-click-contact-sheet.jpg", "video-audit.json",
+type capture struct {
+	Path  string  `json:"path"`
+	Time  float64 `json:"time"`
+	Label string  `json:"label"`
 }
 
-func compileRecording(rec string, write bool) (Obj, error) {
-	if err := verifySourceManifest(rec); err != nil {
-		return nil, err
-	}
-	summary, err := loadJSON(filepath.Join(rec, "recording-summary.json"))
-	if err != nil {
-		return nil, err
-	}
-	brief, err := loadJSON(filepath.Join(rec, "edit-brief.json"))
-	if err != nil {
-		return nil, err
-	}
-	revealed, err := loadRevealedText(filepath.Join(rec, "events.jsonl"))
-	if err != nil {
-		return nil, err
-	}
-	comp, err := compileBrief(summary, brief, houseStyle, revealed)
-	if err != nil {
-		return nil, err
-	}
-	if write {
-		err = writeComposition(filepath.Join(rec, "composition.js"), comp)
-	}
-	return comp, err
+type sample struct {
+	Time  float64 `json:"time"`
+	Label string  `json:"label"`
 }
 
-func beatsOf(comp Obj) []any { b, _ := asList(comp.Get("beats")); return b }
-
-func totalDuration(comp Obj) float64 {
-	t := 0.0
-	for _, b := range beatsOf(comp) {
-		o, _ := asObj(b)
-		t += mustFloat(o.Get("dur"))
-	}
-	return t
-}
-
-// reviewSamples picks one stable state per beat, plus every explanation reveal.
-func reviewSamples(comp Obj) []any {
-	samples := []any{}
+// samples picks one stable moment per beat, plus every explanation reveal.
+func samples(c *Composition) []sample {
+	var out []sample
 	start := 0.0
-	for i, bv := range beatsOf(comp) {
-		beat, _ := asObj(bv)
-		dur := mustFloat(beat.Get("dur"))
-		points, _ := asList(beat.Get("points"))
-		if beat.Get("kind") == "explanation" && len(points) > 0 {
-			first, finalHold := 1.1, 3.0
-			span := math.Max(0, dur-first-finalHold)
-			gap := span / float64(max(1, len(points)-1))
-			for pi, pv := range points {
-				p, _ := asObj(pv)
-				local := math.Min(math.Max(0.05, dur-0.05), first+float64(pi)*gap+0.2)
-				label := pyStr(p.Get("label"))
-				if !truthy(p.Get("label")) {
-					label = strconv.Itoa(pi + 1)
-				}
-				samples = append(samples, Obj{{K: "time", V: round(start + local)}, {K: "label", V: fmt.Sprintf("beat %d · %s", i+1, label)}})
+	for i, b := range c.Beats {
+		at := func(local float64) float64 { return round3(start + math.Min(math.Max(0.05, b.Dur-0.05), local)) }
+		switch {
+		case b.Kind == "explanation" && len(b.Points) > 0:
+			gap := math.Max(0, b.Dur-4.1) / float64(max(1, len(b.Points)-1))
+			for j, p := range b.Points {
+				out = append(out, sample{at(1.1 + float64(j)*gap + 0.2), fmt.Sprintf("beat %d · %s", i+1, p.Label)})
 			}
-		} else {
-			want := math.Max(0.12, math.Min(0.5, dur/2))
-			if truthy(beat.Get("card")) {
-				want = 1.0
-			}
-			local := math.Min(math.Max(0.05, dur-0.05), want)
-			samples = append(samples, Obj{{K: "time", V: round(start + local)}, {K: "label", V: fmt.Sprintf("beat %d", i+1)}})
+		case b.Card:
+			out = append(out, sample{at(1.0), fmt.Sprintf("beat %d", i+1)})
+		default:
+			out = append(out, sample{at(math.Max(0.12, math.Min(0.5, b.Dur/2))), fmt.Sprintf("beat %d", i+1)})
 		}
-		start += dur
+		start += b.Dur
 	}
-	return samples
+	return out
 }
 
-// serve exposes the recording on a loopback port for the renderer page.
+// serve exposes the recording on loopback so the renderer can load its frames.
 func serve(rec string) (string, func(), error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -118,15 +75,16 @@ func serve(rec string) (string, func(), error) {
 	}
 	srv := &http.Server{Handler: http.FileServer(http.Dir(rec))}
 	go func() { _ = srv.Serve(l) }()
-	url := fmt.Sprintf("http://127.0.0.1:%d/video.html", l.Addr().(*net.TCPAddr).Port)
-	return url, func() { _ = srv.Close() }, nil
+	return fmt.Sprintf("http://%s/video.html", l.Addr()), func() { _ = srv.Close() }, nil
 }
 
-// runHarness runs a snippet against the daemon and returns its marker line; a seam for tests.
-var runHarness = func(code string, timeout time.Duration) (Obj, error) {
+// runHarness runs a snippet with cfg bound and decodes its marker line into out; a seam for tests.
+var runHarness = func(snippet string, cfg any, timeout time.Duration, out any) error {
 	if err := admin.EnsureDaemon(-1, "", nil); err != nil {
-		return nil, fmt.Errorf("browser review failed: %v", err)
+		return err
 	}
+	raw, _ := json.Marshal(cfg)
+	code := "import json\ncfg = json.loads(" + strconv.Quote(string(raw)) + ")\n" + snippet
 	py := os.Getenv("BH_PYTHON")
 	if py == "" {
 		py = "python3"
@@ -139,43 +97,17 @@ var runHarness = func(code string, timeout time.Duration) (Obj, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
-		}
-		if detail == "" {
-			detail = err.Error()
-		}
-		return nil, fmt.Errorf("browser review failed: %s", detail)
+		return fmt.Errorf("browser step failed: %v: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	lines := strings.Split(stdout.String(), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if rest, ok := strings.CutPrefix(strings.TrimRight(lines[i], "\r"), marker); ok {
-			v, err := pyjson.Loads([]byte(rest))
-			if err != nil {
-				return nil, err
-			}
-			o, _ := asObj(v)
-			return o, nil
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		if rest, ok := strings.CutPrefix(line, marker); ok {
+			return json.Unmarshal([]byte(rest), out)
 		}
 	}
-	out := stdout.String()
-	if len(out) > 1000 {
-		out = out[len(out)-1000:]
-	}
-	return nil, fmt.Errorf("browser review returned no result: %s", out)
+	return fmt.Errorf("browser step returned no result: %s", stdout.String())
 }
 
-// pyLiteral embeds v as json.loads("<json>") source.
-func pyLiteral(v any) string {
-	inner, _ := json.Marshal(v)
-	outer, _ := json.Marshal(string(inner))
-	return "json.loads(" + string(outer) + ")"
-}
-
-const reviewSnippet = `
-import json, os, time
-cfg = %s
+const reviewSnippet = `import os, time
 os.makedirs(cfg['reviewDir'], exist_ok=True)
 
 def ready():
@@ -185,75 +117,136 @@ def ready():
         time.sleep(0.05)
     raise RuntimeError('video assets did not become ready')
 
-def inspect_mode(name, reduced):
-    features = [{'name':'prefers-reduced-motion','value':'reduce'}] if reduced else []
+def inspect(name, reduced):
+    features = [{'name': 'prefers-reduced-motion', 'value': 'reduce'}] if reduced else []
     cdp('Emulation.setEmulatedMedia', media='', features=features)
     cdp('Page.reload', ignoreCache=True)
     wait_for_load()
     ready()
-    preflight = js('window.videoPreflight()')
-    clicks = js('window.clickVisibility()')
-    captures = []
-    for index, sample in enumerate(cfg['samples'], 1):
-        js(f"window.seek({sample['time']})")
-        path = f"{cfg['reviewDir']}/{name}-beat-{index:02d}.png"
+    out = {'preflight': js('window.videoPreflight()'), 'clicks': js('window.clickVisibility()'), 'captures': []}
+    shots = [(f"beat-{i:02d}", s['time'], s['label']) for i, s in enumerate(cfg['samples'], 1)]
+    for i, c in enumerate(out['clicks'], 1):
+        shots += [(f"click-{i:02d}-click", c['time'], f"beat {c['beat']} · click"),
+                  (f"click-{i:02d}-result", c['resultTime'], f"beat {c['beat']} · result")]
+    for key, t, label in shots:
+        js(f"window.seek({t})")
+        path = f"{cfg['reviewDir']}/{name}-{key}.png"
         capture_screenshot(path)
-        captures.append({'path': path, 'time': sample['time'], 'label': sample['label']})
-    click_captures = []
-    for index, click in enumerate(clicks, 1):
-        for state, key in (('click', 'time'), ('result', 'resultTime')):
-            js(f"window.seek({click[key]})")
-            path = f"{cfg['reviewDir']}/{name}-click-{index:02d}-{state}.png"
-            capture_screenshot(path)
-            click_captures.append({
-                'path': path, 'time': click[key],
-                'label': f"beat {click['beat']} · {state}",
-            })
-    return {'preflight': preflight, 'clicks': clicks, 'captures': captures,
-            'clickCaptures': click_captures}
+        out['captures'].append({'path': path, 'time': t, 'label': f"{name} · {label}"})
+    return out
 
 try:
     previous = current_tab()['targetId']
-except Exception:
+except Exception:  # a stale session heals on the next call
     previous = None
-target = None
+target = new_tab(cfg['url'])
 try:
-    target = new_tab()
-    goto_url(cfg['url'])
     wait_for_load()
     ready()
-    normal = inspect_mode('normal', False)
-    reduced = inspect_mode('reduced', True)
-    print(cfg['marker'] + json.dumps({'normal': normal, 'reduced': reduced}))
+    print(cfg['marker'] + json.dumps({'normal': inspect('normal', False), 'reduced': inspect('reduced', True)}))
 finally:
-    try:
-        cdp('Emulation.setEmulatedMedia', media='', features=[])
-    except Exception:
-        pass
-    try:
-        switch_tab(previous) if previous else new_tab()
-    except Exception:
-        try:
-            new_tab()
-        except Exception:
-            pass
-    if target is not None:
-        try:
-            close_tab(target)
-        except Exception:
-            pass
+    cdp('Emulation.setEmulatedMedia', media='', features=[])
+    switch_tab(previous) if previous else new_tab()
+    close_tab(target)
 `
 
-func reviewBrowser(rec, url string, samples []any) (Obj, error) {
-	cfg := Obj{{K: "url", V: url}, {K: "samples", V: samples}, {K: "reviewDir", V: filepath.Join(rec, ".renderer-review")}, {K: "marker", V: marker}}
-	code := fmt.Sprintf(reviewSnippet, pyLiteral(json.RawMessage(pyjson.Dumps(cfg, 0))))
-	return runHarness(code, time.Duration(max(60, len(samples)*3))*time.Second)
+type modeResult struct {
+	Preflight struct {
+		Errors   []string `json:"errors"`
+		Warnings []string `json:"warnings"`
+	} `json:"preflight"`
+	Clicks []struct {
+		Beat    any  `json:"beat"`
+		Visible bool `json:"visible"`
+	} `json:"clicks"`
+	Captures []capture `json:"captures"`
 }
 
-func hexColor(s string) color.RGBA {
-	v, _ := strconv.ParseUint(strings.TrimPrefix(s, "#"), 16, 32)
-	return color.RGBA{uint8(v >> 16), uint8(v >> 8), uint8(v), 255}
+type reviewReport struct {
+	Errors         []string          `json:"errors"`
+	Warnings       []string          `json:"warnings"`
+	Duration       float64           `json:"duration"`
+	ArtifactHashes map[string]string `json:"artifactHashes"`
+	ContactSheet   string            `json:"contactSheet"`
+	PrivacyDir     string            `json:"privacyReviewDir"`
 }
+
+func review(rec string) (int, error) {
+	started := time.Now()
+	c, comp, err := compileRecording(rec)
+	if err != nil {
+		return 0, err
+	}
+	if err := os.WriteFile(filepath.Join(rec, "composition.js"), comp, 0o644); err != nil {
+		return 0, err
+	}
+	if err := copyFile(templatePath(), filepath.Join(rec, "video.html")); err != nil {
+		return 0, err
+	}
+	privacyDir, caps, err := privacyReview(rec, c)
+	if err != nil {
+		return 0, err
+	}
+	reviewDir := filepath.Join(rec, ".renderer-review")
+	_ = os.RemoveAll(reviewDir)
+	url, stop, err := serve(rec)
+	if err != nil {
+		return 0, err
+	}
+	var result map[string]modeResult
+	err = runHarness(reviewSnippet, map[string]any{"url": url, "samples": samples(c), "reviewDir": reviewDir, "marker": marker},
+		time.Duration(max(60, len(c.Beats)*6))*time.Second, &result)
+	stop()
+	if err != nil {
+		return 0, err
+	}
+	report := reviewReport{Errors: []string{}, Warnings: []string{}, Duration: duration(c.Beats),
+		ContactSheet: filepath.Join(rec, "video-review-contact-sheet.jpg"), PrivacyDir: privacyDir}
+	for _, mode := range []string{"normal", "reduced"} {
+		m := result[mode]
+		for _, e := range m.Preflight.Errors {
+			report.Errors = append(report.Errors, mode+": "+e)
+		}
+		for _, w := range m.Preflight.Warnings {
+			report.Warnings = append(report.Warnings, mode+": "+w)
+		}
+		for _, cl := range m.Clicks {
+			if !cl.Visible {
+				report.Errors = append(report.Errors, fmt.Sprintf("%s: beat %v click is outside the safe viewport", mode, cl.Beat))
+			}
+		}
+		caps = append(caps, m.Captures...)
+	}
+	if err := contactSheet(caps, report.ContactSheet, "PRIVACY · EVERY BEAT · EXACT CLICK + RESULT"); err != nil {
+		return 0, err
+	}
+	if report.ArtifactHashes, err = hashes(rec, reviewed); err != nil {
+		return 0, err
+	}
+	if err := writeJSON(filepath.Join(rec, "renderer-review.json"), report); err != nil {
+		return 0, err
+	}
+	fmt.Printf("review sheet: %s\nfull-resolution privacy review: %s\nrenderer review: %d error(s) in %.1fs\n",
+		report.ContactSheet, privacyDir, len(report.Errors), time.Since(started).Seconds())
+	if len(report.Errors) > 0 {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func hashes(rec string, names []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, n := range names {
+		h, err := fileHash(filepath.Join(rec, n))
+		if err != nil {
+			return nil, err
+		}
+		out[n] = h
+	}
+	return out, nil
+}
+
+// --- images ---
 
 func loadRGB(path string) (*image.RGBA, error) {
 	f, err := os.Open(path)
@@ -270,273 +263,88 @@ func loadRGB(path string) (*image.RGBA, error) {
 	return dst, nil
 }
 
-func saveJPEG(path string, img image.Image, quality int) error {
-	f, err := os.Create(path)
-	if err != nil {
+func saveJPEG(path string, img image.Image) error {
+	var b bytes.Buffer
+	if err := jpeg.Encode(&b, img, &jpeg.Options{Quality: 92}); err != nil {
 		return err
 	}
-	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: quality}); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	return os.WriteFile(path, b.Bytes(), 0o644)
 }
 
-func drawText(img *image.RGBA, x, y int, text string, c color.Color) {
-	d := font.Drawer{Dst: img, Src: image.NewUniform(c), Face: basicfont.Face7x13,
-		Dot: fixed.P(x, y+basicfont.Face7x13.Ascent)}
-	d.DrawString(text)
+func hexColor(s string) color.RGBA {
+	v, _ := strconv.ParseUint(strings.TrimPrefix(s, "#"), 16, 32)
+	return color.RGBA{uint8(v >> 16), uint8(v >> 8), uint8(v), 255}
 }
 
-type capture struct {
-	Path  string
-	Time  float64
-	Label string
+func label(img *image.RGBA, x, y int, s string, c color.Color) {
+	d := font.Drawer{Dst: img, Src: image.NewUniform(c), Face: basicfont.Face7x13, Dot: fixed.P(x, y+11)}
+	d.DrawString(strings.ReplaceAll(s, "·", "|")) // the bitmap face is ASCII-only
 }
 
+// contactSheet tiles captures four across with their labels.
 func contactSheet(caps []capture, output, title string) error {
-	const cols, tileW, tileH, labelH, gap, banner = 4, 400, 225, 34, 8, 42
+	const cols, tw, th, lh, gap, banner = 4, 400, 225, 34, 8, 42
 	rows := max(1, (len(caps)+cols-1)/cols)
-	sheet := image.NewRGBA(image.Rect(0, 0, cols*tileW+(cols+1)*gap, banner+rows*(tileH+labelH+gap)+gap))
+	sheet := image.NewRGBA(image.Rect(0, 0, cols*tw+(cols+1)*gap, banner+rows*(th+lh+gap)+gap))
 	draw.Draw(sheet, sheet.Bounds(), image.NewUniform(hexColor("#171a20")), image.Point{}, draw.Src)
-	drawText(sheet, gap, 15, title, color.White)
+	label(sheet, gap, 15, title, color.White)
 	for i, c := range caps {
 		img, err := loadRGB(c.Path)
 		if err != nil {
 			return err
 		}
-		scale := math.Min(float64(tileW)/float64(img.Bounds().Dx()), float64(tileH)/float64(img.Bounds().Dy()))
-		w, h := int(math.Round(float64(img.Bounds().Dx())*scale)), int(math.Round(float64(img.Bounds().Dy())*scale))
-		col, row := i%cols, i/cols
-		x, y := gap+col*(tileW+gap), banner+gap+row*(tileH+labelH+gap)
-		px := x + (tileW-w)/2
-		draw.CatmullRom.Scale(sheet, image.Rect(px, y, px+w, y+h), img, img.Bounds(), draw.Src, nil)
-		drawText(sheet, x, y+tileH+9, fmt.Sprintf("%s  %.2fs", c.Label, c.Time), hexColor("#d7dbe3"))
+		s := math.Min(tw/float64(img.Bounds().Dx()), th/float64(img.Bounds().Dy()))
+		w, h := int(float64(img.Bounds().Dx())*s), int(float64(img.Bounds().Dy())*s)
+		x, y := gap+i%cols*(tw+gap), banner+gap+i/cols*(th+lh+gap)
+		draw.CatmullRom.Scale(sheet, image.Rect(x+(tw-w)/2, y, x+(tw-w)/2+w, y+h), img, img.Bounds(), draw.Src, nil)
+		label(sheet, x, y+th+9, fmt.Sprintf("%s  %.2fs", c.Label, c.Time), hexColor("#d7dbe3"))
 	}
-	return saveJPEG(output, sheet, 91)
+	return saveJPEG(output, sheet)
 }
 
-// insideRounded reports whether pixel centre (px, py) lies in the rounded rectangle.
-func insideRounded(px, py, x0, y0, x1, y1, r float64) bool {
-	if px < x0 || px > x1 || py < y0 || py > y1 {
-		return false
-	}
-	r = math.Min(r, math.Min((x1-x0)/2, (y1-y0)/2))
-	cx := math.Max(x0+r, math.Min(px, x1-r))
-	cy := math.Max(y0+r, math.Min(py, y1-r))
-	return math.Hypot(px-cx, py-cy) <= r
-}
-
-func maskedFrame(rec string, comp Obj, frame string) (*image.RGBA, error) {
-	vp, _ := asObj(comp.Get("viewport"))
-	vw, vh := mustFloat(vp.Get("w")), mustFloat(vp.Get("h"))
-	redactions, _ := asObj(comp.Get("redact"))
-	privacy, _ := asObj(comp.Get("privacy"))
-	mask, _ := asObj(privacy.Get("mask"))
-	pad := 8.0
-	if truthy(privacy.Get("pad")) {
-		pad = mustFloat(privacy.Get("pad"))
-	}
-	img, err := loadRGB(filepath.Join(rec, frame))
-	if err != nil {
-		return nil, err
-	}
-	W, H := float64(img.Bounds().Dx()), float64(img.Bounds().Dy())
-	sx, sy := W/vw, H/vh
-	pick := func(r Obj, k string, def any) any {
-		if r.Has(k) {
-			return r.Get(k)
-		}
-		if mask.Has(k) {
-			return mask.Get(k)
-		}
-		return def
-	}
-	rects, _ := asList(redactions.Get(frame))
-	for _, rv := range rects {
-		r, _ := asObj(rv)
-		p := pad
-		if r.Has("pad") {
-			p = mustFloat(r.Get("pad"))
-		}
-		x0 := math.Max(0, (mustFloat(r.Get("x"))-p)*sx)
-		y0 := math.Max(0, (mustFloat(r.Get("y"))-p)*sy)
-		x1 := math.Min(W, (mustFloat(r.Get("x"))+mustFloat(r.Get("w"))+p)*sx)
-		y1 := math.Min(H, (mustFloat(r.Get("y"))+mustFloat(r.Get("h"))+p)*sy)
-		radius := mustFloat(pick(r, "radius", 7)) * math.Min(sx, sy)
-		width := math.Max(1, math.Round(math.Min(sx, sy)))
-		fill, hasFill := pick(r, "fill", "#f2f4f7").(string)
-		stroke, hasStroke := pick(r, "stroke", "#e2e7ec").(string)
-		for py := int(y0); py <= int(math.Ceil(y1)) && py < img.Bounds().Dy(); py++ {
-			for px := int(x0); px <= int(math.Ceil(x1)) && px < img.Bounds().Dx(); px++ {
-				fx, fy := float64(px)+0.5, float64(py)+0.5
-				if !insideRounded(fx, fy, x0, y0, x1, y1, radius) {
-					continue
-				}
-				edge := !insideRounded(fx, fy, x0+width, y0+width, x1-width, y1-width, math.Max(0, radius-width))
-				switch {
-				case edge && hasStroke:
-					img.SetRGBA(px, py, hexColor(stroke))
-				case hasFill:
-					img.SetRGBA(px, py, hexColor(fill))
-				}
-			}
-		}
-	}
-	return img, nil
-}
-
-func privacyReview(rec string, comp Obj) (string, []capture, error) {
+// privacyReview writes every used frame with its masks applied, at full resolution.
+func privacyReview(rec string, c *Composition) (string, []capture, error) {
 	dir := filepath.Join(rec, ".privacy-review")
+	_ = os.RemoveAll(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", nil, err
 	}
-	stale, _ := filepath.Glob(filepath.Join(dir, "*.jpg"))
-	for _, s := range stale {
-		_ = os.Remove(s)
-	}
-	redactions, _ := asObj(comp.Get("redact"))
 	var caps []capture
-	for _, frame := range usedFrames(beatsOf(comp)) {
-		if fi, err := os.Stat(filepath.Join(rec, frame)); err != nil || !fi.Mode().IsRegular() {
-			return "", nil, fmt.Errorf("missing frame: %s", frame)
-		}
-		img, err := maskedFrame(rec, comp, frame)
+	for _, frame := range usedFrames(c.Beats) {
+		img, err := loadRGB(filepath.Join(rec, frame))
 		if err != nil {
 			return "", nil, err
 		}
+		sx, sy := float64(img.Bounds().Dx())/c.Viewport.W, float64(img.Bounds().Dy())/c.Viewport.H
+		for _, r := range c.Redact[frame] {
+			pad := c.Privacy.Pad
+			if r.Pad != nil {
+				pad = *r.Pad
+			}
+			fill := c.Privacy.Mask.Fill
+			if s, ok := r.Fill.(string); ok {
+				fill = s
+			}
+			rect := image.Rect(int((*r.X-pad)*sx), int((*r.Y-pad)*sy), int(math.Ceil((*r.X+*r.W+pad)*sx)), int(math.Ceil((*r.Y+*r.H+pad)*sy)))
+			draw.Draw(img, rect.Intersect(img.Bounds()), image.NewUniform(hexColor(fill)), image.Point{}, draw.Src)
+		}
 		out := filepath.Join(dir, frame)
-		if err := saveJPEG(out, img, 94); err != nil {
+		if err := saveJPEG(out, img); err != nil {
 			return "", nil, err
 		}
-		rects, _ := asList(redactions.Get(frame))
-		caps = append(caps, capture{out, 0, fmt.Sprintf("privacy · %s · masks:%d", frame, len(rects))})
+		caps = append(caps, capture{out, 0, fmt.Sprintf("privacy · %s · masks:%d", frame, len(c.Redact[frame]))})
 	}
 	return dir, caps, nil
 }
 
-func capturesOf(mode Obj, key, prefix string) []capture {
-	var out []capture
-	list, _ := asList(mode.Get(key))
-	for _, cv := range list {
-		c, _ := asObj(cv)
-		out = append(out, capture{pyStr(c.Get("path")), mustFloat(c.Get("time")), prefix + " · " + pyStr(c.Get("label"))})
-	}
-	return out
-}
+// --- export ---
 
-func artifactHashes(rec string) (Obj, error) {
-	names := append([]string{}, reviewArtifacts...)
-	sort.Strings(names)
-	out := Obj{}
-	for _, n := range names {
-		h, err := fileHash(filepath.Join(rec, n))
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, pyjson.KV{K: n, V: h})
-	}
-	return out, nil
-}
-
-func review(rec string) (int, error) {
-	started := time.Now()
-	for _, n := range obsoleteReviewFiles {
-		_ = os.Remove(filepath.Join(rec, n))
-	}
-	comp, err := compileRecording(rec, true)
-	if err != nil {
-		return 0, err
-	}
-	if err := copyFile(templatePath(), filepath.Join(rec, "video.html")); err != nil {
-		return 0, err
-	}
-	privacyDir, caps, err := privacyReview(rec, comp)
-	if err != nil {
-		return 0, err
-	}
-	samples := reviewSamples(comp)
-	reviewDir := filepath.Join(rec, ".renderer-review")
-	if err := os.MkdirAll(reviewDir, 0o755); err != nil {
-		return 0, err
-	}
-	stale, _ := filepath.Glob(filepath.Join(reviewDir, "*.png"))
-	for _, s := range stale {
-		_ = os.Remove(s)
-	}
-	url, stop, err := serve(rec)
-	if err != nil {
-		return 0, err
-	}
-	result, err := reviewBrowser(rec, url, samples)
-	stop()
-	if err != nil {
-		return 0, err
-	}
-
-	errs, warnings := []any{}, []any{}
-	for _, mode := range []string{"normal", "reduced"} {
-		m, _ := asObj(result.Get(mode))
-		pre, _ := asObj(m.Get("preflight"))
-		el, _ := asList(pre.Get("errors"))
-		for _, e := range el {
-			errs = append(errs, mode+": "+pyStr(e))
-		}
-		wl, _ := asList(pre.Get("warnings"))
-		for _, w := range wl {
-			warnings = append(warnings, mode+": "+pyStr(w))
-		}
-		clicks, _ := asList(m.Get("clicks"))
-		for _, cv := range clicks {
-			c, _ := asObj(cv)
-			if !truthy(c.Get("visible")) {
-				errs = append(errs, fmt.Sprintf("%s: beat %s click is outside the safe viewport", mode, pyStr(c.Get("beat"))))
-			}
-		}
-		caps = append(caps, capturesOf(m, "captures", mode)...)
-		caps = append(caps, capturesOf(m, "clickCaptures", mode)...)
-	}
-	sheet := filepath.Join(rec, "video-review-contact-sheet.jpg")
-	if err := contactSheet(caps, sheet, "PRIVACY · EVERY BEAT · EXACT CLICK + RESULT"); err != nil {
-		return 0, err
-	}
-	hashes, err := artifactHashes(rec)
-	if err != nil {
-		return 0, err
-	}
-	elapsed := round(time.Since(started).Seconds())
-	report := Obj{
-		{K: "errors", V: errs},
-		{K: "warnings", V: warnings},
-		{K: "duration", V: round(totalDuration(comp))},
-		{K: "artifactHashes", V: hashes},
-		{K: "normal", V: result.Get("normal")},
-		{K: "reduced", V: result.Get("reduced")},
-		{K: "contactSheet", V: sheet},
-		{K: "privacyReviewDir", V: privacyDir},
-		{K: "elapsedSeconds", V: elapsed},
-	}
-	if err := writeText(filepath.Join(rec, "renderer-review.json"), pyjson.Dumps(report, 2)+"\n"); err != nil {
-		return 0, err
-	}
-	fmt.Printf("review sheet: %s\n", sheet)
-	fmt.Printf("full-resolution privacy review: %s\n", privacyDir)
-	fmt.Printf("renderer review: %d error(s) in %.1fs\n", len(errs), elapsed)
-	if len(errs) > 0 {
-		return 1, nil
-	}
-	return 0, nil
-}
-
-const exportSnippet = `
-import json, time
-cfg = %s
+const exportSnippet = `import time
 try:
     previous = current_tab()['targetId']
-except Exception:
+except Exception:  # a stale session heals on the next call
     previous = None
-target = new_tab()
-goto_url(cfg['url'])
+target = new_tab(cfg['url'])
 wait_for_load()
 for _ in range(100):
     if js('window.videoReady && window.videoReady()'):
@@ -548,350 +356,220 @@ preflight = js('window.videoPreflight()')
 clicks = js('window.clickVisibility()')
 cdp('Browser.setDownloadBehavior', behavior='allow', downloadPath=cfg['downloadPath'], eventsEnabled=True)
 cdp('Page.bringToFront')
-started = js('''(() => {
-  window.__exported = null; window.__exportError = null;
-  window.exportVideo(%s)
-    .catch(error => window.__exportError = String(error));
-  return true;
-})()''')
-print(cfg['marker'] + json.dumps({'target': target, 'previous': previous, 'preflight': preflight, 'clicks': clicks, 'started': started}))
+js('window.exportVideo(' + json.dumps(cfg['filename']) + ').catch(e => window.__exportError = String(e)), true')
+print(cfg['marker'] + json.dumps({'previous': previous, 'preflight': preflight, 'clicks': clicks}))
 `
 
-func startExport(url, webm string) (Obj, error) {
-	dir, err := filepath.Abs(filepath.Dir(webm))
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	cfg := Obj{{K: "url", V: url}, {K: "downloadPath", V: dir}, {K: "filename", V: filepath.Base(webm)}, {K: "marker", V: marker}}
-	code := fmt.Sprintf(exportSnippet, pyLiteral(json.RawMessage(pyjson.Dumps(cfg, 0))), pyjson.Dumps(filepath.Base(webm), 0))
-	return runHarness(code, 30*time.Second)
-}
-
-const closeSnippet = `
-import json
-cfg = %s
-downloads_reset = True
+const closeSnippet = `cdp('Browser.setDownloadBehavior', behavior='default', eventsEnabled=False)
+editors = [t['targetId'] for t in list_tabs() if t.get('url') == cfg['url']]
 try:
-    cdp('Browser.setDownloadBehavior', behavior='default', eventsEnabled=False)
-except Exception:
-    downloads_reset = False
-targets = [tab for tab in list_tabs() if tab.get('url') == cfg['url']]
-try:
-    switch_tab(cfg['previous']) if cfg.get('previous') else new_tab()
+    switch_tab(cfg['previous'])
 except Exception:
     new_tab()
-for tab in targets:
-    try:
-        close_tab(tab)
-    except Exception:
-        pass
-print(cfg['marker'] + json.dumps({'closed': True, 'downloadsReset': downloads_reset}))
+for tab in editors:
+    close_tab(tab)
+print(cfg['marker'] + 'true')
 `
 
-func closeEditor(url string, previous any) bool {
-	cfg := Obj{{K: "url", V: url}, {K: "previous", V: previous}, {K: "marker", V: marker}}
-	r, err := runHarness(fmt.Sprintf(closeSnippet, pyLiteral(json.RawMessage(pyjson.Dumps(cfg, 0)))), 15*time.Second)
-	return err == nil && r.Get("downloadsReset") == true
-}
-
-func run(dir string, timeout time.Duration, name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func run(dir string, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
-		}
-		if detail == "" {
-			detail = err.Error()
-		}
-		return "", errors.New(detail)
+		return "", fmt.Errorf("%s: %v: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
 }
 
-func probe(path string) (Obj, error) {
-	out, err := run(filepath.Dir(path), 120*time.Second, "ffprobe", "-v", "error", "-show_entries",
-		"format=duration,size:stream=codec_name,width,height,pix_fmt,r_frame_rate", "-of", "json", path)
+func probeDuration(path string) (float64, error) {
+	out, err := run(filepath.Dir(path), "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	v, err := pyjson.Loads([]byte(out))
-	if err != nil {
-		return nil, err
-	}
-	o, _ := asObj(v)
-	return o, nil
+	return strconv.ParseFloat(strings.TrimSpace(out), 64)
 }
 
-func exists(p string) bool { _, err := os.Stat(p); return err == nil }
-
-func isFile(p string) bool {
-	fi, err := os.Stat(p)
-	return err == nil && fi.Mode().IsRegular()
-}
-
-func export(rec, outputName string, reviewed bool) (int, error) {
-	if !reviewed {
-		return 0, errors.New("inspect the review sheet and full-resolution privacy frames, then rerun with --reviewed")
+func export(rec, output string, reviewedFlag bool) error {
+	if !reviewedFlag {
+		return errors.New("inspect the review sheet and full-resolution privacy frames, then rerun with --reviewed")
 	}
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return 0, errors.New("ffmpeg and ffprobe are required")
-	}
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		return 0, errors.New("ffmpeg and ffprobe are required")
-	}
-	reviewPath := filepath.Join(rec, "renderer-review.json")
-	if !isFile(reviewPath) {
-		return 0, errors.New("run browser-harness video review first")
-	}
-	report, err := loadJSON(reviewPath)
-	if err != nil {
-		return 0, err
-	}
-	if truthy(report.Get("errors")) {
-		return 0, errors.New("renderer review has blocking errors")
-	}
-	if err := verifySourceManifest(rec); err != nil {
-		return 0, err
-	}
-	comp, err := loadComposition(filepath.Join(rec, "composition.js"))
-	if err != nil {
-		return 0, err
-	}
-	expectedComp, err := compileRecording(rec, false)
-	if err != nil {
-		return 0, err
-	}
-	if !sameJSON(comp, expectedComp) {
-		return 0, errors.New("composition.js is not the current compiled brief; rerun review")
-	}
-	hashes, _ := asObj(report.Get("artifactHashes"))
-	names := map[string]bool{}
-	for _, kv := range hashes {
-		names[kv.K] = true
-	}
-	same := len(names) == len(reviewArtifacts)
-	for _, n := range reviewArtifacts {
-		same = same && names[n]
-	}
-	if !same {
-		return 0, errors.New("renderer review lacks content hashes; rerun it")
-	}
-	for _, kv := range hashes {
-		h, err := fileHash(filepath.Join(rec, kv.K))
-		if err != nil || h != kv.V {
-			return 0, fmt.Errorf("%s changed after review; rerun it", kv.K)
+	for _, tool := range []string{"ffmpeg", "ffprobe"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			return errors.New("ffmpeg and ffprobe are required")
 		}
 	}
-	rh, err := fileHash(filepath.Join(rec, "video.html"))
+	var report reviewReport
+	if err := readJSONLoose(filepath.Join(rec, "renderer-review.json"), &report); err != nil {
+		return errors.New("run browser-harness video review first")
+	}
+	if len(report.Errors) > 0 {
+		return errors.New("renderer review has blocking errors")
+	}
+	c, comp, err := compileRecording(rec)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	if th, err := fileHash(templatePath()); err != nil || th != rh {
-		return 0, errors.New("renderer is not the current shared template; rerun review")
+	if cur, _ := os.ReadFile(filepath.Join(rec, "composition.js")); !bytes.Equal(cur, comp) {
+		return errors.New("composition.js is not the current compiled brief; rerun review")
 	}
-
-	output := outputName
+	now, err := hashes(rec, reviewed)
+	if err != nil {
+		return err
+	}
+	for n, h := range now {
+		if report.ArtifactHashes[n] != h {
+			return fmt.Errorf("%s changed after review; rerun it", n)
+		}
+	}
+	if th, _ := fileHash(templatePath()); th != now["video.html"] {
+		return errors.New("renderer is not the current shared template; rerun review")
+	}
 	if !filepath.IsAbs(output) {
 		output = filepath.Join(rec, output)
 	}
 	if strings.ToLower(filepath.Ext(output)) != ".mp4" {
-		return 0, errors.New("--output must end in .mp4")
+		return errors.New("--output must end in .mp4")
 	}
 	webm := strings.TrimSuffix(output, filepath.Ext(output)) + ".webm"
-	for _, p := range []string{webm, output} {
-		if exists(p) || exists(p+".crdownload") {
-			return 0, fmt.Errorf("refusing to overwrite %s", p)
+	for _, p := range []string{webm, webm + ".crdownload", output} {
+		if _, err := os.Stat(p); err == nil {
+			return fmt.Errorf("refusing to overwrite %s", p)
 		}
 	}
+	if err := os.MkdirAll(filepath.Dir(webm), 0o755); err != nil {
+		return err
+	}
 
-	expected := totalDuration(expectedComp)
-	started := time.Now()
+	expected := duration(c.Beats)
 	url, stop, err := serve(rec)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	var browser Obj
-	captureErr := func() error {
-		var err error
-		if browser, err = startExport(url, webm); err != nil {
-			return err
+	defer stop()
+	var started struct {
+		Previous string `json:"previous"`
+		Pre      struct {
+			Errors []string `json:"errors"`
+		} `json:"preflight"`
+		Clicks []struct {
+			Visible bool `json:"visible"`
+		} `json:"clicks"`
+	}
+	err = runHarness(exportSnippet, map[string]any{"url": url, "downloadPath": filepath.Dir(webm),
+		"filename": filepath.Base(webm), "marker": marker}, 30*time.Second, &started)
+	if err == nil && len(started.Pre.Errors) > 0 {
+		err = errors.New("export preflight failed: " + strings.Join(started.Pre.Errors, "; "))
+	}
+	for _, cl := range started.Clicks {
+		if err == nil && !cl.Visible {
+			err = errors.New("export click visibility failed")
 		}
-		pre, _ := asObj(browser.Get("preflight"))
-		if el, _ := asList(pre.Get("errors")); len(el) > 0 {
-			msgs := make([]string, len(el))
-			for i, e := range el {
-				msgs[i] = pyStr(e)
-			}
-			return errors.New("export preflight failed: " + strings.Join(msgs, "; "))
-		}
-		clicks, _ := asList(browser.Get("clicks"))
-		for _, cv := range clicks {
-			if c, _ := asObj(cv); !truthy(c.Get("visible")) {
-				return errors.New("export click visibility failed")
-			}
-		}
-		deadline := time.Now().Add(time.Duration((expected + 30) * float64(time.Second)))
-		partial := webm + ".crdownload"
-		for time.Now().Before(deadline) {
-			if fi, err := os.Stat(webm); err == nil && fi.Mode().IsRegular() && !exists(partial) && fi.Size() > 0 {
-				time.Sleep(250 * time.Millisecond)
-				if fi2, err := os.Stat(webm); err == nil && fi2.Size() == fi.Size() {
-					return nil
-				}
-			}
-			time.Sleep(250 * time.Millisecond)
-		}
-		return fmt.Errorf("timed out waiting for %s", webm)
-	}()
-	closed := closeEditor(url, browser.Get("previous"))
-	stop()
-	if !closed {
-		return 0, errors.New("could not restore Chrome download behavior; restart Chrome")
 	}
-	if captureErr != nil {
-		return 0, captureErr
+	if err == nil {
+		err = waitForDownload(webm, time.Duration((expected+30)*float64(time.Second)))
 	}
-	captureSeconds := time.Since(started).Seconds()
-
-	convStarted := time.Now()
-	if _, err := probe(webm); err != nil {
-		return 0, err
+	var closed bool
+	if cerr := runHarness(closeSnippet, map[string]any{"url": url, "previous": started.Previous, "marker": marker}, 15*time.Second, &closed); cerr != nil && err == nil {
+		err = fmt.Errorf("could not restore Chrome download behavior; restart Chrome: %v", cerr)
 	}
-	if _, err := run(rec, 120*time.Second, "ffmpeg", "-v", "error", "-i", webm, "-c:v", "libx264",
-		"-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output); err != nil {
-		return 0, err
-	}
-	convSeconds := time.Since(convStarted).Seconds()
-
-	verifyStarted := time.Now()
-	pr, err := probe(output)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	format, _ := asObj(pr.Get("format"))
-	actual, ok := toFloat(format.Get("duration"))
-	if !ok {
-		return 0, errors.New("ffprobe reported no duration")
+
+	if _, err := run(rec, "ffmpeg", "-v", "error", "-i", webm, "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
+		"-movflags", "+faststart", output); err != nil {
+		return err
 	}
-	if math.Abs(actual-expected) > math.Max(1.0, expected*0.08) {
-		return 0, fmt.Errorf("export duration %.2fs does not match composition %.2fs", actual, expected)
+	actual, err := probeDuration(output)
+	if err != nil {
+		return err
 	}
-	if _, err := run(rec, 120*time.Second, "ffmpeg", "-v", "error", "-err_detect", "explode", "-i", output, "-f", "null", "-"); err != nil {
-		return 0, err
+	if math.Abs(actual-expected) > math.Max(1, expected*0.08) {
+		return fmt.Errorf("export duration %.2fs does not match composition %.2fs", actual, expected)
 	}
 	reviewDir := filepath.Join(rec, ".renderer-review")
 	var finals []capture
-	for i, at := range []float64{math.Min(1.0, expected/4), expected / 2, math.Max(0, expected-0.8)} {
+	for i, at := range []float64{math.Min(1, expected/4), expected / 2, math.Max(0, expected-0.8)} {
 		p := filepath.Join(reviewDir, fmt.Sprintf("final-%02d.jpg", i+1))
-		if _, err := run(rec, 120*time.Second, "ffmpeg", "-v", "error", "-y", "-ss", fmt.Sprintf("%.3f", at), "-i", output, "-frames:v", "1", p); err != nil {
-			return 0, err
+		if _, err := run(rec, "ffmpeg", "-v", "error", "-y", "-ss", fmt.Sprintf("%.3f", at), "-i", output, "-frames:v", "1", p); err != nil {
+			return err
 		}
 		finals = append(finals, capture{p, at, []string{"intro", "middle", "outcome"}[i]})
 	}
-	finalSheet := filepath.Join(rec, "renderer-final-contact-sheet.jpg")
-	if err := contactSheet(finals, finalSheet, "FINAL MP4 SAMPLE"); err != nil {
-		return 0, err
+	sheet := filepath.Join(rec, "renderer-final-contact-sheet.jpg")
+	if err := contactSheet(finals, sheet, "FINAL MP4 SAMPLE"); err != nil {
+		return err
 	}
-	verifySeconds := time.Since(verifyStarted).Seconds()
-	sum, err := fileHash(output)
-	if err != nil {
-		return 0, err
-	}
-	elapsed := round(time.Since(started).Seconds())
-	out := Obj{
-		{K: "output", V: output},
-		{K: "webm", V: webm},
-		{K: "expectedDuration", V: round(expected)},
-		{K: "actualDuration", V: actual},
-		{K: "captureSeconds", V: round(captureSeconds)},
-		{K: "conversionSeconds", V: round(convSeconds)},
-		{K: "verificationSeconds", V: round(verifySeconds)},
-		{K: "elapsedSeconds", V: elapsed},
-		{K: "sha256", V: sum},
-		{K: "probe", V: pr},
-		{K: "finalContactSheet", V: finalSheet},
-	}
-	if err := writeText(filepath.Join(rec, "video-export.json"), pyjson.Dumps(out, 2)+"\n"); err != nil {
-		return 0, err
-	}
-	fmt.Printf("video: %s\n", output)
-	fmt.Printf("final review: %s\n", finalSheet)
-	fmt.Printf("verified %.2fs MP4 in %.1fs\n", actual, elapsed)
-	return 0, nil
+	fmt.Printf("video: %s\nfinal review: %s\nverified %.2fs MP4\n", output, sheet, actual)
+	return nil
 }
 
-const usage = "usage: browser-harness video [-h] {init,review,export} ..."
+// waitForDownload returns once Chrome has finished writing path.
+func waitForDownload(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	last := int64(-1)
+	for time.Now().Before(deadline) {
+		fi, err := os.Stat(path)
+		_, partial := os.Stat(path + ".crdownload")
+		if err == nil && partial != nil && fi.Size() > 0 && fi.Size() == last {
+			return nil
+		}
+		if err == nil {
+			last = fi.Size()
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for %s", path)
+}
 
-// CLI is `browser-harness video`.
+// CLI is `browser-harness video init|review|export <recording>`.
 func CLI(args []string) int {
-	fail := func(msg string) int {
-		fmt.Fprintf(os.Stderr, "%s\nbrowser-harness video: error: %s\n", usage, msg)
+	const usage = "usage: browser-harness video {init [--require-explicit] | review | export [--output video.mp4] --reviewed} <recording>"
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
-	if len(args) == 0 {
-		return fail("the following arguments are required: command")
-	}
-	if args[0] == "-h" || args[0] == "--help" {
-		fmt.Println(usage)
-		return 0
-	}
-	cmd, rest := args[0], args[1:]
-	var recArg string
-	requireExplicit, reviewed, output := false, false, "video.mp4"
-	for i := 0; i < len(rest); i++ {
-		a := rest[i]
-		switch {
-		case cmd == "init" && a == "--require-explicit":
-			requireExplicit = true
-		case cmd == "export" && a == "--reviewed":
-			reviewed = true
-		case cmd == "export" && a == "--output" && i+1 < len(rest):
-			i++
-			output = rest[i]
-		case cmd == "export" && strings.HasPrefix(a, "--output="):
-			output = strings.TrimPrefix(a, "--output=")
-		case recArg == "" && !strings.HasPrefix(a, "-"):
-			recArg = a
-		default:
-			return fail("unrecognized arguments: " + a)
+	fs := flag.NewFlagSet("video "+args[0], flag.ContinueOnError)
+	explicit := fs.Bool("require-explicit", false, "")
+	output := fs.String("output", "video.mp4", "")
+	reviewedFlag := fs.Bool("reviewed", false, "")
+	// Flags may follow the recording path.
+	var pos []string
+	for rest := args[1:]; ; rest = fs.Args()[1:] {
+		if fs.Parse(rest) != nil {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
 		}
-	}
-	if cmd != "init" && cmd != "review" && cmd != "export" {
-		return fail(fmt.Sprintf("argument command: invalid choice: '%s' (choose from 'init', 'review', 'export')", cmd))
-	}
-	if recArg == "" {
-		return fail("the following arguments are required: recording")
-	}
-	if strings.HasPrefix(recArg, "~/") {
-		h, _ := os.UserHomeDir()
-		recArg = filepath.Join(h, recArg[2:])
-	}
-	rec, err := filepath.Abs(recArg)
-	if err == nil {
-		if r, e := filepath.EvalSymlinks(rec); e == nil {
-			rec = r
+		if fs.NArg() == 0 {
+			break
 		}
+		pos = append(pos, fs.Arg(0))
 	}
+	if len(pos) != 1 {
+		fmt.Fprintln(os.Stderr, usage)
+		return 2
+	}
+	rec, err := filepath.Abs(pos[0])
 	code := 0
-	switch cmd {
-	case "init":
-		err = initRecording(rec, requireExplicit)
-	case "review":
-		code, err = review(rec)
-	case "export":
-		code, err = export(rec, output, reviewed)
+	if err == nil {
+		switch args[0] {
+		case "init":
+			err = initRecording(rec, *explicit)
+		case "review":
+			code, err = review(rec)
+		case "export":
+			err = export(rec, *output, *reviewedFlag)
+		default:
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
 	}
 	if err != nil {
-		return fail(err.Error())
+		fmt.Fprintln(os.Stderr, "browser-harness video:", err)
+		return 1
 	}
 	return code
 }
