@@ -975,6 +975,32 @@ def test_run_update_of_installed_wheel_never_pulls_an_enclosing_repo(tmp_path, m
     )
     assert ["uv", "tool", "upgrade", "browser-harness"] in commands
 
+
+def test_run_update_pulls_a_git_checkout_when_the_release_is_current(tmp_path, monkeypatch):
+    """A clone follows its branch, not PyPI releases. Right after a release the
+    installed version equals the latest tag while main keeps moving, so
+    `browser-harness --update` must still pull."""
+    import subprocess
+
+    clone = tmp_path / "browser-harness"
+    (clone / ".git").mkdir(parents=True)
+    _fake_install(monkeypatch, clone / "src" / "browser_harness")
+    monkeypatch.setattr(admin, "_version", lambda: "0.2.0")
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda *a, **k: "0.2.0")
+    monkeypatch.setattr(admin, "_cache_read", lambda: {})
+    monkeypatch.setattr(admin, "_cache_write", lambda data: None)
+    monkeypatch.setattr(admin, "daemon_alive", lambda *a, **k: False)
+    commands = []
+
+    def fake_run(command, *args, **kwargs):
+        commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert admin.run_update(yes=True) == 0
+    assert ["git", "-C", str(admin._repo_dir()), "pull", "--ff-only"] in commands
+
 def _wheel_update_env(tmp_path, monkeypatch):
     """Set up a wheel install so run_update() takes the pypi branch."""
     project = tmp_path / "my-project"
