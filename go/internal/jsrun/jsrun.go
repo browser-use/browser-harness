@@ -96,14 +96,17 @@ func (r *runner) loadAgentHelpers() error {
 type args struct {
 	call goja.FunctionCall
 	opts map[string]any
-	pos  int // positional count before the options object
+	pos  int // arguments before the options object
 }
 
+// parse treats a trailing plain object as options, like Python keywords. A tab
+// object (it has targetId) in a positional slot stays positional.
 func parse(call goja.FunctionCall, positional int) args {
-	a := args{call: call, opts: map[string]any{}, pos: positional}
-	if len(call.Arguments) > positional {
-		if m, ok := call.Arguments[len(call.Arguments)-1].Export().(map[string]any); ok {
-			a.opts = m
+	n := len(call.Arguments)
+	a := args{call: call, opts: map[string]any{}, pos: min(n, positional)}
+	if n > 0 {
+		if m, ok := call.Arguments[n-1].Export().(map[string]any); ok && (n > positional || m["targetId"] == nil) {
+			a.opts, a.pos = m, min(n-1, positional)
 		}
 	}
 	return a
@@ -273,35 +276,35 @@ func (r *runner) install() {
 		return h.CDP(a.str(0, "method", ""), params, s)
 	})
 	r.bind("drain_events", 0, func(a args) (any, error) { return h.DrainEvents() })
-	r.bind("js", 1, func(a args) (any, error) { return h.JS(a.str(0, "expression", ""), a.str(1, "target_id", "")) })
+	r.bind("js", 2, func(a args) (any, error) { return h.JS(a.str(0, "expression", ""), a.str(1, "target_id", "")) })
 	r.bind("goto_url", 1, func(a args) (any, error) { return h.GotoURL(a.str(0, "url", "")) })
 	r.bind("page_info", 0, func(a args) (any, error) { return h.PageInfo() })
 
 	// Input.
-	r.bind("click_at_xy", 2, func(a args) (any, error) {
+	r.bind("click_at_xy", 4, func(a args) (any, error) {
 		return none(h.ClickAtXY(a.num(0, "x", 0), a.num(1, "y", 0), a.str(2, "button", "left"), int(a.num(3, "clicks", 1))))
 	})
 	r.bind("type_text", 1, func(a args) (any, error) { return none(h.TypeText(a.str(0, "text", ""))) })
-	r.bind("fill_input", 2, func(a args) (any, error) {
+	r.bind("fill_input", 4, func(a args) (any, error) {
 		return none(h.FillInput(a.str(0, "selector", ""), a.str(1, "text", ""), a.flag(2, "clear_first", true), a.num(3, "timeout", 0)))
 	})
-	r.bind("press_key", 1, func(a args) (any, error) { return none(h.PressKey(a.str(0, "key", ""), int(a.num(1, "modifiers", 0)))) })
-	r.bind("scroll", 2, func(a args) (any, error) {
+	r.bind("press_key", 2, func(a args) (any, error) { return none(h.PressKey(a.str(0, "key", ""), int(a.num(1, "modifiers", 0)))) })
+	r.bind("scroll", 4, func(a args) (any, error) {
 		return none(h.Scroll(a.num(0, "x", 0), a.num(1, "y", 0), a.num(2, "dy", -300), a.num(3, "dx", 0)))
 	})
-	r.bind("dispatch_key", 1, func(a args) (any, error) {
+	r.bind("dispatch_key", 3, func(a args) (any, error) {
 		return none(h.DispatchKey(a.str(0, "selector", ""), a.str(1, "key", "Enter"), a.str(2, "event", "keypress")))
 	})
 	r.bind("upload_file", 2, func(a args) (any, error) { return none(h.UploadFile(a.str(0, "selector", ""), a.strs(1, "path"))) })
-	r.bind("capture_screenshot", 1, func(a args) (any, error) {
+	r.bind("capture_screenshot", 3, func(a args) (any, error) {
 		return h.CaptureScreenshot(a.str(0, "path", ""), a.flag(1, "full", false), int(a.num(2, "max_dim", 0)))
 	})
 
 	// Tabs.
-	r.bind("list_tabs", 0, func(a args) (any, error) { return h.ListTabs(a.flag(0, "include_chrome", true)) })
+	r.bind("list_tabs", 1, func(a args) (any, error) { return h.ListTabs(a.flag(0, "include_chrome", true)) })
 	r.bind("current_tab", 0, func(a args) (any, error) { return h.CurrentTab() })
 	r.bind("activate_tab", 1, func(a args) (any, error) { return h.ActivateTab(a.str(0, "target", "")) })
-	r.bind("switch_tab", 1, func(a args) (any, error) { return h.SwitchTab(a.str(0, "target", ""), a.flag(1, "activate", false)) })
+	r.bind("switch_tab", 2, func(a args) (any, error) { return h.SwitchTab(a.str(0, "target", ""), a.flag(1, "activate", false)) })
 	r.bind("new_tab", 1, func(a args) (any, error) { return h.NewTab(a.str(0, "url", "about:blank")) })
 	r.bind("close_tab", 1, func(a args) (any, error) { return none(h.CloseTab(a.str(0, "target", ""))) })
 	r.bind("ensure_real_tab", 0, func(a args) (any, error) { return h.EnsureRealTab() })
@@ -316,18 +319,18 @@ func (r *runner) install() {
 	// Waiting and HTTP.
 	r.bind("wait", 1, func(a args) (any, error) { helpers.Wait(a.num(0, "seconds", 1)); return nil, nil })
 	r.bind("wait_for_load", 1, func(a args) (any, error) { return h.WaitForLoad(a.num(0, "timeout", 15)) })
-	r.bind("wait_for_element", 1, func(a args) (any, error) {
+	r.bind("wait_for_element", 3, func(a args) (any, error) {
 		return h.WaitForElement(a.str(0, "selector", ""), a.num(1, "timeout", 10), a.flag(2, "visible", false))
 	})
-	r.bind("wait_for_network_idle", 0, func(a args) (any, error) {
+	r.bind("wait_for_network_idle", 2, func(a args) (any, error) {
 		return h.WaitForNetworkIdle(a.num(0, "timeout", 10), int(a.num(1, "idle_ms", 500)))
 	})
-	r.bind("http_get", 1, func(a args) (any, error) {
+	r.bind("http_get", 3, func(a args) (any, error) {
 		return helpers.HTTPGet(a.str(0, "url", ""), a.strMap(1, "headers"), a.num(2, "timeout", 20))
 	})
 
 	// Recording (the daemon records; these only start, stop and locate it).
-	r.bind("start_recording", 0, func(a args) (any, error) {
+	r.bind("start_recording", 2, func(a args) (any, error) {
 		m, err := r.recordMeta("record_start", map[string]any{"name": a.str(0, "name", ""), "title": a.str(1, "title", "")})
 		if err != nil {
 			return nil, err
@@ -358,17 +361,17 @@ func (r *runner) install() {
 	})
 
 	// Daemon and cloud browser management.
-	r.bind("ensure_daemon", 0, func(a args) (any, error) {
+	r.bind("ensure_daemon", 3, func(a args) (any, error) {
 		return none(admin.EnsureDaemon(a.num(0, "wait", -1), a.str(1, "name", ""), a.strMap(2, "env")))
 	})
-	r.bind("require_existing_daemon", 0, func(a args) (any, error) { return none(admin.RequireExistingDaemon(a.str(0, "name", ""))) })
-	r.bind("daemon_alive", 0, func(a args) (any, error) { return admin.DaemonAlive(a.str(0, "name", "")), nil })
-	r.bind("daemon_browser_ready", 0, func(a args) (any, error) { return admin.DaemonBrowserReady(a.str(0, "name", "")), nil })
+	r.bind("require_existing_daemon", 1, func(a args) (any, error) { return none(admin.RequireExistingDaemon(a.str(0, "name", ""))) })
+	r.bind("daemon_alive", 1, func(a args) (any, error) { return admin.DaemonAlive(a.str(0, "name", "")), nil })
+	r.bind("daemon_browser_ready", 1, func(a args) (any, error) { return admin.DaemonBrowserReady(a.str(0, "name", "")), nil })
 	r.bind("browser_connections", 0, func(a args) (any, error) { return admin.BrowserConnections(), nil })
-	r.bind("restart_daemon", 0, func(a args) (any, error) {
+	r.bind("restart_daemon", 2, func(a args) (any, error) {
 		return none(admin.RestartDaemon(a.str(0, "name", ""), a.flag(1, "require_clean", false)))
 	})
-	r.bind("start_remote_daemon", 1, func(a args) (any, error) {
+	r.bind("start_remote_daemon", 2, func(a args) (any, error) {
 		create := map[string]any{}
 		for k, v := range a.opts {
 			if k != "profileName" {
@@ -380,7 +383,7 @@ func (r *runner) install() {
 	r.bind("stop_remote_daemon", 1, func(a args) (any, error) { return none(admin.StopRemoteDaemon(a.str(0, "name", "remote"))) })
 	r.bind("list_cloud_profiles", 0, func(a args) (any, error) { return admin.ListCloudProfiles() })
 	r.bind("list_local_profiles", 0, func(a args) (any, error) { return admin.ListLocalProfiles() })
-	r.bind("sync_local_profile", 1, func(a args) (any, error) {
+	r.bind("sync_local_profile", 5, func(a args) (any, error) {
 		return admin.SyncLocalProfile(a.str(0, "profile_name", ""), a.str(1, "browser", ""), a.str(2, "cloud_profile_id", ""),
 			a.strs(3, "include_domains"), a.strs(4, "exclude_domains"))
 	})

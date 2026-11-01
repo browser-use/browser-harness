@@ -72,3 +72,28 @@ func TestEvalReturnsLastExpression(t *testing.T) {
 		t.Fatal(v, err)
 	}
 }
+
+func TestOptionsVersusPositional(t *testing.T) {
+	cases := []struct {
+		js         string
+		positional int
+		want       string
+	}{
+		{`f("n", {title: "t"})`, 2, "n|t"},
+		{`f({name: "n", title: "t"})`, 2, "n|t"},
+		{`f("n", "t")`, 2, "n|t"},
+		{`f({targetId: "T"})`, 2, "T|"},
+		{`f("x", {targetId: "T"})`, 1, "x|"},
+	}
+	for _, c := range cases {
+		r := newRunner(&bytes.Buffer{})
+		var got string
+		r.bind("f", c.positional, func(a args) (any, error) {
+			got = a.str(0, "name", "") + "|" + a.str(1, "title", "")
+			return nil, nil
+		})
+		if _, err := r.rt.RunString(c.js); err != nil || got != c.want {
+			t.Errorf("%s: %q %v", c.js, got, err)
+		}
+	}
+}

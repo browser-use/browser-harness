@@ -93,7 +93,9 @@ func TestScreenshotUsesLongTimeoutAndSaves(t *testing.T) {
 	if b, _ := os.ReadFile(p); len(b) == 0 {
 		t.Fatal("no file")
 	}
-	h, _ = newFake(t, func(M) (M, error) { return nil, errors.New("Page.captureScreenshot timed out after 60s waiting for the daemon") })
+	h, _ = newFake(t, func(M) (M, error) {
+		return nil, errors.New("Page.captureScreenshot timed out after 60s waiting for the daemon")
+	})
 	if _, err := h.CaptureScreenshot(p, false, 0); err == nil || !strings.Contains(err.Error(), "timed out after 60s") {
 		t.Fatal(err)
 	}
