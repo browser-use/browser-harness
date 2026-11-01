@@ -1,13 +1,14 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"golang.org/x/term"
 
 	"github.com/browser-use/browser-harness/go/internal/auth"
-	"github.com/browser-use/browser-harness/go/internal/pyjson"
 )
 
 const authUsage = "usage: browser-harness auth [-h] {login,status,logout} ..."
@@ -25,7 +26,7 @@ func Auth(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Println(pyjson.Dumps(st, 2))
+		printJSON(os.Stdout, st)
 		return 0
 	case "logout":
 		removed, err := auth.Clear()
@@ -37,7 +38,7 @@ func Auth(args []string) int {
 		if removed {
 			status = "logged-out"
 		}
-		fmt.Println(pyjson.Dumps(pyjson.Obj{{K: "status", V: status}, {K: "path", V: auth.Path()}}, 2))
+		printJSON(os.Stdout, map[string]string{"status": status, "path": auth.Path()})
 		return 0
 	case "login":
 	default:
@@ -75,11 +76,16 @@ func Auth(args []string) int {
 	}
 	if err != nil {
 		if jsonOut {
-			fmt.Fprintln(os.Stderr, pyjson.Dumps(pyjson.Obj{{K: "status", V: "error"}, {K: "reason", V: err.Error()}}, 0))
+			printJSON(os.Stderr, map[string]string{"status": "error", "reason": err.Error()})
 		} else {
 			fmt.Fprintln(os.Stderr, err)
 		}
 		return 1
 	}
 	return 0
+}
+
+func printJSON(w io.Writer, v any) {
+	raw, _ := json.MarshalIndent(v, "", "  ")
+	fmt.Fprintln(w, string(raw))
 }

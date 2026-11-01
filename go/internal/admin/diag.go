@@ -16,7 +16,6 @@ import (
 
 	"github.com/browser-use/browser-harness/go/internal/auth"
 	"github.com/browser-use/browser-harness/go/internal/paths"
-	"github.com/browser-use/browser-harness/go/internal/pyjson"
 )
 
 const (
@@ -244,20 +243,10 @@ func Doctor() int {
 	chrome := chromeRunning()
 	daemonUp := DaemonAlive("")
 	conns := BrowserConnections()
-	var status, source string
 	st, err := auth.Status()
+	status, source := st.Status, st.Source
 	if err != nil {
 		status, source = "error", err.Error()
-	}
-	for _, kv := range st {
-		if s, ok := kv.V.(string); ok {
-			switch kv.K {
-			case "status":
-				status = s
-			case "source":
-				source = s
-			}
-		}
 	}
 	cloud := status == "authenticated"
 	latest := latestReleaseTag(false)
@@ -334,11 +323,12 @@ func DoctorJSON(strict bool) int {
 	if v := Version(); v != "" {
 		ver = v
 	}
-	fmt.Println(pyjson.Dumps(map[string]any{
+	raw, _ := json.Marshal(map[string]any{
 		"schema_version": 1, "healthy": ok, "require_existing_daemon": strict, "version": ver,
 		"install_mode": InstallMode(), "chrome_running": chrome,
 		"daemon": map[string]any{"name": Name(), "alive": up, "browser_ready": ready},
-	}, 0)) // plain maps render with sorted keys, matching sort_keys=True
+	})
+	fmt.Println(string(raw))
 	if ok {
 		return 0
 	}

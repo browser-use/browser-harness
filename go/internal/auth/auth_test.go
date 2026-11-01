@@ -53,7 +53,7 @@ func TestAuthFileMissingAndObject(t *testing.T) {
 		t.Fatalf("stored key: %q %v", k, err)
 	}
 	st, err := Status()
-	if err != nil || st[0].V != "authenticated" || st[1].V != "stored" || st[2].V != p {
+	if err != nil || st != (StatusInfo{"authenticated", "stored", p}) {
 		t.Fatalf("status: %v %v", st, err)
 	}
 }
@@ -64,7 +64,7 @@ func TestEnvKeyWinsOverCorruptFile(t *testing.T) {
 	if k, err := APIKey(); err != nil || k != "envkey" {
 		t.Fatalf("APIKey: %q %v", k, err)
 	}
-	if st, err := Status(); err != nil || st[1].V != "env" {
+	if st, err := Status(); err != nil || st.Source != "env" {
 		t.Fatalf("Status: %v %v", st, err)
 	}
 }

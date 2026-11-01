@@ -105,22 +105,12 @@ func (t tool) schema() map[string]any {
 	return map[string]any{"type": "object", "properties": props, "required": required}
 }
 
-// wrapper turns the body's `result` into the JSON text the Python server returned:
-// NaN/Infinity become null, unserializable values their str().
-const wrapper = `import json as _json, math as _math
+// wrapper runs the body and writes its `result` as JSON text, or the error.
+const wrapper = `import json as _json
 a = _json.load(open(os.environ["BH_MCP_ARGS"], encoding="utf-8"))
-def _norm(v):
-    if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)): return None
-    if isinstance(v, dict): return {k: _norm(x) for k, x in v.items()}
-    if isinstance(v, (list, tuple, set, frozenset)): return [_norm(x) for x in v]
-    return v
-def _default(v):
-    if isinstance(v, bytes): return v.decode("utf-8", errors="replace")
-    if hasattr(v, "isoformat"): return v.isoformat()
-    return str(v)
 try:
 %s
-    _out = {"text": _json.dumps(_norm(result), ensure_ascii=False, allow_nan=False, default=_default)}
+    _out = {"text": _json.dumps(result, ensure_ascii=False, default=str)}
 except Exception as _e:
     _out = {"error": str(_e)}
 with open(os.environ["BH_MCP_RESULT"], "w", encoding="utf-8") as _f:

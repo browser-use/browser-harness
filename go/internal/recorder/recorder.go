@@ -4,6 +4,7 @@
 package recorder
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/paths"
-	"github.com/browser-use/browser-harness/go/internal/pyjson"
 )
 
 // Actions are helpers that change what is on screen; read-only helpers get no frame.
@@ -122,7 +122,7 @@ func AutoSetting(e Env) (bool, string) {
 func SetAuto(e Env, enabled bool) error {
 	p := configPath()
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, []byte(pyjson.Dumps(pyjson.Obj{{K: "enabled", V: enabled}}, 0)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(tmp, jsonLine(map[string]bool{"enabled": enabled}), 0o600); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, p); err != nil {
@@ -205,11 +205,11 @@ func isAuto(d string) bool {
 func nowSec() float64 { return float64(time.Now().UnixMilli()) / 1000 }
 
 func writeMeta(d, name string, title any, auto bool) error {
-	meta := pyjson.Obj{{K: "name", V: name}, {K: "title", V: title}, {K: "started", V: nowSec()}}
+	meta := map[string]any{"name": name, "title": title, "started": nowSec()}
 	if auto {
-		meta = append(meta, pyjson.KV{K: "auto", V: true})
+		meta["auto"] = true
 	}
-	return os.WriteFile(filepath.Join(d, "meta.json"), []byte(pyjson.Dumps(meta, 0)), 0o644)
+	return os.WriteFile(filepath.Join(d, "meta.json"), jsonLine(meta), 0o644)
 }
 
 func autoStart(e Env) (string, error) {
@@ -335,25 +335,25 @@ func Stop(e Env, p Page) (string, int) {
 }
 
 func capture(d string, c Call, p Page) {
-	ev := pyjson.Obj{{K: "ts", V: nowSec()}, {K: "helper", V: c.Helper}}
+	ev := map[string]any{"ts": nowSec(), "helper": c.Helper}
 	if c.Duration != nil {
-		ev = append(ev, pyjson.KV{K: "duration", V: *c.Duration})
+		ev["duration"] = *c.Duration
 	}
 	ctx := map[string]any{}
 	if m, err := p.JS(CtxJS); err == nil && m != nil {
 		ctx = m
 		for _, k := range []string{"url", "title", "w", "h", "sx", "sy", "dpr", "box", "input"} {
 			if v, ok := m[k]; ok {
-				ev = set(ev, k, v)
+				ev[k] = v
 			}
 		}
 	}
-	for _, kv := range details(c, ctx) {
-		ev = set(ev, kv.K, kv.V)
+	for k, v := range details(c, ctx) {
+		ev[k] = v
 	}
-	for i, kv := range ev {
-		if (kv.K == "url" || kv.K == "to") && kv.V != nil {
-			ev[i].V = scrubURL(fmt.Sprint(kv.V))
+	for _, k := range []string{"url", "to"} {
+		if v, ok := ev[k]; ok && v != nil {
+			ev[k] = scrubURL(fmt.Sprint(v))
 		}
 	}
 	if data, err := p.Screenshot(); err != nil {
@@ -361,9 +361,9 @@ func capture(d string, c Call, p Page) {
 		if msg == "" {
 			msg = "no detail"
 		}
-		ev = append(ev, pyjson.KV{K: "frame_error", V: truncate("RuntimeError: "+msg, 200)})
+		ev["frame_error"] = truncate(msg, 200)
 	} else if raw, derr := base64.StdEncoding.DecodeString(data); derr != nil {
-		ev = append(ev, pyjson.KV{K: "frame_error", V: truncate("Error: "+derr.Error(), 200)})
+		ev["frame_error"] = truncate(derr.Error(), 200)
 	} else {
 		n := len(frames(d)) + 1
 		for {
@@ -376,9 +376,9 @@ func capture(d string, c Call, p Page) {
 			if err == nil {
 				_, _ = f.Write(raw)
 				f.Close()
-				ev = append(ev, pyjson.KV{K: "frame", V: frame})
+				ev["frame"] = frame
 			} else {
-				ev = append(ev, pyjson.KV{K: "frame_error", V: truncate("OSError: "+err.Error(), 200)})
+				ev["frame_error"] = truncate(err.Error(), 200)
 			}
 			break
 		}
@@ -388,17 +388,7 @@ func capture(d string, c Call, p Page) {
 		return
 	}
 	defer f.Close()
-	_, _ = f.WriteString(pyjson.DumpsUnicode(ev) + "\n")
-}
-
-func set(o pyjson.Obj, k string, v any) pyjson.Obj {
-	for i := range o {
-		if o[i].K == k {
-			o[i].V = v
-			return o
-		}
-	}
-	return append(o, pyjson.KV{K: k, V: v})
+	_, _ = f.Write(jsonLine(ev))
 }
 
 func truncate(s string, n int) string {
@@ -409,7 +399,7 @@ func truncate(s string, n int) string {
 	return s
 }
 
-func details(c Call, ctx map[string]any) pyjson.Obj {
+func details(c Call, ctx map[string]any) map[string]any {
 	arg := func(i int, name string, def any) any {
 		if len(c.Args) > i {
 			return c.Args[i]
@@ -419,10 +409,10 @@ func details(c Call, ctx map[string]any) pyjson.Obj {
 		}
 		return def
 	}
-	var d pyjson.Obj
+	d := map[string]any{}
 	add := func(k string, v any) {
 		if v != nil {
-			d = append(d, pyjson.KV{K: k, V: v})
+			d[k] = v
 		}
 	}
 	switch c.Helper {
@@ -458,4 +448,13 @@ func mask(v any, ctx map[string]any) string {
 		return strings.Repeat("•", len([]rune(s)))
 	}
 	return truncate(s, textLimit)
+}
+
+// jsonLine is one JSON value plus a newline, with page text left unescaped.
+func jsonLine(v any) []byte {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	_ = e.Encode(v)
+	return b.Bytes()
 }

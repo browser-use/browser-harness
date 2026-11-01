@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/paths"
-	"github.com/browser-use/browser-harness/go/internal/pyjson"
 )
 
 const (
@@ -112,24 +111,26 @@ func APIKey() (string, error) {
 	return "", ErrRequired
 }
 
-// Status keeps auth_status()'s key order: status, source, path.
-func Status() (pyjson.Obj, error) {
-	var status string
-	var source any
+// StatusInfo is what `auth status` prints.
+type StatusInfo struct {
+	Status string `json:"status"`
+	Source string `json:"source,omitempty"`
+	Path   string `json:"path"`
+}
+
+// Status reports where the API key comes from; a corrupt auth file is an error.
+func Status() (StatusInfo, error) {
 	if os.Getenv("BROWSER_USE_API_KEY") != "" {
-		return pyjson.Obj{{K: "status", V: "authenticated"}, {K: "source", V: "env"}, {K: "path", V: Path()}}, nil
+		return StatusInfo{"authenticated", "env", Path()}, nil
 	}
 	rec, err := stored()
 	if err != nil {
-		return nil, err
+		return StatusInfo{}, err
 	}
-	switch {
-	case rec != nil && rec["api_key"] != nil && rec["api_key"] != "":
-		status, source = "authenticated", "stored"
-	default:
-		status, source = "missing", nil
+	if k, _ := rec["api_key"].(string); k != "" {
+		return StatusInfo{"authenticated", "stored", Path()}, nil
 	}
-	return pyjson.Obj{{K: "status", V: status}, {K: "source", V: source}, {K: "path", V: Path()}}, nil
+	return StatusInfo{"missing", "", Path()}, nil
 }
 
 // Record is the stored browser_use entry.
@@ -297,7 +298,7 @@ func BrowserLogin(open, jsonOut bool, out io.Writer) error {
 	}
 	opened := open && Opener(authURL) == nil
 	if jsonOut {
-		writeJSON(out, pyjson.Obj{{K: "status", V: "needs_user_auth"}, {K: "auth_url", V: authURL}, {K: "callback", V: redirect}, {K: "expires_in", V: nullableInt(data["expires_in"])}, {K: "opened", V: opened}})
+		writeJSON(out, map[string]any{"status": "needs_user_auth", "auth_url": authURL, "callback": redirect, "expires_in": nullableInt(data["expires_in"]), "opened": opened})
 	} else {
 		fmt.Fprintln(out, "Open this URL to sign in to Browser Use Cloud:")
 		fmt.Fprintln(out, authURL)
@@ -374,7 +375,7 @@ func DeviceLogin(open, jsonOut bool, out io.Writer) error {
 		if complete != "" {
 			vc = complete
 		}
-		writeJSON(out, pyjson.Obj{{K: "status", V: "needs_user_auth"}, {K: "verification_uri", V: verify}, {K: "verification_uri_complete", V: vc}, {K: "user_code", V: userCode}, {K: "expires_in", V: nullableInt(data["expires_in"])}, {K: "opened", V: opened}})
+		writeJSON(out, map[string]any{"status": "needs_user_auth", "verification_uri": verify, "verification_uri_complete": vc, "user_code": userCode, "expires_in": nullableInt(data["expires_in"]), "opened": opened})
 	} else {
 		fmt.Fprintln(out, "Open this URL to sign in to Browser Use Cloud:")
 		fmt.Fprintln(out, openURI)
@@ -462,7 +463,10 @@ func nullableInt(v any) any {
 	return nil
 }
 
-func writeJSON(w io.Writer, v any) { fmt.Fprintln(w, pyjson.Dumps(v, 0)) }
+func writeJSON(w io.Writer, v any) {
+	raw, _ := json.Marshal(v)
+	fmt.Fprintln(w, string(raw))
+}
 
 // StoredOutput is the success line after a login.
-func StoredOutput() pyjson.Obj { return pyjson.Obj{{K: "status", V: "stored"}, {K: "path", V: Path()}} }
+func StoredOutput() map[string]any { return map[string]any{"status": "stored", "path": Path()} }

@@ -68,7 +68,7 @@ func TestDroppedFrameIsRecorded(t *testing.T) {
 func TestMessageLessFrameError(t *testing.T) {
 	d := t.TempDir()
 	capture(d, click(), fakePage{err: errors.New("")})
-	if fe := events(t, d)[0]["frame_error"]; fe != "RuntimeError: no detail" {
+	if fe := events(t, d)[0]["frame_error"]; fe != "no detail" {
 		t.Fatalf("frame_error %q", fe)
 	}
 }

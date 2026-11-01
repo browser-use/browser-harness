@@ -2,13 +2,11 @@
 package cdp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,12 +16,23 @@ import (
 // MaxFrame matches cdp-use's 100 MB default; screenshots and DOM dumps are large.
 const MaxFrame = 100 << 20
 
-// Error carries a CDP error object; Error() renders it the way Python's
-// str(dict) does, because cdp-use raised RuntimeError(error_dict) and helper
-// callers (and agents) see that exact text.
+// Error is a CDP error response.
 type Error struct{ raw json.RawMessage }
 
-func (e *Error) Error() string { return PyRepr(e.raw) }
+func (e *Error) Error() string {
+	var v struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    string `json:"data"`
+	}
+	if json.Unmarshal(e.raw, &v) != nil || v.Message == "" {
+		return string(e.raw)
+	}
+	if v.Data != "" {
+		return fmt.Sprintf("%s: %s (CDP %d)", v.Message, v.Data, v.Code)
+	}
+	return fmt.Sprintf("%s (CDP %d)", v.Message, v.Code)
+}
 
 // ErrClosed matches cdp-use's message when the socket drops mid-call.
 var ErrClosed = errors.New("WebSocket connection closed")
@@ -168,94 +177,3 @@ func (c *Client) forget(id int64) {
 }
 
 func (c *Client) Close() error { return c.ws.Close(websocket.StatusNormalClosure, "") }
-
-// PyRepr renders JSON the way Python's repr() renders the decoded value.
-func PyRepr(raw json.RawMessage) string {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var b strings.Builder
-	if err := reprValue(dec, &b); err != nil {
-		return string(raw)
-	}
-	return b.String()
-}
-
-func reprValue(dec *json.Decoder, b *strings.Builder) error {
-	tok, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	switch t := tok.(type) {
-	case json.Delim:
-		open, close := "{", "}"
-		if t == '[' {
-			open, close = "[", "]"
-		}
-		b.WriteString(open)
-		first := true
-		for dec.More() {
-			if !first {
-				b.WriteString(", ")
-			}
-			first = false
-			if t == '{' {
-				k, err := dec.Token()
-				if err != nil {
-					return err
-				}
-				b.WriteString(pyStr(k.(string)))
-				b.WriteString(": ")
-			}
-			if err := reprValue(dec, b); err != nil {
-				return err
-			}
-		}
-		if _, err := dec.Token(); err != nil {
-			return err
-		}
-		b.WriteString(close)
-	case string:
-		b.WriteString(pyStr(t))
-	case json.Number:
-		b.WriteString(t.String())
-	case bool:
-		if t {
-			b.WriteString("True")
-		} else {
-			b.WriteString("False")
-		}
-	case nil:
-		b.WriteString("None")
-	}
-	return nil
-}
-
-func pyStr(s string) string {
-	q := byte('\'')
-	if strings.Contains(s, "'") && !strings.Contains(s, "\"") {
-		q = '"'
-	}
-	var b strings.Builder
-	b.WriteByte(q)
-	for _, r := range s {
-		switch {
-		case r == '\\':
-			b.WriteString(`\\`)
-		case r == rune(q):
-			b.WriteByte('\\')
-			b.WriteByte(q)
-		case r == '\n':
-			b.WriteString(`\n`)
-		case r == '\r':
-			b.WriteString(`\r`)
-		case r == '\t':
-			b.WriteString(`\t`)
-		case r < 0x20 || r == 0x7f:
-			b.WriteString(`\x` + fmt.Sprintf("%02x", r))
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte(q)
-	return b.String()
-}

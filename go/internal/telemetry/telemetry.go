@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/paths"
-	"github.com/browser-use/browser-harness/go/internal/pyjson"
 )
 
 const (
@@ -52,7 +51,7 @@ func load() map[string]any {
 func save(m map[string]any) {
 	p := configPath()
 	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	if os.WriteFile(p, []byte(pyjson.Dumps(m, 2)+"\n"), 0o600) == nil && runtime.GOOS != "windows" {
+	if os.WriteFile(p, indent(m), 0o600) == nil && runtime.GOOS != "windows" {
 		_ = os.Chmod(p, 0o600)
 	}
 }
@@ -106,17 +105,17 @@ func truthy(v any) bool {
 
 func Enabled() bool { return !envDisabled() && !disabledByConfig(load()) }
 
-func Status() pyjson.Obj {
+func Status() map[string]any {
 	m := load()
 	env := envDisabled()
 	enabled := !env && !disabledByConfig(m)
-	return pyjson.Obj{
-		{K: "enabled", V: enabled}, {K: "disabled_by_env", V: env}, {K: "disabled_by_config", V: disabledByConfig(m)},
-		{K: "install_id", V: installID(m, enabled)}, {K: "config_path", V: configPath()},
+	return map[string]any{
+		"enabled": enabled, "disabled_by_env": env, "disabled_by_config": disabledByConfig(m),
+		"install_id": installID(m, enabled), "config_path": configPath(),
 	}
 }
 
-func setEnabled(on bool) pyjson.Obj {
+func setEnabled(on bool) map[string]any {
 	m := load()
 	m["disabled"] = !on
 	save(m)
@@ -127,11 +126,11 @@ func setEnabled(on bool) pyjson.Obj {
 func RunCLI(args []string) int {
 	switch strings.Join(args, " ") {
 	case "", "status":
-		fmt.Println(pyjson.Dumps(Status(), 2))
+		printJSON(Status())
 	case "disable":
-		fmt.Println(pyjson.Dumps(setEnabled(false), 2))
+		printJSON(setEnabled(false))
 	case "enable":
-		fmt.Println(pyjson.Dumps(setEnabled(true), 2))
+		printJSON(setEnabled(true))
 	default:
 		fmt.Println("usage: browser-harness telemetry [status|enable|disable]")
 		return 2
@@ -190,13 +189,13 @@ func orNil(s string) any {
 	return s
 }
 
-func base() pyjson.Obj {
+func base() map[string]any {
 	v := os.Getenv("BH_VERSION")
 	if v == "" {
 		v = "unknown"
 	}
-	return pyjson.Obj{{K: "browser_harness_version", V: v}, {K: "python_version", V: os.Getenv("BH_PYTHON_VERSION")},
-		{K: "os", V: osName()}, {K: "machine", V: machine()}}
+	return map[string]any{"browser_harness_version": v, "python_version": os.Getenv("BH_PYTHON_VERSION"),
+		"os": osName(), "machine": machine()}
 }
 
 func cdpHostname() any {
@@ -255,18 +254,21 @@ func CaptureCLIEvent(e CLIEvent) {
 		}
 		task = string(t)
 	}
-	props := append(base(), pyjson.Obj{
-		{K: "$process_person_profile", V: true}, {K: "action", V: e.Action}, {K: "command", V: e.Command},
-		{K: "browser", V: strp(e.Browser)}, {K: "cdp_url", V: cdpHostname()},
-		{K: "client", V: orNil(os.Getenv("BH_CLIENT"))}, {K: "client_version", V: orNil(os.Getenv("BH_CLIENT_VERSION"))},
-		{K: "agent_client", V: agentClient()}, {K: "model", V: orNil(os.Getenv("BROWSER_USE_AGENT_MODEL"))},
-		{K: "model_provider", V: orNil(os.Getenv("BROWSER_USE_MODEL_PROVIDER"))},
-		{K: "task", V: task}, {K: "task_length", V: taskLen}, {K: "output", V: strp(e.Output)},
-		{K: "output_length", V: intp(e.OutputLength)}, {K: "steps", V: e.Steps}, {K: "step_count", V: intp(e.StepCount)},
-		{K: "duration_seconds", V: e.Duration}, {K: "exit_code", V: e.ExitCode}, {K: "error_message", V: strp(e.Error)},
-	}...)
-	send(pyjson.Obj{{K: "api_key", V: posthogKey}, {K: "distinct_id", V: installID(load(), true)},
-		{K: "event", V: "cli_event"}, {K: "properties", V: props}})
+	props := base()
+	for k, v := range map[string]any{
+		"$process_person_profile": true, "action": e.Action, "command": e.Command,
+		"browser": strp(e.Browser), "cdp_url": cdpHostname(),
+		"client": orNil(os.Getenv("BH_CLIENT")), "client_version": orNil(os.Getenv("BH_CLIENT_VERSION")),
+		"agent_client": agentClient(), "model": orNil(os.Getenv("BROWSER_USE_AGENT_MODEL")),
+		"model_provider": orNil(os.Getenv("BROWSER_USE_MODEL_PROVIDER")),
+		"task":           task, "task_length": taskLen, "output": strp(e.Output),
+		"output_length": intp(e.OutputLength), "steps": e.Steps, "step_count": intp(e.StepCount),
+		"duration_seconds": e.Duration, "exit_code": e.ExitCode, "error_message": strp(e.Error),
+	} {
+		props[k] = v
+	}
+	send(map[string]any{"api_key": posthogKey, "distinct_id": installID(load(), true),
+		"event": "cli_event", "properties": props})
 }
 
 // Capture sends an event with scrubbed properties.
@@ -274,7 +276,8 @@ func Capture(event string, props map[string]any) {
 	if !Enabled() {
 		return
 	}
-	all := append(base(), pyjson.KV{K: "$process_person_profile", V: false})
+	all := base()
+	all["$process_person_profile"] = false
 	for k, v := range props {
 		safe := unsafeKeyRE.ReplaceAllString(k, "_")
 		if len(safe) > 80 {
@@ -292,7 +295,7 @@ func Capture(event string, props map[string]any) {
 		}
 		switch t := v.(type) {
 		case nil, bool, int, float64:
-			all = append(all, pyjson.KV{K: safe, V: t})
+			all[safe] = t
 		default:
 			s := fmt.Sprint(t)
 			if strings.Contains(s, "://") {
@@ -301,15 +304,15 @@ func Capture(event string, props map[string]any) {
 			if r := []rune(s); len(r) > 120 {
 				s = string(r[:120])
 			}
-			all = append(all, pyjson.KV{K: safe, V: s})
+			all[safe] = s
 		}
 	}
-	send(pyjson.Obj{{K: "api_key", V: posthogKey}, {K: "distinct_id", V: installID(load(), true)},
-		{K: "event", V: event}, {K: "properties", V: all}})
+	send(map[string]any{"api_key": posthogKey, "distinct_id": installID(load(), true),
+		"event": event, "properties": all})
 }
 
 // send hands the payload to a detached copy of this binary so the CLI never blocks.
-func send(payload pyjson.Obj) {
+func send(payload map[string]any) {
 	host := strings.TrimRight(os.Getenv("BH_POSTHOG_HOST"), "/")
 	if host == "" {
 		host = posthogHost
@@ -318,13 +321,13 @@ func send(payload pyjson.Obj) {
 	if t, err := strconv.ParseFloat(os.Getenv("BH_TELEMETRY_TIMEOUT"), 64); err == nil {
 		timeout = t
 	}
-	job := pyjson.Obj{{K: "url", V: host + "/i/v0/e/"}, {K: "timeout", V: timeout}, {K: "payload", V: payload}}
+	job := map[string]any{"url": host + "/i/v0/e/", "timeout": timeout, "payload": payload}
 	self, err := os.Executable()
 	if err != nil {
 		return
 	}
 	cmd := exec.Command(self, "telemetry-send")
-	cmd.Stdin = strings.NewReader(pyjson.Dumps(job, 0))
+	cmd.Stdin = bytes.NewReader(compact(job))
 	Detach(cmd)
 	if cmd.Start() == nil {
 		go func() { _ = cmd.Wait() }()
@@ -353,3 +356,15 @@ func RunSender() int {
 	}
 	return 0
 }
+
+func indent(v any) []byte {
+	raw, _ := json.MarshalIndent(v, "", "  ")
+	return append(raw, '\n')
+}
+
+func compact(v any) []byte {
+	raw, _ := json.Marshal(v)
+	return raw
+}
+
+func printJSON(v any) { os.Stdout.Write(indent(v)) }
