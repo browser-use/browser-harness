@@ -1448,3 +1448,162 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+def test_cold_start_daemon_exit_launches_browser_before_retry(monkeypatch, tmp_path):
+    """Regression for #786: when the daemon exits immediately because zero
+    supported browser processes exist (true cold start), ensure_daemon must
+    launch a browser and retry, instead of respawning the same doomed daemon
+    up to the retry limit and failing with "daemon didn't come up"."""
+    import types
+    from contextlib import contextmanager
+
+    log_msg = (
+        "fatal: chrome-not-running: no supported Chromium-family browser is "
+        "running -- start Chrome, then retry"
+    )
+
+    class DeadProc:
+        pid = 4242
+
+        def poll(self):
+            return 1
+
+    class FakeIPC:
+        def log_path(self, name):
+            return tmp_path / f"{name or 'default'}.log"
+
+        def pid_path(self, name):
+            return tmp_path / f"{name or 'default'}.pid"
+
+        @staticmethod
+        def spawn_kwargs():
+            return {}
+
+    state = {"up": False}
+    launched = []
+    restarts = []
+
+    @contextmanager
+    def fake_spawn_lock(name, timeout=1.0):
+        yield types.SimpleNamespace(fd=999)
+
+    def fake_daemon_alive(name=None):
+        return state["up"]
+
+    def fake_launch_browser():
+        launched.append(1)
+        state["up"] = True
+        return (DeadProc(), "profile")
+
+    monkeypatch.setattr(admin, "daemon_alive", fake_daemon_alive)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env=None: True)
+    monkeypatch.setattr(admin, "_daemon_wait_windows", lambda wait, local: (0.2, None))
+    monkeypatch.setattr(admin, "_log_tail", lambda name=None: log_msg)
+    monkeypatch.setattr(admin, "_launch_browser", fake_launch_browser)
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarts.append(name))
+    monkeypatch.setattr(admin, "_spawn_lock", fake_spawn_lock)
+    monkeypatch.setattr(admin, "_parked_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_publish_pid", lambda path, pid: None)
+    monkeypatch.setattr(admin, "_pid_number", lambda path: None)  # endpoint unlinked
+    monkeypatch.setattr(admin, "_pending_pid_record", lambda path: None)
+    monkeypatch.setattr(admin, "_cleanup_unattached_browser_launch", lambda obj: None)
+    monkeypatch.setattr(admin, "_needs_chrome_permission_popup", lambda msg: False)
+    monkeypatch.setattr(admin, "_needs_chrome_remote_debugging_prompt", lambda msg: False)
+    monkeypatch.setattr(admin, "ipc", FakeIPC())
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: DeadProc())
+
+    import browser_harness.daemon as daemon_mod
+    monkeypatch.setattr(daemon_mod, "supported_browser_running", lambda: True)
+
+    admin.ensure_daemon()
+
+    assert launched == [1], "cold-start daemon exit must call _launch_browser() exactly once"
+    assert restarts, "cold-start daemon exit must restart the daemon before the retry"
+
+
+def test_cold_start_rescue_skipped_when_successor_published(monkeypatch, tmp_path):
+    """Cubic review follow-up: if a concurrent ensure_daemon() caller published
+    a successor after our cleanup lock was released, the cold-start rescue must
+    NOT call restart_daemon()/_launch_browser() -- an unscoped restart would
+    stop that healthy successor. Instead, the retry loop must adopt the live
+    successor and ensure_daemon() must return normally."""
+    import types
+    from contextlib import contextmanager
+
+    log_msg = (
+        "fatal: chrome-not-running: no supported Chromium-family browser is "
+        "running -- start Chrome, then retry"
+    )
+
+    class DeadProc:
+        pid = 4242
+
+        def poll(self):
+            return 1
+
+    class FakeIPC:
+        def log_path(self, name):
+            return tmp_path / f"{name or 'default'}.log"
+
+        def pid_path(self, name):
+            return tmp_path / f"{name or 'default'}.pid"
+
+        @staticmethod
+        def spawn_kwargs():
+            return {}
+
+    launched = []
+    restarts = []
+
+    @contextmanager
+    def fake_spawn_lock(name, timeout=1.0):
+        yield types.SimpleNamespace(fd=999)
+
+    def fake_pid_number(path):
+        # A successor daemon (pid 7777) has been published by another caller.
+        return 7777
+
+    def fake_launch_browser():
+        launched.append(1)
+        return (DeadProc(), "profile")
+
+    probes = {"n": 0}
+
+    def fake_daemon_alive(name=None):
+        # Call order: (1) ensure_daemon() top-of-function probe -> no daemon
+        # yet; (2) loop iteration 1 lock probe -> still none, so we spawn the
+        # doomed daemon; (3) loop iteration 2 lock probe -> the successor
+        # published by the concurrent caller is alive.
+        probes["n"] += 1
+        return probes["n"] >= 3
+
+    monkeypatch.setattr(admin, "daemon_alive", fake_daemon_alive)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env=None: True)
+    monkeypatch.setattr(admin, "_daemon_wait_windows", lambda wait, local: (0.05, None))
+    monkeypatch.setattr(admin, "_log_tail", lambda name=None: log_msg)
+    monkeypatch.setattr(admin, "_launch_browser", fake_launch_browser)
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarts.append(name))
+    monkeypatch.setattr(admin, "_spawn_lock", fake_spawn_lock)
+    monkeypatch.setattr(admin, "_parked_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_publish_pid", lambda path, pid: None)
+    monkeypatch.setattr(admin, "_pid_number", fake_pid_number)
+    monkeypatch.setattr(admin, "_pending_pid_record", lambda path: None)
+    monkeypatch.setattr(admin, "_cleanup_unattached_browser_launch", lambda obj: None)
+    monkeypatch.setattr(admin, "_needs_chrome_permission_popup", lambda msg: False)
+    monkeypatch.setattr(admin, "_needs_chrome_remote_debugging_prompt", lambda msg: False)
+    monkeypatch.setattr(admin, "ipc", FakeIPC())
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: DeadProc())
+
+    import browser_harness.daemon as daemon_mod
+    monkeypatch.setattr(daemon_mod, "supported_browser_running", lambda: True)
+
+    # The rescue path skips (no launch, no restart), and on the next loop
+    # iteration the live successor is adopted: ensure_daemon() returns.
+    admin.ensure_daemon()
+
+    assert probes["n"] >= 3, "successor must be adopted via the retry loop"
+    assert launched == [], "rescue must not launch a browser when a successor owns the endpoint"
+    assert restarts == [], "rescue must not restart when a successor owns the endpoint"
