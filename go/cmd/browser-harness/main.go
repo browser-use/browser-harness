@@ -3,9 +3,12 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
 
 	"github.com/browser-use/browser-harness/go/internal/cli"
+	"github.com/browser-use/browser-harness/go/internal/jsrun"
 	"github.com/browser-use/browser-harness/go/internal/mcpserver"
 	"github.com/browser-use/browser-harness/go/internal/paths"
 	"github.com/browser-use/browser-harness/go/internal/telemetry"
@@ -26,6 +29,14 @@ func main() {
 		os.Exit(runCall(args[1:]))
 	case "__telemetry-send":
 		os.Exit(telemetry.RunSender())
+	case "js":
+		// Prototype: run a JavaScript snippet from stdin, no Python involved.
+		code, _ := io.ReadAll(os.Stdin)
+		if err := jsrun.Run(string(code), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	case "mcp":
 		os.Exit(mcpserver.Run(os.Getenv("BH_VERSION")))
 	}
