@@ -20,7 +20,12 @@ func Auth(args []string) int {
 	}
 	switch args[0] {
 	case "status":
-		fmt.Println(pyjson.Dumps(auth.Status(), 2))
+		st, err := auth.Status()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Println(pyjson.Dumps(st, 2))
 		return 0
 	case "logout":
 		removed, err := auth.Clear()

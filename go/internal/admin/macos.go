@@ -58,27 +58,40 @@ return resultText
 const accessibilityDetail = "allow the app launching browser-harness (for example Terminal, iTerm, or Codex) " +
 	"in System Settings > Privacy & Security > Accessibility"
 
+// Seams for tests.
+var (
+	macGOOS           = runtime.GOOS
+	macDaemonReady    = func() bool { return DaemonBrowserReady("") }
+	macToggleProfiles = browser.RemoteDebuggingToggleProfiles
+	macChromeRoot     = func() string {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, "Library/Application Support/Google/Chrome")
+	}
+	runOsascript = func(ctx context.Context, script string) (string, string, error) {
+		cmd := exec.CommandContext(ctx, "osascript")
+		cmd.Stdin = strings.NewReader(script)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		return stdout.String(), stderr.String(), err
+	}
+)
+
 // approveRemoteDebugging clicks Chrome's exact per-connection Allow sheet without activating Chrome.
 func approveRemoteDebugging() (string, string) {
-	if runtime.GOOS != "darwin" {
+	if macGOOS != "darwin" {
 		return "unsupported", "mac-approve is only available on macOS"
 	}
-	if DaemonBrowserReady("") {
+	if macDaemonReady() {
 		return "ready", ""
 	}
-	home, _ := os.UserHomeDir()
-	root := filepath.Join(home, "Library/Application Support/Google/Chrome")
-	if !contains(browser.RemoteDebuggingToggleProfiles(), root) {
+	if !contains(macToggleProfiles(), macChromeRoot()) {
 		return "setup-required", `first enable "Allow remote debugging for this browser instance" at ` +
 			"chrome://inspect/#remote-debugging, then run `browser-harness mac-approve` again"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "osascript")
-	cmd.Stdin = strings.NewReader(approveScript)
-	var stdout, stderr strings.Builder
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	stdout, stderr, err := runOsascript(ctx, approveScript)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "accessibility-required", accessibilityDetail
 	}
@@ -87,7 +100,7 @@ func approveRemoteDebugging() (string, string) {
 		if !errors.As(err, &ee) {
 			return "error", err.Error()
 		}
-		detail := strings.TrimSpace(stderr.String())
+		detail := strings.TrimSpace(stderr)
 		if detail == "" {
 			detail = "osascript failed"
 		}
@@ -97,12 +110,12 @@ func approveRemoteDebugging() (string, string) {
 		}
 		return "error", detail
 	}
-	switch status := strings.TrimSpace(stdout.String()); status {
+	switch status := strings.TrimSpace(stdout); status {
 	case "ready":
 		return "ready", ""
 	case "not-found":
 		// The user may have accepted the sheet while AppleScript was looking.
-		if DaemonBrowserReady("") {
+		if macDaemonReady() {
 			return "ready", ""
 		}
 		return "not-found", "retry the browser command and run `browser-harness mac-approve` when the prompt appears"

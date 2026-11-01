@@ -54,6 +54,9 @@ func (p page) Screenshot() (string, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 60*time.Second)
 	defer cancel()
 	raw, err := p.d.send(ctx, "Page.captureScreenshot", map[string]any{"format": "jpeg", "quality": 80}, p.sid())
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "", errors.New("Page.captureScreenshot timed out after 60s")
+	}
 	if err != nil {
 		return "", err
 	}

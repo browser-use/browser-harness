@@ -86,13 +86,13 @@ func loadFile(p string) (map[string]any, error) {
 	return m, nil
 }
 
-func stored() map[string]any {
+func stored() (map[string]any, error) {
 	m, err := loadFile(Path())
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	rec, _ := m["browser_use"].(map[string]any)
-	return rec
+	return rec, nil
 }
 
 // APIKey prefers BROWSER_USE_API_KEY, then the stored record.
@@ -100,7 +100,11 @@ func APIKey() (string, error) {
 	if k := os.Getenv("BROWSER_USE_API_KEY"); k != "" {
 		return k, nil
 	}
-	if rec := stored(); rec != nil {
+	rec, err := stored()
+	if err != nil {
+		return "", err
+	}
+	if rec != nil {
 		if k, ok := rec["api_key"].(string); ok && k != "" {
 			return k, nil
 		}
@@ -109,18 +113,23 @@ func APIKey() (string, error) {
 }
 
 // Status keeps auth_status()'s key order: status, source, path.
-func Status() pyjson.Obj {
+func Status() (pyjson.Obj, error) {
 	var status string
 	var source any
-	switch rec := stored(); {
-	case os.Getenv("BROWSER_USE_API_KEY") != "":
-		status, source = "authenticated", "env"
+	if os.Getenv("BROWSER_USE_API_KEY") != "" {
+		return pyjson.Obj{{K: "status", V: "authenticated"}, {K: "source", V: "env"}, {K: "path", V: Path()}}, nil
+	}
+	rec, err := stored()
+	if err != nil {
+		return nil, err
+	}
+	switch {
 	case rec != nil && rec["api_key"] != nil && rec["api_key"] != "":
 		status, source = "authenticated", "stored"
 	default:
 		status, source = "missing", nil
 	}
-	return pyjson.Obj{{K: "status", V: status}, {K: "source", V: source}, {K: "path", V: Path()}}
+	return pyjson.Obj{{K: "status", V: status}, {K: "source", V: source}, {K: "path", V: Path()}}, nil
 }
 
 // Record is the stored browser_use entry.

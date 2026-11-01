@@ -245,7 +245,11 @@ func Doctor() int {
 	daemonUp := DaemonAlive("")
 	conns := BrowserConnections()
 	var status, source string
-	for _, kv := range auth.Status() {
+	st, err := auth.Status()
+	if err != nil {
+		status, source = "error", err.Error()
+	}
+	for _, kv := range st {
 		if s, ok := kv.V.(string); ok {
 			switch kv.K {
 			case "status":

@@ -59,12 +59,15 @@ var windowsProfiles = []string{ // relative to %LOCALAPPDATA%; SxS = Canary
 	"BraveSoftware/Brave-Browser/User Data",
 }
 
+// GOOS picks the profile layout; tests override it.
+var GOOS = runtime.GOOS
+
 // ProfileDirs lists the user-data dirs scanned for DevToolsActivePort.
 func ProfileDirs() []string {
 	home, _ := os.UserHomeDir()
 	var rel []string
 	root := home
-	switch runtime.GOOS {
+	switch GOOS {
 	case "windows":
 		root = os.Getenv("LOCALAPPDATA")
 		if root == "" {
@@ -166,7 +169,7 @@ func RemoteDebuggingToggleProfiles() []string {
 
 // SupportedBrowserRunning reports whether any scanned browser is running.
 func SupportedBrowserRunning() bool {
-	if runtime.GOOS == "windows" {
+	if GOOS == "windows" {
 		out, err := exec.Command("tasklist").Output()
 		if err != nil {
 			return true // can't tell: keep recovery on the popup/toggle path
@@ -277,7 +280,7 @@ func WSURL() (string, error) {
 			time.Sleep(time.Second)
 		}
 		hint := "is the dedicated automation Chrome running? Launch it with --remote-debugging-port=<port> --user-data-dir=<dedicated dir>"
-		if runtime.GOOS == "windows" {
+		if GOOS == "windows" {
 			hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
 		}
 		return "", fmt.Errorf("BU_CDP_URL=%s unreachable after 30s: %v -- %s", u, last, hint)

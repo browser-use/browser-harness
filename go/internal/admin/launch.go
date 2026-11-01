@@ -109,6 +109,12 @@ func hasLocalState(base string) bool {
 }
 
 // launchBrowser prefers the browser whose profile already has the inspect toggle on.
+// openApp runs macOS `open`; tests override it.
+var openApp = func(args ...string) error {
+	_, err := runWithTimeout(exec.Command("open", args...), 10*time.Second)
+	return err
+}
+
 func launchBrowser() *launchResult {
 	enabled := browser.RemoteDebuggingToggleProfiles()
 	known := append([]string{}, enabled...)
@@ -136,7 +142,7 @@ func launchBrowser() *launchResult {
 		}
 		go func() { _ = cmd.Wait() }()
 		profile := ""
-		if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		if browser.GOOS != "darwin" && browser.GOOS != "windows" {
 			for _, b := range known {
 				if binaryMatchesProfile(raw, b) {
 					profile = b
@@ -162,18 +168,18 @@ func launchBrowser() *launchResult {
 		spec = specFor(base)
 	}
 	args := profileDirectoryArgs(base)
-	switch runtime.GOOS {
+	switch browser.GOOS {
 	case "darwin":
 		cmdArgs := []string{"-a", spec.macApp}
 		if len(args) > 0 {
 			cmdArgs = append(cmdArgs, append([]string{"--args"}, args...)...)
 		}
-		if _, err := runWithTimeout(exec.Command("open", cmdArgs...), 10*time.Second); err != nil {
+		if err := openApp(cmdArgs...); err != nil {
 			if spec.macApp == "Google Chrome" {
 				return nil
 			}
 			// A different app's profile dir may not match; launch plain Chrome.
-			if _, err := runWithTimeout(exec.Command("open", "-a", "Google Chrome"), 10*time.Second); err != nil {
+			if err := openApp("-a", "Google Chrome"); err != nil {
 				return nil
 			}
 		}
