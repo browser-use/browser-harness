@@ -1,5 +1,4 @@
-// Package paths mirrors browser_harness/paths.py: the on-disk layout shared by
-// the Go core and the Python snippet runner.
+// Package paths is the on-disk layout: config, runtime, tmp and workspace dirs.
 package paths
 
 import (
@@ -74,11 +73,10 @@ func firstEnv(keys ...string) string {
 	return ""
 }
 
-// LoadEnv mirrors _load_env(): <repo>/.env (repo from BH_REPO_ROOT, set by the
-// Python package) then <workspace>/.env; existing variables win.
+// LoadEnv reads <repo>/.env (source checkouts) then <workspace>/.env; existing variables win.
 func LoadEnv() {
 	var files []string
-	if root := os.Getenv("BH_REPO_ROOT"); root != "" {
+	if root := RepoRoot(); root != "" {
 		files = append(files, filepath.Join(root, ".env"))
 	}
 	files = append(files, filepath.Join(WorkspaceDir(), ".env"))

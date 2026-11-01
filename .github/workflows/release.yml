@@ -5,21 +5,27 @@ on:
     types: [published]
 
 jobs:
-  publish:
-    name: publish to PyPI
+  binaries:
+    name: attach binaries
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      contents: read
-      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: "3.12"
-      - name: Build distributions
+          go-version-file: go/go.mod
+      - name: Build
+        working-directory: go
         run: |
-          python -m pip install build==1.6.0
-          python -m build
-      - name: Publish distributions
-        uses: pypa/gh-action-pypi-publish@release/v1
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os=${target%/*} arch=${target#*/} ext=""
+            [ "$os" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X github.com/browser-use/browser-harness/go/internal/version.Version=${{ github.event.release.tag_name }}" \
+              -o "../dist/browser-harness-$os-$arch$ext" ./cmd/browser-harness
+          done
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*

@@ -1,20 +1,18 @@
 // Package mcpserver exposes the browser-harness helpers as MCP tools over
-// stdio. Each call runs one snippet through the Python runner, so tools see
-// exactly the helpers agents use.
+// stdio. Each tool is a one-line JavaScript snippet over the same helpers agents use.
 package mcpserver
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"image/png"
 	"os"
-	"os/exec"
-	"strings"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/browser-use/browser-harness/go/internal/admin"
+	"github.com/browser-use/browser-harness/go/internal/jsrun"
 )
 
 type param struct {
@@ -34,57 +32,54 @@ func opt(name, typ string, def any) param {
 }
 func null(name, typ string) param { return param{name: name, typ: typ, nullable: true} }
 
-const ok = "\nresult = {\"ok\": True}"
+const ok = "; ({ok: true})"
 
 // Bodies run with the call's arguments in `a`; omitted ones keep the helper defaults.
 var tools = []tool{
 	{"browser_new_tab", "Open a new browser tab. Returns the new tab's targetId.",
-		`result = {"targetId": new_tab(**a)}`, []param{opt("url", "string", "about:blank")}},
+		`({targetId: new_tab(a.url ?? "about:blank")})`, []param{opt("url", "string", "about:blank")}},
 	{"browser_goto", "Navigate the current tab to `url`. Returns the navigation result.",
-		`result = goto_url(**a)`, []param{req("url", "string")}},
+		`goto_url(a.url)`, []param{req("url", "string")}},
 	{"browser_page_info", "Return current tab metadata: url, title, viewport and scroll sizes.",
-		`result = page_info()`, nil},
+		`page_info()`, nil},
 	{"browser_click", "Click at screen coordinates (x, y). `button` is 'left'/'right'/'middle'.",
-		`click_at_xy(**a)` + ok, []param{req("x", "integer"), req("y", "integer"), opt("button", "string", "left"), opt("clicks", "integer", 1)}},
+		`click_at_xy(a.x, a.y, a)` + ok, []param{req("x", "integer"), req("y", "integer"), opt("button", "string", "left"), opt("clicks", "integer", 1)}},
 	{"browser_type", "Insert text into the focused element.",
-		`type_text(**a)` + ok, []param{req("text", "string")}},
+		`type_text(a.text)` + ok, []param{req("text", "string")}},
 	{"browser_fill", "Fill an input matched by `selector` with `text`.",
-		`fill_input(**a)` + ok, []param{req("selector", "string"), req("text", "string"), opt("clear_first", "boolean", true)}},
+		`fill_input(a.selector, a.text, a)` + ok, []param{req("selector", "string"), req("text", "string"), opt("clear_first", "boolean", true)}},
 	{"browser_press", "Press a key. `modifiers` is a bitfield: 1=Alt, 2=Ctrl, 4=Meta, 8=Shift.",
-		`press_key(**a)` + ok, []param{req("key", "string"), opt("modifiers", "integer", 0)}},
+		`press_key(a.key, a)` + ok, []param{req("key", "string"), opt("modifiers", "integer", 0)}},
 	{"browser_scroll", "Scroll the wheel at (x, y) by `dy` vertical / `dx` horizontal pixels.",
-		`scroll(**a)` + ok, []param{req("x", "integer"), req("y", "integer"), opt("dy", "integer", -300), opt("dx", "integer", 0)}},
+		`scroll(a.x, a.y, a)` + ok, []param{req("x", "integer"), req("y", "integer"), opt("dy", "integer", -300), opt("dx", "integer", 0)}},
 	{"browser_screenshot", "Capture a PNG screenshot. If `path` is omitted, a temp file is used.\nSet `max_dim` to downscale results larger than that dimension.",
-		`p = capture_screenshot(**a)
-from PIL import Image
-w, h = Image.open(p).size
-result = {"path": p, "width": w, "height": h, "size_bytes": os.path.getsize(p)}`,
+		`capture_screenshot(a.path ?? null, a)`,
 		[]param{null("path", "string"), opt("full", "boolean", false), null("max_dim", "integer")}},
-	{"browser_list_tabs", "List open page tabs.", `result = list_tabs()`, nil},
-	{"browser_current_tab", "Return the active tab's targetId, url and title.", `result = current_tab()`, nil},
+	{"browser_list_tabs", "List open page tabs.", `list_tabs()`, nil},
+	{"browser_current_tab", "Return the active tab's targetId, url and title.", `current_tab()`, nil},
 	{"browser_switch_tab", "Switch to tab by `targetId` or URL substring. Returns the sessionId.",
-		`result = {"sessionId": switch_tab(**a)}`, []param{req("target", "string")}},
+		`({sessionId: switch_tab(a.target)})`, []param{req("target", "string")}},
 	{"browser_close_tab", "Close a tab. Without `target`, closes the active tab.",
-		`close_tab(**a)` + ok, []param{null("target", "string")}},
+		`close_tab(a.target)` + ok, []param{null("target", "string")}},
 	{"browser_ensure_real_tab", "Switch to a real (non-internal) tab if the current one is chrome:// or stale.",
-		`result = ensure_real_tab()`, nil},
-	{"browser_wait", "Wait for `seconds`.", `wait(**a)` + ok, []param{opt("seconds", "number", 1.0)}},
+		`ensure_real_tab()`, nil},
+	{"browser_wait", "Wait for `seconds`.", `wait(a.seconds ?? 1)` + ok, []param{opt("seconds", "number", 1.0)}},
 	{"browser_wait_for_load", "Wait until the current tab's readyState is 'complete'.",
-		`result = {"ok": wait_for_load(**a)}`, []param{opt("timeout", "number", 15.0)}},
+		`({ok: wait_for_load(a.timeout ?? 15)})`, []param{opt("timeout", "number", 15.0)}},
 	{"browser_wait_for_element", "Wait for an element matching `selector` to appear. Set `visible=True` to\nalso require it to be rendered.",
-		`result = {"ok": wait_for_element(**a)}`, []param{req("selector", "string"), opt("timeout", "number", 10.0), opt("visible", "boolean", false)}},
+		`({ok: wait_for_element(a.selector, a)})`, []param{req("selector", "string"), opt("timeout", "number", 10.0), opt("visible", "boolean", false)}},
 	{"browser_js", "Evaluate a JavaScript expression in the current tab (or an iframe `target_id`).",
-		`result = js(**a)`, []param{req("expression", "string"), null("target_id", "string")}},
+		`js(a.expression, a)`, []param{req("expression", "string"), null("target_id", "string")}},
 	{"browser_cdp", "Call a raw Chrome DevTools Protocol method. `params` are passed as kwargs.",
-		`result = cdp(a["method"], **(a.get("params") or {}))`, []param{req("method", "string"), null("params", "object")}},
+		`cdp(a.method, a.params ?? {})`, []param{req("method", "string"), null("params", "object")}},
 	{"browser_upload_file", "Set files on a file input matched by `selector`. `path` is the local file.",
-		`upload_file(**a)` + ok, []param{req("selector", "string"), req("path", "string")}},
+		`upload_file(a.selector, a.path)` + ok, []param{req("selector", "string"), req("path", "string")}},
 	{"browser_http_get", "HTTP GET `url` (browser-less). Returns the response body. Optional\n`headers` dict for authentication or custom request headers.",
-		`result = {"text": http_get(**a)}`, []param{req("url", "string"), opt("timeout", "number", 20.0), null("headers", "object")}},
+		`({text: http_get(a.url, a)})`, []param{req("url", "string"), opt("timeout", "number", 20.0), null("headers", "object")}},
 	{"browser_start_recording", "Start recording actions to a local directory.",
-		`result = {"recording_dir": start_recording(**a)}`, []param{null("name", "string"), null("title", "string")}},
+		`({recording_dir: start_recording(a)})`, []param{null("name", "string"), null("title", "string")}},
 	{"browser_stop_recording", "Stop the active recording and return its directory.",
-		`result = {"recording_dir": stop_recording()}`, nil},
+		`({recording_dir: stop_recording()})`, nil},
 }
 
 func (t tool) schema() map[string]any {
@@ -105,87 +100,63 @@ func (t tool) schema() map[string]any {
 	return map[string]any{"type": "object", "properties": props, "required": required}
 }
 
-// wrapper runs the body and writes its `result` as JSON text, or the error.
-const wrapper = `import json as _json
-a = _json.load(open(os.environ["BH_MCP_ARGS"], encoding="utf-8"))
-try:
-%s
-    _out = {"text": _json.dumps(result, ensure_ascii=False, default=str)}
-except Exception as _e:
-    _out = {"error": str(_e)}
-with open(os.environ["BH_MCP_RESULT"], "w", encoding="utf-8") as _f:
-    _json.dump(_out, _f)
-`
-
-func indent(s string) string {
-	return "    " + strings.ReplaceAll(s, "\n", "\n    ")
-}
-
 // ensureDaemon and runSnippet are seams for tests.
 var (
 	ensureDaemon = func() error { return admin.EnsureDaemon(-1, "", nil) }
-	runSnippet   = runPython
+	runSnippet   = func(code string, args json.RawMessage) (any, error) {
+		a := map[string]any{}
+		if len(args) > 0 && string(args) != "null" {
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, err
+			}
+		}
+		// Helper prints must never reach the JSON-RPC stream.
+		return jsrun.Eval(code, map[string]any{"a": a}, os.Stderr)
+	}
 )
 
-func runPython(ctx context.Context, code string, args json.RawMessage) (string, error) {
-	dir, err := os.MkdirTemp("", "bh-mcp-")
+// screenshotInfo adds the PNG's size to capture_screenshot's path.
+func screenshotInfo(v any) (any, error) {
+	path, _ := v.(string)
+	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	defer os.RemoveAll(dir)
-	argsPath, resPath := dir+"/args.json", dir+"/result.json"
-	if len(args) == 0 || string(args) == "null" {
-		args = json.RawMessage("{}")
-	}
-	if err := os.WriteFile(argsPath, args, 0o600); err != nil {
-		return "", err
-	}
-	py := os.Getenv("BH_PYTHON")
-	if py == "" {
-		py = "python3"
-	}
-	cmd := exec.CommandContext(ctx, py, "-m", "browser_harness.runner")
-	cmd.Stdin = strings.NewReader(code)
-	// Helper prints must never reach the JSON-RPC stream.
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	cmd.Env = append(os.Environ(), "BH_MCP_ARGS="+argsPath, "BH_MCP_RESULT="+resPath)
-	runErr := cmd.Run()
-	raw, err := os.ReadFile(resPath)
+	defer f.Close()
+	cfg, err := png.DecodeConfig(f)
 	if err != nil {
-		if runErr != nil {
-			return "", runErr
-		}
-		return "", err
+		return nil, err
 	}
-	var out struct {
-		Text  *string `json:"text"`
-		Error *string `json:"error"`
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", err
-	}
-	if out.Error != nil {
-		return "", errors.New(*out.Error)
-	}
-	return *out.Text, nil
+	return map[string]any{"path": path, "width": cfg.Width, "height": cfg.Height, "size_bytes": fi.Size()}, nil
 }
 
 // callMu runs one tool at a time: they all drive the same tab.
 var callMu sync.Mutex
 
 func handler(t tool) mcp.ToolHandler {
-	code := strings.Replace(wrapper, "%s", indent(t.body), 1)
 	return func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		callMu.Lock()
 		defer callMu.Unlock()
-		text, err := "", ensureDaemon()
+		var v any
+		err := ensureDaemon()
 		if err == nil {
-			text, err = runSnippet(ctx, code, r.Params.Arguments)
+			v, err = runSnippet(t.body, r.Params.Arguments)
+		}
+		if err == nil && t.name == "browser_screenshot" {
+			v, err = screenshotInfo(v)
+		}
+		var text []byte
+		if err == nil {
+			text, err = json.Marshal(v)
 		}
 		if err != nil {
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(text)}}}, nil
 	}
 }
 

@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/browser-use/browser-harness/go/internal/assets"
 )
 
 var (
@@ -598,8 +600,12 @@ func fileHash(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
+	return sha(raw), nil
+}
+
+func sha(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func copyFile(src, dst string) error {
@@ -609,8 +615,6 @@ func copyFile(src, dst string) error {
 	}
 	return os.WriteFile(dst, raw, 0o644)
 }
-
-func templatePath() string { return filepath.Join(os.Getenv("BH_PACKAGE_DIR"), "video-template.html") }
 
 // sourceHashes covers everything the brief was written against.
 func sourceHashes(rec string) (map[string]string, error) {
@@ -747,7 +751,7 @@ func initRecording(rec string, requireExplicit bool) error {
 		}
 		sum.Events = append(sum.Events, e)
 	}
-	if err := copyFile(templatePath(), filepath.Join(rec, "video.html")); err != nil {
+	if err := os.WriteFile(filepath.Join(rec, "video.html"), assets.VideoTemplate, 0o644); err != nil {
 		return err
 	}
 	out := filepath.Join(rec, "recording-summary.json")

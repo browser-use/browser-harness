@@ -1,5 +1,4 @@
-// Package cli is the `browser-harness` command line. Only the snippet itself
-// runs in Python; everything around it (setup, telemetry, admin) runs here.
+// Package cli is the `browser-harness` command line: snippets on stdin plus subcommands.
 package cli
 
 import (
@@ -8,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +14,9 @@ import (
 	"golang.org/x/term"
 
 	"github.com/browser-use/browser-harness/go/internal/admin"
+	"github.com/browser-use/browser-harness/go/internal/assets"
 	"github.com/browser-use/browser-harness/go/internal/auth"
+	"github.com/browser-use/browser-harness/go/internal/jsrun"
 	"github.com/browser-use/browser-harness/go/internal/recorder"
 	"github.com/browser-use/browser-harness/go/internal/telemetry"
 	"github.com/browser-use/browser-harness/go/internal/video"
@@ -28,12 +27,12 @@ const help = `Browser Harness
 Read SKILL.md for the default workflow and examples.
 
 Typical usage:
-  browser-harness <<'PY'
+  browser-harness <<'JS'
   ensure_real_tab()
   print(page_info())
-  PY
+  JS
 
-Helpers are pre-imported. The daemon auto-starts and connects to the running browser.
+Snippets are JavaScript with the helpers as globals. The daemon auto-starts and connects to the running browser.
 
 Commands:
   browser-harness --version        print the installed version
@@ -56,14 +55,13 @@ Commands:
   browser-harness video review <recording>    compile and review the video
   browser-harness video export <recording> --reviewed   export a verified MP4
   browser-harness telemetry status    show anonymous telemetry opt-out state
-  browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
 `
 
 const usage = `Usage:
-  browser-harness <<'PY'
+  browser-harness <<'JS'
   print(page_info())
-  PY
+  JS
 `
 
 type exit struct {
@@ -218,11 +216,7 @@ func run(args []string) result {
 		fmt.Print(help + "\n")
 		return done(0)
 	case "--version":
-		v := admin.Version()
-		if v == "" {
-			v = "unknown"
-		}
-		fmt.Println(v)
+		fmt.Println(admin.Version())
 		return done(0)
 	case "--doctor":
 		return done(admin.Doctor())
@@ -237,24 +231,12 @@ func run(args []string) result {
 			fmt.Fprintln(os.Stderr, "usage: browser-harness skill")
 			return done(2)
 		}
-		raw, err := os.ReadFile(filepath.Join(os.Getenv("BH_PACKAGE_DIR"), "SKILL.md"))
-		if err != nil {
-			return fail(err.Error())
-		}
-		fmt.Print(string(raw))
+		fmt.Print(assets.Skill)
 		return done(0)
 	case "recordings":
 		return done(recordings(args[1:]))
 	case "video":
 		return done(video.CLI(args[1:]))
-	case "--update":
-		for _, a := range args[1:] {
-			if a != "-y" && a != "--yes" {
-				fmt.Fprintln(os.Stderr, "usage: browser-harness --update [-y|--yes]")
-				return done(2)
-			}
-		}
-		return done(admin.Update(len(args) > 1))
 	case "--reload":
 		_ = admin.RestartDaemon("", false)
 		fmt.Println("daemon stopped — will restart fresh on next call")
@@ -378,7 +360,6 @@ func cloudAuthConfigured() bool {
 }
 
 func runSnippet(code string) result {
-	admin.PrintUpdateBanner()
 	trimmed := strings.TrimLeft(code, " \t\r\n\f\v")
 	cloudAdmin := strings.HasPrefix(trimmed, "start_remote_daemon(") || strings.HasPrefix(trimmed, "stop_remote_daemon(")
 	if !cloudAdmin {
@@ -403,43 +384,19 @@ func runSnippet(code string) result {
 			return r
 		}
 	}
-	r := runPython(code)
+	r := runJS(code)
 	r.task = &code
 	return r
 }
 
-// runPython executes the snippet in the Python runner and collects its helper trace.
-func runPython(code string) result {
-	py := os.Getenv("BH_PYTHON")
-	if py == "" {
-		py = "python3"
-	}
-	trace, err := os.CreateTemp("", "bh-trace-*.json")
+// runJS executes the snippet in-process and collects its helper trace.
+func runJS(code string) result {
+	trace, err := jsrun.Run(code, os.Stdout)
+	r := result{steps: trace.Steps, stepCount: trace.StepCount}
 	if err != nil {
-		return fail(err.Error())
-	}
-	trace.Close()
-	defer os.Remove(trace.Name())
-	cmd := exec.Command(py, "-m", "browser_harness.runner")
-	cmd.Stdin = strings.NewReader(code)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	cmd.Env = append(os.Environ(), "BH_TRACE_FILE="+trace.Name())
-	runErr := cmd.Run()
-	r := result{}
-	if runErr != nil {
-		if ee, ok := runErr.(*exec.ExitError); ok {
-			r.code = ee.ExitCode()
-		} else {
-			return fail(runErr.Error())
-		}
-	}
-	var t struct {
-		Steps     []any   `json:"steps"`
-		StepCount int     `json:"step_count"`
-		Error     *string `json:"error"`
-	}
-	if raw, err := os.ReadFile(trace.Name()); err == nil && json.Unmarshal(raw, &t) == nil {
-		r.steps, r.stepCount, r.errMsg = t.Steps, t.StepCount, t.Error
+		fmt.Fprintln(os.Stderr, err)
+		msg := err.Error()
+		r.code, r.errMsg = 1, &msg
 	}
 	return r
 }

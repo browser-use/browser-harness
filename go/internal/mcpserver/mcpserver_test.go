@@ -30,7 +30,15 @@ func stub(t *testing.T, daemonErr error, run func(string, json.RawMessage) (stri
 	d, r := ensureDaemon, runSnippet
 	t.Cleanup(func() { ensureDaemon, runSnippet = d, r })
 	ensureDaemon = func() error { return daemonErr }
-	runSnippet = func(_ context.Context, code string, args json.RawMessage) (string, error) { return run(code, args) }
+	runSnippet = func(code string, args json.RawMessage) (any, error) {
+		s, err := run(code, args)
+		if err != nil {
+			return nil, err
+		}
+		var v any
+		_ = json.Unmarshal([]byte(s), &v)
+		return v, nil
+	}
 }
 
 func call(t *testing.T, cs *mcp.ClientSession, name string, args any) *mcp.CallToolResult {
@@ -71,10 +79,10 @@ func TestSuccessIsANormalResult(t *testing.T) {
 		return `{"ok": true}`, nil
 	})
 	r := call(t, connect(t), "browser_click", map[string]any{"x": 10, "y": 20})
-	if r.IsError || text(r) != `{"ok": true}` {
+	if r.IsError || text(r) != `{"ok":true}` {
 		t.Fatalf("%+v", r)
 	}
-	if !strings.Contains(gotCode, "click_at_xy(**a)") || gotArgs["x"] != 10.0 || len(gotArgs) != 2 {
+	if !strings.Contains(gotCode, "click_at_xy(a.x, a.y, a)") || gotArgs["x"] != 10.0 || len(gotArgs) != 2 {
 		t.Fatalf("code %q args %v", gotCode, gotArgs)
 	}
 }

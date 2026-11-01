@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/browser-use/browser-harness/go/internal/version"
+
 	"github.com/browser-use/browser-harness/go/internal/paths"
 )
 
@@ -190,11 +192,7 @@ func orNil(s string) any {
 }
 
 func base() map[string]any {
-	v := os.Getenv("BH_VERSION")
-	if v == "" {
-		v = "unknown"
-	}
-	return map[string]any{"browser_harness_version": v, "python_version": os.Getenv("BH_PYTHON_VERSION"),
+	return map[string]any{"browser_harness_version": version.Version,
 		"os": osName(), "machine": machine()}
 }
 

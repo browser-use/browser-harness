@@ -27,9 +27,9 @@ import (
 	"golang.org/x/image/math/fixed"
 
 	"github.com/browser-use/browser-harness/go/internal/admin"
+	"github.com/browser-use/browser-harness/go/internal/assets"
+	"github.com/browser-use/browser-harness/go/internal/jsrun"
 )
-
-const marker = "__BH_VIDEO_RESULT__="
 
 // reviewed are the files whose hashes export checks against the review.
 var reviewed = []string{"composition.js", "edit-brief.json", "recording-summary.json", "video-source.json", "video.html"}
@@ -78,76 +78,81 @@ func serve(rec string) (string, func(), error) {
 	return fmt.Sprintf("http://%s/video.html", l.Addr()), func() { _ = srv.Close() }, nil
 }
 
-// runHarness runs a snippet with cfg bound and decodes its marker line into out; a seam for tests.
-var runHarness = func(snippet string, cfg any, timeout time.Duration, out any) error {
+// runHarness evaluates a JavaScript browser step with cfg bound and decodes its
+// result into out; a seam for tests.
+var runHarness = func(script string, cfg any, timeout time.Duration, out any) error {
 	if err := admin.EnsureDaemon(-1, "", nil); err != nil {
 		return err
 	}
 	raw, _ := json.Marshal(cfg)
-	code := "import json\ncfg = json.loads(" + strconv.Quote(string(raw)) + ")\n" + snippet
-	py := os.Getenv("BH_PYTHON")
-	if py == "" {
-		py = "python3"
+	var c map[string]any
+	_ = json.Unmarshal(raw, &c)
+	type res struct {
+		v   any
+		err error
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, py, "-m", "browser_harness.runner")
-	cmd.Stdin = strings.NewReader(code)
-	cmd.Env = append(os.Environ(), "BH_RECORD=0")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("browser step failed: %v: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	for _, line := range strings.Split(stdout.String(), "\n") {
-		if rest, ok := strings.CutPrefix(line, marker); ok {
-			return json.Unmarshal([]byte(rest), out)
+	done := make(chan res, 1)
+	go func() {
+		v, err := jsrun.Eval(script, map[string]any{"cfg": c}, os.Stderr)
+		done <- res{v, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return fmt.Errorf("browser step failed: %v", r.err)
 		}
+		b, _ := json.Marshal(r.v)
+		return json.Unmarshal(b, out)
+	case <-time.After(timeout):
+		return fmt.Errorf("browser step timed out after %s", timeout)
 	}
-	return fmt.Errorf("browser step returned no result: %s", stdout.String())
 }
 
-const reviewSnippet = `import os, time
-os.makedirs(cfg['reviewDir'], exist_ok=True)
+const reviewScript = `
+function ready() {
+  for (let i = 0; i < 100; i++) {
+    if (js('window.videoReady && window.videoReady()')) return;
+    wait(0.05);
+  }
+  throw new Error('video assets did not become ready');
+}
 
-def ready():
-    for _ in range(100):
-        if js('window.videoReady && window.videoReady()'):
-            return
-        time.sleep(0.05)
-    raise RuntimeError('video assets did not become ready')
+function inspect(name, reduced) {
+  const features = reduced ? [{name: 'prefers-reduced-motion', value: 'reduce'}] : [];
+  cdp('Emulation.setEmulatedMedia', {media: '', features});
+  cdp('Page.reload', {ignoreCache: true});
+  wait_for_load();
+  ready();
+  const out = {preflight: js('window.videoPreflight()'), clicks: js('window.clickVisibility()'), captures: []};
+  const pad = n => String(n).padStart(2, '0');
+  const shots = cfg.samples.map((s, i) => ['beat-' + pad(i + 1), s.time, s.label]);
+  out.clicks.forEach((c, i) => {
+    shots.push(['click-' + pad(i + 1) + '-click', c.time, 'beat ' + c.beat + ' · click']);
+    shots.push(['click-' + pad(i + 1) + '-result', c.resultTime, 'beat ' + c.beat + ' · result']);
+  });
+  for (const [key, t, label] of shots) {
+    js('window.seek(' + t + ')');
+    const path = cfg.reviewDir + '/' + name + '-' + key + '.png';
+    capture_screenshot(path);
+    out.captures.push({path, time: t, label: name + ' · ' + label});
+  }
+  return out;
+}
 
-def inspect(name, reduced):
-    features = [{'name': 'prefers-reduced-motion', 'value': 'reduce'}] if reduced else []
-    cdp('Emulation.setEmulatedMedia', media='', features=features)
-    cdp('Page.reload', ignoreCache=True)
-    wait_for_load()
-    ready()
-    out = {'preflight': js('window.videoPreflight()'), 'clicks': js('window.clickVisibility()'), 'captures': []}
-    shots = [(f"beat-{i:02d}", s['time'], s['label']) for i, s in enumerate(cfg['samples'], 1)]
-    for i, c in enumerate(out['clicks'], 1):
-        shots += [(f"click-{i:02d}-click", c['time'], f"beat {c['beat']} · click"),
-                  (f"click-{i:02d}-result", c['resultTime'], f"beat {c['beat']} · result")]
-    for key, t, label in shots:
-        js(f"window.seek({t})")
-        path = f"{cfg['reviewDir']}/{name}-{key}.png"
-        capture_screenshot(path)
-        out['captures'].append({'path': path, 'time': t, 'label': f"{name} · {label}"})
-    return out
-
-try:
-    previous = current_tab()['targetId']
-except Exception:  # a stale session heals on the next call
-    previous = None
-target = new_tab(cfg['url'])
-try:
-    wait_for_load()
-    ready()
-    print(cfg['marker'] + json.dumps({'normal': inspect('normal', False), 'reduced': inspect('reduced', True)}))
-finally:
-    cdp('Emulation.setEmulatedMedia', media='', features=[])
-    switch_tab(previous) if previous else new_tab()
-    close_tab(target)
+let previous = null;
+try { previous = current_tab().targetId; } catch (e) {}  // a stale session heals on the next call
+const target = new_tab(cfg.url);
+let result;
+try {
+  wait_for_load();
+  ready();
+  result = {normal: inspect('normal', false), reduced: inspect('reduced', true)};
+} finally {
+  cdp('Emulation.setEmulatedMedia', {media: '', features: []});
+  try { switch_tab(previous); } catch (e) { new_tab(); }
+  close_tab(target);
+}
+result;
 `
 
 type modeResult struct {
@@ -180,7 +185,7 @@ func review(rec string) (int, error) {
 	if err := os.WriteFile(filepath.Join(rec, "composition.js"), comp, 0o644); err != nil {
 		return 0, err
 	}
-	if err := copyFile(templatePath(), filepath.Join(rec, "video.html")); err != nil {
+	if err := os.WriteFile(filepath.Join(rec, "video.html"), assets.VideoTemplate, 0o644); err != nil {
 		return 0, err
 	}
 	privacyDir, caps, err := privacyReview(rec, c)
@@ -193,8 +198,12 @@ func review(rec string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := os.MkdirAll(reviewDir, 0o755); err != nil {
+		stop()
+		return 0, err
+	}
 	var result map[string]modeResult
-	err = runHarness(reviewSnippet, map[string]any{"url": url, "samples": samples(c), "reviewDir": reviewDir, "marker": marker},
+	err = runHarness(reviewScript, map[string]any{"url": url, "samples": samples(c), "reviewDir": reviewDir},
 		time.Duration(max(60, len(c.Beats)*6))*time.Second, &result)
 	stop()
 	if err != nil {
@@ -339,36 +348,31 @@ func privacyReview(rec string, c *Composition) (string, []capture, error) {
 
 // --- export ---
 
-const exportSnippet = `import time
-try:
-    previous = current_tab()['targetId']
-except Exception:  # a stale session heals on the next call
-    previous = None
-target = new_tab(cfg['url'])
-wait_for_load()
-for _ in range(100):
-    if js('window.videoReady && window.videoReady()'):
-        break
-    time.sleep(0.05)
-else:
-    raise RuntimeError('video assets did not become ready')
-preflight = js('window.videoPreflight()')
-clicks = js('window.clickVisibility()')
-cdp('Browser.setDownloadBehavior', behavior='allow', downloadPath=cfg['downloadPath'], eventsEnabled=True)
-cdp('Page.bringToFront')
-js('window.exportVideo(' + json.dumps(cfg['filename']) + ').catch(e => window.__exportError = String(e)), true')
-print(cfg['marker'] + json.dumps({'previous': previous, 'preflight': preflight, 'clicks': clicks}))
+const exportScript = `
+let previous = null;
+try { previous = current_tab().targetId; } catch (e) {}  // a stale session heals on the next call
+new_tab(cfg.url);
+wait_for_load();
+let ready = false;
+for (let i = 0; i < 100 && !ready; i++) {
+  ready = js('window.videoReady && window.videoReady()');
+  if (!ready) wait(0.05);
+}
+if (!ready) throw new Error('video assets did not become ready');
+const preflight = js('window.videoPreflight()');
+const clicks = js('window.clickVisibility()');
+cdp('Browser.setDownloadBehavior', {behavior: 'allow', downloadPath: cfg.downloadPath, eventsEnabled: true});
+cdp('Page.bringToFront');
+js('window.exportVideo(' + JSON.stringify(cfg.filename) + ').catch(e => window.__exportError = String(e)), true');
+({previous, preflight, clicks});
 `
 
-const closeSnippet = `cdp('Browser.setDownloadBehavior', behavior='default', eventsEnabled=False)
-editors = [t['targetId'] for t in list_tabs() if t.get('url') == cfg['url']]
-try:
-    switch_tab(cfg['previous'])
-except Exception:
-    new_tab()
-for tab in editors:
-    close_tab(tab)
-print(cfg['marker'] + 'true')
+const closeScript = `
+cdp('Browser.setDownloadBehavior', {behavior: 'default', eventsEnabled: false});
+const editors = list_tabs().filter(t => t.url === cfg.url).map(t => t.targetId);
+try { switch_tab(cfg.previous); } catch (e) { new_tab(); }
+for (const t of editors) close_tab(t);
+true;
 `
 
 func run(dir string, name string, args ...string) (string, error) {
@@ -424,7 +428,7 @@ func export(rec, output string, reviewedFlag bool) error {
 			return fmt.Errorf("%s changed after review; rerun it", n)
 		}
 	}
-	if th, _ := fileHash(templatePath()); th != now["video.html"] {
+	if th := sha(assets.VideoTemplate); th != now["video.html"] {
 		return errors.New("renderer is not the current shared template; rerun review")
 	}
 	if !filepath.IsAbs(output) {
@@ -458,8 +462,8 @@ func export(rec, output string, reviewedFlag bool) error {
 			Visible bool `json:"visible"`
 		} `json:"clicks"`
 	}
-	err = runHarness(exportSnippet, map[string]any{"url": url, "downloadPath": filepath.Dir(webm),
-		"filename": filepath.Base(webm), "marker": marker}, 30*time.Second, &started)
+	err = runHarness(exportScript, map[string]any{"url": url, "downloadPath": filepath.Dir(webm),
+		"filename": filepath.Base(webm)}, 30*time.Second, &started)
 	if err == nil && len(started.Pre.Errors) > 0 {
 		err = errors.New("export preflight failed: " + strings.Join(started.Pre.Errors, "; "))
 	}
@@ -472,7 +476,7 @@ func export(rec, output string, reviewedFlag bool) error {
 		err = waitForDownload(webm, time.Duration((expected+30)*float64(time.Second)))
 	}
 	var closed bool
-	if cerr := runHarness(closeSnippet, map[string]any{"url": url, "previous": started.Previous, "marker": marker}, 15*time.Second, &closed); cerr != nil && err == nil {
+	if cerr := runHarness(closeScript, map[string]any{"url": url, "previous": started.Previous}, 15*time.Second, &closed); cerr != nil && err == nil {
 		err = fmt.Errorf("could not restore Chrome download behavior; restart Chrome: %v", cerr)
 	}
 	if err != nil {

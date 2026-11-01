@@ -1,15 +1,12 @@
-// Package jsrun is a prototype: agent snippets in JavaScript, run in-process by
-// goja, with the helpers implemented in Go against the daemon. No Python.
+// Package jsrun runs agent snippets: JavaScript executed in-process by goja,
+// with the browser helpers as globals. Helpers are synchronous; there is no
+// event loop, so snippets never need await.
 package jsrun
 
 import (
-	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image"
-	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,68 +14,125 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
-	"golang.org/x/image/draw"
 
 	"github.com/browser-use/browser-harness/go/internal/admin"
-	"github.com/browser-use/browser-harness/go/internal/ipc"
+	"github.com/browser-use/browser-harness/go/internal/helpers"
 	"github.com/browser-use/browser-harness/go/internal/paths"
+	"github.com/browser-use/browser-harness/go/internal/recorder"
 )
 
-type runner struct {
-	rt   *goja.Runtime
-	name string
-	out  io.Writer
+const (
+	maxSteps   = 500
+	maxArgsLen = 300
+)
+
+// Trace is the per-helper record the CLI sends with telemetry.
+type Trace struct {
+	Steps     []any
+	StepCount int
 }
 
-// Run executes one JavaScript snippet; errors carry the JS stack.
-func Run(code string, out io.Writer) error {
-	if err := admin.EnsureDaemon(-1, "", nil); err != nil {
-		return err
-	}
-	r := &runner{rt: goja.New(), name: admin.Name(), out: out}
+type runner struct {
+	rt    *goja.Runtime
+	h     *helpers.H
+	out   io.Writer
+	trace Trace
+}
+
+func newRunner(out io.Writer) *runner {
+	r := &runner{rt: goja.New(), h: helpers.New(admin.Name()), out: out}
 	r.rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	r.install()
+	return r
+}
+
+// Run executes a snippet, printing to out. Uncaught errors come back with the JS stack.
+func Run(code string, out io.Writer) (Trace, error) {
+	r := newRunner(out)
+	if err := r.loadAgentHelpers(); err != nil {
+		return r.trace, err
+	}
 	_, err := r.rt.RunScript("snippet.js", code)
+	return r.trace, cleanError(err)
+}
+
+// Eval runs code with globals set and returns its last expression as plain Go values.
+func Eval(code string, globals map[string]any, out io.Writer) (any, error) {
+	r := newRunner(out)
+	for k, v := range globals {
+		_ = r.rt.Set(k, v)
+	}
+	v, err := r.rt.RunScript("eval.js", code)
+	if err != nil {
+		return nil, cleanError(err)
+	}
+	return v.Export(), nil
+}
+
+func cleanError(err error) error {
+	var ex *goja.Exception
+	if errors.As(err, &ex) {
+		return errors.New(strings.TrimSpace(ex.String()))
+	}
 	return err
 }
 
-// throw turns a Go error into a JS exception so snippets can try/catch it.
-func (r *runner) throw(err error) { panic(r.rt.NewGoError(err)) }
-
-func (r *runner) send(req map[string]any, timeout time.Duration) map[string]any {
-	m, err := ipc.Call(r.name, timeout, req)
+// agent_helpers.js in the workspace may define extra globals for every snippet.
+func (r *runner) loadAgentHelpers() error {
+	p := filepath.Join(paths.WorkspaceDir(), "agent_helpers.js")
+	src, err := os.ReadFile(p)
 	if err != nil {
-		r.throw(err)
+		return nil
 	}
-	if e, ok := m["error"]; ok {
-		r.throw(fmt.Errorf("%v", e))
-	}
-	return m
+	_, err = r.rt.RunScript(p, string(src))
+	return cleanError(err)
 }
 
-func (r *runner) cdp(method string, params map[string]any, session any, timeout time.Duration) map[string]any {
-	if params == nil {
-		params = map[string]any{}
-	}
-	res, _ := r.send(map[string]any{"method": method, "params": params, "session_id": session}, timeout)["result"].(map[string]any)
-	if res == nil {
-		res = map[string]any{}
-	}
-	return res
+// --- argument helpers: f(a, b, {option: value}) ---
+
+type args struct {
+	call goja.FunctionCall
+	opts map[string]any
+	pos  int // positional count before the options object
 }
 
-// opts reads an optional trailing options object: f(a, b, {key: value}).
-func opts(call goja.FunctionCall, i int) map[string]any {
-	if v := call.Argument(i); !goja.IsUndefined(v) && !goja.IsNull(v) {
-		if m, ok := v.Export().(map[string]any); ok {
-			return m
+func parse(call goja.FunctionCall, positional int) args {
+	a := args{call: call, opts: map[string]any{}, pos: positional}
+	if len(call.Arguments) > positional {
+		if m, ok := call.Arguments[len(call.Arguments)-1].Export().(map[string]any); ok {
+			a.opts = m
 		}
 	}
-	return map[string]any{}
+	return a
 }
 
-func num(m map[string]any, k string, def float64) float64 {
-	switch v := m[k].(type) {
+func (a args) has(i int) bool {
+	v := a.call.Argument(i)
+	return i < a.pos && !goja.IsUndefined(v) && !goja.IsNull(v)
+}
+
+// get is positional argument i, else option name, else nil.
+func (a args) get(i int, name string) any {
+	if a.has(i) {
+		return a.call.Argument(i).Export()
+	}
+	return a.opts[name]
+}
+
+func (a args) str(i int, name, def string) string {
+	switch v := a.get(i, name).(type) {
+	case string:
+		return v
+	case map[string]any: // a tab object
+		if id, ok := v["targetId"].(string); ok {
+			return id
+		}
+	}
+	return def
+}
+
+func (a args) num(i int, name string, def float64) float64 {
+	switch v := a.get(i, name).(type) {
 	case int64:
 		return float64(v)
 	case float64:
@@ -87,105 +141,96 @@ func num(m map[string]any, k string, def float64) float64 {
 	return def
 }
 
-func (r *runner) evaluate(expr string, session any) any {
-	res := r.cdp("Runtime.evaluate", map[string]any{"expression": expr, "returnByValue": true, "awaitPromise": true}, session, 5*time.Second)
-	result, _ := res["result"].(map[string]any)
-	if d, ok := res["exceptionDetails"].(map[string]any); ok || result["subtype"] == "error" {
-		desc, _ := result["description"].(string)
-		if desc == "" && d != nil {
-			desc, _ = d["text"].(string)
+func (a args) flag(i int, name string, def bool) bool {
+	if v, ok := a.get(i, name).(bool); ok {
+		return v
+	}
+	return def
+}
+
+func (a args) strs(i int, name string) []string {
+	switch v := a.get(i, name).(type) {
+	case string:
+		return []string{v}
+	case []any:
+		out := make([]string, len(v))
+		for j, s := range v {
+			out[j] = fmt.Sprint(s)
 		}
-		r.throw(fmt.Errorf("JavaScript evaluation failed: %s", desc))
+		return out
 	}
-	return result["value"]
+	return nil
 }
 
-func (r *runner) js(expr string, session any) (v any) {
-	defer func() {
-		if p := recover(); p != nil {
-			if e, ok := p.(*goja.Object); ok && strings.Contains(e.String(), "Illegal return statement") {
-				v = r.evaluate("(function(){"+expr+"})()", session)
-				return
-			}
-			panic(p)
-		}
-	}()
-	return r.evaluate(expr, session)
-}
-
-func (r *runner) currentTab() map[string]any {
-	m := r.send(map[string]any{"meta": "current_tab"}, 5*time.Second)
-	return map[string]any{"targetId": m["targetId"], "url": m["url"], "title": m["title"]}
-}
-
-func targetID(v goja.Value) string {
-	if m, ok := v.Export().(map[string]any); ok {
-		s, _ := m["targetId"].(string)
-		return s
+func (a args) strMap(i int, name string) map[string]string {
+	m, _ := a.get(i, name).(map[string]any)
+	if m == nil {
+		return nil
 	}
-	return v.String()
+	out := map[string]string{}
+	for k, v := range m {
+		out[k] = fmt.Sprint(v)
+	}
+	return out
 }
 
-func (r *runner) switchTab(tid string) string {
-	sid, _ := r.cdp("Target.attachToTarget", map[string]any{"targetId": tid, "flatten": true}, nil, 5*time.Second)["sessionId"].(string)
-	r.send(map[string]any{"meta": "set_session", "session_id": sid, "target_id": tid}, 5*time.Second)
-	return sid
-}
+// --- binding, tracing and recording ---
 
-var namedKeys = map[string]struct {
-	vk         int
-	code, text string
-}{
-	"Enter": {13, "Enter", "\r"}, "Tab": {9, "Tab", "\t"}, "Backspace": {8, "Backspace", ""},
-	"Escape": {27, "Escape", ""}, "ArrowDown": {40, "ArrowDown", ""}, "ArrowUp": {38, "ArrowUp", ""},
-}
-
-func (r *runner) pressKey(key string, mods float64) {
-	base := map[string]any{"key": key, "modifiers": mods}
-	if k, ok := namedKeys[key]; ok {
-		base["code"], base["windowsVirtualKeyCode"] = k.code, k.vk
-		if k.text != "" {
-			base["text"] = k.text
-		}
-	} else {
-		base["text"] = key
-	}
-	down := map[string]any{"type": "keyDown"}
-	for k, v := range base {
-		down[k] = v
-	}
-	r.cdp("Input.dispatchKeyEvent", down, nil, 5*time.Second)
-	up := map[string]any{"type": "keyUp", "key": key, "modifiers": mods}
-	r.cdp("Input.dispatchKeyEvent", up, nil, 5*time.Second)
-}
-
-func (r *runner) screenshot(path string, o map[string]any) string {
-	if path == "" {
-		path = filepath.Join(paths.TmpDir(), "shot.png")
-	}
-	res := r.cdp("Page.captureScreenshot", map[string]any{"format": "png", "captureBeyondViewport": o["full"] == true}, nil, 60*time.Second)
-	raw, err := base64.StdEncoding.DecodeString(fmt.Sprint(res["data"]))
-	if err != nil {
-		r.throw(err)
-	}
-	if maxDim := int(num(o, "max_dim", 0)); maxDim > 0 {
-		img, err := png.Decode(bytes.NewReader(raw))
+func (r *runner) bind(name string, positional int, fn func(a args) (any, error)) {
+	_ = r.rt.Set(name, func(call goja.FunctionCall) goja.Value {
+		a := parse(call, positional)
+		start := time.Now()
+		v, err := fn(a)
+		r.record(name, call, a, time.Since(start), err)
 		if err != nil {
-			r.throw(err)
+			panic(r.rt.NewGoError(err))
 		}
-		if b := img.Bounds(); max(b.Dx(), b.Dy()) > maxDim {
-			s := float64(maxDim) / float64(max(b.Dx(), b.Dy()))
-			dst := image.NewRGBA(image.Rect(0, 0, int(float64(b.Dx())*s), int(float64(b.Dy())*s)))
-			draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Src, nil)
-			var buf bytes.Buffer
-			_ = png.Encode(&buf, dst)
-			raw = buf.Bytes()
+		return r.rt.ToValue(v)
+	})
+}
+
+func (r *runner) record(name string, call goja.FunctionCall, a args, d time.Duration, err error) {
+	r.trace.StepCount++
+	var raw []any
+	for i := 0; i < len(call.Arguments) && i < a.pos; i++ {
+		raw = append(raw, call.Arguments[i].Export())
+	}
+	if r.trace.StepCount <= maxSteps {
+		b, _ := json.Marshal(append(raw, a.opts))
+		s := strings.TrimSuffix(strings.TrimPrefix(string(b), "["), "]")
+		if len(s) > maxArgsLen {
+			s = s[:maxArgsLen]
 		}
+		step := map[string]any{"helper": name, "args": s, "duration_seconds": float64(d.Milliseconds()) / 1000}
+		if err != nil {
+			step["error"] = cut(err.Error(), 300)
+		}
+		r.trace.Steps = append(r.trace.Steps, step)
 	}
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		r.throw(err)
+	if err == nil && recorder.Actions[name] {
+		dur := float64(d.Milliseconds()) / 1000
+		_, _ = r.h.Send(map[string]any{"meta": "record_observe", "call": recorder.Call{
+			Helper: name, Args: raw, Kwargs: a.opts, Duration: &dur, Env: recorder.FromProcess()}}, 65*time.Second)
 	}
-	return path
+}
+
+func cut(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+func (r *runner) recordMeta(meta string, extra map[string]any) (map[string]any, error) {
+	req := map[string]any{"meta": meta, "call": recorder.Call{Env: recorder.FromProcess()}}
+	for k, v := range extra {
+		req[k] = v
+	}
+	m, err := r.h.Send(req, 65*time.Second)
+	if err == nil && m["error"] != nil {
+		err = fmt.Errorf("%v", m["error"])
+	}
+	return m, err
 }
 
 func (r *runner) print(call goja.FunctionCall) goja.Value {
@@ -193,155 +238,162 @@ func (r *runner) print(call goja.FunctionCall) goja.Value {
 	for i, a := range call.Arguments {
 		if s, ok := a.Export().(string); ok {
 			parts[i] = s
-			continue
-		}
-		raw, err := json.Marshal(a.Export())
-		if err != nil {
-			parts[i] = a.String()
+		} else if b, err := json.Marshal(a.Export()); err == nil && !goja.IsUndefined(a) {
+			parts[i] = string(b)
 		} else {
-			parts[i] = string(raw)
+			parts[i] = a.String()
 		}
 	}
 	fmt.Fprintln(r.out, strings.Join(parts, " "))
 	return goja.Undefined()
 }
 
-func (r *runner) install() {
-	rt := r.rt
-	set := func(name string, f any) { _ = rt.Set(name, f) }
-	set("print", r.print)
-	console := rt.NewObject()
-	_ = console.Set("log", r.print)
-	set("console", console)
+func none(err error) (any, error) { return nil, err }
 
-	set("cdp", func(method string, params map[string]any) map[string]any {
-		return r.cdp(method, params, nil, 5*time.Second)
-	})
-	set("drain_events", func() any { return r.send(map[string]any{"meta": "drain_events"}, 5*time.Second)["events"] })
-	set("js", func(call goja.FunctionCall) goja.Value {
-		expr, o := call.Argument(0).String(), opts(call, 1)
-		var sid any
-		if tid, ok := o["target_id"].(string); ok {
-			sid = r.cdp("Target.attachToTarget", map[string]any{"targetId": tid, "flatten": true}, nil, 5*time.Second)["sessionId"]
-			defer r.cdp("Target.detachFromTarget", map[string]any{"sessionId": sid}, nil, 5*time.Second)
-		}
-		return rt.ToValue(r.js(expr, sid))
-	})
-	set("goto_url", func(url string) map[string]any {
-		return r.cdp("Page.navigate", map[string]any{"url": url}, nil, 5*time.Second)
-	})
-	set("page_info", func() any {
-		if d := r.send(map[string]any{"meta": "pending_dialog"}, 5*time.Second)["dialog"]; d != nil {
-			return map[string]any{"dialog": d}
-		}
-		var info map[string]any
-		s := r.js("JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})", nil)
-		_ = json.Unmarshal([]byte(fmt.Sprint(s)), &info)
-		return info
-	})
-	set("click_at_xy", func(call goja.FunctionCall) goja.Value {
-		x, y, o := call.Argument(0).ToFloat(), call.Argument(1).ToFloat(), opts(call, 2)
-		button, _ := o["button"].(string)
-		if button == "" {
-			button = "left"
-		}
-		for _, t := range []string{"mousePressed", "mouseReleased"} {
-			r.cdp("Input.dispatchMouseEvent", map[string]any{"type": t, "x": x, "y": y, "button": button, "clickCount": num(o, "clicks", 1)}, nil, 5*time.Second)
-		}
-		return goja.Undefined()
-	})
-	set("type_text", func(text string) { r.cdp("Input.insertText", map[string]any{"text": text}, nil, 5*time.Second) })
-	set("press_key", func(key string, mods float64) { r.pressKey(key, mods) })
-	set("fill_input", func(call goja.FunctionCall) goja.Value {
-		sel, text, o := call.Argument(0).String(), call.Argument(1).String(), opts(call, 2)
-		q, _ := json.Marshal(sel)
-		if r.js("(()=>{const e=document.querySelector("+string(q)+");if(!e)return false;e.focus();return true})()", nil) != true {
-			r.throw(fmt.Errorf("fill_input: element not found: %s", sel))
-		}
-		if o["clear_first"] != false {
-			r.js("(()=>{const e=document.activeElement;if(e&&\"value\" in e)e.value=\"\"})()", nil)
-		}
-		for _, ch := range text {
-			r.pressKey(string(ch), 0)
-		}
-		r.js("(()=>{const e=document.querySelector("+string(q)+");e.dispatchEvent(new Event(\"input\",{bubbles:true}));e.dispatchEvent(new Event(\"change\",{bubbles:true}))})()", nil)
-		return goja.Undefined()
-	})
-	set("capture_screenshot", func(call goja.FunctionCall) goja.Value {
-		path := ""
-		if v := call.Argument(0); !goja.IsUndefined(v) && !goja.IsNull(v) {
-			path = v.String()
-		}
-		return rt.ToValue(r.screenshot(path, opts(call, 1)))
-	})
-	set("list_tabs", func(call goja.FunctionCall) goja.Value {
-		includeChrome := opts(call, 0)["include_chrome"] != false
-		var out []any
-		infos, _ := r.cdp("Target.getTargets", nil, nil, 5*time.Second)["targetInfos"].([]any)
-		for _, i := range infos {
-			t, _ := i.(map[string]any)
-			url, _ := t["url"].(string)
-			if t["type"] != "page" || (!includeChrome && (strings.HasPrefix(url, "chrome") || strings.HasPrefix(url, "about:") || strings.HasPrefix(url, "devtools:"))) {
-				continue
+func (r *runner) install() {
+	h := r.h
+	_ = r.rt.Set("print", r.print)
+	console := r.rt.NewObject()
+	_ = console.Set("log", r.print)
+	_ = console.Set("error", r.print)
+	_ = r.rt.Set("console", console)
+
+	// Page and CDP.
+	r.bind("cdp", 1, func(a args) (any, error) {
+		params := map[string]any{}
+		for k, v := range a.opts {
+			if k != "session_id" {
+				params[k] = v
 			}
-			out = append(out, map[string]any{"targetId": t["targetId"], "title": t["title"], "url": url})
 		}
-		return rt.ToValue(out)
+		s, _ := a.opts["session_id"].(string)
+		return h.CDP(a.str(0, "method", ""), params, s)
 	})
-	set("current_tab", r.currentTab)
-	set("switch_tab", func(t goja.Value) string { return r.switchTab(targetID(t)) })
-	set("activate_tab", func(t goja.Value) string {
-		tid := targetID(t)
-		r.cdp("Target.activateTarget", map[string]any{"targetId": tid}, nil, 5*time.Second)
-		return tid
+	r.bind("drain_events", 0, func(a args) (any, error) { return h.DrainEvents() })
+	r.bind("js", 1, func(a args) (any, error) { return h.JS(a.str(0, "expression", ""), a.str(1, "target_id", "")) })
+	r.bind("goto_url", 1, func(a args) (any, error) { return h.GotoURL(a.str(0, "url", "")) })
+	r.bind("page_info", 0, func(a args) (any, error) { return h.PageInfo() })
+
+	// Input.
+	r.bind("click_at_xy", 2, func(a args) (any, error) {
+		return none(h.ClickAtXY(a.num(0, "x", 0), a.num(1, "y", 0), a.str(2, "button", "left"), int(a.num(3, "clicks", 1))))
 	})
-	set("new_tab", func(call goja.FunctionCall) goja.Value {
-		url := "about:blank"
-		if v := call.Argument(0); !goja.IsUndefined(v) {
-			url = v.String()
-		}
-		tid, _ := r.cdp("Target.createTarget", map[string]any{"url": "about:blank", "background": true}, nil, 5*time.Second)["targetId"].(string)
-		r.switchTab(tid)
-		if url != "about:blank" {
-			r.cdp("Page.navigate", map[string]any{"url": url}, nil, 5*time.Second)
-		}
-		return rt.ToValue(tid)
+	r.bind("type_text", 1, func(a args) (any, error) { return none(h.TypeText(a.str(0, "text", ""))) })
+	r.bind("fill_input", 2, func(a args) (any, error) {
+		return none(h.FillInput(a.str(0, "selector", ""), a.str(1, "text", ""), a.flag(2, "clear_first", true), a.num(3, "timeout", 0)))
 	})
-	set("close_tab", func(call goja.FunctionCall) goja.Value {
-		tid := ""
-		if v := call.Argument(0); !goja.IsUndefined(v) && !goja.IsNull(v) {
-			tid = targetID(v)
-		} else {
-			tid, _ = r.currentTab()["targetId"].(string)
-		}
-		r.cdp("Target.closeTarget", map[string]any{"targetId": tid}, nil, 5*time.Second)
-		return goja.Undefined()
+	r.bind("press_key", 1, func(a args) (any, error) { return none(h.PressKey(a.str(0, "key", ""), int(a.num(1, "modifiers", 0)))) })
+	r.bind("scroll", 2, func(a args) (any, error) {
+		return none(h.Scroll(a.num(0, "x", 0), a.num(1, "y", 0), a.num(2, "dy", -300), a.num(3, "dx", 0)))
 	})
-	set("wait", func(seconds float64) { time.Sleep(time.Duration(seconds * float64(time.Second))) })
-	set("wait_for_load", func(call goja.FunctionCall) goja.Value {
-		timeout := 15.0
-		if v := call.Argument(0); !goja.IsUndefined(v) {
-			timeout = v.ToFloat()
-		}
-		deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
-		for time.Now().Before(deadline) {
-			if r.js("document.readyState", nil) == "complete" {
-				return rt.ToValue(true)
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-		return rt.ToValue(false)
+	r.bind("dispatch_key", 1, func(a args) (any, error) {
+		return none(h.DispatchKey(a.str(0, "selector", ""), a.str(1, "key", "Enter"), a.str(2, "event", "keypress")))
 	})
-	set("write_file", func(path string, data string) {
-		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
-			r.throw(err)
-		}
+	r.bind("upload_file", 2, func(a args) (any, error) { return none(h.UploadFile(a.str(0, "selector", ""), a.strs(1, "path"))) })
+	r.bind("capture_screenshot", 1, func(a args) (any, error) {
+		return h.CaptureScreenshot(a.str(0, "path", ""), a.flag(1, "full", false), int(a.num(2, "max_dim", 0)))
 	})
-	set("base64_decode", func(s string) string {
-		raw, err := base64.StdEncoding.DecodeString(s)
+
+	// Tabs.
+	r.bind("list_tabs", 0, func(a args) (any, error) { return h.ListTabs(a.flag(0, "include_chrome", true)) })
+	r.bind("current_tab", 0, func(a args) (any, error) { return h.CurrentTab() })
+	r.bind("activate_tab", 1, func(a args) (any, error) { return h.ActivateTab(a.str(0, "target", "")) })
+	r.bind("switch_tab", 1, func(a args) (any, error) { return h.SwitchTab(a.str(0, "target", ""), a.flag(1, "activate", false)) })
+	r.bind("new_tab", 1, func(a args) (any, error) { return h.NewTab(a.str(0, "url", "about:blank")) })
+	r.bind("close_tab", 1, func(a args) (any, error) { return none(h.CloseTab(a.str(0, "target", ""))) })
+	r.bind("ensure_real_tab", 0, func(a args) (any, error) { return h.EnsureRealTab() })
+	r.bind("iframe_target", 1, func(a args) (any, error) {
+		id, err := h.IframeTarget(a.str(0, "url_substr", ""))
+		if id == "" {
+			return nil, err
+		}
+		return id, err
+	})
+
+	// Waiting and HTTP.
+	r.bind("wait", 1, func(a args) (any, error) { helpers.Wait(a.num(0, "seconds", 1)); return nil, nil })
+	r.bind("wait_for_load", 1, func(a args) (any, error) { return h.WaitForLoad(a.num(0, "timeout", 15)) })
+	r.bind("wait_for_element", 1, func(a args) (any, error) {
+		return h.WaitForElement(a.str(0, "selector", ""), a.num(1, "timeout", 10), a.flag(2, "visible", false))
+	})
+	r.bind("wait_for_network_idle", 0, func(a args) (any, error) {
+		return h.WaitForNetworkIdle(a.num(0, "timeout", 10), int(a.num(1, "idle_ms", 500)))
+	})
+	r.bind("http_get", 1, func(a args) (any, error) {
+		return helpers.HTTPGet(a.str(0, "url", ""), a.strMap(1, "headers"), a.num(2, "timeout", 20))
+	})
+
+	// Recording (the daemon records; these only start, stop and locate it).
+	r.bind("start_recording", 0, func(a args) (any, error) {
+		m, err := r.recordMeta("record_start", map[string]any{"name": a.str(0, "name", ""), "title": a.str(1, "title", "")})
 		if err != nil {
-			r.throw(errors.New("base64_decode: " + err.Error()))
+			return nil, err
 		}
-		return string(raw)
+		fmt.Fprintf(r.out, "recording to %v\n", m["dir"])
+		return m["dir"], nil
+	})
+	r.bind("stop_recording", 0, func(a args) (any, error) {
+		m, err := r.recordMeta("record_stop", nil)
+		if err != nil || m["dir"] == nil {
+			if err == nil {
+				fmt.Fprintln(r.out, "no active recording")
+			}
+			return nil, err
+		}
+		fmt.Fprintf(r.out, "recording saved: %v (%v frames)\n", m["dir"], m["frames"])
+		if f, _ := m["frames"].(float64); f == 0 {
+			fmt.Fprintf(r.out, "warning: no frames captured — see frame_error in %v\n", filepath.Join(fmt.Sprint(m["dir"]), "events.jsonl"))
+		}
+		return m["dir"], nil
+	})
+	r.bind("recording_dir", 0, func(a args) (any, error) {
+		m, err := r.recordMeta("record_dir", nil)
+		if err != nil {
+			return nil, err
+		}
+		return m["dir"], nil
+	})
+
+	// Daemon and cloud browser management.
+	r.bind("ensure_daemon", 0, func(a args) (any, error) {
+		return none(admin.EnsureDaemon(a.num(0, "wait", -1), a.str(1, "name", ""), a.strMap(2, "env")))
+	})
+	r.bind("require_existing_daemon", 0, func(a args) (any, error) { return none(admin.RequireExistingDaemon(a.str(0, "name", ""))) })
+	r.bind("daemon_alive", 0, func(a args) (any, error) { return admin.DaemonAlive(a.str(0, "name", "")), nil })
+	r.bind("daemon_browser_ready", 0, func(a args) (any, error) { return admin.DaemonBrowserReady(a.str(0, "name", "")), nil })
+	r.bind("browser_connections", 0, func(a args) (any, error) { return admin.BrowserConnections(), nil })
+	r.bind("restart_daemon", 0, func(a args) (any, error) {
+		return none(admin.RestartDaemon(a.str(0, "name", ""), a.flag(1, "require_clean", false)))
+	})
+	r.bind("start_remote_daemon", 1, func(a args) (any, error) {
+		create := map[string]any{}
+		for k, v := range a.opts {
+			if k != "profileName" {
+				create[k] = v
+			}
+		}
+		return admin.StartRemoteDaemon(a.str(0, "name", "remote"), a.str(1, "profileName", ""), create)
+	})
+	r.bind("stop_remote_daemon", 1, func(a args) (any, error) { return none(admin.StopRemoteDaemon(a.str(0, "name", "remote"))) })
+	r.bind("list_cloud_profiles", 0, func(a args) (any, error) { return admin.ListCloudProfiles() })
+	r.bind("list_local_profiles", 0, func(a args) (any, error) { return admin.ListLocalProfiles() })
+	r.bind("sync_local_profile", 1, func(a args) (any, error) {
+		return admin.SyncLocalProfile(a.str(0, "profile_name", ""), a.str(1, "browser", ""), a.str(2, "cloud_profile_id", ""),
+			a.strs(3, "include_domains"), a.strs(4, "exclude_domains"))
+	})
+
+	// Files: snippets have no fs module.
+	r.bind("read_file", 1, func(a args) (any, error) {
+		b, err := os.ReadFile(a.str(0, "path", ""))
+		return string(b), err
+	})
+	r.bind("write_file", 2, func(a args) (any, error) {
+		return none(os.WriteFile(a.str(0, "path", ""), []byte(a.str(1, "data", "")), 0o644))
+	})
+	_ = r.rt.Set("env", func(name string) any {
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		return nil
 	})
 }

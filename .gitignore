@@ -1,11 +1,6 @@
-__pycache__/
-*.pyc
 *.log
 .env
-uv.lock
-*.egg-info/
 .browser-harness-dev/
-build/
 dist/
 .idea/
 .claude/
