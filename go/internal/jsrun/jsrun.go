@@ -32,6 +32,9 @@ type Trace struct {
 	StepCount int
 }
 
+// newHelpers is a seam for tests.
+var newHelpers = helpers.New
+
 type runner struct {
 	rt    *goja.Runtime
 	h     *helpers.H
@@ -40,7 +43,7 @@ type runner struct {
 }
 
 func newRunner(out io.Writer) *runner {
-	r := &runner{rt: goja.New(), h: helpers.New(admin.Name()), out: out}
+	r := &runner{rt: goja.New(), h: newHelpers(admin.Name()), out: out}
 	r.rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	r.install()
 	return r

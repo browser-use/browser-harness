@@ -166,15 +166,23 @@ func (h *H) evaluate(expr, session string) (any, error) {
 // JS evaluates expr in the attached tab, or in an iframe target. A top-level
 // `return` is retried inside a function wrapper.
 func (h *H) JS(expr, targetID string) (any, error) {
-	session := ""
-	if targetID != "" {
-		r, err := h.CDP("Target.attachToTarget", M{"targetId": targetID, "flatten": true}, "")
-		if err != nil {
-			return nil, err
-		}
-		session, _ = r["sessionId"].(string)
-		defer h.detach(session)
+	if targetID == "" {
+		return h.evalOrWrap(expr, "")
 	}
+	r, err := h.CDP("Target.attachToTarget", M{"targetId": targetID, "flatten": true}, "")
+	if err != nil {
+		return nil, err
+	}
+	session, _ := r["sessionId"].(string)
+	v, err := h.evalOrWrap(expr, session)
+	// An evaluation error wins over a detach error.
+	if derr := h.detach(session); err == nil {
+		err = derr
+	}
+	return v, err
+}
+
+func (h *H) evalOrWrap(expr, session string) (any, error) {
 	v, err := h.evaluate(expr, session)
 	if err != nil && strings.Contains(err.Error(), "Illegal return statement") {
 		return h.evaluate("(function(){"+expr+"})()", session)
@@ -182,9 +190,16 @@ func (h *H) JS(expr, targetID string) (any, error) {
 	return v, err
 }
 
-// detach releases an iframe session so polling loops don't pile up sessions.
-func (h *H) detach(session string) {
-	_, _ = h.CDP("Target.detachFromTarget", M{"sessionId": session}, "")
+// detach releases an iframe session so polling loops don't pile up sessions;
+// a session Chrome already dropped is not an error.
+func (h *H) detach(session string) error {
+	_, err := h.CDP("Target.detachFromTarget", M{"sessionId": session}, "")
+	if err != nil {
+		if m := strings.ToLower(err.Error()); strings.Contains(m, "no session with given id") || strings.Contains(m, "session with given id not found") {
+			return nil
+		}
+	}
+	return err
 }
 
 func quote(s string) string {
