@@ -686,6 +686,21 @@ func (d *Daemon) shutdown() map[string]any {
 	return map[string]any{"ok": true}
 }
 
+// foreground activates the attached tab before a screenshot. Headless Chrome
+// only renders a hidden tab when it changes, so a capture can wait forever for
+// a frame. Never on discovered local Chrome: that would move the user's tabs.
+func (d *Daemon) foreground(ctx context.Context, sid string) {
+	d.mu.Lock()
+	tid, cur := d.targetID, d.session
+	d.mu.Unlock()
+	if d.cfg.Kind == "local" || tid == "" || sid != cur {
+		return
+	}
+	actx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, _ = d.send(actx, "Target.activateTarget", map[string]any{"targetId": tid}, "")
+}
+
 func (d *Daemon) relay(ctx context.Context, req map[string]any) map[string]any {
 	method, _ := req["method"].(string)
 	if method == "" {
@@ -706,6 +721,9 @@ func (d *Daemon) relay(ctx context.Context, req map[string]any) map[string]any {
 		if sid == "" {
 			sid = cur
 		}
+	}
+	if method == "Page.captureScreenshot" {
+		d.foreground(ctx, sid)
 	}
 	res, err := d.send(ctx, method, params, sid)
 	if err == nil {
