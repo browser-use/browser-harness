@@ -201,8 +201,12 @@ func writeString(b *strings.Builder, s string) {
 }
 
 // DumpsUnicode matches json.dumps(v, ensure_ascii=False).
-func DumpsUnicode(v any) string {
-	s := Dumps(v, 0)
+func DumpsUnicode(v any) string { return unescape(Dumps(v, 0)) }
+
+// DumpsUnicodeIndent matches json.dumps(v, indent=indent, ensure_ascii=False).
+func DumpsUnicodeIndent(v any, indent int) string { return unescape(Dumps(v, indent)) }
+
+func unescape(s string) string {
 	var b strings.Builder
 	runes := []rune(s)
 	for i := 0; i < len(runes); i++ {

@@ -28,3 +28,16 @@ func TestDumpsUnicode(t *testing.T) {
 		t.Errorf("got %q want %q", got, want)
 	}
 }
+
+func TestLoadsKeepsOrder(t *testing.T) {
+	v, err := Loads([]byte(`{"b": 1, "a": [1.50, {"z": null, "y": true}], "b": 2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := DumpsUnicodeIndent(v, 0); got != `{"b": 2, "a": [1.50, {"z": null, "y": true}]}` {
+		t.Fatal(got)
+	}
+	if _, err := Loads([]byte("{} {}")); err == nil {
+		t.Fatal("extra data accepted")
+	}
+}

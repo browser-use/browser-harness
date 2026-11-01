@@ -11,10 +11,12 @@ import (
 	"github.com/browser-use/browser-harness/go/internal/mcpserver"
 	"github.com/browser-use/browser-harness/go/internal/paths"
 	"github.com/browser-use/browser-harness/go/internal/telemetry"
+	"github.com/browser-use/browser-harness/go/internal/video"
 )
 
 func main() {
 	paths.LoadEnv()
+	cli.VideoCLI = video.CLI
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: browser-harness-core <command> [args]")
 		os.Exit(2)
