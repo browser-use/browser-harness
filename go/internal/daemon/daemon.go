@@ -645,6 +645,8 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 		return map[string]any{"dialog": d.dialog}
 	case "shutdown":
 		return d.shutdown()
+	case "record_observe", "record_start", "record_stop":
+		return d.handleRecord(ctx, meta, req)
 	}
 	return d.relay(ctx, req)
 }

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"fmt"
@@ -10,9 +10,10 @@ import (
 	"github.com/browser-use/browser-harness/go/internal/pyjson"
 )
 
-const authUsage = "usage: browser-harness auth {login,status,logout} ..."
+const authUsage = "usage: browser-harness auth [-h] {login,status,logout} ..."
 
-func runAuth(args []string) int {
+// Auth is `browser-harness auth`.
+func Auth(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, authUsage)
 		return 2
@@ -50,12 +51,12 @@ func runAuth(args []string) int {
 		case "--no-open":
 			noOpen = true
 		default:
-			fmt.Fprintf(os.Stderr, "browser-harness auth login: unrecognized argument %s\n", a)
+			fmt.Fprintf(os.Stderr, "%s\nbrowser-harness auth: error: unrecognized arguments: %s\n", authUsage, a)
 			return 2
 		}
 	}
 	if device && stdin {
-		fmt.Fprintln(os.Stderr, "browser-harness auth login: --device-code and --api-key-stdin are mutually exclusive")
+		fmt.Fprintf(os.Stderr, "%s\nbrowser-harness auth login: error: argument --api-key-stdin: not allowed with argument --device-code\n", authUsage)
 		return 2
 	}
 	var err error

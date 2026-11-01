@@ -193,3 +193,40 @@ func writeString(b *strings.Builder, s string) {
 	}
 	b.WriteByte('"')
 }
+
+// DumpsUnicode matches json.dumps(v, ensure_ascii=False).
+func DumpsUnicode(v any) string {
+	s := Dumps(v, 0)
+	var b strings.Builder
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\\' && i+5 < len(runes) && runes[i+1] == 'u' {
+			if hex, err := strconv.ParseUint(string(runes[i+2:i+6]), 16, 32); err == nil && hex >= 0x7f {
+				if hex >= 0xd800 && hex < 0xdc00 && i+11 < len(runes) && runes[i+6] == '\\' && runes[i+7] == 'u' {
+					if lo, err := strconv.ParseUint(string(runes[i+8:i+12]), 16, 32); err == nil && lo >= 0xdc00 && lo < 0xe000 {
+						b.WriteRune(utf16.DecodeRune(rune(hex), rune(lo)))
+						i += 11
+						continue
+					}
+				}
+				if hex < 0xd800 || hex >= 0xe000 {
+					b.WriteRune(rune(hex))
+					i += 5
+					continue
+				}
+				// A lone surrogate cannot be UTF-8; Python's errors="replace" writes U+FFFD.
+				b.WriteRune('�')
+				i += 5
+				continue
+			}
+		}
+		if runes[i] == '\\' && i+1 < len(runes) {
+			b.WriteRune(runes[i])
+			b.WriteRune(runes[i+1])
+			i++
+			continue
+		}
+		b.WriteRune(runes[i])
+	}
+	return b.String()
+}

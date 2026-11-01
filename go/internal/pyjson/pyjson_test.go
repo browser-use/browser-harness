@@ -19,3 +19,11 @@ func TestDumps(t *testing.T) {
 		}
 	}
 }
+
+func TestDumpsUnicode(t *testing.T) {
+	got := DumpsUnicode(Obj{{K: "title", V: "café \U0001F434 \x7f\n"}, {K: "w", V: 393}})
+	want := "{\"title\": \"café \U0001F434 \x7f\\n\", \"w\": 393}"
+	if got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
