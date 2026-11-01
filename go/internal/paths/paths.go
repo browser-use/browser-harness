@@ -46,9 +46,11 @@ func EnsurePrivateDir(dir string) string {
 	return dir
 }
 
-func ConfigDir() string  { return EnsurePrivateDir(envOr("BH_CONFIG_DIR", Home())) }
-func RuntimeDir() string { return EnsurePrivateDir(envOr("BH_RUNTIME_DIR", filepath.Join(Home(), "runtime"))) }
-func TmpDir() string     { return EnsurePrivateDir(envOr("BH_TMP_DIR", filepath.Join(Home(), "tmp"))) }
+func ConfigDir() string { return EnsurePrivateDir(envOr("BH_CONFIG_DIR", Home())) }
+func RuntimeDir() string {
+	return EnsurePrivateDir(envOr("BH_RUNTIME_DIR", filepath.Join(Home(), "runtime")))
+}
+func TmpDir() string { return EnsurePrivateDir(envOr("BH_TMP_DIR", filepath.Join(Home(), "tmp"))) }
 func WorkspaceDir() string {
 	return EnsurePrivateDir(envOr("BH_AGENT_WORKSPACE", filepath.Join(Home(), "agent-workspace")))
 }

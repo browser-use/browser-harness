@@ -25,11 +25,11 @@ import (
 )
 
 const (
-	bufSize           = 500
-	recoveryDrain     = 2 * time.Second
-	tabMarkerJS       = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
-	sessionNotFound   = "Session with given id not found"
-	maxReplacements   = 32
+	bufSize         = 500
+	recoveryDrain   = 2 * time.Second
+	tabMarkerJS     = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
+	sessionNotFound = "Session with given id not found"
+	maxReplacements = 32
 )
 
 // BUAPI is the Browser Use Cloud API base.
@@ -59,7 +59,9 @@ func isReusableBlank(t Target) bool {
 	return t.Type == "page" && (t.URL == "about:blank" || strings.HasPrefix(t.URL, "about:blank#")) &&
 		!strings.HasPrefix(t.Title, "Starting agent ")
 }
-func isInspectTab(t Target) bool { return t.Type == "page" && strings.HasPrefix(t.URL, "chrome://inspect") }
+func isInspectTab(t Target) bool {
+	return t.Type == "page" && strings.HasPrefix(t.URL, "chrome://inspect")
+}
 func isReusableNewTab(t Target) bool {
 	return t.Type == "page" && hasAnyPrefix(t.URL, "chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")
 }
@@ -112,19 +114,19 @@ type Daemon struct {
 	logf func(string)
 	cdp  *cdp.Client
 
-	mu          sync.Mutex // guards the plain fields below
-	session     string
-	targetID    string
-	dedicated   string
-	events      []event
-	dialog      json.RawMessage
-	shutting    bool
-	replaces    map[string]string
-	replOrder   []string
-	recoveries  map[*recovery]struct{}
-	recoveryWG  sync.WaitGroup
-	stopOnce    sync.Once
-	stop        chan struct{}
+	mu         sync.Mutex // guards the plain fields below
+	session    string
+	targetID   string
+	dedicated  string
+	events     []event
+	dialog     json.RawMessage
+	shutting   bool
+	replaces   map[string]string
+	replOrder  []string
+	recoveries map[*recovery]struct{}
+	recoveryWG sync.WaitGroup
+	stopOnce   sync.Once
+	stop       chan struct{}
 
 	sessionState  chan struct{} // held across CDP calls like Python's asyncio.Lock
 	dedicatedLock chan struct{}

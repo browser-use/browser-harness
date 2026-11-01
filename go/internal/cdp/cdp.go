@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,12 +29,12 @@ func (e *Error) Error() string { return PyRepr(e.raw) }
 var ErrClosed = errors.New("WebSocket connection closed")
 
 type response struct {
-	ID     int64           `json:"id"`
-	Result json.RawMessage `json:"result"`
-	Error  json.RawMessage `json:"error"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-	Session string         `json:"sessionId"`
+	ID      int64           `json:"id"`
+	Result  json.RawMessage `json:"result"`
+	Error   json.RawMessage `json:"error"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+	Session string          `json:"sessionId"`
 }
 
 // EventFunc receives every CDP event, in arrival order.
@@ -260,6 +259,3 @@ func pyStr(s string) string {
 	b.WriteByte(q)
 	return b.String()
 }
-
-// Itoa is a tiny helper for log lines.
-func Itoa(i int) string { return strconv.Itoa(i) }
