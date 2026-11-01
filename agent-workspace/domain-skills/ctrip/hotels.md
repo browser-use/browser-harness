@@ -131,18 +131,21 @@ return Array.from(document.querySelectorAll(".list-item")).slice(0, 30).map(card
   const text = (card.innerText || "").replace(/\s+/g, " ");
   const name = text.match(/^([^\s]{2,40}?(?:酒店|宾馆|公寓|民宿)(?:\([^)]*\))?)/)?.[1];
   const score = text.match(/[1-5]\.\d/)?.[0];
-  // strip "1,234条点评" before grabbing prices, otherwise ¥1 from "1,234" leaks in
-  const priced = text.replace(/\d{1,3}(?:,\d{3})+/g, "").replace(/\d+条点评/g, "");
-  const prices = (priced.match(/¥\s*(\d{2,})/g) || []).map(s => parseInt(s.replace(/[^\d]/g, "")));
+  // strip the review count ("9,219条点评") before grabbing prices; prices above
+  // ¥999 render as "¥1,234", so the price regex must accept the comma
+  const priced = text.replace(/\d{1,3}(?:,\d{3})*条点评/g, "");
+  const prices = (priced.match(/¥\s*(?:\d{1,3}(?:,\d{3})+|\d{2,})/g) || []).map(s => parseInt(s.replace(/[^\d]/g, ""), 10));
   const [original, current] = prices;
   return {name, score, price_original: original ?? null, price_current: current ?? null};
 });
 ```
 
-**Trap:** review counts like `1,234条点评` and `5,678条点评` will match
-`¥\s*\d+` if you don't strip them first — `¥1` and `¥5` will appear as
-phantom prices. Always pre-strip thousand-separated numbers and review
-counts before the price regex.
+**Trap:** strip the review count (`9,219条点评`, with its thousands
+separator) before the price regex, but do **not** strip every
+thousand-separated number: prices above ¥999 render as `¥1,234`, and a
+global `\d{1,3}(?:,\d{3})+` strip leaves a bare `¥` behind, so those
+listings come back with no price. Let the price regex accept the comma
+and remove it only when parsing.
 
 The text shape per card:
 ```
@@ -223,8 +226,9 @@ Ctrip's hotel data lives in React component state, not on `window`.
 - **Default homepage tab is 海外酒店 (overseas).** Featured hotels show
   "暂无价格" and pre-select Singapore/Phuket dates. Don't read prices off
   the homepage — go to `/hotels/list?...` instead.
-- **Phantom `¥1`, `¥5` prices** from review-count regex bleed-through.
-  Strip `\d+,\d+` and `\d+条点评` before applying `¥\d+`.
+- **Prices carry thousands separators** (`¥1,234`). Strip only the review
+  count (`\d{1,3}(?:,\d{3})*条点评`) before the price regex and let the
+  regex accept the comma — stripping every `\d+,\d+` deletes the price.
 - **No detail URL on cards.** No `data-id`, no `<a>`. Coordinate click is
   the only reliable navigate-to-detail option without an external ID
   source.
@@ -269,10 +273,10 @@ time.sleep(6)
 hotels = js("""
   return Array.from(document.querySelectorAll(".list-item")).slice(0, 20).map(card => {
     const raw = (card.innerText || "").replace(/\\s+/g, " ");
-    const cleaned = raw.replace(/\\d{1,3}(?:,\\d{3})+/g, "").replace(/\\d+条点评/g, "");
+    const cleaned = raw.replace(/\\d{1,3}(?:,\\d{3})*条点评/g, "");
     const name = raw.match(/^([^\\s]{2,40}?(?:酒店|宾馆|公寓|民宿)(?:\\([^)]*\\))?)/)?.[1] || null;
-    const prices = (cleaned.match(/¥\\s*\\d{2,}/g) || [])
-                     .map(s => parseInt(s.replace(/[^\\d]/g, "")));
+    const prices = (cleaned.match(/¥\\s*(?:\\d{1,3}(?:,\\d{3})+|\\d{2,})/g) || [])
+                     .map(s => parseInt(s.replace(/[^\\d]/g, ""), 10));
     const score = raw.match(/[1-5]\\.\\d/)?.[0] || null;
     return {name, score, price_original: prices[0] ?? null, price_current: prices[1] ?? null};
   });

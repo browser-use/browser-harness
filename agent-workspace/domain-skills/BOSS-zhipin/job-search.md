@@ -152,20 +152,25 @@ for j in result["jobs"]:
 
 ### Pagination
 
-The API uses `hasMore` (boolean), not a total count. **Page-based pagination is unreliable** — `page=2` often returns 0 results even when `page=1` says `hasMore: true`. Use the initial page 1 results and consider widening filters (e.g., smaller `pageSize`, different city) rather than paginating.
+The API uses `hasMore` (boolean), not a total count. **Page-based pagination is unreliable** — `page=2` often returns 0 results even when `page=1` says `hasMore: true` (re-checked 2026-10-28: `page=1` → 15 jobs, `hasMore: true`; `page=2` and `page=3` → 0 jobs). A `for page in ...` loop therefore stops after page 1 and looks like a complete result. Use the page 1 results and vary valid filters (e.g., a different `city`) rather than paginating.
 
-The actual job search page loads recommendations once at `page=1` and lazy-loads more via scroll, which triggers a different API path. For bulk extraction, vary filters (city, experience, salary) to get different result sets:
+The actual job search page loads recommendations once at `page=1` and lazy-loads more via scroll, which triggers a different API path. For bulk extraction, take page 1 for several cities and dedupe by `encryptJobId`; non-default `experience` / `salary` / `degree` filters need a valid `encryptExpectId` (see Gotchas), so leave `filter_sets` at its default unless you have one. This is best-effort — it does not enumerate every job:
 
 ```python
-def fetch_all_jobs(city="101020100", max_pages=10):
-    all_jobs = []
-    for page in range(1, max_pages + 1):
-        result = fetch_job_list(page=page, city=city)
-        all_jobs.extend(result["jobs"])
-        if not result["hasMore"] or len(result["jobs"]) == 0:
-            break
-        wait(0.5)  # polite delay
-    return all_jobs
+def fetch_jobs_best_effort(cities=("101020100",), filter_sets=({},), page_size=15):
+    """Page 1 of each (city, filters) combination, deduped. Not exhaustive."""
+    seen = {}
+    for city in cities:
+        for filters in filter_sets:
+            result = fetch_job_list(page=1, page_size=page_size, city=city, **filters)
+            for j in result["jobs"]:
+                seen.setdefault(j["encryptJobId"], j)
+            wait(0.5)  # polite delay
+    return list(seen.values())
+
+# Usage: page 1 for 上海, 北京 and 深圳 with default filters
+jobs = fetch_jobs_best_effort(cities=("101020100", "101010100", "101280200"))
+print(f"{len(jobs)} unique jobs")
 ```
 
 ---
