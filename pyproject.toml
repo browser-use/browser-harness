@@ -32,7 +32,7 @@ dependencies = [
 mcp = ["mcp==2.1.1"]
 
 [project.scripts]
-browser-harness = "browser_harness.run:main"
+browser-harness = "browser_harness.cli:main"
 browser-harness-mcp = "browser_harness.mcp_cli:main"
 
 [project.urls]
@@ -48,7 +48,7 @@ py-modules = ["mcp_server"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-browser_harness = ["SKILL.md", "video-template.html"]
+browser_harness = ["SKILL.md", "video-template.html", "bin/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

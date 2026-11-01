@@ -645,7 +645,7 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 		return map[string]any{"dialog": d.dialog}
 	case "shutdown":
 		return d.shutdown()
-	case "record_observe", "record_start", "record_stop":
+	case "record_observe", "record_start", "record_stop", "record_dir":
 		return d.handleRecord(ctx, meta, req)
 	}
 	return d.relay(ctx, req)
@@ -841,7 +841,10 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn, token string) {
 	}
 	var resp any
 	var req map[string]any
-	if jerr := json.Unmarshal(line, &req); jerr != nil {
+	// UseNumber keeps request numbers verbatim, both for CDP params and recorded helper args.
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.UseNumber()
+	if jerr := dec.Decode(&req); jerr != nil {
 		d.logf(fmt.Sprintf("conn: %v", jerr))
 		resp = map[string]any{"error": jerr.Error()}
 	} else {

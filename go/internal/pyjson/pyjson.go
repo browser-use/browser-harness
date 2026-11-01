@@ -145,6 +145,8 @@ func writeArr(b *strings.Builder, a []any, indent, depth int) {
 	b.WriteByte(']')
 }
 
+// writeFloat follows Python's float repr: shortest round-trip digits, positional
+// for 1e-4 <= |f| < 1e16 (always with a fractional part), exponent otherwise.
 func writeFloat(b *strings.Builder, f float64) {
 	switch {
 	case math.IsNaN(f):
@@ -153,10 +155,14 @@ func writeFloat(b *strings.Builder, f float64) {
 		b.WriteString("Infinity")
 	case math.IsInf(f, -1):
 		b.WriteString("-Infinity")
-	case f == math.Trunc(f) && math.Abs(f) < 1e16:
-		b.WriteString(strconv.FormatFloat(f, 'f', 1, 64))
+	case f == 0 || (math.Abs(f) >= 1e-4 && math.Abs(f) < 1e16):
+		s := strconv.FormatFloat(f, 'f', -1, 64)
+		if !strings.Contains(s, ".") {
+			s += ".0"
+		}
+		b.WriteString(s)
 	default:
-		b.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+		b.WriteString(strconv.FormatFloat(f, 'e', -1, 64))
 	}
 }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,7 +36,10 @@ func (p page) JS(expr string) (map[string]any, error) {
 		} `json:"result"`
 		Exception json.RawMessage `json:"exceptionDetails"`
 	}
-	if err := json.Unmarshal(raw, &r); err != nil {
+	// Keep page numbers as JSON numbers so 780 stays 780, not 780.0.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&r); err != nil {
 		return nil, err
 	}
 	if len(r.Exception) > 0 {
@@ -68,7 +72,9 @@ func decodeCall(req map[string]any) (recorder.Call, error) {
 	if err != nil {
 		return c, err
 	}
-	return c, json.Unmarshal(raw, &c)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	return c, dec.Decode(&c)
 }
 
 // handleRecord serves record_observe, record_start and record_stop.
@@ -90,6 +96,11 @@ func (d *Daemon) handleRecord(ctx context.Context, meta string, req map[string]a
 			return map[string]any{"error": err.Error()}
 		}
 		return map[string]any{"dir": dir}
+	case "record_dir":
+		if dir := recorder.Dir(c.Env); dir != "" {
+			return map[string]any{"dir": dir}
+		}
+		return map[string]any{"dir": nil}
 	case "record_stop":
 		dir, frames := recorder.Stop(c.Env, p)
 		if dir == "" {

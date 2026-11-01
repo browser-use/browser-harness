@@ -249,7 +249,7 @@ func run(args []string) result {
 		return done(recordings(args[1:]))
 	case "video":
 		if VideoCLI == nil {
-			return fail("video support is not built into this binary")
+			return done(pythonModule("browser_harness.video", args[1:]))
 		}
 		return done(VideoCLI(args[1:]))
 	case "--update":
@@ -411,6 +411,24 @@ func runSnippet(code string) result {
 	r := runPython(code)
 	r.task = &code
 	return r
+}
+
+// pythonModule runs a Python module of the package with inherited stdio.
+func pythonModule(module string, args []string) int {
+	py := os.Getenv("BH_PYTHON")
+	if py == "" {
+		py = "python3"
+	}
+	cmd := exec.Command(py, append([]string{"-m", module}, args...)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode()
+		}
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
 }
 
 // runPython executes the snippet in the Python runner and collects its helper trace.

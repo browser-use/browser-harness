@@ -22,13 +22,18 @@ if [ -z "${BH_TMP_DIR:-}" ]; then
   export BH_TMP_DIR_SHARED="${BH_TMP_DIR_SHARED:-1}"
 fi
 
+# The Go core owns the daemon and CLI; rebuild it so local edits take effect.
+if command -v go >/dev/null 2>&1; then
+  (cd "$ROOT/go" && go build -o "$ROOT/src/browser_harness/bin/browser-harness-core" ./cmd/browser-harness-core)
+fi
+
 if [ -x "$ROOT/.venv/bin/python" ]; then
-  exec "$ROOT/.venv/bin/python" -m browser_harness.run "$@"
+  exec "$ROOT/.venv/bin/python" -m browser_harness.cli "$@"
 fi
 
 if command -v uv >/dev/null 2>&1; then
-  exec uv --directory "$ROOT" run python -m browser_harness.run "$@"
+  exec uv --directory "$ROOT" run python -m browser_harness.cli "$@"
 fi
 
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m browser_harness.run "$@"
+exec python3 -m browser_harness.cli "$@"

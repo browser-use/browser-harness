@@ -9,3 +9,4 @@ build/
 dist/
 .idea/
 .claude/
+src/browser_harness/bin/

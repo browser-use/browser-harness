@@ -11,6 +11,7 @@ func TestDumps(t *testing.T) {
 		{Obj{{"status", "stored"}, {"path", "/x/auth.json"}}, 0, `{"status": "stored", "path": "/x/auth.json"}`},
 		{map[string]any{"b": 1, "a": []any{true, nil, 2.5, 3.0}}, 0, `{"a": [true, null, 2.5, 3.0], "b": 1}`},
 		{Obj{{"status", "missing"}, {"source", nil}}, 2, "{\n  \"status\": \"missing\",\n  \"source\": null\n}"},
+		{[]any{1793553136.217, 3.0, 0.0001, 1e-05, 1e16, 2.5e16, 0.1}, 0, `[1793553136.217, 3.0, 0.0001, 1e-05, 1e+16, 2.5e+16, 0.1]`},
 		{"caf\u00e9 \U0001F434 \x7f \"q\"", 0, `"caf\u00e9 \ud83d\udc34 \u007f \"q\""`},
 	}
 	for _, c := range cases {
