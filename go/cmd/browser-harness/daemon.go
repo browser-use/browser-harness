@@ -14,7 +14,7 @@ import (
 	"github.com/browser-use/browser-harness/go/internal/ipc"
 )
 
-// runDaemon is `browser-harness-core daemon`: the long-lived CDP holder.
+// runDaemon is `browser-harness __daemon`: the long-lived CDP holder.
 func runDaemon() int {
 	cfg := daemon.ConfigFromEnv()
 	if err := ipc.Check(cfg.Name); err != nil {

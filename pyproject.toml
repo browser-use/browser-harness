@@ -33,7 +33,6 @@ dependencies = [
 mcp = []
 
 [project.scripts]
-browser-harness = "browser_harness.cli:main"
 browser-harness-mcp = "browser_harness.cli:mcp"
 
 [project.urls]
@@ -43,12 +42,15 @@ Issues = "https://github.com/browser-use/browser-harness/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+# The Go binary is the `browser-harness` command, installed into the environment's bin/;
+# build it into bin/ first (./browser-harness does).
+data-files = {"bin" = ["bin/browser-harness"]}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-browser_harness = ["SKILL.md", "video-template.html", "bin/*"]
+browser_harness = ["SKILL.md", "video-template.html"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

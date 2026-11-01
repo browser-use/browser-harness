@@ -60,7 +60,7 @@ func isDaemonProcess(pid int) bool {
 	if err != nil || strings.TrimSpace(out) == "" {
 		return false
 	}
-	return strings.Contains(out, "browser-harness-core") || strings.Contains(out, "browser_harness")
+	return strings.Contains(out, "__daemon") || strings.Contains(out, "browser_harness")
 }
 
 func runWithTimeout(cmd *exec.Cmd, d time.Duration) (string, error) {

@@ -24,11 +24,11 @@ type callArgs struct {
 	Exclude        []string          `json:"exclude_domains"`
 }
 
-// runCall is `browser-harness-core call <fn> <result-file> [json-args]`. stdout and
+// runCall is `browser-harness __call <fn> <result-file> [json-args]`. stdout and
 // stderr stay the user's; the result or error goes to the result file.
 func runCall(args []string) int {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: browser-harness-core call <fn> <result-file> [json-args]")
+		fmt.Fprintln(os.Stderr, "usage: browser-harness __call <fn> <result-file> [json-args]")
 		return 2
 	}
 	fn, resultFile := args[0], args[1]

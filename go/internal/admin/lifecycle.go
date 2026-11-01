@@ -153,7 +153,7 @@ type spawned struct {
 }
 
 func spawnDaemon(name string, env map[string]string) (*spawned, error) {
-	cmd := exec.Command(Self(), "daemon")
+	cmd := exec.Command(Self(), "__daemon")
 	e := os.Environ()
 	if name != "" {
 		e = append(e, "BU_NAME="+name)

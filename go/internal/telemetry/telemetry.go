@@ -326,7 +326,7 @@ func send(payload map[string]any) {
 	if err != nil {
 		return
 	}
-	cmd := exec.Command(self, "telemetry-send")
+	cmd := exec.Command(self, "__telemetry-send")
 	cmd.Stdin = bytes.NewReader(compact(job))
 	Detach(cmd)
 	if cmd.Start() == nil {

@@ -1,4 +1,4 @@
-"""Session recording helpers. The daemon (browser-harness-core) does the
+"""Session recording helpers. The daemon (the browser-harness binary) does the
 recording; see interaction-skills/make-video.md to turn one into a video."""
 import json, os
 

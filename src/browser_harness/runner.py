@@ -1,7 +1,7 @@
 """Run one agent snippet from stdin with the helpers pre-imported.
 
 This is the only part of the CLI that is Python: agents write Python against
-these globals. browser-harness-core prepares the daemon before starting this
+these globals. The browser-harness binary prepares the daemon before starting this
 process and reads the helper trace back from BH_TRACE_FILE for telemetry.
 """
 import functools, json, os, sys, time

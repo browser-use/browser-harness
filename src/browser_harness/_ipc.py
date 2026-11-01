@@ -1,6 +1,6 @@
 """Client half of the daemon transport: one JSON request line, one JSON reply line.
 
-The daemon (browser-harness-core) owns the server half; paths and the wire
+The daemon (the browser-harness binary) owns the server half; paths and the wire
 format must stay in step with go/internal/ipc.
 """
 import json, os, re, socket, sys

@@ -1,4 +1,4 @@
-"""Daemon and cloud-browser management, callable from snippets. Implemented in browser-harness-core."""
+"""Daemon and cloud-browser management, callable from snippets. Implemented in the browser-harness binary."""
 import os
 
 from .core import call

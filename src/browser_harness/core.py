@@ -1,19 +1,19 @@
-"""Bridge to browser-harness-core, the Go binary that owns everything except the snippet language."""
-import json, os, platform, shutil, subprocess, sys, tempfile
+"""Bridge to the browser-harness Go binary, which owns everything except the snippet language."""
+import json, os, platform, shutil, subprocess, sys, sysconfig, tempfile
 from pathlib import Path
 
 _PACKAGE = Path(__file__).resolve().parent
-_EXE = "browser-harness-core.exe" if sys.platform == "win32" else "browser-harness-core"
+_EXE = "browser-harness.exe" if sys.platform == "win32" else "browser-harness"
 
 
 def binary():
-    """BH_CORE, then the binary shipped in the package, then PATH."""
+    """BH_CORE, then this environment's scripts dir, a source checkout's build, then PATH."""
     explicit = os.environ.get("BH_CORE")
     if explicit:
         return explicit
-    bundled = _PACKAGE / "bin" / _EXE
-    if bundled.is_file():
-        return str(bundled)
+    for candidate in (Path(sysconfig.get_path("scripts")) / _EXE, _PACKAGE.parent.parent / "bin" / _EXE):
+        if candidate.is_file():
+            return str(candidate)
     found = shutil.which(_EXE)
     if found:
         return found
@@ -58,12 +58,12 @@ def call(fn, **args):
     fd, result_path = tempfile.mkstemp(prefix="bh-call-", suffix=".json")
     os.close(fd)
     try:
-        subprocess.run([binary(), "call", fn, result_path, json.dumps(args, default=str)], env=env(), check=False)
+        subprocess.run([binary(), "__call", fn, result_path, json.dumps(args, default=str)], env=env(), check=False)
         try:
             with open(result_path, encoding="utf-8") as f:
                 reply = json.load(f)
         except (OSError, ValueError):
-            raise RuntimeError(f"browser-harness-core call {fn} produced no result") from None
+            raise RuntimeError(f"browser-harness __call {fn} produced no result") from None
     finally:
         try: os.unlink(result_path)
         except OSError: pass
