@@ -216,6 +216,12 @@ func StartRemoteDaemon(name, profileName string, create map[string]any) (map[str
 	if err := ipc.Check(name); err != nil {
 		return nil, err
 	}
+	// One start per name at a time: two concurrent calls would each create a billed browser.
+	lk, err := acquireStartLock(name, 2*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	defer lk.release()
 	show, err := shouldShowLiveView()
 	if err != nil {
 		return nil, err

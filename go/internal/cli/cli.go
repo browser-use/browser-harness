@@ -238,7 +238,10 @@ func run(args []string) result {
 	case "video":
 		return done(video.CLI(args[1:]))
 	case "--reload":
-		_ = admin.RestartDaemon("", false)
+		if err := admin.RestartDaemon("", false); err != nil {
+			fmt.Fprintln(os.Stderr, "browser-harness: "+err.Error())
+			return done(1)
+		}
 		fmt.Println("daemon stopped — will restart fresh on next call")
 		return done(0)
 	}

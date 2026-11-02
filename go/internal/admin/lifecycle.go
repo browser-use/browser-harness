@@ -251,6 +251,15 @@ func EnsureDaemon(wait float64, name string, env map[string]string) error {
 			}
 			lk.release()
 		} else {
+			// Held until the daemon answers, so concurrent callers find it instead of spawning more.
+			lk, err := acquireStartLock(n, time.Duration((startupWait+5)*float64(time.Second)))
+			if err != nil {
+				return err
+			}
+			defer lk.release()
+			if DaemonAlive(name) {
+				return nil
+			}
 			p, err := spawnDaemon(name, env)
 			if err != nil {
 				return err
@@ -430,11 +439,16 @@ func RestartDaemon(name string, requireClean bool) error {
 	// start-time fingerprint as a second identity check before any SIGTERM.
 	startFP := processStartTime(daemonPid)
 	if isAlive {
+		cloud := DaemonBrowserKind(n) == "cloud"
 		timeout := 5 * time.Second
-		if requireClean {
+		if requireClean || cloud {
 			timeout = 50 * time.Second
 		}
 		m, err := ipc.Call(n, timeout, map[string]any{"meta": "shutdown"})
+		if cloud && !requireClean && err == nil && m["ok"] != true {
+			// Killing it now would leave the cloud browser billing with nobody left to stop it.
+			return fmt.Errorf("daemon %s could not stop its cloud browser and was left running so you can retry: %v", quoted(n), m["error"])
+		}
 		if requireClean {
 			if err != nil {
 				return fmt.Errorf("daemon %s did not confirm clean shutdown: %v", quoted(n), err)

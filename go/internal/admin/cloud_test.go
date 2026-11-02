@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/daemon"
+	"github.com/browser-use/browser-harness/go/internal/ipc"
 )
 
 func TestCleanupCloudBrowsers(t *testing.T) {
@@ -51,5 +54,48 @@ func TestInvalidDaemonNamesAreRejected(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "invalid BU_NAME") {
 			t.Errorf("got %v", err)
 		}
+	}
+}
+
+// A cloud daemon that cannot stop its browser must stay up and --reload must fail.
+func TestReloadKeepsCloudDaemonWhoseStopFailed(t *testing.T) {
+	t.Setenv("BH_RUNTIME_DIR", t.TempDir())
+	sleeper := exec.Command("sleep", "30")
+	if err := sleeper.Start(); err != nil {
+		t.Skip(err)
+	}
+	defer sleeper.Process.Kill()
+	l, _, err := ipc.Listen("cloudt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				var req map[string]any
+				if json.NewDecoder(c).Decode(&req) != nil {
+					return
+				}
+				resp := map[string]any{"pong": true, "pid": sleeper.Process.Pid, "browser_kind": "cloud"}
+				if req["meta"] == "shutdown" {
+					resp = map[string]any{"error": "PATCH /browsers/x failed"}
+				}
+				b, _ := json.Marshal(resp)
+				c.Write(append(b, '\n'))
+			}()
+		}
+	}()
+	err = RestartDaemon("cloudt", false)
+	if err == nil || !strings.Contains(err.Error(), "could not stop its cloud browser") {
+		t.Fatalf("got %v", err)
+	}
+	if sleeper.ProcessState != nil || sleeper.Process.Signal(syscall.Signal(0)) != nil {
+		t.Fatal("daemon process was killed")
 	}
 }
