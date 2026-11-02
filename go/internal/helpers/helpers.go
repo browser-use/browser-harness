@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"math"
@@ -31,8 +32,10 @@ import (
 )
 
 const (
-	callTimeout       = 5 * time.Second
-	screenshotTimeout = 60 * time.Second
+	callTimeout           = 5 * time.Second
+	screenshotTimeout     = 10 * time.Second
+	fullScreenshotTimeout = 60 * time.Second // long pages take several seconds to capture
+	wheelTimeout          = 3 * time.Second
 )
 
 var internalPrefixes = []string{"chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:"}
@@ -274,12 +277,68 @@ func (h *H) PageInfo() (M, error) {
 // --- input ---
 
 func (h *H) ClickAtXY(x, y float64, button string, clicks int) error {
+	if os.Getenv("BH_DEBUG_CLICKS") != "" {
+		h.debugClick(x, y)
+	}
 	for _, t := range []string{"mousePressed", "mouseReleased"} {
 		if _, err := h.CDP("Input.dispatchMouseEvent", M{"type": t, "x": x, "y": y, "button": button, "clickCount": clicks}, ""); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+var debugClicks int
+
+// debugClick saves a screenshot with the click target marked (--debug-clicks).
+func (h *H) debugClick(x, y float64) {
+	path := filepath.Join(paths.TmpDir(), fmt.Sprintf("debug_click_%d.png", debugClicks))
+	debugClicks++
+	err := func() error {
+		dpr, _ := h.JS("window.devicePixelRatio", "")
+		scale, ok := dpr.(float64)
+		if !ok || scale <= 0 {
+			scale = 1
+		}
+		if _, err := h.CaptureScreenshot(path, false, 0); err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		src, err := png.Decode(f)
+		f.Close()
+		if err != nil {
+			return err
+		}
+		img := image.NewRGBA(src.Bounds())
+		draw.Draw(img, img.Bounds(), src, image.Point{}, draw.Src)
+		px, py, r := x*scale, y*scale, 15*scale
+		red := color.RGBA{255, 0, 0, 255}
+		for a := 0.0; a < 2*math.Pi; a += 0.5 / r { // ring
+			for w := -1.5 * scale; w <= 1.5*scale; w++ {
+				img.Set(int(px+(r+w)*math.Cos(a)), int(py+(r+w)*math.Sin(a)), red)
+			}
+		}
+		for d := -r - 5*scale; d <= r+5*scale; d++ { // crosshair
+			for w := -scale; w <= scale; w++ {
+				img.Set(int(px+d), int(py+w), red)
+				img.Set(int(px+w), int(py+d), red)
+			}
+		}
+		out, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		return png.Encode(out, img)
+	}()
+	if err != nil {
+		fmt.Printf("[debug_click] overlay failed: %v\n", err)
+		return
+	}
+	fmt.Printf("[debug_click] saved %s (x=%v, y=%v)\n", path, x, y)
 }
 
 func (h *H) TypeText(text string) error {
@@ -367,6 +426,9 @@ var shifted = map[rune]rune{
 
 // printableKey is the US-layout code and virtual key for one ASCII character.
 func printableKey(c rune) (code string, vk int, shift, ok bool) {
+	if c > unicode.MaxASCII { // e.g. dotless ı upper-cases to I but has no US key
+		return "", 0, false, false
+	}
 	base, isShifted := shifted[c]
 	if !isShifted {
 		base = c
@@ -433,8 +495,20 @@ func (h *H) PressKey(key string, modifiers int) error {
 	return nil
 }
 
+// Scroll sends a wheel event. A hidden tab in a local Chrome may never answer
+// it (the daemon only brings automation browsers' tabs forward), so a timeout
+// is retried once with focus emulation, which does not move the user's tabs.
 func (h *H) Scroll(x, y, dy, dx float64) error {
-	_, err := h.CDP("Input.dispatchMouseEvent", M{"type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy}, "")
+	wheel := M{"type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy}
+	_, err := h.cdpTimeout("Input.dispatchMouseEvent", wheel, "", wheelTimeout)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		return err
+	}
+	if _, ferr := h.CDP("Emulation.setFocusEmulationEnabled", M{"enabled": true}, ""); ferr != nil {
+		return err
+	}
+	defer h.CDP("Emulation.setFocusEmulationEnabled", M{"enabled": false}, "")
+	_, err = h.CDP("Input.dispatchMouseEvent", wheel, "")
 	return err
 }
 
@@ -472,10 +546,14 @@ func (h *H) CaptureScreenshot(path string, full bool, maxDim int) (string, error
 	if path == "" {
 		path = filepath.Join(paths.TmpDir(), "shot.png")
 	}
-	r, err := h.cdpTimeout("Page.captureScreenshot", M{"format": "png", "captureBeyondViewport": full}, "", screenshotTimeout)
+	timeout := screenshotTimeout
+	if full {
+		timeout = fullScreenshotTimeout
+	}
+	r, err := h.cdpTimeout("Page.captureScreenshot", M{"format": "png", "captureBeyondViewport": full}, "", timeout)
 	if err != nil {
 		if strings.Contains(err.Error(), "timed out") {
-			return "", fmt.Errorf("Page.captureScreenshot timed out after %gs", screenshotTimeout.Seconds())
+			return "", fmt.Errorf("Page.captureScreenshot timed out after %gs", timeout.Seconds())
 		}
 		return "", err
 	}

@@ -94,10 +94,18 @@ func TestScreenshotUsesLongTimeoutAndSaves(t *testing.T) {
 		t.Fatal("no file")
 	}
 	h, _ = newFake(t, func(M) (M, error) {
-		return nil, errors.New("Page.captureScreenshot timed out after 60s waiting for the daemon")
+		return nil, errors.New("Page.captureScreenshot timed out after 10s waiting for the daemon")
 	})
-	if _, err := h.CaptureScreenshot(p, false, 0); err == nil || !strings.Contains(err.Error(), "timed out after 60s") {
+	if _, err := h.CaptureScreenshot(p, false, 0); err == nil || !strings.Contains(err.Error(), "timed out after 10s") {
 		t.Fatal(err)
+	}
+	var full time.Duration
+	h, _ = newFake(t, nil)
+	send := h.Send
+	h.Send = func(req M, timeout time.Duration) (M, error) { full = timeout; return send(req, timeout) }
+	_, _ = h.CaptureScreenshot(p, true, 0)
+	if full != fullScreenshotTimeout {
+		t.Fatalf("full-page timeout %v", full)
 	}
 }
 
@@ -196,6 +204,11 @@ func TestPressKey(t *testing.T) {
 	_ = h.PressKey("é", 0)
 	if ev := keyEvents(f); ev[0]["code"] != "" || ev[1]["text"] != "é" {
 		t.Fatalf("é %v", ev)
+	}
+	f.reqs = nil
+	_ = h.PressKey("ı", 0)
+	if ev := keyEvents(f); ev[0]["code"] != "" || ev[0]["modifiers"] != 0 {
+		t.Fatalf("ı %v", ev)
 	}
 	f.reqs = nil
 	_ = h.PressKey("A", 2) // Ctrl+Shift intent stays the caller's: no forced Shift, no char event.
@@ -347,5 +360,25 @@ func TestJSIframeSessions(t *testing.T) {
 	h, _ = attach(func(M) (M, error) { return nil, errors.New("eval broke") }, errors.New("boom"))
 	if _, err := h.JS("1", "IFRAME"); err == nil || !strings.Contains(err.Error(), "eval broke") {
 		t.Fatal(err)
+	}
+}
+
+func TestScrollRetriesWithFocusEmulationAfterTimeout(t *testing.T) {
+	wheels := 0
+	h, f := newFake(t, func(req M) (M, error) {
+		if req["method"] == "Input.dispatchMouseEvent" {
+			if wheels++; wheels == 1 {
+				return nil, errors.New("Input.dispatchMouseEvent timed out after 3s waiting for the daemon")
+			}
+		}
+		return M{"result": M{}}, nil
+	})
+	if err := h.Scroll(1, 2, -100, 0); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(f.methods(), ",")
+	want := "Input.dispatchMouseEvent,Emulation.setFocusEmulationEnabled,Input.dispatchMouseEvent,Emulation.setFocusEmulationEnabled"
+	if got != want || f.reqs[3]["params"].(M)["enabled"] != false {
+		t.Fatalf("calls %s", got)
 	}
 }
