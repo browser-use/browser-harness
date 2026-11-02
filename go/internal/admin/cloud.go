@@ -22,7 +22,9 @@ import (
 
 // api calls the Browser Use Cloud API; admin callers have no deadline beyond the client's.
 func api(method, path string, body any) (any, error) {
-	return cloud.Request(context.Background(), method, path, body)
+	out := any(map[string]any{})
+	err := cloud.Request(context.Background(), method, path, body, &out)
+	return out, err
 }
 
 func hasLocalGUI() bool {

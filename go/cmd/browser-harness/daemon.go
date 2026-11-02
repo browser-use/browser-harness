@@ -31,7 +31,10 @@ func runDaemon() int {
 		_, _ = fmt.Fprintln(f, msg)
 		_ = f.Close()
 	}
-	ipc.WritePid(cfg.Name, os.Getpid()) // the same record the spawning CLI wrote, or the first one
+	// Keep the record the spawning CLI published: a failed start-time lookup here must not erase its fingerprint.
+	if pid, _ := ipc.ReadPid(cfg.Name); pid != os.Getpid() {
+		ipc.WritePid(cfg.Name, os.Getpid())
+	}
 	d := daemon.New(cfg, logf)
 	code := 0
 	ctx := context.Background()

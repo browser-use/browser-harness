@@ -83,7 +83,20 @@ func installID(m map[string]any, create bool) any {
 	return id
 }
 
-func disabledByConfig(m map[string]any) bool { return m["disabled"] == true }
+// disabledByConfig honours hand-edited opt-outs such as 1 or "yes", not only true.
+func disabledByConfig(m map[string]any) bool {
+	switch v := m["disabled"].(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case string:
+		return v != ""
+	}
+	return true
+}
 
 func Enabled() bool { return !envDisabled() && !disabledByConfig(load()) }
 

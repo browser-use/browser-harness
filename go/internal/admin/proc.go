@@ -1,8 +1,12 @@
 package admin
 
 import (
+	"fmt"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/proc"
@@ -24,9 +28,27 @@ func liveGeneration(name string) (generation, bool) {
 }
 
 // startingDaemonPid is the PID of name's recorded daemon while it still runs, else 0.
+// Without a recorded start time (its lookup failed) the process must at least be a daemon.
 func startingDaemonPid(name string) int {
-	g, _ := liveGeneration(name)
-	return g.PID
+	if g, ok := liveGeneration(name); ok {
+		return g.PID
+	}
+	if pid, started := ipc.ReadPid(name); pid > 0 && started == "" && isDaemonProcess(pid) {
+		return pid
+	}
+	return 0
+}
+
+func isDaemonProcess(pid int) bool {
+	var out string
+	var err error
+	if runtime.GOOS == "windows" {
+		out, err = proc.Output(2*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+			fmt.Sprintf("(Get-CimInstance Win32_Process -Filter 'ProcessId=%d').CommandLine", pid))
+	} else {
+		out, err = proc.Output(2*time.Second, "ps", "-o", "command=", "-p", strconv.Itoa(pid))
+	}
+	return err == nil && strings.Contains(out, "__daemon")
 }
 
 // parkedDaemonPid finds a daemon still parked on Chrome's Allow popup, which
