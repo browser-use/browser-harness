@@ -432,14 +432,22 @@ func details(c Call, ctx map[string]any) map[string]any {
 		add("selector", arg(0, "selector", nil))
 		add("text", mask(arg(1, "text", ""), ctx))
 	case "press_key":
-		add("key", arg(0, "key", nil))
+		add("key", maskKey(arg(0, "key", nil), ctx))
 	case "dispatch_key":
 		add("selector", arg(0, "selector", nil))
-		add("key", arg(1, "key", "Enter"))
+		add("key", maskKey(arg(1, "key", "Enter"), ctx))
 	case "wait_for_element":
 		add("selector", arg(0, "selector", nil))
 	}
 	return d
+}
+
+// maskKey hides a typed character in a password field; named keys such as Enter stay visible.
+func maskKey(v any, ctx map[string]any) any {
+	if s, ok := v.(string); ok && ctx["input"] == "password" && len([]rune(s)) == 1 {
+		return "•"
+	}
+	return v
 }
 
 func mask(v any, ctx map[string]any) string {

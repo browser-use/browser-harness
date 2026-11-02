@@ -91,3 +91,13 @@ func TestURLSecretsAreScrubbed(t *testing.T) {
 		t.Fatalf("to %q", to)
 	}
 }
+
+func TestPasswordKeysAreMasked(t *testing.T) {
+	for key, want := range map[string]string{"x": "•", "Enter": "Enter"} {
+		d := t.TempDir()
+		capture(d, Call{Helper: "press_key", Args: []any{key}}, fakePage{ctx: map[string]any{"input": "password"}, err: errors.New("x")})
+		if got := events(t, d)[0]["key"]; got != want {
+			t.Fatalf("key %q recorded as %q", key, got)
+		}
+	}
+}
