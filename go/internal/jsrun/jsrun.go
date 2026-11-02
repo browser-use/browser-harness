@@ -100,12 +100,12 @@ type args struct {
 }
 
 // parse treats a trailing plain object as options. A tab
-// object (it has targetId) in a positional slot stays positional.
+// object (it has targetId or target_id) in a positional slot stays positional.
 func parse(call goja.FunctionCall, positional int) args {
 	n := len(call.Arguments)
 	a := args{call: call, opts: map[string]any{}, pos: min(n, positional)}
 	if n > 0 {
-		if m, ok := call.Arguments[n-1].Export().(map[string]any); ok && (n > positional || m["targetId"] == nil) {
+		if m, ok := call.Arguments[n-1].Export().(map[string]any); ok && (n > positional || m["targetId"] == nil && m["target_id"] == nil) {
 			a.opts, a.pos = m, min(n-1, positional)
 		}
 	}
@@ -131,6 +131,9 @@ func (a args) str(i int, name, def string) string {
 		return v
 	case map[string]any: // a tab object
 		if id, ok := v["targetId"].(string); ok {
+			return id
+		}
+		if id, ok := v["target_id"].(string); ok {
 			return id
 		}
 	}

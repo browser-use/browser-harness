@@ -84,6 +84,7 @@ func TestOptionsVersusPositional(t *testing.T) {
 		{`f("n", "t")`, 2, "n|t"},
 		{`f({targetId: "T"})`, 2, "T|"},
 		{`f("x", {targetId: "T"})`, 1, "x|"},
+		{`f({target_id: "T"})`, 2, "T|"},
 	}
 	for _, c := range cases {
 		r := newRunner(&bytes.Buffer{})
