@@ -14,7 +14,7 @@ if [ -z "${BH_TEST_CDP_URL:-}" ]; then
 			--user-data-dir="$profile" about:blank >/dev/null 2>&1 &
 		chrome_pid=$!
 		# Chrome helpers outlive the main process briefly; cleanup must never fail the run.
-		trap 'status=$?; kill "$chrome_pid" 2>/dev/null; wait "$chrome_pid" 2>/dev/null; sleep 1; rm -rf "$profile" 2>/dev/null; exit "$status"' EXIT
+		trap 'status=$?; set +e; kill "$chrome_pid" 2>/dev/null; wait "$chrome_pid" 2>/dev/null; sleep 1; rm -rf "$profile" 2>/dev/null; exit "$status"' EXIT
 		trap 'exit 129' HUP
 		trap 'exit 130' INT
 		trap 'exit 143' TERM

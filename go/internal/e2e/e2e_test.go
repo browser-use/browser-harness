@@ -36,7 +36,7 @@ func setup(t *testing.T) *env {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(page)) }))
 	t.Cleanup(srv.Close)
 	e := &env{t: t, bin: bin, dir: dir, url: srv.URL}
-	t.Cleanup(func() { _, _ = e.run("", "--reload") })
+	t.Cleanup(func() { _, _ = e.run("none", "", "--reload") })
 	return e
 }
 
@@ -123,4 +123,26 @@ print(wrong);`, e.url+"/?t="+name, name, name, name, name, name, filepath.Join(e
 		}
 		return nil
 	})
+}
+
+// An agent's tab never leaks into the shared tab or into on(name), and survives being closed.
+func TestAgentTabsStayPrivate(t *testing.T) {
+	e := setup(t)
+	shared, err := e.run("none", "print(current_tab().targetId)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := e.run("alice", fmt.Sprintf(`new_tab(%q); wait_for_load()`, e.url+"/?alice")); err != nil {
+		t.Fatalf("new_tab: %v %s", err, out)
+	}
+	if out, _ := e.run("none", "print(current_tab().targetId)"); out != shared {
+		t.Fatalf("alice's new_tab moved the shared tab: %s -> %s", shared, out)
+	}
+	if out, _ := e.run("alice", `print(on("e2e").current_tab().url)`); out != e.url+"/?alice" {
+		t.Fatalf("on() ignored alice's tab: %s", out)
+	}
+	// Closing alice's tab from outside falls back instead of failing her next call.
+	if out, err := e.run("alice", `cdp("Target.closeTarget", {targetId: current_tab().targetId}); wait(0.5); print(typeof page_info().url)`); err != nil || out != "string" {
+		t.Fatalf("after close: %q %v", out, err)
+	}
 }
