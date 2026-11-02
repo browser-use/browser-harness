@@ -3,6 +3,7 @@ package cdp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,5 +47,18 @@ func TestDetachedSessionFailsPendingAndLaterCalls(t *testing.T) {
 		if _, err := c.Send(ctx, "Runtime.evaluate", nil, "S"); err == nil || !strings.Contains(err.Error(), "Session with given id not found") {
 			t.Fatalf("call %d: got %v", i, err)
 		}
+	}
+}
+
+func TestDetachedSetIsBounded(t *testing.T) {
+	c := &Client{pending: map[int64]call{}, detached: [2]map[string]bool{{}, {}}}
+	for i := 0; i < 10*maxDetached; i++ {
+		c.failSession(json.RawMessage(fmt.Sprintf(`{"sessionId":"s%d"}`, i)))
+	}
+	if n := len(c.detached[0]) + len(c.detached[1]); n > 2*maxDetached {
+		t.Fatalf("kept %d detached sessions", n)
+	}
+	if !c.detached[0][fmt.Sprintf("s%d", 10*maxDetached-1)] {
+		t.Fatal("lost the most recent detached session")
 	}
 }

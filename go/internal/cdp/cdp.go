@@ -59,11 +59,13 @@ type Client struct {
 	mu       sync.Mutex
 	nextID   int64
 	pending  map[int64]call
-	detached map[string]bool
+	detached [2]map[string]bool // recent detached sessions; two generations keep it bounded
 	onEvent  EventFunc
 	done     chan struct{}
 	err      error
 }
+
+const maxDetached = 512
 
 // detachedReply is Chrome's own error for an unknown session, so callers recover the same way.
 var detachedReply = json.RawMessage(`{"code":-32001,"message":"Session with given id not found."}`)
@@ -88,7 +90,7 @@ func Dial(ctx context.Context, url string, timeout time.Duration, onEvent EventF
 		return nil, err
 	}
 	ws.SetReadLimit(MaxFrame)
-	c := &Client{ws: ws, pending: map[int64]call{}, detached: map[string]bool{}, onEvent: onEvent, done: make(chan struct{})}
+	c := &Client{ws: ws, pending: map[int64]call{}, detached: [2]map[string]bool{{}, {}}, onEvent: onEvent, done: make(chan struct{})}
 	go c.readLoop()
 	return c, nil
 }
@@ -147,7 +149,7 @@ func (c *Client) Send(ctx context.Context, method string, params any, sessionID 
 		c.mu.Unlock()
 		return nil, c.err
 	}
-	if c.detached[sessionID] {
+	if c.detached[0][sessionID] || c.detached[1][sessionID] {
 		c.mu.Unlock()
 		return nil, &Error{raw: detachedReply}
 	}
@@ -197,7 +199,10 @@ func (c *Client) failSession(params json.RawMessage) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.detached[v.SessionID] = true
+	if len(c.detached[0]) >= maxDetached {
+		c.detached = [2]map[string]bool{{}, c.detached[0]}
+	}
+	c.detached[0][v.SessionID] = true
 	for id, p := range c.pending {
 		if p.session == v.SessionID {
 			p.ch <- response{ID: id, Error: detachedReply}
