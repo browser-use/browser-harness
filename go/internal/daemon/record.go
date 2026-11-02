@@ -13,11 +13,15 @@ import (
 
 // page adapts the daemon's attached session for the recorder.
 type page struct {
-	d   *Daemon
-	ctx context.Context
+	d       *Daemon
+	ctx     context.Context
+	session string // a pinned tab's session; "" follows the attached tab
 }
 
 func (p page) sid() string {
+	if p.session != "" {
+		return p.session
+	}
 	p.d.mu.Lock()
 	defer p.d.mu.Unlock()
 	return p.d.session
@@ -87,7 +91,7 @@ func (d *Daemon) handleRecord(ctx context.Context, meta string, req map[string]a
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	p := page{d: d, ctx: ctx}
+	p := page{d: d, ctx: ctx, session: c.Session}
 	switch meta {
 	case "record_observe":
 		recorder.Observe(c, p)

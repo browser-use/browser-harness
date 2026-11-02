@@ -17,6 +17,7 @@ import (
 
 	"github.com/browser-use/browser-harness/go/internal/admin"
 	"github.com/browser-use/browser-harness/go/internal/helpers"
+	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/paths"
 	"github.com/browser-use/browser-harness/go/internal/recorder"
 )
@@ -36,13 +37,14 @@ type Trace struct {
 var newHelpers = helpers.New
 
 type runner struct {
-	rt      *goja.Runtime
-	h       *helpers.H
-	out     io.Writer
-	trace   Trace
-	lazy    bool                     // the CLI skipped starting the default daemon
-	tabs    map[[2]string]*helpers.H // (daemon, tab) -> pinned helpers
-	daemons map[string]*goja.Object  // on(name) results
+	rt        *goja.Runtime
+	h         *helpers.H
+	out       io.Writer
+	trace     Trace
+	lazy      bool                     // the CLI skipped starting the default daemon
+	inBrowser bool                     // set while installBrowser binds the browser helpers
+	tabs      map[[2]string]*helpers.H // (daemon, tab) -> pinned helpers
+	daemons   map[string]*goja.Object  // on(name) results
 }
 
 func newRunner(out io.Writer) *runner {
@@ -202,26 +204,33 @@ func (r *runner) bind(name string, positional int, fn func(a args) (any, error))
 
 // bindOn installs a helper on obj; a {tab: id} option runs it on that tab of base's daemon.
 func (r *runner) bindOn(obj *goja.Object, base *helpers.H, name string, positional int, fn func(a args) (any, error)) {
+	browser := r.inBrowser
 	_ = obj.Set(name, func(call goja.FunctionCall) goja.Value {
 		a := parse(call, positional)
 		a.h = base
 		var v any
 		var err error
 		start := time.Now()
-		if base == r.h && r.lazy {
+		if browser && base == r.h && r.lazy {
 			r.lazy = false
-			if !admin.DaemonAlive("") {
+			if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
+				err = admin.RequireExistingDaemon("")
+			} else if !admin.DaemonAlive("") {
 				err = admin.EnsureDaemon(-1, "", nil)
 			}
 		}
-		if t, ok := a.opts["tab"]; ok && err == nil {
+		if t, ok := a.opts["tab"]; ok && browser && err == nil {
 			delete(a.opts, "tab")
 			a.h, err = r.onTab(base, t)
+		}
+		password := false
+		if err == nil && browser && typing[name] && recorder.Dir(recorder.FromProcess()) != "" {
+			password = r.typingIntoPassword(a, name)
 		}
 		if err == nil {
 			v, err = fn(a)
 		}
-		r.record(name, call, a, time.Since(start), err)
+		r.record(name, call, a, time.Since(start), err, password)
 		if err != nil {
 			panic(r.rt.NewGoError(err))
 		}
@@ -229,7 +238,21 @@ func (r *runner) bindOn(obj *goja.Object, base *helpers.H, name string, position
 	})
 }
 
-func (r *runner) record(name string, call goja.FunctionCall, a args, d time.Duration, err error) {
+// typing helpers can put secrets into a recording; focus is checked before they run,
+// since a page may move focus away from a password field as it is typed into.
+var typing = map[string]bool{"type_text": true, "press_key": true, "fill_input": true, "dispatch_key": true}
+
+func (r *runner) typingIntoPassword(a args, name string) bool {
+	expr := `document.activeElement?.type === "password"`
+	if name == "fill_input" || name == "dispatch_key" {
+		b, _ := json.Marshal(a.str(0, "selector", ""))
+		expr = `document.querySelector(` + string(b) + `)?.type === "password"`
+	}
+	v, err := a.h.JS(expr, "")
+	return err == nil && v == true
+}
+
+func (r *runner) record(name string, call goja.FunctionCall, a args, d time.Duration, err error, password bool) {
 	r.trace.StepCount++
 	var raw []any
 	for i := 0; i < len(call.Arguments) && i < a.pos; i++ {
@@ -250,7 +273,8 @@ func (r *runner) record(name string, call goja.FunctionCall, a args, d time.Dura
 	if err == nil && recorder.Actions[name] {
 		dur := float64(d.Milliseconds()) / 1000
 		_, _ = a.h.Send(map[string]any{"meta": "record_observe", "call": recorder.Call{
-			Helper: name, Args: raw, Kwargs: a.opts, Duration: &dur, Env: recorder.FromProcess()}}, 65*time.Second)
+			Helper: name, Args: raw, Kwargs: a.opts, Duration: &dur, Env: recorder.FromProcess(),
+			Session: a.h.PinnedSession(), Password: password}}, 65*time.Second)
 	}
 }
 
@@ -391,6 +415,8 @@ func (r *runner) install() {
 
 // installBrowser binds the page, input, tab and wait helpers for one daemon onto obj.
 func (r *runner) installBrowser(obj *goja.Object, base *helpers.H) {
+	r.inBrowser = true
+	defer func() { r.inBrowser = false }()
 	// Page and CDP.
 	r.bindOn(obj, base, "cdp", 1, func(a args) (any, error) {
 		params := map[string]any{}
@@ -487,6 +513,9 @@ func (r *runner) onTab(base *helpers.H, t any) (*helpers.H, error) {
 
 // on returns the browser helpers of another daemon, e.g. a cloud browser next to local Chrome.
 func (r *runner) on(name string) (*goja.Object, error) {
+	if err := ipc.Check(name); err != nil {
+		return nil, err
+	}
 	if obj := r.daemons[name]; obj != nil {
 		return obj, nil
 	}

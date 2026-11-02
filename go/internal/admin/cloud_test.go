@@ -99,3 +99,21 @@ func TestReloadKeepsCloudDaemonWhoseStopFailed(t *testing.T) {
 		t.Fatal("daemon process was killed")
 	}
 }
+
+// Goroutines of one process must not both hold the start lock.
+func TestStartLockSerialisesGoroutines(t *testing.T) {
+	t.Setenv("BH_RUNTIME_DIR", t.TempDir())
+	first, err := acquireStartLock("same", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireStartLock("same", 300*time.Millisecond); err == nil {
+		t.Fatal("second holder in the same process")
+	}
+	first.release()
+	again, err := acquireStartLock("same", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.release()
+}

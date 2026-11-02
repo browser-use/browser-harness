@@ -101,3 +101,12 @@ func TestPasswordKeysAreMasked(t *testing.T) {
 		}
 	}
 }
+
+// Focus can leave the field before the recorder looks; the pre-action check still masks.
+func TestPasswordFlagFromCallMasks(t *testing.T) {
+	d := t.TempDir()
+	capture(d, Call{Helper: "press_key", Args: []any{"Z"}, Password: true}, fakePage{err: errors.New("x")})
+	if ev := events(t, d)[0]; ev["key"] != "•" || ev["input"] != "password" {
+		t.Fatalf("event %v", ev)
+	}
+}

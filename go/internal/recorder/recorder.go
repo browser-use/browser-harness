@@ -262,6 +262,8 @@ type Call struct {
 	Kwargs   map[string]any `json:"kwargs"`
 	Duration *float64       `json:"duration"`
 	Env      Env            `json:"env"`
+	Session  string         `json:"session,omitempty"`  // a pinned tab's session; "" is the attached tab
+	Password bool           `json:"password,omitempty"` // typed into a password field (checked before the action)
 }
 
 // Observe runs after each traced helper succeeds. It never fails.
@@ -347,6 +349,9 @@ func capture(d string, c Call, p Page) {
 				ev[k] = v
 			}
 		}
+	}
+	if c.Password {
+		ctx["input"], ev["input"] = "password", "password"
 	}
 	for k, v := range details(c, ctx) {
 		ev[k] = v

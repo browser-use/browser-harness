@@ -256,11 +256,7 @@ func CaptureCLIEvent(e CLIEvent) {
 	}
 	var errClass any
 	if e.Error != nil {
-		c, _, _ := strings.Cut(strings.TrimPrefix(*e.Error, "GoError: "), ":")
-		if r := []rune(strings.TrimSpace(c)); len(r) > 80 {
-			c = string(r[:80])
-		}
-		errClass = strings.TrimSpace(c)
+		errClass = errorClass(*e.Error, steps)
 	}
 	props := base()
 	for k, v := range map[string]any{
@@ -277,6 +273,22 @@ func CaptureCLIEvent(e CLIEvent) {
 	send(map[string]any{"api_key": posthogKey, "distinct_id": installID(load(), true),
 		"event": "cli_event", "properties": props})
 }
+
+// errorClass names what failed without any message text, which can echo page data:
+// the failing helper, else the JavaScript error type, else "error".
+func errorClass(msg string, steps []any) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if m, _ := steps[i].(map[string]any); m["error"] == true {
+			return fmt.Sprintf("helper:%v", m["helper"])
+		}
+	}
+	if m := jsErrorRE.FindStringSubmatch(msg); m != nil {
+		return m[1]
+	}
+	return "error"
+}
+
+var jsErrorRE = regexp.MustCompile(`^(Error|EvalError|RangeError|ReferenceError|SyntaxError|TypeError|URIError|AggregateError|GoError)\b`)
 
 // Capture sends an event with scrubbed properties.
 func Capture(event string, props map[string]any) {
@@ -346,9 +358,11 @@ func send(payload map[string]any) {
 	}
 	cmd := exec.Command(self, "__telemetry-send", f.Name())
 	Detach(cmd)
-	if cmd.Start() == nil {
-		go func() { _ = cmd.Wait() }()
+	if cmd.Start() != nil {
+		os.Remove(f.Name())
+		return
 	}
+	go func() { _ = cmd.Wait() }()
 }
 
 // RunSender is the detached `telemetry-send` process: POST one job from stdin.

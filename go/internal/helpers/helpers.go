@@ -138,6 +138,9 @@ func (h *H) OnTab(target string) (*H, error) {
 	return &H{Name: h.Name, Target: target, session: sid, selectAll: h.selectAll, opened: h.opened, Send: h.Send}, nil
 }
 
+// PinnedSession is the pinned tab's session, or "" for the attached tab.
+func (h *H) PinnedSession() string { return h.session }
+
 func (h *H) send(req M, timeout time.Duration) (M, error) {
 	m, err := h.Send(req, timeout)
 	if err != nil {
@@ -166,6 +169,14 @@ func (h *H) cdpTimeout(method string, params M, session string, timeout time.Dur
 		req["session_id"] = session
 	}
 	m, err := h.send(req, timeout)
+	if err != nil && h.Target != "" && session == h.session && strings.Contains(err.Error(), "Session with given id not found") {
+		// The pinned tab's session went away (e.g. Chrome detached it); attach again once.
+		if a, aerr := h.send(M{"meta": "attach", "target_id": h.Target}, callTimeout); aerr == nil {
+			h.session, _ = a["session_id"].(string)
+			req["session_id"] = h.session
+			m, err = h.send(req, timeout)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -563,10 +574,11 @@ func (h *H) Scroll(x, y, dy, dx float64) error {
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		return err
 	}
+	// Disable even if enabling failed: Chrome may have applied it before its reply was lost.
+	defer h.CDP("Emulation.setFocusEmulationEnabled", M{"enabled": false}, "")
 	if _, ferr := h.CDP("Emulation.setFocusEmulationEnabled", M{"enabled": true}, ""); ferr != nil {
 		return err
 	}
-	defer h.CDP("Emulation.setFocusEmulationEnabled", M{"enabled": false}, "")
 	_, err = h.CDP("Input.dispatchMouseEvent", wheel, "")
 	return err
 }
@@ -749,6 +761,11 @@ func (h *H) SwitchTab(target string, activate bool) (string, error) {
 // NewTab opens url in a background tab, reusing the attached tab when it is blank,
 // unless this snippet opened it or it is named (both mean it is in use).
 func (h *H) NewTab(url string) (string, error) {
+	if h.Target != "" { // a new tab has nothing to do with a pinned one
+		u := *h
+		u.Target, u.session = "", ""
+		return u.NewTab(url)
+	}
 	if h.opened == nil {
 		h.opened = map[string]bool{}
 	}

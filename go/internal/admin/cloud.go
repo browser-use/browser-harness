@@ -254,7 +254,7 @@ func StartRemoteDaemon(name, profileName string, create map[string]any) (map[str
 		if err != nil {
 			return err
 		}
-		return EnsureDaemon(-1, name, map[string]string{"BU_CDP_WS": ws, "BU_BROWSER_ID": id})
+		return ensureDaemon(-1, name, map[string]string{"BU_CDP_WS": ws, "BU_BROWSER_ID": id}, true)
 	}()
 	if startErr != nil {
 		if cerr := stopCloudBrowser(id, true); cerr != nil {

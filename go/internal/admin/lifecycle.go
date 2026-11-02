@@ -190,6 +190,11 @@ func (s *spawned) exited() bool {
 // and walks the user through chrome://inspect when remote debugging is off.
 // wait<0 means "default".
 func EnsureDaemon(wait float64, name string, env map[string]string) error {
+	return ensureDaemon(wait, name, env, false)
+}
+
+// ensureDaemon is EnsureDaemon; startLocked means the caller holds the start lock.
+func ensureDaemon(wait float64, name string, env map[string]string, startLocked bool) error {
 	n := pick(name)
 	if err := ipc.Check(n); err != nil {
 		return err
@@ -252,13 +257,16 @@ func EnsureDaemon(wait float64, name string, env map[string]string) error {
 			lk.release()
 		} else {
 			// Held until the daemon answers, so concurrent callers find it instead of spawning more.
-			lk, err := acquireStartLock(n, time.Duration((startupWait+5)*float64(time.Second)))
-			if err != nil {
-				return err
-			}
-			defer lk.release()
-			if DaemonAlive(name) {
-				return nil
+			if !startLocked {
+				lk, err := acquireStartLock(n, time.Duration((startupWait+5)*float64(time.Second)))
+				if err != nil {
+					return err
+				}
+				defer lk.release()
+				startLocked = true
+				if DaemonAlive(name) {
+					return nil
+				}
 			}
 			p, err := spawnDaemon(name, env)
 			if err != nil {

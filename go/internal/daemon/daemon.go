@@ -120,6 +120,8 @@ type Daemon struct {
 	tabs       map[string]string // targetId -> cached flat session
 	tabTargets map[string]string // session -> targetId
 	tabNames   map[string]string // agent-chosen name -> targetId
+	netOff     map[string]bool   // sessions whose Network domain set_session disabled
+	attachMu   sync.Mutex        // one attach per tab at a time, so the cache never holds two sessions
 	events     []event
 	dialog     json.RawMessage
 	shutting   bool
@@ -144,7 +146,7 @@ func unlock(l chan struct{}) { <-l }
 func New(cfg Config, logf func(string)) *Daemon {
 	return &Daemon{
 		cfg: cfg, logf: logf, replaces: map[string]string{}, recoveries: map[*recovery]struct{}{},
-		tabs: map[string]string{}, tabTargets: map[string]string{}, tabNames: map[string]string{},
+		tabs: map[string]string{}, tabTargets: map[string]string{}, tabNames: map[string]string{}, netOff: map[string]bool{},
 		stop: make(chan struct{}), sessionState: newLock(), dedicatedLock: newLock(),
 	}
 }
@@ -198,9 +200,18 @@ func (d *Daemon) attach(ctx context.Context, tid string) (string, error) {
 // attachTab returns the cached session for a tab, attaching once. Reusing the
 // session keeps per-session state such as device emulation across tab switches.
 func (d *Daemon) attachTab(ctx context.Context, tid string) (string, error) {
+	d.attachMu.Lock()
+	defer d.attachMu.Unlock()
 	d.mu.Lock()
 	sid := d.tabs[tid]
+	off := sid != "" && d.netOff[sid]
+	delete(d.netOff, sid)
 	d.mu.Unlock()
+	if off { // pinned calls need Network events again, e.g. wait_for_network_idle
+		c, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, _ = d.send(c, "Network.enable", nil, sid)
+		cancel()
+	}
 	if sid != "" {
 		return sid, nil
 	}
@@ -669,7 +680,11 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 				defer wg.Done()
 				c, cancel := context.WithTimeout(ctx, 2*time.Second)
 				defer cancel()
-				_, _ = d.send(c, "Network.disable", nil, old)
+				if _, err := d.send(c, "Network.disable", nil, old); err == nil {
+					d.mu.Lock()
+					d.netOff[old] = true
+					d.mu.Unlock()
+				}
 			}()
 		}
 		d.enableDefaultDomains(ctx, newSID)
@@ -956,7 +971,7 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn, token string) {
 		d.logf(fmt.Sprintf("conn: %v", jerr))
 		resp = map[string]any{"error": jerr.Error()}
 	} else {
-		// Clients send one line and wait; a read returning means they hung up.
+		// Clients send one line and wait without half-closing; a read returning means they hung up.
 		cctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		go func() { _, _ = conn.Read(make([]byte, 1)); cancel() }()
