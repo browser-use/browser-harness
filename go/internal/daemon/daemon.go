@@ -686,9 +686,9 @@ func (d *Daemon) shutdown() map[string]any {
 	return map[string]any{"ok": true}
 }
 
-// foreground activates the attached tab before a screenshot. Headless Chrome
-// only renders a hidden tab when it changes, so a capture can wait forever for
-// a frame. Never on discovered local Chrome: that would move the user's tabs.
+// foreground activates the attached tab before a screenshot or wheel event:
+// headless Chrome renders a hidden tab only when it changes, so both can wait
+// forever for a frame. Never on discovered local Chrome: that would move the user's tabs.
 func (d *Daemon) foreground(ctx context.Context, sid string) {
 	d.mu.Lock()
 	tid, cur := d.targetID, d.session
@@ -722,7 +722,8 @@ func (d *Daemon) relay(ctx context.Context, req map[string]any) map[string]any {
 			sid = cur
 		}
 	}
-	if method == "Page.captureScreenshot" {
+	// Both wait for a compositor frame, which a hidden headless tab never produces.
+	if p, _ := params.(map[string]any); method == "Page.captureScreenshot" || method == "Input.dispatchMouseEvent" && p["type"] == "mouseWheel" {
 		d.foreground(ctx, sid)
 	}
 	res, err := d.send(ctx, method, params, sid)
