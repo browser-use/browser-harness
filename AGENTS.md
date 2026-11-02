@@ -37,8 +37,11 @@ From a **git checkout** (no global install required for local testing):
 print(page_info())
 JS
 
-# unit tests (no live browser)
-(cd go && go test ./...)
+# unit tests (no live browser), always with the race detector
+sh go/tools/test.sh
+
+# format and lint, same setup as the Go backend (Linux)
+sh tools/go-lint/lint.sh
 
 # after Go edits: the launcher rebuilds; reload the daemon so the next call runs the new code
 ./browser-harness --reload

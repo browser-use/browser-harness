@@ -1,0 +1,37 @@
+version: "2"
+run:
+  timeout: 10m
+  go: "1.26"
+  tests: false
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - errchkjson
+    - nilerr
+    - nilnesserr
+    - errorlint
+    - bodyclose
+    - noctx
+    - contextcheck
+    - rowserrcheck
+    - sqlclosecheck
+    - durationcheck
+    - gosec
+  settings:
+    errchkjson:
+      check-error-free-encoding: false
+    rowserrcheck:
+      packages: [github.com/jackc/pgx/v5, github.com/jackc/pgx/v5/pgxpool]
+    gosec:
+      includes: [G201, G202, G204, G301, G302, G304, G401, G402, G403, G501, G502, G503, G505]
+    staticcheck:
+      checks: ["SA*", "S1*"]
+  exclusions:
+    presets: []
+    generated: strict
+    warn-unused: true
