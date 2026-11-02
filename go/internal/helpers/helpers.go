@@ -109,6 +109,12 @@ func (h *H) Resolve(target string) string {
 	return target
 }
 
+// claim asks the daemon for a blank tab to reuse; concurrent new_tab calls must not share one.
+func (h *H) claim(id string) bool {
+	m, err := h.send(M{"meta": "claim_tab", "target_id": id}, callTimeout)
+	return err == nil && m["ok"] == true
+}
+
 func (h *H) named(id string) bool {
 	names, _ := h.TabNames()
 	for _, t := range names {
@@ -301,8 +307,11 @@ func quote(s string) string {
 
 // --- navigation ---
 
-func (h *H) GotoURL(url string) (M, error) {
-	r, err := h.CDP("Page.navigate", M{"url": url}, "")
+func (h *H) GotoURL(url string) (M, error) { return h.gotoOn(url, "") }
+
+// gotoOn navigates session ("" is the attached or pinned tab).
+func (h *H) gotoOn(url, session string) (M, error) {
+	r, err := h.CDP("Page.navigate", M{"url": url}, session)
 	if err != nil || os.Getenv("BH_DOMAIN_SKILLS") != "1" {
 		return r, err
 	}
@@ -770,15 +779,22 @@ func (h *H) NewTab(url string) (string, error) {
 		h.opened = map[string]bool{}
 	}
 	if url != "about:blank" {
-		if cur, err := h.CurrentTab(); err == nil && !h.opened[fmt.Sprint(cur["targetId"])] && !h.named(fmt.Sprint(cur["targetId"])) {
+		if cur, err := h.CurrentTab(); err == nil {
+			id, _ := cur["targetId"].(string)
 			u, _ := cur["url"].(string)
-			if u == "" || u == "about:blank" || u == "data:text/html," || strings.HasPrefix(u, "about:blank#") ||
+			blank := u == "" || u == "about:blank" || u == "data:text/html," || strings.HasPrefix(u, "about:blank#") ||
 				strings.HasPrefix(u, "chrome://newtab") || strings.HasPrefix(u, "chrome://new-tab-page") ||
-				strings.HasPrefix(u, "edge://newtab") || strings.HasPrefix(u, "about:newtab") {
-				if _, err := h.GotoURL(url); err != nil {
+				strings.HasPrefix(u, "edge://newtab") || strings.HasPrefix(u, "about:newtab")
+			if blank && !h.opened[id] && !h.named(id) && h.claim(id) {
+				// Navigate that tab by its own session: another snippet may switch the daemon meanwhile.
+				a, err := h.send(M{"meta": "attach", "target_id": id}, callTimeout)
+				if err != nil {
 					return "", err
 				}
-				id, _ := cur["targetId"].(string)
+				sid, _ := a["session_id"].(string)
+				if _, err := h.gotoOn(url, sid); err != nil {
+					return "", err
+				}
 				h.opened[id] = true
 				return id, nil
 			}
@@ -791,11 +807,13 @@ func (h *H) NewTab(url string) (string, error) {
 	}
 	tid, _ := r["targetId"].(string)
 	h.opened[tid] = true
-	if _, err := h.SwitchTab(tid, false); err != nil {
+	h.claim(tid) // so a concurrent new_tab never reuses it while it still reads about:blank
+	sid, err := h.SwitchTab(tid, false)
+	if err != nil {
 		return "", err
 	}
 	if url != "about:blank" {
-		_, err = h.GotoURL(url)
+		_, err = h.gotoOn(url, sid)
 	}
 	return tid, err
 }

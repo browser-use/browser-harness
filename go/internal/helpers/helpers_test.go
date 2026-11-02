@@ -300,8 +300,11 @@ func TestTabs(t *testing.T) {
 
 	// A blank attached tab is reused instead of opening another.
 	h, f = newFake(t, func(req M) (M, error) {
-		if req["meta"] == "current_tab" {
+		switch req["meta"] {
+		case "current_tab":
 			return M{"targetId": "T1", "url": "data:text/html,", "title": ""}, nil
+		case "claim_tab":
+			return M{"ok": true}, nil
 		}
 		return M{"result": M{}}, nil
 	})

@@ -121,6 +121,7 @@ type Daemon struct {
 	tabTargets map[string]string // session -> targetId
 	tabNames   map[string]string // agent-chosen name -> targetId
 	netOff     map[string]bool   // sessions whose Network domain set_session disabled
+	claimed    map[string]bool   // blank tabs new_tab already reused; each goes to one caller
 	attachMu   sync.Mutex        // one attach per tab at a time, so the cache never holds two sessions
 	events     []event
 	dialog     json.RawMessage
@@ -146,7 +147,7 @@ func unlock(l chan struct{}) { <-l }
 func New(cfg Config, logf func(string)) *Daemon {
 	return &Daemon{
 		cfg: cfg, logf: logf, replaces: map[string]string{}, recoveries: map[*recovery]struct{}{},
-		tabs: map[string]string{}, tabTargets: map[string]string{}, tabNames: map[string]string{}, netOff: map[string]bool{},
+		tabs: map[string]string{}, tabTargets: map[string]string{}, tabNames: map[string]string{}, netOff: map[string]bool{}, claimed: map[string]bool{},
 		stop: make(chan struct{}), sessionState: newLock(), dedicatedLock: newLock(),
 	}
 }
@@ -701,6 +702,13 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 			return map[string]any{"error": err.Error()}
 		}
 		return map[string]any{"session_id": sid}
+	case "claim_tab":
+		tid, _ := req["target_id"].(string)
+		d.mu.Lock()
+		ok := tid != "" && !d.claimed[tid]
+		d.claimed[tid] = true
+		d.mu.Unlock()
+		return map[string]any{"ok": ok}
 	case "name_tab":
 		name, _ := req["name"].(string)
 		tid, _ := req["target_id"].(string)
