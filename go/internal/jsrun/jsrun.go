@@ -33,15 +33,18 @@ type Trace struct {
 	StepCount int
 }
 
-// newHelpers is a seam for tests.
-var newHelpers = helpers.New
+// Seams for tests that fake the daemon.
+var (
+	newHelpers     = helpers.New
+	connectDefault = admin.ConnectDefault
+)
 
 type runner struct {
 	rt        *goja.Runtime
 	h         *helpers.H
 	out       io.Writer
 	trace     Trace
-	lazy      bool                     // the CLI skipped starting the default daemon
+	lazy      bool                     // the default daemon starts on the first browser helper
 	inBrowser bool                     // set while installBrowser binds the browser helpers
 	ready     map[*helpers.H]bool      // helpers whose daemon and agent tab are set up
 	tabs      map[[2]string]*helpers.H // (daemon, tab) -> pinned helpers
@@ -56,11 +59,10 @@ func newRunner(out io.Writer) *runner {
 }
 
 // Run executes a snippet, printing to out. Uncaught errors come back with the JS stack.
-// lazy is for snippets the CLI starts without a daemon (they begin with
-// start_remote_daemon): the default daemon starts on their first browser helper.
-func Run(code string, out io.Writer, lazy bool) (Trace, error) {
+// The default daemon starts on the first browser helper, so cloud-only snippets need no local browser.
+func Run(code string, out io.Writer) (Trace, error) {
 	r := newRunner(out)
-	r.lazy = lazy
+	r.lazy = true
 	if err := r.loadAgentHelpers(); err != nil {
 		return r.trace, err
 	}
@@ -246,7 +248,7 @@ func (r *runner) prepare(base *helpers.H) error {
 	r.ready[base] = true
 	if base == r.h && r.lazy {
 		r.lazy = false
-		if err := admin.Connect(""); err != nil {
+		if err := connectDefault(); err != nil {
 			return err
 		}
 	}

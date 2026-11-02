@@ -14,8 +14,9 @@ func fakeDaemon(t *testing.T) *[]helpers.M {
 	t.Helper()
 	t.Setenv("BH_AGENT_ID", "none") // these tests count requests; agent tabs add a lookup
 	var reqs []helpers.M
-	saved := newHelpers
-	t.Cleanup(func() { newHelpers = saved })
+	saved, savedConnect := newHelpers, connectDefault
+	connectDefault = func() error { return nil }
+	t.Cleanup(func() { newHelpers, connectDefault = saved, savedConnect })
 	newHelpers = func(name string) *helpers.H {
 		h := &helpers.H{Name: name}
 		h.Send = func(req helpers.M, _ time.Duration) (helpers.M, error) {
@@ -41,7 +42,7 @@ func TestRunSnippet(t *testing.T) {
 click_at_xy(10, 20, {button: "right"});
 print(js("document.title"), {a: [1, 2]});
 try { close_tab("nope"); } catch (e) { print("caught:", e.message); }
-`, &out, false)
+`, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ try { close_tab("nope"); } catch (e) { print("caught:", e.message); }
 func TestUncaughtErrorHasLocation(t *testing.T) {
 	fakeDaemon(t)
 	t.Setenv("BH_AGENT_WORKSPACE", t.TempDir())
-	_, err := Run("\n\nnot_a_helper()", &bytes.Buffer{}, false)
+	_, err := Run("\n\nnot_a_helper()", &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "not_a_helper is not defined") || !strings.Contains(err.Error(), "snippet.js:3") {
 		t.Fatal(err)
 	}

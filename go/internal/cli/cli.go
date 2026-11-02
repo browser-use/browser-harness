@@ -2,7 +2,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,9 +13,6 @@ import (
 
 	"github.com/browser-use/browser-harness/go/internal/admin"
 	"github.com/browser-use/browser-harness/go/internal/assets"
-	"github.com/browser-use/browser-harness/go/internal/auth"
-	"github.com/browser-use/browser-harness/go/internal/browser"
-	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/jsrun"
 	"github.com/browser-use/browser-harness/go/internal/recorder"
 	"github.com/browser-use/browser-harness/go/internal/telemetry"
@@ -194,11 +190,6 @@ type result struct {
 
 func done(code int) result { return result{code: code} }
 
-func fail(msg string) result {
-	fmt.Fprintln(os.Stderr, msg)
-	return result{code: 1, errMsg: &msg}
-}
-
 func run(args []string) result {
 	first := ""
 	if len(args) > 0 {
@@ -330,55 +321,15 @@ func recordings(rest []string) int {
 	return 0
 }
 
-// localChromeListening is whether Chrome answers on 9222 or 9223; an unrelated
-// listener there must not skip the cloud bootstrap.
-func localChromeListening() bool {
-	for _, p := range []int{9222, 9223} {
-		if _, err := browser.WebSocketURL(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", p), 300*time.Millisecond); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func cloudAuthConfigured() bool {
-	_, err := auth.APIKey()
-	return err == nil
-}
-
 func runSnippet(code string) result {
-	trimmed := strings.TrimLeft(code, " \t\r\n\f\v")
-	cloudAdmin := strings.HasPrefix(trimmed, "start_remote_daemon(") || strings.HasPrefix(trimmed, "stop_remote_daemon(")
-	if !cloudAdmin {
-		var err error
-		if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
-			err = admin.RequireExistingDaemon("")
-		} else {
-			// Cloud auto-bootstrap is opt-in (BU_AUTOSPAWN); an explicit CDP endpoint blocks it.
-			if !admin.DaemonAlive("") && !localChromeListening() && os.Getenv("BU_CDP_URL") == "" &&
-				os.Getenv("BU_CDP_WS") == "" && cloudAuthConfigured() && os.Getenv("BU_AUTOSPAWN") != "" {
-				if _, err = admin.StartRemoteDaemon(ipc.Name(), "", nil); err != nil {
-					r := fail("browser-harness: " + err.Error())
-					r.task = &code
-					return r
-				}
-			}
-			err = admin.EnsureDaemon(-1, "", nil)
-		}
-		if err != nil {
-			r := fail("browser-harness: " + err.Error())
-			r.task = &code
-			return r
-		}
-	}
-	r := runJS(code, cloudAdmin)
+	r := runJS(code)
 	r.task = &code
 	return r
 }
 
 // runJS executes the snippet in-process and collects its helper trace.
-func runJS(code string, lazy bool) result {
-	trace, err := jsrun.Run(code, os.Stdout, lazy)
+func runJS(code string) result {
+	trace, err := jsrun.Run(code, os.Stdout)
 	r := result{steps: trace.Steps, stepCount: trace.StepCount}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

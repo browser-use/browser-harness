@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/browser-use/browser-harness/go/internal/auth"
 	"github.com/browser-use/browser-harness/go/internal/browser"
 	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/paths"
@@ -438,6 +439,31 @@ func Connect(name string) error {
 		return nil
 	}
 	return EnsureDaemon(-1, name, nil)
+}
+
+// ConnectDefault is Connect for the default daemon, first provisioning a cloud browser
+// when BU_AUTOSPAWN is set and there is no daemon, local Chrome or explicit CDP endpoint.
+func ConnectDefault() error {
+	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") != "1" && os.Getenv("BU_AUTOSPAWN") != "" &&
+		os.Getenv("BU_CDP_URL") == "" && os.Getenv("BU_CDP_WS") == "" && !DaemonAlive("") && !localChromeListening() {
+		if _, err := auth.APIKey(); err == nil {
+			if _, err := StartRemoteDaemon(ipc.Name(), "", nil); err != nil {
+				return err
+			}
+		}
+	}
+	return Connect("")
+}
+
+// localChromeListening is whether Chrome answers on 9222 or 9223; an unrelated
+// listener there must not skip the cloud bootstrap.
+func localChromeListening() bool {
+	for _, p := range []int{9222, 9223} {
+		if _, err := browser.WebSocketURL(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", p), 300*time.Millisecond); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // StopRemoteDaemon cleanly stops a daemon and its billable cloud browser.
