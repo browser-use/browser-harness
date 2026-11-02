@@ -49,15 +49,24 @@ type response struct {
 // EventFunc receives every CDP event, in arrival order.
 type EventFunc func(method string, params json.RawMessage, sessionID string)
 
-type Client struct {
-	ws      *websocket.Conn
-	mu      sync.Mutex
-	nextID  int64
-	pending map[int64]chan response
-	onEvent EventFunc
-	done    chan struct{}
-	err     error
+type call struct {
+	ch      chan response
+	session string
 }
+
+type Client struct {
+	ws       *websocket.Conn
+	mu       sync.Mutex
+	nextID   int64
+	pending  map[int64]call
+	detached map[string]bool
+	onEvent  EventFunc
+	done     chan struct{}
+	err      error
+}
+
+// detachedReply is Chrome's own error for an unknown session, so callers recover the same way.
+var detachedReply = json.RawMessage(`{"code":-32001,"message":"Session with given id not found."}`)
 
 // Dial connects to a CDP websocket. timeout 0 waits indefinitely: a local
 // Chrome holds the handshake open while its "Allow remote debugging?" sheet is shown.
@@ -79,7 +88,7 @@ func Dial(ctx context.Context, url string, timeout time.Duration, onEvent EventF
 		return nil, err
 	}
 	ws.SetReadLimit(MaxFrame)
-	c := &Client{ws: ws, pending: map[int64]chan response{}, onEvent: onEvent, done: make(chan struct{})}
+	c := &Client{ws: ws, pending: map[int64]call{}, detached: map[string]bool{}, onEvent: onEvent, done: make(chan struct{})}
 	go c.readLoop()
 	return c, nil
 }
@@ -90,8 +99,8 @@ func (c *Client) readLoop() {
 		if c.err == nil {
 			c.err = ErrClosed
 		}
-		for id, ch := range c.pending {
-			close(ch)
+		for id, p := range c.pending {
+			close(p.ch)
 			delete(c.pending, id)
 		}
 		c.mu.Unlock()
@@ -107,17 +116,20 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if r.Method != "" && r.ID == 0 {
+			if r.Method == "Target.detachedFromTarget" {
+				c.failSession(r.Params)
+			}
 			if c.onEvent != nil {
 				c.onEvent(r.Method, r.Params, r.Session)
 			}
 			continue
 		}
 		c.mu.Lock()
-		ch := c.pending[r.ID]
+		p, ok := c.pending[r.ID]
 		delete(c.pending, r.ID)
 		c.mu.Unlock()
-		if ch != nil {
-			ch <- r
+		if ok {
+			p.ch <- r
 		}
 	}
 }
@@ -135,10 +147,14 @@ func (c *Client) Send(ctx context.Context, method string, params any, sessionID 
 		c.mu.Unlock()
 		return nil, c.err
 	}
+	if c.detached[sessionID] {
+		c.mu.Unlock()
+		return nil, &Error{raw: detachedReply}
+	}
 	c.nextID++
 	id := c.nextID
 	ch := make(chan response, 1)
-	c.pending[id] = ch
+	c.pending[id] = call{ch, sessionID}
 	c.mu.Unlock()
 	msg := map[string]any{"id": id, "method": method, "params": params}
 	if sessionID != "" {
@@ -167,6 +183,26 @@ func (c *Client) Send(ctx context.Context, method string, params any, sessionID 
 	case <-ctx.Done():
 		c.forget(id)
 		return nil, ctx.Err()
+	}
+}
+
+// failSession answers calls on a detached session: Chrome may never reply to
+// commands that raced the close of their target.
+func (c *Client) failSession(params json.RawMessage) {
+	var v struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(params, &v) != nil || v.SessionID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.detached[v.SessionID] = true
+	for id, p := range c.pending {
+		if p.session == v.SessionID {
+			p.ch <- response{ID: id, Error: detachedReply}
+			delete(c.pending, id)
+		}
 	}
 }
 
