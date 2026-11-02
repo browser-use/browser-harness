@@ -1087,6 +1087,8 @@ def test_monitor_gives_up_after_bounded_remote_stop_retries(monkeypatch):
         monkeypatch.setattr(daemon, "REMOTE_STOP_RETRY_INTERVAL", 0.01)
         monkeypatch.setattr(daemon, "REMOTE_STOP_MAX_RETRIES", 2)
         attempts = []
+        logs = []
+        monkeypatch.setattr(daemon, "log", logs.append)
 
         def failing_stop(strict=False):
             attempts.append(strict)
@@ -1101,6 +1103,7 @@ def test_monitor_gives_up_after_bounded_remote_stop_retries(monkeypatch):
         # The daemon stays up as a cleanup authority after the retries run out.
         assert not d.stop.is_set()
         assert not d._shutting_down
+        assert any("remote stop retries exhausted" in m for m in logs)
 
     asyncio.run(run())
 
@@ -1151,11 +1154,9 @@ def test_ping_answered_while_monitor_stops_remote_slowly(monkeypatch):
 
         monkeypatch.setattr(daemon, "stop_remote", slow_stop)
 
-        monitor = asyncio.create_task(d._monitor_cdp())
-        await asyncio.sleep(0.01)  # let the monitor enter the strict stop
-
         start = time.monotonic()
-        result = await d.handle({"meta": "ping"})
+        monitor = asyncio.create_task(d._monitor_cdp())
+        result = await asyncio.wait_for(d.handle({"meta": "ping"}), timeout=0.15)
         elapsed = time.monotonic() - start
 
         assert result["pong"] is True
@@ -1171,11 +1172,16 @@ def test_serve_cleanup_finishes_when_close_target_never_answers(monkeypatch):
     """A CDP send_raw that never answers must not hang shutdown cleanup."""
 
     class _NeverAnswerCDP:
+        def __init__(self):
+            self.methods = []
+
         async def send_raw(self, method, params=None, session_id=None):
+            self.methods.append(method)
             await asyncio.Event().wait()
 
+    cdp = _NeverAnswerCDP()
     d = daemon.Daemon()
-    d.cdp = _NeverAnswerCDP()
+    d.cdp = cdp
     cleaned = []
 
     async def wait_forever(*_args):
@@ -1188,13 +1194,14 @@ def test_serve_cleanup_finishes_when_close_target_never_answers(monkeypatch):
     monkeypatch.setattr(daemon.ipc, "serve", wait_forever)
     monkeypatch.setattr(daemon.ipc, "sock_addr", lambda _name: "test-socket")
     monkeypatch.setattr(daemon.ipc, "cleanup_endpoint", lambda _name: cleaned.append(_name))
-    monkeypatch.setattr(daemon, "RECOVERY_CANCEL_DRAIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(daemon, "SHUTDOWN_CDP_TIMEOUT", 0.05)
 
     async def run():
         await asyncio.wait_for(daemon.serve(d), timeout=2)
 
     asyncio.run(run())
 
+    assert cdp.methods == ["Target.closeTarget"]
     assert cleaned == [daemon.NAME]
     # The close never answered, so the daemon-owned id is not claimed as closed.
     assert d.dedicated_target_id == "daemon-tab"

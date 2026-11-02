@@ -127,6 +127,8 @@ TOGGLE_BOOT_GRACE = 12
 # Cancellation should make an in-flight CDP call finish immediately. Keep the
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
+# How long shutdown waits for the client-side CDP stop or closing a daemon-owned target.
+SHUTDOWN_CDP_TIMEOUT = 2
 CDP_DISCONNECT_GRACE = 3
 # When the strict Cloud stop fails in the monitor, the daemon stays up as a
 # retryable cleanup authority and retries in the background: REMOTE_STOP_MAX_
@@ -665,6 +667,7 @@ class Daemon:
             self._shutting_down = True
             self.stop.set()
             return
+        log("remote stop retries exhausted; daemon stays as cleanup-only holder")
 
     async def _monitor_cdp(self):
         """Stop this daemon when its CDP WebSocket message handler exits.
@@ -697,7 +700,7 @@ class Daemon:
         client_stop = getattr(self.cdp, "stop", None)
         if callable(client_stop):
             try:
-                await asyncio.wait_for(client_stop(), timeout=RECOVERY_CANCEL_DRAIN_TIMEOUT)
+                await asyncio.wait_for(client_stop(), timeout=SHUTDOWN_CDP_TIMEOUT)
             except Exception as e:
                 log(f"CDP client stop after handler exit: {e}")
 
@@ -976,7 +979,7 @@ async def serve(d):
                                 d.cdp.send_raw(
                                     "Target.closeTarget", {"targetId": d.dedicated_target_id}
                                 ),
-                                timeout=RECOVERY_CANCEL_DRAIN_TIMEOUT,
+                                timeout=SHUTDOWN_CDP_TIMEOUT,
                             )
                             d.dedicated_target_id = None
                         except Exception as e:
