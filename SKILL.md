@@ -63,11 +63,13 @@ to share the daemon's attached tab.
 - At task completion, close tabs created for the task that are no longer needed.
   Keep a tab open if the user needs to see it, it is needed for a known follow-up,
   or closing it could discard unsaved work or other important state.
-- Tab work happens in the background: `new_tab()`, `switch_tab()` and `{tab}`
-  never change Chrome's visible tab, and screenshots and input work on hidden
-  tabs. Never call `activate_tab(target)` automatically: it brings Chrome to the
-  foreground. Call it only when the user explicitly asks to see or visibly switch
-  to that tab.
+- Tab work happens in the background: in local Chrome, `new_tab()`,
+  `switch_tab()` and `{tab}` never change the visible tab, and screenshots and
+  input work on hidden tabs. (On cloud and `BU_CDP_URL` browsers, which nobody is
+  looking at, the daemon brings a tab forward for screenshots and scrolling,
+  because hidden tabs there stop drawing.) Never call `activate_tab(target)`
+  automatically: it brings Chrome to the foreground. Call it only when the user
+  explicitly asks to see or visibly switch to that tab.
 - A timeout or a page that pauses while hidden is not permission to foreground
   Chrome. `scroll` already retries with focus emulation; for another focus-gated
   page, temporarily call `cdp("Emulation.setFocusEmulationEnabled", {enabled: true})`,
