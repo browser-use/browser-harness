@@ -702,7 +702,7 @@ class Daemon:
             try:
                 await asyncio.wait_for(client_stop(), timeout=SHUTDOWN_CDP_TIMEOUT)
             except Exception as e:
-                log(f"CDP client stop after handler exit: {e}")
+                log(f"CDP client stop after handler exit: {e!r}")
 
         if self.stop is None or self.stop.is_set():
             return
@@ -983,7 +983,7 @@ async def serve(d):
                             )
                             d.dedicated_target_id = None
                         except Exception as e:
-                            log(f"close dedicated tab on shutdown: {e}")
+                            log(f"close dedicated tab on shutdown: {e!r}")
         else:
             log("skip dedicated-tab cleanup: stale-session recovery did not stop")
         ipc.cleanup_endpoint(NAME)
