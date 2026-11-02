@@ -1220,6 +1220,10 @@ _BROWSER_LAUNCH = (
     # (profile-dir fragment, macOS app name, POSIX commands, Windows `start` target)
     ("chrome canary", "Google Chrome Canary", ("google-chrome-canary",), "chrome"),
     ("chromium", "Chromium", ("chromium", "chromium-browser"), "chromium"),
+    ("chrome beta", "Google Chrome Beta", ("google-chrome-beta",), "chrome"),
+    ("chrome-beta", "Google Chrome Beta", ("google-chrome-beta",), "chrome"),
+    ("chrome dev", "Google Chrome Dev", ("google-chrome-unstable",), "chrome"),
+    ("chrome-unstable", "Google Chrome Dev", ("google-chrome-unstable",), "chrome"),
     ("chrome", "Google Chrome", ("google-chrome-stable", "google-chrome"), "chrome"),
     ("edge", "Microsoft Edge", ("microsoft-edge", "microsoft-edge-stable"), "msedge"),
     ("brave-origin", "Brave Origin", (), None),

@@ -62,6 +62,10 @@ def test_origin_relaunch_uses_origin_not_regular_brave(monkeypatch, origin_profi
     ("Google/Chrome", "Google Chrome"),
     ("Google/Chrome Canary", "Google Chrome Canary"),
     ("Application Support/Microsoft Edge", "Microsoft Edge"),
+    ("Google/Chrome Beta", "Google Chrome Beta"),
+    ("Google/Chrome Dev", "Google Chrome Dev"),
+    (".config/google-chrome-beta", "Google Chrome Beta"),
+    (".config/google-chrome-unstable", "Google Chrome Dev"),
 ])
 def test_launch_mapping_preserves_existing_browsers(profile, app):
     assert admin._browser_launch_spec(profile)[0] == app
