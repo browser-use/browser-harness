@@ -35,6 +35,10 @@ JS
   switching: `fill_input("#q", "x", {tab: t})`, `js("document.title", {tab: t})`,
   `capture_screenshot(path, {tab: t})`. `id` is what `new_tab()` returns or a
   `list_tabs()` entry.
+- Name tabs to find them in later snippets: `new_tab(url, {name: "cart"})` or
+  `name_tab("cart")`, then `{tab: "cart"}`, `switch_tab("cart")` or
+  `close_tab("cart")`. Names live in the daemon until the tab closes and show in
+  `list_tabs()`. Agents sharing a daemon should use distinct names.
 - `on(name)` returns the same helpers for another daemon, so one snippet can
   drive local Chrome and a cloud browser: after `start_remote_daemon("work")`,
   `const cloud = on("work"); cloud.goto_url(url); cloud.page_info()`.

@@ -119,6 +119,7 @@ type Daemon struct {
 	dedicated  string
 	tabs       map[string]string // targetId -> cached flat session
 	tabTargets map[string]string // session -> targetId
+	tabNames   map[string]string // agent-chosen name -> targetId
 	events     []event
 	dialog     json.RawMessage
 	shutting   bool
@@ -143,7 +144,7 @@ func unlock(l chan struct{}) { <-l }
 func New(cfg Config, logf func(string)) *Daemon {
 	return &Daemon{
 		cfg: cfg, logf: logf, replaces: map[string]string{}, recoveries: map[*recovery]struct{}{},
-		tabs: map[string]string{}, tabTargets: map[string]string{},
+		tabs: map[string]string{}, tabTargets: map[string]string{}, tabNames: map[string]string{},
 		stop: make(chan struct{}), sessionState: newLock(), dedicatedLock: newLock(),
 	}
 }
@@ -685,6 +686,42 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 			return map[string]any{"error": err.Error()}
 		}
 		return map[string]any{"session_id": sid}
+	case "name_tab":
+		name, _ := req["name"].(string)
+		tid, _ := req["target_id"].(string)
+		if name == "" || tid == "" {
+			return map[string]any{"error": "name_tab needs a name and a tab"}
+		}
+		d.mu.Lock()
+		for n, t := range d.tabNames { // one name per tab
+			if t == tid {
+				delete(d.tabNames, n)
+			}
+		}
+		d.tabNames[name] = tid
+		d.mu.Unlock()
+		return map[string]any{"ok": true}
+	case "tab_names":
+		// Drop names of closed tabs, then return name -> targetId.
+		targets, err := d.targets(ctx)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		open := map[string]bool{}
+		for _, t := range targets {
+			open[t.TargetID] = true
+		}
+		d.mu.Lock()
+		names := map[string]any{}
+		for n, t := range d.tabNames {
+			if open[t] {
+				names[n] = t
+			} else {
+				delete(d.tabNames, n)
+			}
+		}
+		d.mu.Unlock()
+		return map[string]any{"names": names}
 	case "pending_dialog":
 		d.mu.Lock()
 		defer d.mu.Unlock()

@@ -434,7 +434,14 @@ func (r *runner) installBrowser(obj *goja.Object, base *helpers.H) {
 	r.bindOn(obj, base, "current_tab", 0, func(a args) (any, error) { return a.h.CurrentTab() })
 	r.bindOn(obj, base, "activate_tab", 1, func(a args) (any, error) { return a.h.ActivateTab(a.str(0, "target", "")) })
 	r.bindOn(obj, base, "switch_tab", 2, func(a args) (any, error) { return a.h.SwitchTab(a.str(0, "target", ""), a.flag(1, "activate", false)) })
-	r.bindOn(obj, base, "new_tab", 1, func(a args) (any, error) { return a.h.NewTab(a.str(0, "url", "about:blank")) })
+	r.bindOn(obj, base, "new_tab", 1, func(a args) (any, error) {
+		id, err := a.h.NewTab(a.str(0, "url", "about:blank"))
+		if name, _ := a.opts["name"].(string); err == nil && name != "" {
+			err = a.h.NameTab(name, id)
+		}
+		return id, err
+	})
+	r.bindOn(obj, base, "name_tab", 1, func(a args) (any, error) { return none(a.h.NameTab(a.str(0, "name", ""), a.h.Target)) })
 	r.bindOn(obj, base, "close_tab", 1, func(a args) (any, error) { return none(a.h.CloseTab(a.str(0, "target", ""))) })
 	r.bindOn(obj, base, "ensure_real_tab", 0, func(a args) (any, error) { return a.h.EnsureRealTab() })
 	r.bindOn(obj, base, "iframe_target", 1, func(a args) (any, error) {

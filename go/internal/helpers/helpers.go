@@ -46,9 +46,10 @@ type M = map[string]any
 // H drives one named daemon, on its attached tab or on a pinned tab (see OnTab).
 type H struct {
 	Name      string
-	Target    string  // pinned tab; "" follows the daemon's attached tab
-	session   string  // the pinned tab's session
-	selectAll float64 // cached select-all modifier: 4 on macOS browsers, else 2
+	Target    string          // pinned tab; "" follows the daemon's attached tab
+	session   string          // the pinned tab's session
+	opened    map[string]bool // tabs this snippet opened; still about:blank while they load
+	selectAll float64         // cached select-all modifier: 4 on macOS browsers, else 2
 	// Send is the IPC round trip; tests replace it.
 	Send func(req M, timeout time.Duration) (M, error)
 }
@@ -69,14 +70,72 @@ func New(name string) *H {
 	return h
 }
 
-// OnTab returns helpers that act on target without changing the daemon's attached tab.
+// TabNames maps the daemon's tab names to target ids, for tabs still open.
+func (h *H) TabNames() (map[string]string, error) {
+	m, err := h.send(M{"meta": "tab_names"}, callTimeout)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	if names, ok := m["names"].(M); ok {
+		for n, t := range names {
+			out[n], _ = t.(string)
+		}
+	}
+	return out, nil
+}
+
+// NameTab gives target (or the attached tab) a name that later snippets can use instead of its id.
+func (h *H) NameTab(name, target string) error {
+	if target == "" {
+		cur, err := h.CurrentTab()
+		if err != nil {
+			return err
+		}
+		target, _ = cur["targetId"].(string)
+	}
+	_, err := h.send(M{"meta": "name_tab", "name": name, "target_id": target}, callTimeout)
+	return err
+}
+
+// Resolve turns a tab name into its target id; ids and unknown names pass through.
+func (h *H) Resolve(target string) string {
+	if target == "" || isTargetID(target) {
+		return target
+	}
+	if names, err := h.TabNames(); err == nil && names[target] != "" {
+		return names[target]
+	}
+	return target
+}
+
+func (h *H) named(id string) bool {
+	names, _ := h.TabNames()
+	for _, t := range names {
+		if t == id {
+			return true
+		}
+	}
+	return false
+}
+
+func isTargetID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+// OnTab returns helpers that act on target (an id or a tab name) without changing the daemon's attached tab.
 func (h *H) OnTab(target string) (*H, error) {
+	target = h.Resolve(target)
 	m, err := h.send(M{"meta": "attach", "target_id": target}, callTimeout)
 	if err != nil {
 		return nil, err
 	}
 	sid, _ := m["session_id"].(string)
-	return &H{Name: h.Name, Target: target, session: sid, selectAll: h.selectAll, Send: h.Send}, nil
+	return &H{Name: h.Name, Target: target, session: sid, selectAll: h.selectAll, opened: h.opened, Send: h.Send}, nil
 }
 
 func (h *H) send(req M, timeout time.Duration) (M, error) {
@@ -622,6 +681,15 @@ func (h *H) ListTabs(includeChrome bool) ([]Tab, error) {
 		}
 		out = append(out, tab(t["targetId"], title, url))
 	}
+	if names, err := h.TabNames(); err == nil {
+		for n, id := range names {
+			for _, t := range out {
+				if t["targetId"] == id {
+					t["name"] = n
+				}
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -642,6 +710,7 @@ func (h *H) CurrentTab() (Tab, error) {
 }
 
 func (h *H) ActivateTab(target string) (string, error) {
+	target = h.Resolve(target)
 	_, err := h.CDP("Target.activateTarget", M{"targetId": target}, "")
 	return target, err
 }
@@ -656,6 +725,7 @@ func markerOff() bool {
 
 // SwitchTab attaches the agent to target, moving the 🐴 title marker with it.
 func (h *H) SwitchTab(target string, activate bool) (string, error) {
+	target = h.Resolve(target)
 	_, _ = h.CDP("Runtime.evaluate", M{"expression": "if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)"}, "")
 	if activate {
 		if _, err := h.ActivateTab(target); err != nil {
@@ -676,10 +746,14 @@ func (h *H) SwitchTab(target string, activate bool) (string, error) {
 	return sid, nil
 }
 
-// NewTab opens url in a background tab, reusing the attached tab when it is blank.
+// NewTab opens url in a background tab, reusing the attached tab when it is blank,
+// unless this snippet opened it or it is named (both mean it is in use).
 func (h *H) NewTab(url string) (string, error) {
+	if h.opened == nil {
+		h.opened = map[string]bool{}
+	}
 	if url != "about:blank" {
-		if cur, err := h.CurrentTab(); err == nil {
+		if cur, err := h.CurrentTab(); err == nil && !h.opened[fmt.Sprint(cur["targetId"])] && !h.named(fmt.Sprint(cur["targetId"])) {
 			u, _ := cur["url"].(string)
 			if u == "" || u == "about:blank" || u == "data:text/html," || strings.HasPrefix(u, "about:blank#") ||
 				strings.HasPrefix(u, "chrome://newtab") || strings.HasPrefix(u, "chrome://new-tab-page") ||
@@ -688,6 +762,7 @@ func (h *H) NewTab(url string) (string, error) {
 					return "", err
 				}
 				id, _ := cur["targetId"].(string)
+				h.opened[id] = true
 				return id, nil
 			}
 		}
@@ -698,6 +773,7 @@ func (h *H) NewTab(url string) (string, error) {
 		return "", err
 	}
 	tid, _ := r["targetId"].(string)
+	h.opened[tid] = true
 	if _, err := h.SwitchTab(tid, false); err != nil {
 		return "", err
 	}
@@ -708,6 +784,7 @@ func (h *H) NewTab(url string) (string, error) {
 }
 
 func (h *H) CloseTab(target string) error {
+	target = h.Resolve(target)
 	if target == "" {
 		cur, err := h.CurrentTab()
 		if err != nil {
