@@ -7,14 +7,15 @@ This is a **one-time prerequisite**, not part of the regular AI workflow. Do it 
 ```bash
 os=$(uname -s | tr '[:upper:]' '[:lower:]'); arch=$(uname -m)
 case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+command -v uv >/dev/null && uv tool uninstall browser-harness 2>/dev/null || true  # old Python install
 mkdir -p ~/.local/bin
-curl -fsSL -o ~/.local/bin/browser-harness \
+curl -fsSL -o ~/.local/bin/browser-harness.new \
   "https://github.com/browser-use/browser-harness/releases/latest/download/browser-harness-$os-$arch"
-chmod +x ~/.local/bin/browser-harness
+chmod +x ~/.local/bin/browser-harness.new && mv -f ~/.local/bin/browser-harness.new ~/.local/bin/browser-harness
 command -v browser-harness   # should print a path
 ```
 
-This downloads one self-contained binary; rerun it to upgrade. Keep `~/.local/bin` on `PATH`. On Windows, download `browser-harness-windows-amd64.exe` from the [latest release](https://github.com/browser-use/browser-harness/releases/latest) instead. If an older Python install is still present (`uv tool list` shows `browser-harness`), remove it with `uv tool uninstall browser-harness` so it does not shadow the binary.
+This downloads one self-contained binary; rerun it to upgrade. Keep `~/.local/bin` on `PATH`. On Windows, download `browser-harness-windows-amd64.exe` from the [latest release](https://github.com/browser-use/browser-harness/releases/latest) instead. The first line removes an older Python install, if any, so it cannot shadow the binary.
 
 For browser-harness development, clone the repo and run `./browser-harness` from the checkout; it rebuilds the Go binary from the working tree when Go is installed.
 
