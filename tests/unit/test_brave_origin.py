@@ -69,3 +69,12 @@ def test_origin_relaunch_uses_origin_not_regular_brave(monkeypatch, origin_profi
 ])
 def test_launch_mapping_preserves_existing_browsers(profile, app):
     assert admin._browser_launch_spec(profile)[0] == app
+
+
+@pytest.mark.parametrize("profile,posix_cmds", [
+    (".config/google-chrome-beta", ("google-chrome-beta",)),
+    (".config/google-chrome-unstable", ("google-chrome-unstable",)),
+    (".config/google-chrome", ("google-chrome-stable", "google-chrome")),
+])
+def test_linux_chrome_channels_launch_matching_binary(profile, posix_cmds):
+    assert admin._browser_launch_spec(profile)[1] == posix_cmds
