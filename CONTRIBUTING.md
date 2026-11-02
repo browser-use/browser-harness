@@ -5,14 +5,17 @@ helper improvements, and focused domain skills are all useful.
 
 ## Development
 
-From a checkout, use `./browser-harness` to run the current working tree without
-activating a virtual environment or depending on the globally installed command:
+From a checkout, use `./browser-harness` to run the current working tree instead
+of the globally installed command. It rebuilds the Go binary from `go/` when Go is
+installed:
 
 ```bash
-./browser-harness <<'PY'
+./browser-harness <<'JS'
 print(page_info())
-PY
+JS
 ```
+
+Run the unit tests with `(cd go && go test ./...)`.
 
 Agent-facing documentation should use `browser-harness`. The `./browser-harness`
 launcher is only for testing a local checkout.
@@ -27,6 +30,8 @@ workspace.
   what actually works in the browser; do not hand-author them.
 - Copy the generated `domain-skills/<site>/` folder into this repository's
   [`agent-workspace/domain-skills/`](agent-workspace/domain-skills/) examples.
+- Existing examples are Python, from before snippets became JavaScript; write new
+  and updated examples in JavaScript.
 - Keep contributions small and focused.
 - Browse existing examples such as `github/`, `linkedin/`, and `amazon/` to see
   the expected shape.

@@ -7,17 +7,19 @@ browser-harness is a thin layer that connects agents to browsers via an editable
 - Versatility
 
 # Overview
-Core code lives in `src/browser_harness/`:
-- `admin.py` — daemon lifecycle, diagnostics, updates, profile management
-- `daemon.py` — the long-lived middleman process between the browser and the agent
-- `helpers.py` — CDP wrapper and core browser primitives auto-imported into the scripts the CLI reads from stdin
-- `run.py` — the `browser-harness` CLI
+Core code lives in `go/`, built into one `browser-harness` binary (CLI, daemon and MCP server):
+- `internal/admin/` — daemon lifecycle, diagnostics, cloud browsers, profile management
+- `internal/daemon/` — the long-lived middleman process between the browser and the agent
+- `internal/helpers/` — CDP wrapper and core browser primitives
+- `internal/jsrun/` — runs the JavaScript snippets the CLI reads from stdin, with the helpers as globals
+- `internal/cli/` — the `browser-harness` CLI
+- `internal/mcpserver/` — the `browser-harness mcp` server
 
 `SKILL.md` tells agents how to use the harness and CLI.
 `install.md` tells agents how to install it, attach a browser, and troubleshoot.
 
 An agent operating the harness only edits inside `agent-workspace/`:
-- `agent_helpers.py` — task-specific browser helpers the agent adds
+- `agent_helpers.js` — task-specific browser helpers the agent adds
 - `domain-skills/` — skills the agent writes and reads
 
 Package/CLI name = `browser-harness`. Skill identity (`name` + trigger) = `browser-use` (do not rename).
@@ -31,20 +33,19 @@ From a **git checkout** (no global install required for local testing):
 ./browser-harness --doctor
 
 # smoke — CDP attach + page_info (Chrome remote debugging must be allowed)
-./browser-harness <<'PY'
+./browser-harness <<'JS'
 print(page_info())
-PY
+JS
 
 # unit tests (no live browser)
-uv run --with pytest python -m pytest tests/unit -q
+(cd go && go test ./...)
 
-# after core/src edits: reload daemon so next call picks up code
+# after Go edits: the launcher rebuilds; reload the daemon so the next call runs the new code
 ./browser-harness --reload
 ```
 
 Notes:
 - `./browser-harness` = local tree launcher. Agents/docs outside this repo use the installed `browser-harness` command.
-- Integration tests under `tests/integration/` may need a live browser/CDP — prefer unit + doctor for routine PR gates.
 - First-time install / blocked Chrome: follow `install.md` (`chrome://inspect/#remote-debugging`).
 
 # Security

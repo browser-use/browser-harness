@@ -282,3 +282,5 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 Only applies when `BH_DOMAIN_SKILLS=1`. Otherwise ignore domain skills.
 
 When enabled, search `$BH_AGENT_WORKSPACE/domain-skills/<host>/` before inventing an approach. `goto_url(...)` returns up to 10 skill filenames for the navigated host.
+
+Domain skill examples are written in Python, from before snippets became JavaScript. Use them as reference: the URLs, selectors, APIs, waits and traps still apply, and helper names are the same, so translate calls (`fn(a, key=v)` becomes `fn(a, {key: v})`). Python-only libraries (`requests`, BeautifulSoup, `re`, `subprocess`) have no snippet equivalent; use `js(...)` in the page or `http_get`. Write new or updated domain skill examples in JavaScript.

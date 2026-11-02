@@ -10,17 +10,22 @@ Use once. For browser work, read `SKILL.md`.
 ## Fast Path
 
 ```bash
-uv tool install --python 3.12 --upgrade --force browser-harness
+os=$(uname -s | tr '[:upper:]' '[:lower:]'); arch=$(uname -m)
+case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+mkdir -p ~/.local/bin
+curl -fsSL -o ~/.local/bin/browser-harness \
+  "https://github.com/browser-use/browser-harness/releases/latest/download/browser-harness-$os-$arch"
+chmod +x ~/.local/bin/browser-harness
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness"
 browser-harness skill > "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness/SKILL.md"
-browser-harness <<'PY'
+browser-harness <<'JS'
 print(page_info())
-PY
+JS
 ```
 
 If `page_info()` prints, configure recording consent below, then stop.
 
-`--python 3.12` prevents uv from selecting old releases that support older Python versions. `--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
+This downloads one self-contained binary; rerun it to upgrade. Keep `~/.local/bin` on `PATH`. On Windows, download `browser-harness-windows-amd64.exe` from the [latest release](https://github.com/browser-use/browser-harness/releases/latest) instead. If an older Python install is still present (`uv tool list` shows `browser-harness`), remove it with `uv tool uninstall browser-harness` so it does not shadow the binary.
 
 For Claude Code or other agents: install `browser-harness`, register a skill named `browser-harness`, use `browser-harness skill` as the body, and use this trigger:
 
@@ -73,17 +78,17 @@ Use any short made-up name; `r7k2` below is just a placeholder.
 
 ```bash
 browser-harness auth login
-browser-harness <<'PY'
+browser-harness <<'JS'
 start_remote_daemon("r7k2")
-PY
+JS
 ```
 
 Then use it by name:
 
 ```bash
-BU_NAME=r7k2 browser-harness <<'PY'
+BU_NAME=r7k2 browser-harness <<'JS'
 print(page_info())
-PY
+JS
 ```
 
 ## If Still Broken
@@ -96,7 +101,6 @@ Use the output:
 
 - `chrome running` FAIL: ask the user to open Chrome, or use isolated/cloud browser.
 - `daemon alive` FAIL: Chrome remote debugging permission is missing, Chrome is closed, or the CDP endpoint is not reachable.
-- update available: run `browser-harness --update -y` when you decide to upgrade.
 
 For a machine-readable health check, an orchestrator can set `BU_NAME` to an
 already-provisioned daemon and run:
@@ -108,12 +112,11 @@ browser-harness doctor --json --require-existing-daemon
 This prints a versioned JSON report and exits nonzero unless that exact daemon
 has a live browser connection. It never starts or discovers another browser.
 
-If this still fails, inspect `src/browser_harness/admin.py`, `src/browser_harness/daemon.py`, and `src/browser_harness/_ipc.py`.
+If this still fails, inspect `go/internal/admin/`, `go/internal/daemon/`, and `go/internal/ipc/` in the source repo.
 
-Useful:
+To upgrade, rerun the install commands above. To opt out of anonymous telemetry:
 
 ```bash
-browser-harness --update -y
 browser-harness telemetry disable
 ```
 

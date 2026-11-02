@@ -1,15 +1,14 @@
 # Browser Harness MCP Server
 
-The `browser-harness-mcp` command exposes `browser_harness.helpers` as MCP tools.
-It reuses the existing helper layer — no second CDP implementation and no changes
-inside `src/browser_harness/`.
+`browser-harness mcp` exposes the browser helpers as MCP tools. It reuses the
+same helper layer as snippets, so there is no second CDP implementation.
 
 ## Start
 
 From any directory:
 
 ```bash
-uvx --from 'browser-harness[mcp]' browser-harness-mcp
+browser-harness mcp
 ```
 
 The server speaks MCP stdio and connects to the same local Chrome CDP endpoint
@@ -18,8 +17,7 @@ call.
 
 ## Tools
 
-The browser control helpers from `browser_harness.helpers` are exposed as MCP
-tools with a `browser_` prefix:
+The browser control helpers are exposed as MCP tools with a `browser_` prefix:
 
 - `browser_new_tab`
 - `browser_goto`
@@ -60,15 +58,13 @@ server process keeps running.
 ### Claude Code
 
 ```bash
-claude mcp add browser-harness \
-  uvx --from 'browser-harness[mcp]' browser-harness-mcp
+claude mcp add browser-harness -- browser-harness mcp
 ```
 
 ### Devin
 
 ```bash
-devin mcp add -s project browser-harness -- \
-  uvx --from 'browser-harness[mcp]' browser-harness-mcp
+devin mcp add -s project browser-harness -- browser-harness mcp
 ```
 
 ### Cursor / OpenClaw / other MCP clients
@@ -77,12 +73,8 @@ devin mcp add -s project browser-harness -- \
 {
   "mcpServers": {
     "browser-harness": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "browser-harness[mcp]",
-        "browser-harness-mcp"
-      ]
+      "command": "browser-harness",
+      "args": ["mcp"]
     }
   }
 }
@@ -91,9 +83,8 @@ devin mcp add -s project browser-harness -- \
 ### MCP Inspector
 
 ```bash
-npx @modelcontextprotocol/inspector \
-  uvx --from 'browser-harness[mcp]' browser-harness-mcp
+npx @modelcontextprotocol/inspector browser-harness mcp
 ```
 
-From a repository checkout, `uv run --extra mcp browser-harness-mcp` runs the
-same packaged entry point against the current source.
+From a repository checkout, `./browser-harness mcp` runs the same server built
+from the current source.

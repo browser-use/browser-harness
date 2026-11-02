@@ -9,9 +9,9 @@ Try browser-harness in [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_
 ```
   ● agent: wants to upload a file
   │
-  ● agent-workspace/agent_helpers.py → helper missing
+  ● agent-workspace/agent_helpers.js → helper missing
   │
-  ● agent writes it                         agent_helpers.py
+  ● agent writes it                         agent_helpers.js
   │                                                       + custom helper
   ✓ file uploaded
 ```
@@ -29,7 +29,7 @@ Try browser-harness in [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_
 Paste into Claude Code or Codex (Cursor: use the [MCP config](#cursor) below):
 
 ```text
-Install or upgrade browser-harness to the latest stable version with uv using Python 3.12, register the skill from `browser-harness skill`, and connect it to my browser. Ask whether I want local browser recordings enabled; default to no and preserve my existing preference on upgrades. Follow https://github.com/browser-use/browser-harness/blob/main/install.md if setup or connection fails.
+Install or upgrade browser-harness to the latest release binary as described in https://github.com/browser-use/browser-harness/blob/main/install.md, register the skill from `browser-harness skill`, and connect it to my browser. Ask whether I want local browser recordings enabled; default to no and preserve my existing preference on upgrades. Follow https://github.com/browser-use/browser-harness/blob/main/install.md if setup or connection fails.
 ```
 
 The agent will open `chrome://inspect/#remote-debugging`. On first setup, tick
@@ -41,13 +41,13 @@ the checkbox so the agent can connect to your browser:
 
 - [`install.md`](install.md) connects the agent to your browser.
 - [`SKILL.md`](SKILL.md) teaches it the browser workflow.
-- [`src/browser_harness/`](src/browser_harness/) stays protected while the agent writes reusable helpers in its local workspace.
+- [`go/`](go/) is the core: one binary with the CLI, daemon and MCP server. It stays protected while the agent writes reusable JavaScript helpers in its local workspace.
 
 ## Compared with other browser tools
 
 | | Works with | Browser it drives | What you approve in your own Chrome |
 |---|---|---|---|
-| **Browser Harness** | Claude Code, Codex, Cursor, any MCP client via `browser-harness-mcp` | Your running Chrome, logged in as you | Whole browser: on Chrome 144+, tick remote debugging in `chrome://inspect`, then click Allow |
+| **Browser Harness** | Claude Code, Codex, Cursor, any MCP client via `browser-harness mcp` | Your running Chrome, logged in as you | Whole browser: on Chrome 144+, tick remote debugging in `chrome://inspect`, then click Allow |
 | **Playwright MCP** | Any MCP client (Claude Code, Codex, Cursor, Copilot and more) | Its own browser profile by default. Your Chrome with `--extension` (Playwright Extension) or `--cdp-endpoint` | Chosen tabs (one tab group per client) via the extension, approval skippable with a token; or whole browser via `--cdp-endpoint` |
 | **Playwright CLI** | Claude Code, GitHub Copilot and other agents that run shell commands | Its own browser by default. Your Chrome with `attach --extension=chrome` or `attach --cdp=chrome` | Chosen tab via the Playwright Extension, or whole browser via `--cdp` |
 | **Chrome DevTools MCP** | Any MCP client (Claude Code, Cursor, Copilot, Antigravity and more), plus a CLI | A new Chrome with a dedicated profile by default. Your Chrome 144+ with `--autoConnect` | Whole browser: the same Chrome 144+ toggle and Allow dialog; the server sees every open window of that profile |
@@ -58,7 +58,7 @@ the checkbox so the agent can connect to your browser:
 Matched eval by Browser Use on 100 of the 200 public [BU Bench V2.1](https://github.com/browser-use/benchmark) tasks (bu2-001 to bu2-100; 101-200 not run). Measured 2026-10-14.
 
 - Same agent for every tool: Codex CLI 0.144.6, GPT-6 Luna, medium reasoning, web search off. Same frozen judge.
-- Browser Harness was given to the agent as its CLI and SKILL.md, not `browser-harness-mcp`. Playwright MCP and Chrome DevTools MCP ran as MCP servers with default settings. agent-browser ran as its CLI and skill.
+- Browser Harness was given to the agent as its CLI and SKILL.md, not its MCP server. Playwright MCP and Chrome DevTools MCP ran as MCP servers with default settings. agent-browser ran as its CLI and skill.
 - Every tool drove the same fresh Browser Use cloud browser over CDP. This does not measure each tool's default or local-Chrome mode.
 - One run per task. Agent failures were never retried. Runner, browser and judge failures were rerun once (Browser Harness 3 tasks, Playwright MCP 4, Chrome DevTools MCP 6, agent-browser 0).
 
@@ -92,7 +92,7 @@ Use your local browser for logged-in, personal work. When you want many browsers
 
 ## MCP server
 
-`browser-harness-mcp` exposes the browser control helpers as MCP tools over
+`browser-harness mcp` exposes the browser control helpers as MCP tools over
 stdio, so any MCP client (Claude Code, Devin, Cursor, etc.) can drive the
 browser without writing a second CDP layer. See [docs/MCP.md](docs/MCP.md) for
 setup and client configuration.
@@ -100,15 +100,15 @@ setup and client configuration.
 ### Cursor
 
 Add this to `.cursor/mcp.json` in your project, or to `~/.cursor/mcp.json` for
-every project. It needs [uv](https://docs.astral.sh/uv/).
+every project. It needs `browser-harness` on your `PATH` (see [install.md](install.md)).
 
 ```json
 {
   "mcpServers": {
     "browser-harness": {
       "type": "stdio",
-      "command": "uvx",
-      "args": ["--from", "browser-harness[mcp]", "browser-harness-mcp"]
+      "command": "browser-harness",
+      "args": ["mcp"]
     }
   }
 }
