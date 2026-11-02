@@ -23,24 +23,30 @@ var wrappers = map[string]bool{
 // across its snippets. BH_AGENT_ID wins ("none" turns this off); otherwise it is the
 // nearest ancestor process that is not a shell or wrapper, e.g. the coding agent itself.
 func AgentID() string {
+	id, _ := AgentIdentity()
+	return id
+}
+
+// AgentIdentity is AgentID plus the agent process's name, when it was detected.
+func AgentIdentity() (id, name string) {
 	if v := strings.TrimSpace(os.Getenv("BH_AGENT_ID")); v != "" {
 		if v == "none" {
-			return ""
+			return "", ""
 		}
-		return "id:" + v
+		return "id:" + v, ""
 	}
 	pid := os.Getppid()
 	for i := 0; i < 8 && pid > 1; i++ {
 		name, ppid, start, ok := procInfo(pid)
 		if !ok {
-			return ""
+			return "", ""
 		}
-		if !wrappers[strings.TrimPrefix(filepath.Base(name), "-")] {
-			return fmt.Sprintf("pid:%d:%s", pid, start) // start time guards against PID reuse
+		if base := strings.TrimPrefix(filepath.Base(name), "-"); !wrappers[base] {
+			return fmt.Sprintf("pid:%d:%s", pid, start), base // start time guards against PID reuse
 		}
 		pid = ppid
 	}
-	return ""
+	return "", ""
 }
 
 // procInfo is a process's name, parent and start time.

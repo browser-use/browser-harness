@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/browser-use/browser-harness/go/internal/auth"
+	"github.com/browser-use/browser-harness/go/internal/helpers"
 	"github.com/browser-use/browser-harness/go/internal/paths"
 	"github.com/browser-use/browser-harness/go/internal/version"
 )
@@ -128,6 +129,8 @@ func Doctor() int {
 		status, source = "error", err.Error()
 	}
 	cloud := status == "authenticated"
+	needChrome := chromeNeeded()
+	agent, agentName := helpers.AgentIdentity()
 	row := func(label string, ok bool, detail string) {
 		mark := "ok  "
 		if !ok {
@@ -141,6 +144,17 @@ func Doctor() int {
 	fmt.Println("browser-harness doctor")
 	fmt.Printf("  platform          %s %s\n", platformName(), osRelease())
 	fmt.Printf("  version           %s (%s)\n", cur, InstallMode())
+	if InstallMode() == "release" {
+		fmt.Println("  upgrade           rerun the install command in install.md")
+	}
+	switch {
+	case agent == "":
+		fmt.Println("  agent id          none (agents share the attached tab; set BH_AGENT_ID)")
+	case agentName != "":
+		fmt.Printf("  agent id          %s (%s)\n", agent, agentName)
+	default:
+		fmt.Printf("  agent id          %s\n", agent)
+	}
 	if runtime.GOOS == "linux" {
 		if name, p := probeChromeForSnap(); name != "" && isSnap(p) {
 			fmt.Println("[snap-detect]")
@@ -149,25 +163,62 @@ func Doctor() int {
 			fmt.Printf("  Docs: %s\n", snapDoc)
 		}
 	}
-	row("chrome running", chrome, map[bool]string{true: "", false: "start chrome/edge"}[chrome])
+	if needChrome || chrome {
+		row("chrome running", chrome, map[bool]string{true: "", false: "start chrome/edge"}[chrome])
+	} else {
+		fmt.Println("  [skip] chrome running — not needed: this daemon is a cloud or CDP browser")
+	}
 	row("daemon alive", daemonUp, map[bool]string{true: "", false: "see install.md"}[daemonUp])
-	row("active browser connections", len(conns) > 0, strconv.Itoa(len(conns)))
+	row("browser connections", len(conns) > 0, strconv.Itoa(len(conns)))
 	for _, c := range conns {
-		if c.Page != nil {
-			fmt.Printf("        %s — active page: %s — %s\n", c.Name, shortText(c.Page["title"]), shortText(c.Page["url"]))
-		} else {
-			fmt.Printf("        %s — active page: (no real page)\n", c.Name)
+		kind := c.Kind
+		if kind == "" {
+			kind = "unknown"
 		}
+		tabs := fmt.Sprintf("%d tabs", c.Tabs)
+		if c.Tabs == 1 {
+			tabs = "1 tab"
+		}
+		line := fmt.Sprintf("        %s (%s) — %s", c.Name, kind, tabs)
+		if len(c.Names) > 0 {
+			line += ", named: " + strings.Join(c.Names, ", ")
+		}
+		fmt.Println(line)
+		if c.Page != nil {
+			fmt.Printf("            attached → %s — %s\n", shortText(c.Page["title"]), shortText(c.Page["url"]))
+		}
+		for _, a := range c.Agents {
+			mine := ""
+			if a.Agent == agent {
+				mine = " (this shell)"
+			}
+			fmt.Printf("            agent %s%s → %s — %s\n", a.Agent, mine, shortText(a.Title), shortText(a.URL))
+		}
+	}
+	if stale := staleEndpoints(conns); len(stale) > 0 {
+		shown := strings.Join(stale[:min(5, len(stale))], ", ")
+		if len(stale) > 5 {
+			shown += fmt.Sprintf(", +%d more", len(stale)-5)
+		}
+		fmt.Printf("  [info] %d stopped daemons left socket files — %s (harmless; each is replaced when that name starts again)\n", len(stale), shown)
 	}
 	detail := "optional: browser-harness auth login"
 	if source != "" {
 		detail = source
 	}
 	row("Browser Use cloud auth", cloud, detail)
-	if chrome && daemonUp {
+	if daemonUp && (chrome || !needChrome) {
 		return 0
 	}
 	return 1
+}
+
+// chromeNeeded is whether this daemon drives a local Chrome, rather than a cloud or CDP browser.
+func chromeNeeded() bool {
+	if k := DaemonBrowserKind(""); k != "" {
+		return k == "local"
+	}
+	return isLocalMode(nil)
 }
 
 // DoctorJSON is the stable, non-networked health report for orchestrators.
@@ -179,13 +230,16 @@ func DoctorJSON(strict bool) int {
 	ready := DaemonBrowserReady("")
 	up := ready || DaemonAlive("")
 	ok := ready || (chrome == true && up)
+	agent, _ := helpers.AgentIdentity()
+	conns := BrowserConnections()
 	if strict {
 		ok = up && ready
 	}
 	raw, err := json.Marshal(map[string]any{
 		"schema_version": 1, "healthy": ok, "require_existing_daemon": strict, "version": Version(),
-		"install_mode": InstallMode(), "chrome_running": chrome,
-		"daemon": map[string]any{"name": Name(), "alive": up, "browser_ready": ready},
+		"install_mode": InstallMode(), "chrome_running": chrome, "chrome_needed": chromeNeeded(),
+		"daemon":   map[string]any{"name": Name(), "alive": up, "browser_ready": ready},
+		"agent_id": agent, "connections": conns,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

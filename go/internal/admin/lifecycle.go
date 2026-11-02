@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,8 +48,19 @@ func DaemonBrowserKind(name string) string {
 
 // Connection is one live daemon with a healthy browser connection.
 type Connection struct {
-	Name string            `json:"name"`
-	Page map[string]string `json:"page"`
+	Name   string            `json:"name"`
+	Page   map[string]string `json:"page"`
+	Kind   string            `json:"kind,omitempty"`   // local, cloud or cdp
+	Tabs   int               `json:"tabs,omitempty"`   // open page targets
+	Names  []string          `json:"names,omitempty"`  // named tabs
+	Agents []AgentTab        `json:"agents,omitempty"` // each agent's own current tab
+}
+
+// AgentTab is one agent's current tab in a daemon.
+type AgentTab struct {
+	Agent string `json:"agent"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 func daemonConnection(name string) *Connection {
@@ -68,7 +80,43 @@ func daemonConnection(name string) *Connection {
 		u, _ := p["url"].(string)
 		c.Page = map[string]string{"title": title, "url": u}
 	}
+	c.Kind, _ = m["kind"].(string)
+	if n, ok := m["tabs"].(float64); ok {
+		c.Tabs = int(n)
+	}
+	if names, ok := m["names"].(map[string]any); ok {
+		for n := range names {
+			c.Names = append(c.Names, n)
+		}
+		sort.Strings(c.Names)
+	}
+	if agents, ok := m["agents"].([]any); ok {
+		for _, a := range agents {
+			am, _ := a.(map[string]any)
+			at := AgentTab{}
+			at.Agent, _ = am["agent"].(string)
+			at.Title, _ = am["title"].(string)
+			at.URL, _ = am["url"].(string)
+			c.Agents = append(c.Agents, at)
+		}
+		sort.Slice(c.Agents, func(i, j int) bool { return c.Agents[i].Agent < c.Agents[j].Agent })
+	}
 	return c
+}
+
+// staleEndpoints are daemon names whose socket or port file outlived the daemon.
+func staleEndpoints(live []Connection) []string {
+	up := map[string]bool{}
+	for _, c := range live {
+		up[c.Name] = true
+	}
+	var out []string
+	for _, n := range endpointNames() {
+		if !up[n] && !DaemonAlive(n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func DaemonBrowserReady(name string) bool { return daemonConnection(pick(name)) != nil }

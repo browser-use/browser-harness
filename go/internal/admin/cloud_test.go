@@ -117,3 +117,33 @@ func TestStartLockSerialisesGoroutines(t *testing.T) {
 	}
 	again.release()
 }
+
+// Doctor reads kind, tab count, names and per-agent tabs from the daemon status.
+func TestConnectionCarriesTabsAndAgents(t *testing.T) {
+	t.Setenv("BH_RUNTIME_DIR", t.TempDir())
+	l, _, err := ipc.Listen("doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				var req map[string]any
+				_ = json.NewDecoder(c).Decode(&req)
+				b, _ := json.Marshal(map[string]any{"page": map[string]any{"title": "T", "url": "https://a.test/"}, "kind": "cloud", "tabs": 3,
+					"names": map[string]any{"cart": "X"}, "agents": []any{map[string]any{"agent": "id:bob", "title": "B", "url": "https://b.test/"}}})
+				_, _ = c.Write(append(b, '\n'))
+			}()
+		}
+	}()
+	c := daemonConnection("doc")
+	if c == nil || c.Kind != "cloud" || c.Tabs != 3 || len(c.Names) != 1 || c.Names[0] != "cart" || len(c.Agents) != 1 || c.Agents[0].URL != "https://b.test/" {
+		t.Fatalf("got %+v", c)
+	}
+}

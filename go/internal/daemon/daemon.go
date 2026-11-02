@@ -665,7 +665,34 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 			}
 			page = map[string]any{"targetId": info.TargetID, "title": title, "url": info.URL}
 		}
-		return map[string]any{"target_id": tid, "session_id": nullable(sid), "page": page}
+		out := map[string]any{"target_id": tid, "session_id": nullable(sid), "page": page, "kind": d.cfg.Kind}
+		// Tab, name and per-agent detail for doctor; best effort.
+		if targets, err := d.targets(ctx); err == nil {
+			byID := map[string]Target{}
+			tabs := 0
+			for _, t := range targets {
+				byID[t.TargetID] = t
+				if t.Type == "page" {
+					tabs++
+				}
+			}
+			d.mu.Lock()
+			names := map[string]any{}
+			for n, t := range d.tabNames {
+				if _, open := byID[t]; open {
+					names[n] = t
+				}
+			}
+			agents := []any{}
+			for a, t := range d.agentTabs {
+				if info, open := byID[t]; open {
+					agents = append(agents, map[string]any{"agent": a, "target_id": t, "title": info.Title, "url": info.URL})
+				}
+			}
+			d.mu.Unlock()
+			out["tabs"], out["names"], out["agents"] = tabs, names, agents
+		}
+		return out
 	case "set_session":
 		lock(d.sessionState)
 		d.mu.Lock()
