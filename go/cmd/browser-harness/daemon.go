@@ -2,12 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/daemon"
@@ -35,8 +31,7 @@ func runDaemon() int {
 		_, _ = fmt.Fprintln(f, msg)
 		_ = f.Close()
 	}
-	pidPath := ipc.PidPath(cfg.Name)
-	publishOwnPID(pidPath)
+	ipc.WritePid(cfg.Name, os.Getpid()) // the same record the spawning CLI wrote, or the first one
 	d := daemon.New(cfg, logf)
 	code := 0
 	ctx := context.Background()
@@ -48,33 +43,6 @@ func runDaemon() int {
 		code = 1
 	}
 	_ = d.StopRemote(ctx, false)
-	_ = os.Remove(pidPath)
+	_ = os.Remove(ipc.PidPath(cfg.Name))
 	return code
-}
-
-// publishOwnPID keeps a parent-published fingerprint record for this PID and
-// never truncates it, so a cold caller cannot observe an empty PID file.
-func publishOwnPID(path string) {
-	pid := os.Getpid()
-	published := strconv.Itoa(pid)
-	if raw, err := os.ReadFile(path); err == nil { //nolint:gosec // Read the local daemon PID record.
-		var rec struct {
-			PID json.Number `json:"pid"`
-		}
-		filePID := 0
-		if json.Unmarshal(raw, &rec) == nil {
-			filePID, _ = strconv.Atoi(rec.PID.String())
-		} else if f := strings.Fields(string(raw)); len(f) > 0 {
-			filePID, _ = strconv.Atoi(f[0])
-		}
-		if filePID == pid {
-			published = string(raw)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		_ = err
-	}
-	tmp := fmt.Sprintf("%s.%d.tmp", path, pid)
-	if os.WriteFile(tmp, []byte(published), 0o600) == nil {
-		_ = os.Rename(tmp, path)
-	}
 }

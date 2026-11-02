@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -17,98 +15,14 @@ import (
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/auth"
-	"github.com/browser-use/browser-harness/go/internal/daemon"
+	"github.com/browser-use/browser-harness/go/internal/browser"
+	"github.com/browser-use/browser-harness/go/internal/cloud"
 	"github.com/browser-use/browser-harness/go/internal/ipc"
 )
 
-// HTTPError mirrors urllib's HTTPError text, which callers and agents see.
-type HTTPError struct {
-	Code   int
-	Reason string
-}
-
-func (e *HTTPError) Error() string { return fmt.Sprintf("HTTP Error %d: %s", e.Code, e.Reason) }
-
-func browserUse(path, method string, body any) (any, error) {
-	key, err := auth.APIKey()
-	if err != nil {
-		return nil, err
-	}
-	var rd io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		rd = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(context.Background(), method, daemon.BUAPI+path, rd)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-Browser-Use-API-Key", key)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("<urlopen error %w>", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, &HTTPError{Code: resp.StatusCode, Reason: http.StatusText(resp.StatusCode)}
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return map[string]any{}, nil
-	}
-	var out any
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func stopCloudBrowser(id string, strict bool) error {
-	if id == "" {
-		return nil
-	}
-	var last error
-	for attempt := 0; attempt < 3; attempt++ {
-		if _, last = browserUse("/browsers/"+id, "PATCH", map[string]any{"action": "stop"}); last == nil {
-			return nil
-		}
-		if attempt < 2 {
-			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-		}
-	}
-	if strict {
-		return fmt.Errorf("failed to stop remote browser %s: %w", id, last)
-	}
-	return nil
-}
-
-func cdpWSFromURL(cdpURL string) (string, error) {
-	req, err := http.NewRequestWithContext(context.Background(), "GET", cdpURL+"/json/version", nil)
-	if err != nil {
-		return "", &url.Error{Op: "Get", URL: cdpURL + "/json/version", Err: err}
-	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 400 {
-		return "", &HTTPError{Code: resp.StatusCode, Reason: http.StatusText(resp.StatusCode)}
-	}
-	var v struct {
-		WS string `json:"webSocketDebuggerUrl"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return "", err
-	}
-	if v.WS == "" {
-		return "", errors.New("'webSocketDebuggerUrl'")
-	}
-	return v.WS, nil
+// api calls the Browser Use Cloud API; admin callers have no deadline beyond the client's.
+func api(method, path string, body any) (any, error) {
+	return cloud.Request(context.Background(), method, path, body)
 }
 
 func hasLocalGUI() bool {
@@ -156,7 +70,7 @@ func shouldShowLiveView() (bool, error) {
 func ListCloudProfiles() ([]map[string]any, error) {
 	out := []map[string]any{}
 	for page := 1; ; page++ {
-		listing, err := browserUse(fmt.Sprintf("/profiles?pageSize=100&pageNumber=%d", page), "GET", nil)
+		listing, err := api(http.MethodGet, fmt.Sprintf("/profiles?pageSize=100&pageNumber=%d", page), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +91,7 @@ func ListCloudProfiles() ([]map[string]any, error) {
 		for _, it := range items {
 			p, _ := it.(map[string]any)
 			id, _ := p["id"].(string)
-			detail, err := browserUse("/profiles/"+id, "GET", nil)
+			detail, err := api(http.MethodGet, "/profiles/"+id, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -212,11 +126,11 @@ func resolveProfileName(name string) (string, error) {
 	}
 	switch len(ids) {
 	case 0:
-		return "", fmt.Errorf("no cloud profile named %s -- call list_cloud_profiles() or sync_local_profile() first", quoted(name))
+		return "", fmt.Errorf("no cloud profile named %q -- call list_cloud_profiles() or sync_local_profile() first", name)
 	case 1:
 		return ids[0], nil
 	}
-	return "", fmt.Errorf("%d cloud profiles named %s -- pass profileId=<uuid> instead", len(ids), quoted(name))
+	return "", fmt.Errorf("%d cloud profiles named %q -- pass profileId=<uuid> instead", len(ids), name)
 }
 
 // StartRemoteDaemon provisions a cloud browser and starts a daemon attached to it;
@@ -229,7 +143,7 @@ func StartRemoteDaemon(name, profileName string, create map[string]any) (map[str
 		return nil, err
 	}
 	// One start per name at a time: two concurrent calls would each create a billed browser.
-	lk, err := acquireStartLock(name, 2*time.Minute)
+	lk, err := lockStart(name, "start", 2*time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +153,7 @@ func StartRemoteDaemon(name, profileName string, create map[string]any) (map[str
 		return nil, err
 	}
 	if DaemonAlive(name) {
-		return nil, fmt.Errorf("daemon %s already alive -- restart_daemon(%s) first", quoted(name), quoted(name))
+		return nil, fmt.Errorf("daemon %q already alive -- restart_daemon(%q) first", name, name)
 	}
 	if create == nil {
 		create = map[string]any{}
@@ -254,7 +168,7 @@ func StartRemoteDaemon(name, profileName string, create map[string]any) (map[str
 		}
 		create["profileId"] = id
 	}
-	raw, err := browserUse("/browsers", "POST", create)
+	raw, err := api(http.MethodPost, "/browsers", create)
 	if err != nil {
 		return nil, err
 	}
@@ -262,17 +176,14 @@ func StartRemoteDaemon(name, profileName string, create map[string]any) (map[str
 	id, _ := b["id"].(string)
 	cdpURL, _ := b["cdpUrl"].(string)
 	startErr := func() error {
-		ws, err := cdpWSFromURL(cdpURL)
+		ws, err := browser.WebSocketURL(context.Background(), cdpURL, 15*time.Second)
 		if err != nil {
 			return err
 		}
 		return ensureDaemon(-1, name, map[string]string{"BU_CDP_WS": ws, "BU_BROWSER_ID": id}, true)
 	}()
 	if startErr != nil {
-		if cerr := stopCloudBrowser(id, true); cerr != nil {
-			return nil, fmt.Errorf("remote daemon startup and cloud browser cleanup both failed (2 sub-exceptions): %w; %w", startErr, cerr)
-		}
-		return nil, startErr
+		return nil, errors.Join(startErr, cloud.StopBrowser(context.Background(), id))
 	}
 	if show {
 		live, _ := b["liveUrl"].(string)
@@ -290,7 +201,7 @@ func ListLocalProfiles() (any, error) {
 	}
 	out, err := exec.CommandContext(context.Background(), p, "list", "--json").Output() //nolint:gosec // Run the installed profile-use tool with explicit arguments.
 	if err != nil {
-		return nil, fmt.Errorf("Command '['profile-use', 'list', '--json']' returned non-zero exit status: %w", err)
+		return nil, fmt.Errorf("profile-use list: %w", err)
 	}
 	var v any
 	return v, json.Unmarshal(out, &v)
@@ -353,7 +264,7 @@ func SyncLocalProfile(profile, browserName, cloudID string, include, exclude []s
 func CleanupCloudBrowsers(olderThan time.Duration, dryRun bool) ([]map[string]any, error) {
 	var active []map[string]any
 	for page, seen := 1, 0; ; page++ {
-		listing, err := browserUse(fmt.Sprintf("/browsers?pageSize=100&pageNumber=%d", page), "GET", nil)
+		listing, err := api(http.MethodGet, fmt.Sprintf("/browsers?pageSize=100&pageNumber=%d", page), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -383,7 +294,7 @@ func CleanupCloudBrowsers(olderThan time.Duration, dryRun bool) ([]map[string]an
 			action = "would_stop"
 			if !dryRun {
 				action = "stopped"
-				if err := stopCloudBrowser(id, true); err != nil {
+				if err := cloud.StopBrowser(context.Background(), id); err != nil {
 					action = "stop_failed: " + err.Error()
 				}
 			}

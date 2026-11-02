@@ -9,41 +9,26 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/browser-use/browser-harness/go/internal/auth"
 	"github.com/browser-use/browser-harness/go/internal/browser"
 	"github.com/browser-use/browser-harness/go/internal/cdp"
+	"github.com/browser-use/browser-harness/go/internal/cloud"
 	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/paths"
+	"github.com/browser-use/browser-harness/go/internal/tabs"
 )
 
 const (
 	bufSize         = 500
 	recoveryDrain   = 2 * time.Second
-	tabMarkerJS     = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
 	sessionNotFound = "Session with given id not found"
 	maxReplacements = 32
 )
-
-// BUAPI is the Browser Use Cloud API base.
-var BUAPI = "https://api.browser-use.com/api/v3"
-
-var internalPrefixes = []string{"chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:"}
-
-func hasAnyPrefix(s string, prefixes ...string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return true
-		}
-	}
-	return false
-}
 
 // Target is the subset of Target.TargetInfo the daemon reads.
 type Target struct {
@@ -53,30 +38,18 @@ type Target struct {
 	Title    string `json:"title"`
 }
 
-func isRealPage(t Target) bool { return t.Type == "page" && !hasAnyPrefix(t.URL, internalPrefixes...) }
+func isRealPage(t Target) bool { return t.Type == "page" && !tabs.Internal(t.URL) }
 func isReusableBlank(t Target) bool {
-	return t.Type == "page" && (t.URL == "about:blank" || strings.HasPrefix(t.URL, "about:blank#")) &&
-		!strings.HasPrefix(t.Title, "Starting agent ")
+	return t.Type == "page" && tabs.AboutBlank(t.URL) && !tabs.Placeholder(t.Title, t.URL)
 }
+func isReusableNewTab(t Target) bool { return t.Type == "page" && tabs.NewTabPage(t.URL) }
 func isInspectTab(t Target) bool {
 	return t.Type == "page" && strings.HasPrefix(t.URL, "chrome://inspect")
-}
-func isReusableNewTab(t Target) bool {
-	return t.Type == "page" && hasAnyPrefix(t.URL, "chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")
 }
 
 func harnessOpenedInspect() bool {
 	_, err := os.Stat(paths.InspectMarker())
 	return err == nil
-}
-
-// TabMarkerEnabled gates the cosmetic controlled-tab title marker.
-func TabMarkerEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("BH_TAB_MARKER"))) {
-	case "0", "false", "no", "off":
-		return false
-	}
-	return true
 }
 
 // Config is the per-process daemon identity, read from the environment.
@@ -87,10 +60,7 @@ type Config struct {
 }
 
 func ConfigFromEnv() Config {
-	c := Config{Name: os.Getenv("BU_NAME"), RemoteID: os.Getenv("BU_BROWSER_ID")}
-	if c.Name == "" {
-		c.Name = "default"
-	}
+	c := Config{Name: ipc.Name(), RemoteID: os.Getenv("BU_BROWSER_ID")}
 	switch {
 	case c.RemoteID != "":
 		c.Kind = "cloud"
@@ -246,14 +216,6 @@ func (d *Daemon) attachTab(ctx context.Context, tid string) (string, error) {
 	return sid, err
 }
 
-func trunc(s string, n int) string {
-	r := []rune(s)
-	if len(r) > n {
-		return string(r[:n])
-	}
-	return s
-}
-
 // attachFirstPage attaches to a real page (or any usable page) and sets the session.
 func (d *Daemon) attachFirstPage(ctx context.Context, replaces string, enableDomains bool) (*Target, error) {
 	targets, err := d.targets(ctx)
@@ -290,19 +252,8 @@ func (d *Daemon) attachFirstPage(ctx context.Context, replaces string, enableDom
 				return nil, err
 			}
 		}
-		sid, err := d.attach(ctx, page.TargetID)
-		if err != nil {
-			return nil, err
-		}
-		d.mu.Lock()
-		d.session, d.targetID = sid, page.TargetID
-		d.recordReplacement(replaces, sid)
-		d.mu.Unlock()
-		d.logf(fmt.Sprintf("attached %s (%s) session=%s", page.TargetID, trunc(page.URL, 80), sid))
-		if enableDomains {
-			d.enableDefaultDomains(ctx, sid)
-		}
-		return page, nil
+		_, err := d.adopt(ctx, *page, replaces, enableDomains)
+		return page, err
 	}
 
 	var pages []Target
@@ -340,15 +291,10 @@ func (d *Daemon) attachFirstPage(ctx context.Context, replaces string, enableDom
 		pages = []Target{{TargetID: tid, URL: "about:blank", Type: "page"}}
 	}
 	page := pages[0]
-	sid, err := d.attach(ctx, page.TargetID)
+	sid, err := d.adopt(ctx, page, replaces, false)
 	if err != nil {
 		return nil, err
 	}
-	d.mu.Lock()
-	d.session, d.targetID = sid, page.TargetID
-	d.recordReplacement(replaces, sid)
-	d.mu.Unlock()
-	d.logf(fmt.Sprintf("attached %s (%s) session=%s", page.TargetID, trunc(page.URL, 80), sid))
 	if takeOver != "" {
 		if _, err := d.send(ctx, "Page.navigate", map[string]any{"url": "about:blank"}, sid); err != nil {
 			d.logf(fmt.Sprintf("take over inspect tab %s: %v", takeOver, err))
@@ -363,6 +309,24 @@ func (d *Daemon) attachFirstPage(ctx context.Context, replaces string, enableDom
 		d.enableDefaultDomains(ctx, sid)
 	}
 	return &page, nil
+}
+
+// adopt attaches page as the daemon's tab, replacing session replaces.
+func (d *Daemon) adopt(ctx context.Context, page Target, replaces string, enableDomains bool) (string, error) {
+	sid, err := d.attach(ctx, page.TargetID)
+	if err != nil {
+		return "", err
+	}
+	d.mu.Lock()
+	d.session, d.targetID = sid, page.TargetID
+	d.recordReplacement(replaces, sid)
+	d.mu.Unlock()
+	url := []rune(page.URL)
+	d.logf(fmt.Sprintf("attached %s (%s) session=%s", page.TargetID, string(url[:min(len(url), 80)]), sid))
+	if enableDomains {
+		d.enableDefaultDomains(ctx, sid)
+	}
+	return sid, nil
 }
 
 func (d *Daemon) findOwnPage(targets []Target) *Target {
@@ -413,7 +377,7 @@ func (d *Daemon) enableDefaultDomains(ctx context.Context, sid string) {
 			c, cancel := context.WithTimeout(ctx, 4*time.Second)
 			defer cancel()
 			if _, err := d.send(c, dom+".enable", nil, sid); err != nil {
-				d.logf(fmt.Sprintf("enable %s on %s: %v", dom, sid, errText(err)))
+				d.logf(fmt.Sprintf("enable %s on %s: %v", dom, sid, err))
 			}
 		}(dom)
 	}
@@ -443,14 +407,14 @@ func (d *Daemon) recordReplacement(stale, repl string) {
 }
 
 func (d *Daemon) scheduleTabMarker(ctx context.Context, sid string) {
-	if !TabMarkerEnabled() || sid == "" {
+	if !tabs.Marked() || sid == "" {
 		return
 	}
 	go func() {
 		// Marking continues after the triggering request returns.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
-		_, _ = d.send(ctx, "Runtime.evaluate", map[string]any{"expression": tabMarkerJS}, sid)
+		_, _ = d.send(ctx, "Runtime.evaluate", map[string]any{"expression": tabs.Mark}, sid)
 	}()
 }
 
@@ -494,7 +458,7 @@ func (d *Daemon) recordEvent(method string, params json.RawMessage, sid string) 
 
 // Start resolves the browser endpoint, connects and attaches.
 func (d *Daemon) Start(ctx context.Context) error {
-	wsURL, err := browser.WSURLContext(ctx)
+	wsURL, err := browser.WSURL(ctx)
 	if err != nil {
 		return err
 	}
@@ -513,7 +477,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 				"This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "+
 				"If you use Browser Use cloud, verify auth and get a fresh URL via start_remote_daemon().", err)
 		}
-		if v := browser.RemoteDebuggingUserEnabledContext(ctx); d.cfg.Kind == "local" && (strings.Contains(low, "timed out") || strings.Contains(low, "403")) && v != nil && *v {
+		if v := browser.RemoteDebuggingUserEnabled(ctx); d.cfg.Kind == "local" && (strings.Contains(low, "timed out") || strings.Contains(low, "403")) && v != nil && *v {
 			return errors.New("permission-blocked: Chrome did not approve the remote debugging connection; browser-harness did not retry or create another connection")
 		}
 		return fmt.Errorf("CDP WS handshake failed: %w -- click Allow in Chrome if prompted, then retry", err)
@@ -539,62 +503,27 @@ func SafeConnectionLabel(raw string) string {
 	return u.Scheme + "://" + host
 }
 
-// StopRemote PATCHes the cloud browser to stop; strict callers get the last error.
+// StopRemote stops the cloud browser, at most once per daemon; strict callers get the error.
 func (d *Daemon) StopRemote(ctx context.Context, strict bool) error {
-	if d.cfg.RemoteID == "" {
-		return nil
-	}
 	d.mu.Lock()
 	done := d.remoteStopped
 	d.mu.Unlock()
-	if done {
+	if d.cfg.RemoteID == "" || done {
 		return nil
 	}
-	var last error
-	for attempt := 0; attempt < 3; attempt++ {
-		last = StopCloudBrowser(ctx, d.cfg.RemoteID)
-		if last == nil {
-			d.mu.Lock()
-			d.remoteStopped = true
-			d.mu.Unlock()
-			d.logf("stopped remote browser " + d.cfg.RemoteID)
-			return nil
+	if err := cloud.StopBrowser(ctx, d.cfg.RemoteID); err != nil {
+		d.logf(err.Error())
+		if strict {
+			return err
 		}
-		d.logf(fmt.Sprintf("stop_remote attempt %d/3 failed (%s): %v", attempt+1, d.cfg.RemoteID, last))
-		if attempt < 2 {
-			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-		}
+		return nil
 	}
-	if strict {
-		return fmt.Errorf("failed to stop remote browser %s: %w", d.cfg.RemoteID, last)
-	}
+	d.mu.Lock()
+	d.remoteStopped = true
+	d.mu.Unlock()
+	d.logf("stopped remote browser " + d.cfg.RemoteID)
 	return nil
 }
-
-// StopCloudBrowser sends one PATCH /browsers/{id} {"action":"stop"}.
-func StopCloudBrowser(ctx context.Context, id string) error {
-	key, err := auth.APIKey()
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, "PATCH", BUAPI+"/browsers/"+id, bytes.NewReader([]byte(`{"action": "stop"}`)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("X-Browser-Use-API-Key", key)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("HTTP Error %d", resp.StatusCode)
-	}
-	return nil
-}
-
-func errText(err error) string { return err.Error() }
 
 func (d *Daemon) targetInfo(ctx context.Context, tid string) (*Target, error) {
 	raw, err := d.send(ctx, "Target.getTargetInfo", map[string]any{"targetId": tid}, "")
@@ -749,7 +678,7 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 	case "attach":
 		tid, _ := req["target_id"].(string)
 		if tid == "" {
-			return map[string]any{"error": "'target_id'"}
+			return map[string]any{"error": "attach needs a target_id"}
 		}
 		sid, err := d.attachTab(ctx, tid)
 		if err != nil {
@@ -890,7 +819,7 @@ func (d *Daemon) foreground(ctx context.Context, sid string) {
 func (d *Daemon) relay(ctx context.Context, req map[string]any) map[string]any {
 	method, _ := req["method"].(string)
 	if method == "" {
-		return map[string]any{"error": "'method'"}
+		return map[string]any{"error": "request needs a method or meta"}
 	}
 	params := req["params"]
 	if params == nil {
@@ -972,7 +901,7 @@ func (d *Daemon) relay(ctx context.Context, req map[string]any) map[string]any {
 
 // Serve accepts IPC connections until shutdown, then closes owned resources.
 func (d *Daemon) Serve(ctx context.Context) error {
-	l, token, err := ipc.ListenContext(ctx, d.cfg.Name)
+	l, token, err := ipc.Listen(ctx, d.cfg.Name)
 	if err != nil {
 		return err
 	}

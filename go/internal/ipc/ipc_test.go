@@ -37,7 +37,7 @@ func serve(t *testing.T, reply string) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	t.Setenv("BH_TMP_DIR", "")
 	t.Setenv("BH_RUNTIME_DIR", dir)
-	l, _, err := Listen("default")
+	l, _, err := Listen(t.Context(), "default")
 	if err != nil {
 		t.Fatal(err)
 	}

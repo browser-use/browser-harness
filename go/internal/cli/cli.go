@@ -3,10 +3,8 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -17,6 +15,8 @@ import (
 	"github.com/browser-use/browser-harness/go/internal/admin"
 	"github.com/browser-use/browser-harness/go/internal/assets"
 	"github.com/browser-use/browser-harness/go/internal/auth"
+	"github.com/browser-use/browser-harness/go/internal/browser"
+	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/jsrun"
 	"github.com/browser-use/browser-harness/go/internal/recorder"
 	"github.com/browser-use/browser-harness/go/internal/telemetry"
@@ -206,7 +206,7 @@ func run(args []string) result {
 	}
 	switch first {
 	case "-h", "--help":
-		fmt.Print(help + "\n")
+		fmt.Print(help)
 		return done(0)
 	case "--version":
 		fmt.Println(admin.Version())
@@ -255,9 +255,8 @@ func run(args []string) result {
 	return runSnippet(code)
 }
 
-// usageExit mirrors sys.exit(USAGE): the text plus a newline on stderr, exit 1.
 func usageExit() result {
-	fmt.Fprint(os.Stderr, usage+"\n")
+	fmt.Fprint(os.Stderr, usage)
 	m := usage
 	return result{code: 1, errMsg: &m}
 }
@@ -331,23 +330,11 @@ func recordings(rest []string) int {
 	return 0
 }
 
-// localChromeListening probes /json/version so an unrelated listener on
-// 9222/9223 does not masquerade as Chrome and skip the cloud bootstrap.
+// localChromeListening is whether Chrome answers on 9222 or 9223; an unrelated
+// listener there must not skip the cloud bootstrap.
 func localChromeListening() bool {
-	c := &http.Client{Timeout: 300 * time.Millisecond}
 	for _, p := range []int{9222, 9223} {
-		req, err := http.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("http://127.0.0.1:%d/json/version", p), nil)
-		if err != nil {
-			continue
-		}
-		resp, err := c.Do(req)
-		if err != nil {
-			continue
-		}
-		var v map[string]any
-		err = json.NewDecoder(resp.Body).Decode(&v)
-		_ = resp.Body.Close()
-		if s, ok := v["webSocketDebuggerUrl"].(string); err == nil && ok && s != "" {
+		if _, err := browser.WebSocketURL(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", p), 300*time.Millisecond); err == nil {
 			return true
 		}
 	}
@@ -370,7 +357,7 @@ func runSnippet(code string) result {
 			// Cloud auto-bootstrap is opt-in (BU_AUTOSPAWN); an explicit CDP endpoint blocks it.
 			if !admin.DaemonAlive("") && !localChromeListening() && os.Getenv("BU_CDP_URL") == "" &&
 				os.Getenv("BU_CDP_WS") == "" && cloudAuthConfigured() && os.Getenv("BU_AUTOSPAWN") != "" {
-				if _, err = admin.StartRemoteDaemon(admin.Name(), "", nil); err != nil {
+				if _, err = admin.StartRemoteDaemon(ipc.Name(), "", nil); err != nil {
 					r := fail("browser-harness: " + err.Error())
 					r.task = &code
 					return r
@@ -391,11 +378,7 @@ func runSnippet(code string) result {
 
 // runJS executes the snippet in-process and collects its helper trace.
 func runJS(code string, lazy bool) result {
-	run := jsrun.Run
-	if lazy {
-		run = jsrun.RunLazy
-	}
-	trace, err := run(code, os.Stdout)
+	trace, err := jsrun.Run(code, os.Stdout, lazy)
 	r := result{steps: trace.Steps, stepCount: trace.StepCount}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

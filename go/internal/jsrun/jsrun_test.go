@@ -41,7 +41,7 @@ func TestRunSnippet(t *testing.T) {
 click_at_xy(10, 20, {button: "right"});
 print(js("document.title"), {a: [1, 2]});
 try { close_tab("nope"); } catch (e) { print("caught:", e.message); }
-`, &out)
+`, &out, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ try { close_tab("nope"); } catch (e) { print("caught:", e.message); }
 func TestUncaughtErrorHasLocation(t *testing.T) {
 	fakeDaemon(t)
 	t.Setenv("BH_AGENT_WORKSPACE", t.TempDir())
-	_, err := Run("\n\nnot_a_helper()", &bytes.Buffer{})
+	_, err := Run("\n\nnot_a_helper()", &bytes.Buffer{}, false)
 	if err == nil || !strings.Contains(err.Error(), "not_a_helper is not defined") || !strings.Contains(err.Error(), "snippet.js:3") {
 		t.Fatal(err)
 	}

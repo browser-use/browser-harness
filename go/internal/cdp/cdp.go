@@ -13,7 +13,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// MaxFrame matches cdp-use's 100 MB default; screenshots and DOM dumps are large.
+// MaxFrame is 100 MB: screenshots and DOM dumps are large.
 const MaxFrame = 100 << 20
 
 // Error is a CDP error response.
@@ -34,8 +34,8 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s (CDP %d)", v.Message, v.Code)
 }
 
-// ErrClosed matches cdp-use's message when the socket drops mid-call.
-var ErrClosed = errors.New("WebSocket connection closed")
+// ErrClosed is returned for calls in flight when the browser websocket drops.
+var ErrClosed = errors.New("cdp: websocket closed")
 
 type response struct {
 	ID      int64           `json:"id"`

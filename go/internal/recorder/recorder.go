@@ -75,13 +75,8 @@ func (e Env) override() *bool {
 	if e.Record == nil {
 		return nil
 	}
-	switch strings.ToLower(strings.TrimSpace(*e.Record)) {
-	case "0", "false", "no", "off":
-		f := false
-		return &f
-	}
-	t := true
-	return &t
+	on := !paths.Disabled(*e.Record)
+	return &on
 }
 
 func (e Env) name() string {
@@ -120,16 +115,11 @@ func AutoSetting(e Env) (bool, string) {
 }
 
 func SetAuto(e Env, enabled bool) error {
-	p := configPath()
-	tmp := p + ".tmp"
 	raw, err := jsonLine(map[string]bool{"enabled": enabled})
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := paths.WriteFileAtomic(configPath(), raw, 0o600); err != nil {
 		return err
 	}
 	if !enabled {

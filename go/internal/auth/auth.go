@@ -169,23 +169,7 @@ func writePrivate(p string, data map[string]any) error {
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // Write the private temporary auth file beside the configured auth file.
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		return err
-	}
-	_ = os.Chmod(p, 0o600)
-	return nil
+	return paths.WriteFileAtomic(p, append(b, '\n'), 0o600)
 }
 
 func Save(r Record) error {
@@ -371,7 +355,7 @@ func BrowserLogin(open, jsonOut bool, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return storeAndReport(tok, "oauth", jsonOut, out, "Browser Use Cloud auth stored.")
+	return storeToken(tok, jsonOut, out)
 }
 
 // DeviceLogin runs the device-code flow for SSH/headless hosts.
@@ -415,7 +399,7 @@ func DeviceLogin(open, jsonOut bool, out io.Writer) error {
 			"grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": deviceCode, "client_id": clientID(),
 		})
 		if err == nil {
-			return storeAndReport(tok, "oauth", jsonOut, out, "Browser Use Cloud auth stored.")
+			return storeToken(tok, jsonOut, out)
 		}
 		switch strings.SplitN(err.Error(), ":", 2)[0] {
 		case "authorization_pending":
@@ -449,34 +433,26 @@ func StdinLogin(in io.Reader, isTTY bool, jsonOut bool, out io.Writer) error {
 	if len(key) < 20 {
 		return errors.New("API key looks too short")
 	}
-	if err := Save(Record{APIKey: key, Scopes: []string{}, Source: "manual"}); err != nil {
-		return err
-	}
-	if jsonOut {
-		if err := writeJSON(out, StoredOutput()); err != nil {
-			return err
-		}
-	} else {
-		_, _ = fmt.Fprintln(out, "Browser Use Cloud API key stored.")
-	}
-	return nil
+	return saveAndReport(Record{APIKey: key, Scopes: []string{}, Source: "manual"}, jsonOut, out, "Browser Use Cloud API key stored.")
 }
 
-func storeAndReport(tok map[string]any, source string, jsonOut bool, out io.Writer, msg string) error {
-	rec, err := recordFromToken(tok, source)
+// storeToken saves an OAuth token response and reports it.
+func storeToken(tok map[string]any, jsonOut bool, out io.Writer) error {
+	rec, err := recordFromToken(tok, "oauth")
 	if err != nil {
 		return err
 	}
+	return saveAndReport(rec, jsonOut, out, "Browser Use Cloud auth stored.")
+}
+
+func saveAndReport(rec Record, jsonOut bool, out io.Writer, msg string) error {
 	if err := Save(rec); err != nil {
 		return err
 	}
 	if jsonOut {
-		if err := writeJSON(out, StoredOutput()); err != nil {
-			return err
-		}
-	} else {
-		_, _ = fmt.Fprintln(out, msg)
+		return writeJSON(out, StoredOutput())
 	}
+	_, _ = fmt.Fprintln(out, msg)
 	return nil
 }
 

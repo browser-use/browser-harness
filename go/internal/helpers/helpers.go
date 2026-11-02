@@ -16,11 +16,13 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"maps"
 	"math"
 	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +32,7 @@ import (
 
 	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/paths"
+	"github.com/browser-use/browser-harness/go/internal/tabs"
 )
 
 const (
@@ -38,8 +41,6 @@ const (
 	fullScreenshotTimeout = 60 * time.Second // long pages take several seconds to capture
 	wheelTimeout          = 3 * time.Second
 )
-
-var internalPrefixes = []string{"chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:"}
 
 // M is a JSON object.
 type M = map[string]any
@@ -119,22 +120,23 @@ func (h *H) claim(id string) bool {
 
 func (h *H) named(id string) bool {
 	names, _ := h.TabNames()
-	for _, t := range names {
-		if t == id {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(slices.Collect(maps.Values(names)), id)
+}
+
+// attachSession is the daemon's cached session for target, attaching it on first use.
+func (h *H) attachSession(target string) (string, error) {
+	m, err := h.send(M{"meta": "attach", "target_id": target}, callTimeout)
+	sid, _ := m["session_id"].(string)
+	return sid, err
 }
 
 // OnTab returns helpers that act on target (an id or a tab name) without changing the daemon's attached tab.
 func (h *H) OnTab(target string) (*H, error) {
 	target = h.Resolve(target)
-	m, err := h.send(M{"meta": "attach", "target_id": target}, callTimeout)
+	sid, err := h.attachSession(target)
 	if err != nil {
 		return nil, err
 	}
-	sid, _ := m["session_id"].(string)
 	return &H{Name: h.Name, Target: target, session: sid, selectAll: h.selectAll, opened: h.opened, Send: h.Send}, nil
 }
 
@@ -157,12 +159,18 @@ func (h *H) UseAgentTab(agent string) error {
 
 // pin points these helpers at target in place, so every bound helper follows.
 func (h *H) pin(target string) error {
-	m, err := h.send(M{"meta": "attach", "target_id": target}, callTimeout)
-	if err != nil {
-		return err
+	sid, err := h.attachSession(target)
+	if err == nil {
+		h.Target, h.session = target, sid
 	}
-	h.Target, h.session = target, fmt.Sprint(m["session_id"])
-	return nil
+	return err
+}
+
+// dropAgentTab returns these helpers, and the agent's later snippets, to the daemon's attached tab.
+func (h *H) dropAgentTab() error {
+	h.Target, h.session = "", ""
+	_, err := h.send(M{"meta": "agent_tab", "agent": h.agent, "set": ""}, callTimeout)
+	return err
 }
 
 // adopt makes target this agent's current tab.
@@ -210,14 +218,13 @@ func (h *H) cdpTimeout(method string, params M, session string, timeout time.Dur
 	m, err := h.send(req, timeout)
 	if err != nil && h.Target != "" && session == h.session && strings.Contains(err.Error(), "Session with given id not found") {
 		// The pinned tab's session went away (e.g. Chrome detached it); attach again once.
-		if a, aerr := h.send(M{"meta": "attach", "target_id": h.Target}, callTimeout); aerr == nil {
-			h.session, _ = a["session_id"].(string)
-			req["session_id"] = h.session
+		if sid, aerr := h.attachSession(h.Target); aerr == nil {
+			h.session = sid
+			req["session_id"] = sid
 			m, err = h.send(req, timeout)
 		} else if h.agent != "" {
 			// The agent's own tab was closed (perhaps by another agent): fall back to the attached tab.
-			h.Target, h.session = "", ""
-			_, _ = h.send(M{"meta": "agent_tab", "agent": h.agent, "set": ""}, callTimeout)
+			_ = h.dropAgentTab()
 			req["session_id"] = nil
 			m, err = h.send(req, timeout)
 		}
@@ -726,15 +733,6 @@ func tab(id, title, url any) Tab {
 	return Tab{"targetId": id, "target_id": id, "title": title, "url": url}
 }
 
-func isInternal(url string) bool {
-	for _, p := range internalPrefixes {
-		if strings.HasPrefix(url, p) {
-			return true
-		}
-	}
-	return false
-}
-
 func (h *H) ListTabs(includeChrome bool) ([]Tab, error) {
 	r, err := h.CDP("Target.getTargets", nil, "")
 	if err != nil {
@@ -746,8 +744,7 @@ func (h *H) ListTabs(includeChrome bool) ([]Tab, error) {
 		t, _ := i.(M)
 		url, _ := t["url"].(string)
 		title, _ := t["title"].(string)
-		placeholder := strings.HasPrefix(title, "Starting agent ") && (url == "" || url == "about:blank" || strings.HasPrefix(url, "about:blank#"))
-		if t["type"] != "page" || placeholder || (!includeChrome && isInternal(url)) {
+		if t["type"] != "page" || tabs.Placeholder(title, url) || (!includeChrome && tabs.Internal(url)) {
 			continue
 		}
 		out = append(out, tab(t["targetId"], title, url))
@@ -786,35 +783,26 @@ func (h *H) ActivateTab(target string) (string, error) {
 	return target, err
 }
 
-func markerOff() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("BH_TAB_MARKER"))) {
-	case "0", "false", "no", "off":
-		return true
-	}
-	return false
-}
-
 // SwitchTab attaches the agent to target, moving the 🐴 title marker with it.
 func (h *H) SwitchTab(target string, activate bool) (string, error) {
 	target = h.Resolve(target)
-	_, _ = h.CDP("Runtime.evaluate", M{"expression": "if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)"}, "")
+	_, _ = h.CDP("Runtime.evaluate", M{"expression": tabs.Unmark}, "")
 	if activate {
 		if _, err := h.ActivateTab(target); err != nil {
 			return "", err
 		}
 	}
-	r, err := h.send(M{"meta": "attach", "target_id": target}, callTimeout)
+	sid, err := h.attachSession(target)
 	if err != nil {
 		return "", err
 	}
-	sid, _ := r["session_id"].(string)
 	if h.agent == "" { // an agent switches only its own tab, never the daemon's shared one
 		if _, err := h.send(M{"meta": "set_session", "session_id": sid, "target_id": target}, callTimeout); err != nil {
 			return "", err
 		}
 	}
-	if !markerOff() {
-		_, _ = h.CDP("Runtime.evaluate", M{"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"}, sid)
+	if tabs.Marked() {
+		_, _ = h.CDP("Runtime.evaluate", M{"expression": tabs.Mark}, sid)
 	}
 	return sid, h.adopt(target)
 }
@@ -838,16 +826,13 @@ func (h *H) NewTab(url string) (string, error) {
 		if cur, err := h.CurrentTab(); err == nil {
 			id, _ := cur["targetId"].(string)
 			u, _ := cur["url"].(string)
-			blank := u == "" || u == "about:blank" || u == "data:text/html," || strings.HasPrefix(u, "about:blank#") ||
-				strings.HasPrefix(u, "chrome://newtab") || strings.HasPrefix(u, "chrome://new-tab-page") ||
-				strings.HasPrefix(u, "edge://newtab") || strings.HasPrefix(u, "about:newtab")
+			blank := u == "" || u == "data:text/html," || tabs.AboutBlank(u) || tabs.NewTabPage(u)
 			if blank && !h.opened[id] && !h.named(id) && h.claim(id) {
 				// Navigate that tab by its own session: another snippet may switch the daemon meanwhile.
-				a, err := h.send(M{"meta": "attach", "target_id": id}, callTimeout)
+				sid, err := h.attachSession(id)
 				if err != nil {
 					return "", err
 				}
-				sid, _ := a["session_id"].(string)
 				if _, err := h.gotoOn(url, sid); err != nil {
 					return "", err
 				}
@@ -888,25 +873,24 @@ func (h *H) CloseTab(target string) error {
 	}
 	_, err := h.CDP("Target.closeTarget", M{"targetId": target}, "")
 	if err == nil && h.agent != "" && target == h.Target {
-		h.Target, h.session = "", "" // back to the daemon's attached tab
-		_, err = h.send(M{"meta": "agent_tab", "agent": h.agent, "set": ""}, callTimeout)
+		err = h.dropAgentTab()
 	}
 	return err
 }
 
 func (h *H) EnsureRealTab() (Tab, error) {
-	tabs, err := h.ListTabs(false)
-	if err != nil || len(tabs) == 0 {
+	open, err := h.ListTabs(false)
+	if err != nil || len(open) == 0 {
 		return nil, err
 	}
 	if cur, err := h.CurrentTab(); err == nil {
-		if u, _ := cur["url"].(string); u != "" && !isInternal(u) {
+		if u, _ := cur["url"].(string); u != "" && !tabs.Internal(u) {
 			return cur, nil
 		}
 	}
-	id, _ := tabs[0]["targetId"].(string)
+	id, _ := open[0]["targetId"].(string)
 	_, err = h.SwitchTab(id, false)
-	return tabs[0], err
+	return open[0], err
 }
 
 func (h *H) IframeTarget(urlSubstr string) (string, error) {
@@ -1027,7 +1011,7 @@ func HTTPGet(url string, headers map[string]string, timeout float64) (string, er
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("HTTP Error %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+		return "", fmt.Errorf("http_get: %s", resp.Status)
 	}
 	var body io.Reader = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {

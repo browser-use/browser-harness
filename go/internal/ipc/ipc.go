@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/paths"
+	"github.com/browser-use/browser-harness/go/internal/proc"
 )
 
 const IsWindows = runtime.GOOS == "windows"
@@ -33,28 +34,21 @@ func Check(name string) error {
 	return nil
 }
 
-func runtimeIsolated() bool {
-	return runtimeDirEnv() != "" && os.Getenv("BH_RUNTIME_DIR_SHARED") != "1"
+// Name is the default daemon name: BU_NAME, else "default".
+func Name() string {
+	if n := os.Getenv("BU_NAME"); n != "" {
+		return n
+	}
+	return "default"
 }
+
+// Isolated is true when BH_RUNTIME_DIR holds a single daemon, named plain "bu".
+func Isolated() bool {
+	return os.Getenv("BH_RUNTIME_DIR") != "" && os.Getenv("BH_RUNTIME_DIR_SHARED") != "1"
+}
+
 func tmpIsolated() bool {
 	return os.Getenv("BH_TMP_DIR") != "" && os.Getenv("BH_TMP_DIR_SHARED") != "1"
-}
-
-// BH_RUNTIME_DIR falls back to BH_TMP_DIR for legacy single-dir callers.
-func runtimeDirEnv() string {
-	if v := os.Getenv("BH_RUNTIME_DIR"); v != "" {
-		return v
-	}
-	return os.Getenv("BH_TMP_DIR")
-}
-
-// RuntimeDir is where sockets, port files and PID files live.
-func RuntimeDir() string {
-	if v := runtimeDirEnv(); v != "" {
-		a, _ := filepath.Abs(v)
-		return paths.EnsurePrivateDir(a)
-	}
-	return paths.RuntimeDir()
 }
 
 func stem(name string, isolated bool) string {
@@ -67,14 +61,15 @@ func stem(name string, isolated bool) string {
 func LogPath(name string) string {
 	return filepath.Join(paths.TmpDir(), stem(name, tmpIsolated())+".log")
 }
-func PidPath(name string) string {
-	return filepath.Join(RuntimeDir(), stem(name, runtimeIsolated())+".pid")
-}
-func PortPath(name string) string {
-	return filepath.Join(RuntimeDir(), stem(name, runtimeIsolated())+".port")
-}
-func SockPath(name string) string {
-	return filepath.Join(RuntimeDir(), stem(name, runtimeIsolated())+".sock")
+func PidPath(name string) string  { return runtimePath(name, ".pid") }
+func PortPath(name string) string { return runtimePath(name, ".port") }
+func SockPath(name string) string { return runtimePath(name, ".sock") }
+
+// LockPath is the file lock serialising daemon starts for name; kind tells locks apart.
+func LockPath(name, kind string) string { return runtimePath(name, "."+kind+"lock") }
+
+func runtimePath(name, ext string) string {
+	return filepath.Join(paths.RuntimeDir(), stem(name, Isolated())+ext)
 }
 
 // SockAddr is display-only.
@@ -85,7 +80,7 @@ func SockAddr(name string) string {
 	if port, _, err := readPortFile(name); err == nil {
 		return fmt.Sprintf("127.0.0.1:%d", port)
 	}
-	return "tcp:" + stem(name, runtimeIsolated())
+	return "tcp:" + stem(name, Isolated())
 }
 
 func readPortFile(name string) (int, string, error) {
@@ -110,19 +105,15 @@ type Conn struct {
 }
 
 func Connect(name string, timeout time.Duration) (*Conn, error) {
-	if !IsWindows {
-		c, err := (&net.Dialer{Timeout: timeout}).DialContext(context.Background(), "unix", SockPath(name))
+	network, addr, token := "unix", SockPath(name), ""
+	if IsWindows {
+		port, t, err := readPortFile(name)
 		if err != nil {
 			return nil, err
 		}
-		_ = c.SetDeadline(time.Now().Add(timeout))
-		return &Conn{Conn: c}, nil
+		network, addr, token = "tcp", fmt.Sprintf("127.0.0.1:%d", port), t
 	}
-	port, token, err := readPortFile(name)
-	if err != nil {
-		return nil, err
-	}
-	c, err := (&net.Dialer{Timeout: timeout}).DialContext(context.Background(), "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	c, err := (&net.Dialer{Timeout: timeout}).DialContext(context.Background(), network, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -200,12 +191,7 @@ func Identify(name string, timeout time.Duration) int {
 }
 
 // Listen binds the daemon endpoint and returns the listener plus the Windows token.
-func Listen(name string) (net.Listener, string, error) {
-	return ListenContext(context.Background(), name)
-}
-
-// ListenContext binds the daemon endpoint using ctx.
-func ListenContext(ctx context.Context, name string) (net.Listener, string, error) {
+func Listen(ctx context.Context, name string) (net.Listener, string, error) {
 	if !IsWindows {
 		p := SockPath(name)
 		_ = os.Remove(p)
@@ -222,29 +208,52 @@ func ListenContext(ctx context.Context, name string) (net.Listener, string, erro
 	buf := make([]byte, 32)
 	_, _ = rand.Read(buf)
 	token := hex.EncodeToString(buf)
-	pf := PortPath(name)
 	data, err := json.Marshal(map[string]any{"port": l.Addr().(*net.TCPAddr).Port, "token": token})
 	if err != nil {
 		_ = l.Close()
 		return nil, "", err
 	}
-	tmp := pf + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		_ = l.Close()
-		return nil, "", err
-	}
-	if err := os.Rename(tmp, pf); err != nil {
+	if err := paths.WriteFileAtomic(PortPath(name), data, 0o600); err != nil {
 		_ = l.Close()
 		return nil, "", err
 	}
 	return l, token, nil
 }
 
-// CleanupEndpoint removes the socket or port file; silent when already gone.
-func CleanupEndpoint(name string) {
+// EndpointPath is the file a client connects through: the socket, or the port file on Windows.
+func EndpointPath(name string) string {
 	if IsWindows {
-		_ = os.Remove(PortPath(name))
-	} else {
-		_ = os.Remove(SockPath(name))
+		return PortPath(name)
 	}
+	return SockPath(name)
+}
+
+// CleanupEndpoint removes the endpoint file; silent when already gone.
+func CleanupEndpoint(name string) { _ = os.Remove(EndpointPath(name)) }
+
+// WritePid records pid as name's daemon, with its start time so a reused PID is never mistaken for it.
+func WritePid(name string, pid int) {
+	var started any
+	if fp := proc.StartTime(pid); fp != "" {
+		started = fp
+	}
+	if b, err := json.Marshal(map[string]any{"pid": pid, "started": started}); err == nil {
+		_ = paths.WriteFileAtomic(PidPath(name), b, 0o600)
+	}
+}
+
+// ReadPid is the recorded daemon PID and start time; pid is 0 when there is no record.
+func ReadPid(name string) (pid int, started string) {
+	raw, err := os.ReadFile(PidPath(name)) //nolint:gosec // The path is derived from the validated daemon name.
+	if err != nil {
+		return 0, ""
+	}
+	var rec struct {
+		PID     int    `json:"pid"`
+		Started string `json:"started"`
+	}
+	if json.Unmarshal(raw, &rec) != nil {
+		return 0, ""
+	}
+	return rec.PID, rec.Started
 }

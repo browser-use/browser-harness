@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -85,7 +86,7 @@ func approveRemoteDebugging() (string, string) {
 	if macDaemonReady() {
 		return "ready", ""
 	}
-	if !contains(macToggleProfiles(), macChromeRoot()) {
+	if !slices.Contains(macToggleProfiles(), macChromeRoot()) {
 		return "setup-required", `first enable "Allow remote debugging for this browser instance" at ` +
 			"chrome://inspect/#remote-debugging, then run `browser-harness mac-approve` again"
 	}

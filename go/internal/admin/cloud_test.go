@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/browser-use/browser-harness/go/internal/daemon"
+	"github.com/browser-use/browser-harness/go/internal/cloud"
 	"github.com/browser-use/browser-harness/go/internal/ipc"
 )
 
@@ -34,9 +34,9 @@ func TestCleanupCloudBrowsers(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	prev := daemon.BUAPI
-	daemon.BUAPI = srv.URL
-	defer func() { daemon.BUAPI = prev }()
+	prev := cloud.API
+	cloud.API = srv.URL
+	defer func() { cloud.API = prev }()
 	t.Setenv("BROWSER_USE_API_KEY", "test")
 
 	got, err := CleanupCloudBrowsers(30*time.Minute, true)
@@ -65,7 +65,7 @@ func TestReloadKeepsCloudDaemonWhoseStopFailed(t *testing.T) {
 		t.Skip(err)
 	}
 	defer sleeper.Process.Kill()
-	l, _, err := ipc.Listen("cloudt")
+	l, _, err := ipc.Listen(t.Context(), "cloudt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,15 +103,15 @@ func TestReloadKeepsCloudDaemonWhoseStopFailed(t *testing.T) {
 // Goroutines of one process must not both hold the start lock.
 func TestStartLockSerialisesGoroutines(t *testing.T) {
 	t.Setenv("BH_RUNTIME_DIR", t.TempDir())
-	first, err := acquireStartLock("same", time.Second)
+	first, err := lockStart("same", "start", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := acquireStartLock("same", 300*time.Millisecond); err == nil {
+	if _, err := lockStart("same", "start", 300*time.Millisecond); err == nil {
 		t.Fatal("second holder in the same process")
 	}
 	first.release()
-	again, err := acquireStartLock("same", time.Second)
+	again, err := lockStart("same", "start", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestStartLockSerialisesGoroutines(t *testing.T) {
 // Doctor reads kind, tab count, names and per-agent tabs from the daemon status.
 func TestConnectionCarriesTabsAndAgents(t *testing.T) {
 	t.Setenv("BH_RUNTIME_DIR", t.TempDir())
-	l, _, err := ipc.Listen("doc")
+	l, _, err := ipc.Listen(t.Context(), "doc")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -238,7 +238,7 @@ func review(rec string) (int, error) {
 	if err := contactSheet(caps, report.ContactSheet, "PRIVACY · EVERY BEAT · EXACT CLICK + RESULT"); err != nil {
 		return 0, err
 	}
-	if report.ArtifactHashes, err = hashes(rec, reviewed); err != nil {
+	if report.ArtifactHashes, err = hashes(rec, reviewed, false); err != nil {
 		return 0, err
 	}
 	if err := writeJSON(filepath.Join(rec, "renderer-review.json"), report); err != nil {
@@ -250,18 +250,6 @@ func review(rec string) (int, error) {
 		return 1, nil
 	}
 	return 0, nil
-}
-
-func hashes(rec string, names []string) (map[string]string, error) {
-	out := map[string]string{}
-	for _, n := range names {
-		h, err := fileHash(filepath.Join(rec, n))
-		if err != nil {
-			return nil, err
-		}
-		out[n] = h
-	}
-	return out, nil
 }
 
 // --- images ---
@@ -430,7 +418,7 @@ func export(rec, output string, reviewedFlag bool) error {
 	if cur, _ := os.ReadFile(filepath.Join(rec, "composition.js")); !bytes.Equal(cur, comp) { //nolint:gosec // Read the composition from the selected local recording.
 		return errors.New("composition.js is not the current compiled brief; rerun review")
 	}
-	now, err := hashes(rec, reviewed)
+	now, err := hashes(rec, reviewed, false)
 	if err != nil {
 		return err
 	}

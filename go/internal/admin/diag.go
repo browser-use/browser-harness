@@ -13,6 +13,7 @@ import (
 
 	"github.com/browser-use/browser-harness/go/internal/auth"
 	"github.com/browser-use/browser-harness/go/internal/helpers"
+	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/paths"
 	"github.com/browser-use/browser-harness/go/internal/version"
 )
@@ -105,18 +106,6 @@ func osRelease() string {
 	return strings.TrimSpace(string(out))
 }
 
-func platformName() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "Darwin"
-	case "windows":
-		return "Windows"
-	case "linux":
-		return "Linux"
-	}
-	return runtime.GOOS
-}
-
 // Doctor prints read-only diagnostics; 0 iff Chrome and the daemon are healthy.
 func Doctor() int {
 	cur := Version()
@@ -142,7 +131,7 @@ func Doctor() int {
 		fmt.Printf("  [%s] %s%s\n", mark, label, detail)
 	}
 	fmt.Println("browser-harness doctor")
-	fmt.Printf("  platform          %s %s\n", platformName(), osRelease())
+	fmt.Printf("  platform          %s/%s %s\n", runtime.GOOS, runtime.GOARCH, osRelease())
 	fmt.Printf("  version           %s (%s)\n", cur, InstallMode())
 	if InstallMode() == "release" {
 		fmt.Println("  upgrade           rerun the install command in install.md")
@@ -238,7 +227,7 @@ func DoctorJSON(strict bool) int {
 	raw, err := json.Marshal(map[string]any{
 		"schema_version": 1, "healthy": ok, "require_existing_daemon": strict, "version": Version(),
 		"install_mode": InstallMode(), "chrome_running": chrome, "chrome_needed": chromeNeeded(),
-		"daemon":   map[string]any{"name": Name(), "alive": up, "browser_ready": ready},
+		"daemon":   map[string]any{"name": ipc.Name(), "alive": up, "browser_ready": ready},
 		"agent_id": agent, "connections": conns,
 	})
 	if err != nil {

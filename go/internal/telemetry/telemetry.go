@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/browser-use/browser-harness/go/internal/proc"
 	"github.com/browser-use/browser-harness/go/internal/version"
 
 	"github.com/browser-use/browser-harness/go/internal/paths"
@@ -29,11 +30,8 @@ const (
 )
 
 var (
-	disableEnvs   = []string{"BH_TELEMETRY", "BROWSER_HARNESS_TELEMETRY", "ANONYMIZED_TELEMETRY"}
-	forbiddenKeys = []string{"api_key", "content", "cookie", "email", "href", "key", "message", "password", "path",
-		"prompt", "query", "secret", "selector", "text", "title", "token", "url", "uri"}
+	disableEnvs = []string{"BH_TELEMETRY", "BROWSER_HARNESS_TELEMETRY", "ANONYMIZED_TELEMETRY"}
 	installIDRE = regexp.MustCompile(`^[0-9a-f-]{32,36}$`)
-	unsafeKeyRE = regexp.MustCompile(`[^A-Za-z0-9_$.-]+`)
 )
 
 func configPath() string { return filepath.Join(paths.ConfigDir(), "telemetry.json") }
@@ -50,21 +48,14 @@ func load() map[string]any {
 }
 
 func save(m map[string]any) {
-	p := configPath()
-	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	raw := indent(m)
-	if raw == nil {
-		return
-	}
-	if os.WriteFile(p, raw, 0o600) == nil && runtime.GOOS != "windows" {
-		_ = os.Chmod(p, 0o600)
+	if raw := indent(m); raw != nil {
+		_ = paths.WriteFileAtomic(configPath(), raw, 0o600)
 	}
 }
 
 func envDisabled() bool {
 	for _, k := range disableEnvs {
-		switch strings.ToLower(os.Getenv(k)) {
-		case "0", "false", "no", "off":
+		if paths.Disabled(os.Getenv(k)) {
 			return true
 		}
 	}
@@ -92,21 +83,7 @@ func installID(m map[string]any, create bool) any {
 	return id
 }
 
-func disabledByConfig(m map[string]any) bool { return truthy(m["disabled"]) }
-
-func truthy(v any) bool {
-	switch t := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return t
-	case float64:
-		return t != 0
-	case string:
-		return t != ""
-	}
-	return true
-}
+func disabledByConfig(m map[string]any) bool { return m["disabled"] == true }
 
 func Enabled() bool { return !envDisabled() && !disabledByConfig(load()) }
 
@@ -159,34 +136,6 @@ func agentClient() any {
 	return nil
 }
 
-func machine() string {
-	switch runtime.GOARCH {
-	case "amd64":
-		if runtime.GOOS == "windows" {
-			return "AMD64"
-		}
-		return "x86_64"
-	case "arm64":
-		if runtime.GOOS == "linux" {
-			return "aarch64"
-		}
-		return "arm64"
-	}
-	return runtime.GOARCH
-}
-
-func osName() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "Darwin"
-	case "windows":
-		return "Windows"
-	case "linux":
-		return "Linux"
-	}
-	return "unknown"
-}
-
 func orNil(s string) any {
 	if s == "" {
 		return nil
@@ -196,7 +145,7 @@ func orNil(s string) any {
 
 func base() map[string]any {
 	return map[string]any{"browser_harness_version": version.Version,
-		"os": osName(), "machine": machine()}
+		"os": runtime.GOOS, "machine": runtime.GOARCH}
 }
 
 func cdpHostname() any {
@@ -295,46 +244,6 @@ func errorClass(msg string, steps []any) string {
 
 var jsErrorRE = regexp.MustCompile(`^(Error|EvalError|RangeError|ReferenceError|SyntaxError|TypeError|URIError|AggregateError|GoError)\b`)
 
-// Capture sends an event with scrubbed properties.
-func Capture(event string, props map[string]any) {
-	if !Enabled() {
-		return
-	}
-	all := base()
-	all["$process_person_profile"] = false
-	for k, v := range props {
-		safe := unsafeKeyRE.ReplaceAllString(k, "_")
-		if len(safe) > 80 {
-			safe = safe[:80]
-		}
-		low := strings.ToLower(safe)
-		skip := safe == ""
-		for _, f := range forbiddenKeys {
-			if strings.Contains(low, f) {
-				skip = true
-			}
-		}
-		if skip {
-			continue
-		}
-		switch t := v.(type) {
-		case nil, bool, int, float64:
-			all[safe] = t
-		default:
-			s := fmt.Sprint(t)
-			if strings.Contains(s, "://") {
-				s = "[redacted]"
-			}
-			if r := []rune(s); len(r) > 120 {
-				s = string(r[:120])
-			}
-			all[safe] = s
-		}
-	}
-	send(map[string]any{"api_key": posthogKey, "distinct_id": installID(load(), true),
-		"event": event, "properties": all})
-}
-
 // send hands the payload to a detached copy of this binary so the CLI never blocks.
 func send(payload map[string]any) {
 	host := strings.TrimRight(os.Getenv("BH_POSTHOG_HOST"), "/")
@@ -366,7 +275,7 @@ func send(payload map[string]any) {
 		return
 	}
 	cmd := exec.CommandContext(context.Background(), self, "__telemetry-send", f.Name()) //nolint:gosec // Start this binary as the detached telemetry sender.
-	Detach(cmd)
+	proc.Detach(cmd)
 	if cmd.Start() != nil {
 		_ = os.Remove(f.Name())
 		return

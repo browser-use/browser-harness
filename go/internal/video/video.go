@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/browser-use/browser-harness/go/internal/assets"
@@ -540,7 +541,7 @@ func checkPrivacy(c *Composition) error {
 		return errors.New("privacy review missing: " + strings.Join(missing, ", "))
 	}
 	for frame, rects := range c.Redact {
-		if !containsStr(frames, frame) {
+		if !slices.Contains(frames, frame) {
 			return fmt.Errorf("privacy.redact lists unused frame %s", frame)
 		}
 		for i, r := range rects {
@@ -556,15 +557,6 @@ func checkPrivacy(c *Composition) error {
 		}
 	}
 	return nil
-}
-
-func containsStr(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 // --- files ---
@@ -618,10 +610,15 @@ func sourceHashes(rec string) (map[string]string, error) {
 	for _, f := range frames {
 		names = append(names, filepath.Base(f))
 	}
+	return hashes(rec, names, true)
+}
+
+// hashes is the SHA-256 of each named file in rec; a missing file is an error unless optional.
+func hashes(rec string, names []string, optional bool) (map[string]string, error) {
 	out := map[string]string{}
 	for _, n := range names {
 		h, err := fileHash(filepath.Join(rec, n))
-		if errors.Is(err, os.ErrNotExist) {
+		if optional && errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {

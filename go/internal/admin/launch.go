@@ -7,12 +7,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/auth"
 	"github.com/browser-use/browser-harness/go/internal/browser"
 	"github.com/browser-use/browser-harness/go/internal/paths"
+	"github.com/browser-use/browser-harness/go/internal/proc"
 )
 
 type launchSpec struct {
@@ -112,7 +114,7 @@ func hasLocalState(base string) bool {
 // launchBrowser prefers the browser whose profile already has the inspect toggle on.
 // openApp runs macOS `open`; tests override it.
 var openApp = func(args ...string) error {
-	_, err := runWithTimeout(exec.CommandContext(context.Background(), "open", args...), 10*time.Second) //nolint:gosec // Open the selected browser application with explicit arguments.
+	_, err := proc.Output(10*time.Second, "open", args...)
 	return err
 }
 
@@ -120,7 +122,7 @@ func launchBrowser() *launchResult {
 	enabled := browser.RemoteDebuggingToggleProfiles()
 	known := append([]string{}, enabled...)
 	for _, b := range browser.ProfileDirs() {
-		if !contains(enabled, b) && hasLocalState(b) {
+		if !slices.Contains(enabled, b) && hasLocalState(b) {
 			known = append(known, b)
 		}
 	}
@@ -137,7 +139,7 @@ func launchBrowser() *launchResult {
 			continue
 		}
 		cmd := exec.CommandContext(context.Background(), raw) //nolint:gosec // The operator selects the browser executable.
-		detach(cmd)
+		proc.Detach(cmd)
 		if cmd.Start() != nil {
 			continue // exists but cannot execute: fall through to discovery
 		}
@@ -191,7 +193,7 @@ func launchBrowser() *launchResult {
 			target = "chrome"
 		}
 		cmd := exec.CommandContext(context.Background(), "cmd", append([]string{"/c", "start", "", target}, args...)...) //nolint:gosec // Launch a known browser target with profile arguments.
-		detach(cmd)
+		proc.Detach(cmd)
 		if cmd.Start() != nil {
 			return nil
 		}
@@ -205,7 +207,7 @@ func launchBrowser() *launchResult {
 	for _, c := range cmds {
 		if p, err := exec.LookPath(c); err == nil {
 			cmd := exec.CommandContext(context.Background(), p, args...) //nolint:gosec // Launch a discovered browser executable with profile arguments.
-			detach(cmd)
+			proc.Detach(cmd)
 			if cmd.Start() != nil {
 				return nil
 			}
@@ -218,21 +220,20 @@ func launchBrowser() *launchResult {
 
 // cleanupUnattachedLaunch stops a browser we launched when the daemon attached elsewhere.
 func cleanupUnattachedLaunch(l *launchResult) {
-	if l == nil || l.proc == nil || l.profile == "" || !alive(l.proc.Pid) {
+	if l == nil || l.proc == nil || l.profile == "" || !proc.Alive(l.proc.Pid) {
 		return
 	}
-	if browser.DevtoolsPortLive(l.profile) {
+	if browser.DevtoolsPortLive(context.Background(), l.profile) {
 		return
 	}
-	terminateGroup(l.proc)
+	proc.TerminateGroup(l.proc)
 }
 
 func openChromeInspect() bool {
 	const u = "chrome://inspect/#remote-debugging"
 	if runtime.GOOS == "darwin" {
-		cmd := exec.CommandContext(context.Background(), "osascript", "-e", `tell application "Google Chrome" to activate`,
-			"-e", `tell application "Google Chrome" to open location "`+u+`"`)
-		if _, err := runWithTimeout(cmd, 5*time.Second); err == nil {
+		if _, err := proc.Output(5*time.Second, "osascript", "-e", `tell application "Google Chrome" to activate`,
+			"-e", `tell application "Google Chrome" to open location "`+u+`"`); err == nil {
 			return true
 		}
 	}
@@ -262,10 +263,10 @@ func chromeRunning() bool {
 	var err error
 	var names []string
 	if runtime.GOOS == "windows" {
-		out, err = runWithTimeout(exec.CommandContext(context.Background(), "tasklist"), 5*time.Second)
+		out, err = proc.Output(5*time.Second, "tasklist")
 		names = []string{"chrome.exe", "msedge.exe", "helium.exe"}
 	} else {
-		out, err = runWithTimeout(exec.CommandContext(context.Background(), "ps", "-A", "-o", "comm="), 5*time.Second)
+		out, err = proc.Output(5*time.Second, "ps", "-A", "-o", "comm=")
 		names = []string{"Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium"}
 	}
 	if err != nil {
@@ -274,15 +275,6 @@ func chromeRunning() bool {
 	low := strings.ToLower(out)
 	for _, n := range names {
 		if strings.Contains(low, strings.ToLower(n)) {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
 			return true
 		}
 	}

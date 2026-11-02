@@ -14,19 +14,13 @@ import (
 
 	"github.com/browser-use/browser-harness/go/internal/browser"
 	"github.com/browser-use/browser-harness/go/internal/ipc"
+	"github.com/browser-use/browser-harness/go/internal/paths"
+	"github.com/browser-use/browser-harness/go/internal/proc"
 )
-
-// Name is the default daemon name (BU_NAME or "default").
-func Name() string {
-	if n := os.Getenv("BU_NAME"); n != "" {
-		return n
-	}
-	return "default"
-}
 
 func pick(name string) string {
 	if name == "" {
-		return Name()
+		return ipc.Name()
 	}
 	return name
 }
@@ -126,20 +120,17 @@ func endpointNames() []string {
 	if ipc.IsWindows {
 		suffix = ".port"
 	}
-	dir := ipc.RuntimeDir()
-	if (os.Getenv("BH_RUNTIME_DIR") != "" || os.Getenv("BH_TMP_DIR") != "") && os.Getenv("BH_RUNTIME_DIR_SHARED") != "1" {
-		if _, err := os.Stat(dir + string(os.PathSeparator) + "bu" + suffix); err == nil {
-			return []string{Name()}
+	if ipc.Isolated() {
+		if _, err := os.Stat(ipc.EndpointPath("")); err == nil {
+			return []string{ipc.Name()}
 		}
 		return nil
 	}
-	entries, _ := os.ReadDir(dir)
+	entries, _ := os.ReadDir(paths.RuntimeDir())
 	var names []string
 	for _, e := range entries {
-		n := e.Name()
-		if strings.HasPrefix(n, "bu-") && strings.HasSuffix(n, suffix) {
-			raw := n[3 : len(n)-len(suffix)]
-			if ipc.Check(raw) == nil {
+		if raw, ok := strings.CutPrefix(e.Name(), "bu-"); ok {
+			if raw, ok = strings.CutSuffix(raw, suffix); ok && ipc.Check(raw) == nil {
 				names = append(names, raw)
 			}
 		}
@@ -158,13 +149,16 @@ func BrowserConnections() []Connection {
 	return out
 }
 
-func healthy(name string, timeout time.Duration) bool {
+// healthy is a real CDP round trip: stale daemons still answer meta requests.
+func healthy(name string, timeout time.Duration) error {
 	m, err := ipc.Call(name, timeout, map[string]any{"method": "Target.getTargets", "params": map[string]any{}})
 	if err != nil {
-		return false
+		return err
 	}
-	_, ok := m["result"]
-	return ok
+	if _, ok := m["result"]; !ok {
+		return errors.New("no CDP result")
+	}
+	return nil
 }
 
 func isLocalMode(env map[string]string) bool {
@@ -214,7 +208,7 @@ func spawnDaemon(name string, env map[string]string) (*spawned, error) {
 		cmd.Stderr = f
 		defer func() { _ = f.Close() }()
 	}
-	detach(cmd)
+	proc.Detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -249,9 +243,8 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 		return err
 	}
 	if DaemonAlive(name) {
-		// Stale daemons still answer meta requests; require a real CDP result.
 		for i := 0; i < 2; i++ {
-			if healthy(n, 3*time.Second) {
+			if healthy(n, 3*time.Second) == nil {
 				return nil
 			}
 			if i == 0 {
@@ -278,12 +271,12 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 	approvalUnbounded := local && !explicit
 	var launched *launchResult
 	for attempt := 0; attempt < 3; attempt++ {
-		var proc *spawned
+		var child *spawned
 		pending := 0
 		if local {
-			lk := acquireSpawnLock(n, time.Duration(startupWait*float64(time.Second)))
-			if !lk.held {
-				return errors.New("daemon-starting: another browser-harness daemon is still starting; retry later")
+			lk, err := lockStart(n, "spawn", time.Duration(startupWait*float64(time.Second)))
+			if err != nil {
+				return err
 			}
 			if DaemonAlive(name) {
 				lk.release()
@@ -299,14 +292,14 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 					lk.release()
 					return err
 				}
-				publishPid(ipc.PidPath(n), p.pid)
-				proc, pending = p, p.pid
+				ipc.WritePid(n, p.pid)
+				child, pending = p, p.pid
 			}
 			lk.release()
 		} else {
 			// Held until the daemon answers, so concurrent callers find it instead of spawning more.
 			if !startLocked {
-				lk, err := acquireStartLock(n, time.Duration((startupWait+5)*float64(time.Second)))
+				lk, err := lockStart(n, "start", time.Duration((startupWait+5)*float64(time.Second)))
 				if err != nil {
 					return err
 				}
@@ -320,7 +313,7 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 			if err != nil {
 				return err
 			}
-			proc = p
+			child = p
 		}
 		spawned := time.Now()
 		deadline := spawned.Add(time.Duration(startupWait * float64(time.Second)))
@@ -333,11 +326,11 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 				cleanupUnattachedLaunch(launched)
 				return nil
 			}
-			if proc.exited() {
+			if child.exited() {
 				pendingDied = true
 				break
 			}
-			if proc == nil && pending != 0 && pendingPid(ipc.PidPath(n)) != pending {
+			if child == nil && pending != 0 && startingDaemonPid(n) != pending {
 				pendingDied = true
 				break
 			}
@@ -366,8 +359,8 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 		permissionWait := local && (strings.HasPrefix(msg, "handshake-wait") || needsPermissionPopup(msg))
 		if local && pendingDied {
 			// Remove only the generation we observed; a successor may already be live.
-			if lk := acquireSpawnLock(n, time.Second); lk.held {
-				if pidNumber(ipc.PidPath(n)) == pending {
+			if lk, err := lockStart(n, "spawn", time.Second); err == nil {
+				if pid, _ := ipc.ReadPid(n); pid == pending {
 					_ = os.Remove(ipc.PidPath(n))
 				}
 				lk.release()
@@ -395,13 +388,13 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 			}
 			fmt.Fprintln(os.Stderr, "browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.")
 			boot := time.Now().Add(15 * time.Second)
-			for time.Now().Before(boot) && !browser.SupportedBrowserRunning() {
+			for time.Now().Before(boot) && !browser.SupportedBrowserRunning(context.Background()) {
 				time.Sleep(300 * time.Millisecond)
 			}
 			continue
 		}
 		if local && needsRemoteDebuggingPrompt(msg) {
-			if v := browser.RemoteDebuggingUserEnabled(); v != nil && *v {
+			if v := browser.RemoteDebuggingUserEnabled(context.Background()); v != nil && *v {
 				fmt.Fprintln(os.Stderr, "browser-harness: Chrome is asking \"Allow remote debugging?\". Approve that exact popup; no replacement connection was started.")
 				return errors.New("permission-blocked: Chrome did not approve the connection; browser-harness did not retry or create another connection.")
 			}
@@ -427,16 +420,24 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 func RequireExistingDaemon(name string) error {
 	n := pick(name)
 	if !DaemonAlive(n) {
-		return fmt.Errorf("required daemon %s is not running", quoted(n))
+		return fmt.Errorf("required daemon %q is not running", n)
 	}
-	m, err := ipc.Call(n, 3*time.Second, map[string]any{"method": "Target.getTargets", "params": map[string]any{}})
-	if err != nil {
-		return fmt.Errorf("required daemon %s is unhealthy: %w", quoted(n), err)
-	}
-	if _, ok := m["result"]; !ok {
-		return fmt.Errorf("required daemon %s failed its CDP health check", quoted(n))
+	if err := healthy(n, 3*time.Second); err != nil {
+		return fmt.Errorf("required daemon %q is unhealthy: %w", n, err)
 	}
 	return nil
+}
+
+// Connect makes sure name's daemon runs: with BH_REQUIRE_EXISTING_DAEMON=1 it must
+// already, otherwise it is started.
+func Connect(name string) error {
+	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
+		return RequireExistingDaemon(name)
+	}
+	if DaemonAlive(name) {
+		return nil
+	}
+	return EnsureDaemon(-1, name, nil)
 }
 
 // StopRemoteDaemon cleanly stops a daemon and its billable cloud browser.
@@ -447,8 +448,6 @@ func StopRemoteDaemon(name string) error {
 	return RestartDaemon(name, true)
 }
 
-func quoted(s string) string { return "'" + s + "'" }
-
 // RestartDaemon stops a daemon (callers re-spawn via EnsureDaemon). Signals are
 // only sent to a process whose identity is verified by IPC or start fingerprint.
 func RestartDaemon(name string, requireClean bool) error {
@@ -456,43 +455,36 @@ func RestartDaemon(name string, requireClean bool) error {
 	if err := ipc.Check(n); err != nil {
 		return err
 	}
-	pidPath := ipc.PidPath(n)
-	var pendingGen *generation
-	pendingUnverified := false
+	var pendingGen generation
+	pending := false
 	if strings.HasPrefix(logTail(n), "handshake-wait") {
-		parked := parkedDaemonPid(n)
-		pendingGen = fingerprintedGeneration(pidPath)
-		pendingUnverified = parked != 0 && pendingGen == nil
+		pendingGen, pending = liveGeneration(n)
 	}
 	daemonPid := ipc.Identify(n, 5*time.Second)
 	isAlive := daemonPid != 0 || ipc.Ping(n, time.Second)
 	if requireClean && !isAlive {
-		return fmt.Errorf("daemon %s is unavailable for required clean shutdown", quoted(n))
+		return fmt.Errorf("daemon %q is unavailable for required clean shutdown", n)
 	}
-	if !isAlive && pendingUnverified {
-		return fmt.Errorf("pending daemon %s is live but has no verifiable process fingerprint; it was not signaled and its ownership records were preserved", quoted(n))
-	}
-	if !isAlive && pendingGen != nil {
-		lk := acquireSpawnLock(n, 5*time.Second)
-		if !lk.held {
-			return fmt.Errorf("pending daemon %s is changing ownership; it was not signaled", quoted(n))
+	if !isAlive && pending {
+		lk, err := lockStart(n, "spawn", 5*time.Second)
+		if err != nil {
+			return fmt.Errorf("pending daemon %q is changing ownership; it was not signaled", n)
 		}
 		defer lk.release()
-		cur := fingerprintedGeneration(pidPath)
-		if cur == nil || *cur != *pendingGen {
-			return fmt.Errorf("pending daemon %s changed ownership; the successor was not signaled and its records were preserved", quoted(n))
+		if cur, ok := liveGeneration(n); !ok || cur != pendingGen {
+			return fmt.Errorf("pending daemon %q changed ownership; the successor was not signaled and its records were preserved", n)
 		}
 		if ipc.Ping(n, 200*time.Millisecond) {
-			return fmt.Errorf("pending daemon %s became ready during cancellation; run --reload again", quoted(n))
+			return fmt.Errorf("pending daemon %q became ready during cancellation; run --reload again", n)
 		}
-		terminate(pendingGen.PID)
+		proc.Terminate(pendingGen.PID)
 		ipc.CleanupEndpoint(n)
-		_ = os.Remove(pidPath)
+		_ = os.Remove(ipc.PidPath(n))
 		return nil
 	}
 	// The socket can vanish before the process exits (slow cloud stop), so keep a
 	// start-time fingerprint as a second identity check before any SIGTERM.
-	startFP := processStartTime(daemonPid)
+	startFP := proc.StartTime(daemonPid)
 	if isAlive {
 		cloud := DaemonBrowserKind(n) == "cloud"
 		timeout := 5 * time.Second
@@ -502,24 +494,24 @@ func RestartDaemon(name string, requireClean bool) error {
 		m, err := ipc.Call(n, timeout, map[string]any{"meta": "shutdown"})
 		if cloud && !requireClean && err == nil && m["ok"] != true {
 			// Killing it now would leave the cloud browser billing with nobody left to stop it.
-			return fmt.Errorf("daemon %s could not stop its cloud browser and was left running so you can retry: %v", quoted(n), m["error"])
+			return fmt.Errorf("daemon %q could not stop its cloud browser and was left running so you can retry: %v", n, m["error"])
 		}
 		if requireClean {
 			if err != nil {
-				return fmt.Errorf("daemon %s did not confirm clean shutdown: %w", quoted(n), err)
+				return fmt.Errorf("daemon %q did not confirm clean shutdown: %w", n, err)
 			}
-			if m["ok"] != true || truthy(m["error"]) {
+			if m["ok"] != true {
 				if e, ok := m["error"].(string); ok && e != "" {
 					return errors.New(e)
 				}
-				return fmt.Errorf("daemon %s did not confirm clean shutdown", quoted(n))
+				return fmt.Errorf("daemon %q did not confirm clean shutdown", n)
 			}
 		}
 	}
 	if daemonPid != 0 {
 		gone := false
 		for i := 0; i < 75; i++ {
-			if !alive(daemonPid) {
+			if !proc.Alive(daemonPid) {
 				gone = true
 				break
 			}
@@ -527,25 +519,12 @@ func RestartDaemon(name string, requireClean bool) error {
 		}
 		if !gone {
 			verified := ipc.Identify(n, time.Second)
-			same := verified == daemonPid || (startFP != "" && processStartTime(daemonPid) == startFP)
-			if same {
-				terminate(daemonPid)
+			if verified == daemonPid || (startFP != "" && proc.StartTime(daemonPid) == startFP) {
+				proc.Terminate(daemonPid)
 			}
 		}
 	}
 	ipc.CleanupEndpoint(n)
-	_ = os.Remove(pidPath)
+	_ = os.Remove(ipc.PidPath(n))
 	return nil
-}
-
-func truthy(v any) bool {
-	switch t := v.(type) {
-	case nil:
-		return false
-	case string:
-		return t != ""
-	case bool:
-		return t
-	}
-	return true
 }

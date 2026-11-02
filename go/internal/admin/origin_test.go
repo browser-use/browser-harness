@@ -34,13 +34,13 @@ func originProfile(t *testing.T) string {
 
 func TestOriginRunningWithoutGoogleChrome(t *testing.T) {
 	p := originProfile(t)
-	if browser.SupportedBrowserRunning() {
+	if browser.SupportedBrowserRunning(t.Context()) {
 		t.Fatal("profile directory alone counted as running")
 	}
 	if err := os.Symlink(fmt.Sprintf("test-host-%d", os.Getpid()), filepath.Join(p, "SingletonLock")); err != nil {
 		t.Fatal(err)
 	}
-	if !browser.SupportedBrowserRunning() {
+	if !browser.SupportedBrowserRunning(t.Context()) {
 		t.Fatal("running Brave Origin not detected")
 	}
 }
@@ -58,7 +58,7 @@ func TestOriginPortDiscoveryKeepsPermissionGate(t *testing.T) {
 		}))
 		u, _ := url.Parse(srv.URL)
 		_ = os.WriteFile(filepath.Join(p, "DevToolsActivePort"), []byte(u.Port()+"\n/devtools/browser/origin\n"), 0o644)
-		ws, err := browser.WSURL()
+		ws, err := browser.WSURL(t.Context())
 		srv.Close()
 		if status == 403 {
 			if err == nil || !strings.Contains(err.Error(), "permission-blocked") {

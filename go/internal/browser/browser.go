@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/browser-use/browser-harness/go/internal/proc"
 )
 
 var macProfiles = []string{
@@ -101,11 +102,7 @@ func readActivePort(base string) (port, wsPath string, ok bool) {
 }
 
 // DevtoolsPortLive is true when something listens on the profile's DevToolsActivePort.
-func DevtoolsPortLive(base string) bool {
-	return devtoolsPortLive(context.Background(), base)
-}
-
-func devtoolsPortLive(ctx context.Context, base string) bool {
+func DevtoolsPortLive(ctx context.Context, base string) bool {
 	port, _, ok := readActivePort(base)
 	if !ok {
 		return false
@@ -142,19 +139,14 @@ func remoteDebuggingFlag(base string) (val bool, set bool) {
 // RemoteDebuggingUserEnabled reports chrome://inspect's toggle: true only when a
 // toggle-on profile also has a live port; false if a profile records it off;
 // nil when no profile records it.
-func RemoteDebuggingUserEnabled() *bool {
-	return RemoteDebuggingUserEnabledContext(context.Background())
-}
-
-// RemoteDebuggingUserEnabledContext checks the toggle and probes live ports using ctx.
-func RemoteDebuggingUserEnabledContext(ctx context.Context) *bool {
+func RemoteDebuggingUserEnabled(ctx context.Context) *bool {
 	var seen *bool
 	for _, base := range ProfileDirs() {
 		v, set := remoteDebuggingFlag(base)
 		if !set {
 			continue
 		}
-		if v && devtoolsPortLive(ctx, base) {
+		if v && DevtoolsPortLive(ctx, base) {
 			t := true
 			return &t
 		}
@@ -178,11 +170,7 @@ func RemoteDebuggingToggleProfiles() []string {
 }
 
 // SupportedBrowserRunning reports whether any scanned browser is running.
-func SupportedBrowserRunning() bool {
-	return supportedBrowserRunning(context.Background())
-}
-
-func supportedBrowserRunning(ctx context.Context) bool {
+func SupportedBrowserRunning(ctx context.Context) bool {
 	if GOOS == "windows" {
 		out, err := exec.CommandContext(ctx, "tasklist").Output()
 		if err != nil {
@@ -214,35 +202,38 @@ func runningForProfile(base string) bool {
 	if err != nil {
 		return false
 	}
-	return processExists(pid)
+	return proc.Alive(pid)
 }
 
 const blockedMsg = "permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted"
 
-type httpStatusError int
+// statusError is a non-2xx reply from /json/version; 403 and 404 mean different things.
+type statusError int
 
-func (e httpStatusError) Error() string { return "HTTP Error " + strconv.Itoa(int(e)) }
+func (e statusError) Error() string {
+	return fmt.Sprintf("/json/version: %d %s", int(e), http.StatusText(int(e)))
+}
 
-func jsonVersionWS(ctx context.Context, base string, timeout time.Duration) (string, error) {
-	c := &http.Client{Timeout: timeout}
-	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(base, "/")+"/json/version", nil)
+// WebSocketURL is the browser websocket that base's /json/version advertises.
+func WebSocketURL(ctx context.Context, base string, timeout time.Duration) (string, error) {
+	u := strings.TrimRight(base, "/") + "/json/version"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", &url.Error{Op: "Get", URL: strings.TrimRight(base, "/") + "/json/version", Err: err}
+		return "", err
 	}
-	resp, err := c.Do(req)
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		return "", httpStatusError(resp.StatusCode)
+		return "", statusError(resp.StatusCode)
 	}
-	body, _ := io.ReadAll(resp.Body)
 	var v struct {
 		WS string `json:"webSocketDebuggerUrl"`
 	}
-	if err := json.Unmarshal(body, &v); err != nil || v.WS == "" {
-		return "", errors.New("no webSocketDebuggerUrl")
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil || v.WS == "" {
+		return "", fmt.Errorf("%s has no webSocketDebuggerUrl", u)
 	}
 	return v.WS, nil
 }
@@ -271,12 +262,7 @@ func WSFromActivePort(httpURL string) string {
 }
 
 // WSURL resolves the CDP websocket from BU_CDP_WS, BU_CDP_URL or local discovery.
-func WSURL() (string, error) {
-	return WSURLContext(context.Background())
-}
-
-// WSURLContext resolves the CDP websocket, using ctx for discovery I/O.
-func WSURLContext(ctx context.Context) (string, error) {
+func WSURL(ctx context.Context) (string, error) {
 	if u := os.Getenv("BU_CDP_WS"); u != "" {
 		return u, nil
 	}
@@ -284,12 +270,12 @@ func WSURLContext(ctx context.Context) (string, error) {
 		deadline := time.Now().Add(30 * time.Second)
 		var last error
 		for time.Now().Before(deadline) {
-			ws, err := jsonVersionWS(ctx, u, 5*time.Second)
+			ws, err := WebSocketURL(ctx, u, 5*time.Second)
 			if err == nil {
 				return ws, nil
 			}
 			last = err
-			var hs httpStatusError
+			var hs statusError
 			if errors.As(err, &hs) {
 				if hs == 403 {
 					return "", errors.New(blockedMsg)
@@ -319,11 +305,11 @@ func WSURLContext(ctx context.Context) (string, error) {
 			}
 			// Resolve via /json/version instead of trusting the stored path, which can
 			// be stale when another --user-data-dir once used the same port.
-			ws, err := jsonVersionWS(ctx, "http://127.0.0.1:"+port, time.Second)
+			ws, err := WebSocketURL(ctx, "http://127.0.0.1:"+port, time.Second)
 			if err == nil {
 				return ws, nil
 			}
-			var hs httpStatusError
+			var hs statusError
 			if errors.As(err, &hs) {
 				if hs == 403 {
 					return "", errors.New(blockedMsg)
@@ -335,7 +321,7 @@ func WSURLContext(ctx context.Context) (string, error) {
 		}
 		now := time.Now()
 		if !now.Before(nextLiveness) {
-			if !supportedBrowserRunning(ctx) {
+			if !SupportedBrowserRunning(ctx) {
 				return "", errors.New("chrome-not-running: no supported Chromium-family browser is running -- start Chrome, then retry")
 			}
 			nextLiveness = now.Add(2 * time.Second)
@@ -350,25 +336,17 @@ func WSURLContext(ctx context.Context) (string, error) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	for _, p := range []int{9222, 9223} {
-		ws, err := jsonVersionWS(ctx, fmt.Sprintf("http://127.0.0.1:%d", p), time.Second)
+		ws, err := WebSocketURL(ctx, fmt.Sprintf("http://127.0.0.1:%d", p), time.Second)
 		if err == nil {
 			return ws, nil
 		}
-		var hs httpStatusError
+		var hs statusError
 		if errors.As(err, &hs) && hs == 403 {
 			return "", errors.New(blockedMsg)
 		}
 	}
-	if v := RemoteDebuggingUserEnabledContext(ctx); v != nil && !*v {
+	if v := RemoteDebuggingUserEnabled(ctx); v != nil && !*v {
 		return "", errors.New(`remote debugging is turned off for this browser instance — enable chrome://inspect/#remote-debugging (tick "Allow remote debugging for this browser instance")`)
 	}
-	return "", fmt.Errorf("DevToolsActivePort not found in %s — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser", pyList(ProfileDirs()))
-}
-
-func pyList(items []string) string {
-	q := make([]string, len(items))
-	for i, s := range items {
-		q[i] = "'" + s + "'"
-	}
-	return "[" + strings.Join(q, ", ") + "]"
+	return "", fmt.Errorf("DevToolsActivePort not found in %s — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser", strings.Join(ProfileDirs(), ", "))
 }

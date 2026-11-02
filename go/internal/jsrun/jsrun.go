@@ -49,20 +49,16 @@ type runner struct {
 }
 
 func newRunner(out io.Writer) *runner {
-	r := &runner{rt: goja.New(), h: newHelpers(admin.Name()), out: out, tabs: map[[2]string]*helpers.H{}, daemons: map[string]*goja.Object{}, ready: map[*helpers.H]bool{}}
+	r := &runner{rt: goja.New(), h: newHelpers(ipc.Name()), out: out, tabs: map[[2]string]*helpers.H{}, daemons: map[string]*goja.Object{}, ready: map[*helpers.H]bool{}}
 	r.rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	r.install()
 	return r
 }
 
 // Run executes a snippet, printing to out. Uncaught errors come back with the JS stack.
-func Run(code string, out io.Writer) (Trace, error) { return run(code, out, false) }
-
-// RunLazy is Run for snippets the CLI starts without a daemon (they begin with
-// start_remote_daemon); the default daemon starts on its first browser helper.
-func RunLazy(code string, out io.Writer) (Trace, error) { return run(code, out, true) }
-
-func run(code string, out io.Writer, lazy bool) (Trace, error) {
+// lazy is for snippets the CLI starts without a daemon (they begin with
+// start_remote_daemon): the default daemon starts on their first browser helper.
+func Run(code string, out io.Writer, lazy bool) (Trace, error) {
 	r := newRunner(out)
 	r.lazy = lazy
 	if err := r.loadAgentHelpers(); err != nil {
@@ -250,14 +246,8 @@ func (r *runner) prepare(base *helpers.H) error {
 	r.ready[base] = true
 	if base == r.h && r.lazy {
 		r.lazy = false
-		if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
-			if err := admin.RequireExistingDaemon(""); err != nil {
-				return err
-			}
-		} else if !admin.DaemonAlive("") {
-			if err := admin.EnsureDaemon(-1, "", nil); err != nil {
-				return err
-			}
+		if err := admin.Connect(""); err != nil {
+			return err
 		}
 	}
 	return base.UseAgentTab(helpers.AgentID())
@@ -550,14 +540,8 @@ func (r *runner) on(name string) (*goja.Object, error) {
 	if obj := r.daemons[name]; obj != nil {
 		return obj, nil
 	}
-	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
-		if err := admin.RequireExistingDaemon(name); err != nil {
-			return nil, err
-		}
-	} else if !admin.DaemonAlive(name) {
-		if err := admin.EnsureDaemon(-1, name, nil); err != nil {
-			return nil, err
-		}
+	if err := admin.Connect(name); err != nil {
+		return nil, err
 	}
 	obj := r.rt.NewObject()
 	r.installBrowser(obj, newHelpers(name))

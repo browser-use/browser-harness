@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 func abs(p string) string {
@@ -85,22 +86,47 @@ func LoadEnv() {
 		if err != nil {
 			continue
 		}
-		s := string(raw)
-		s = trimBOM(s)
-		for _, line := range splitLines(s) {
-			line = trimSpace(line)
-			if line == "" || line[0] == '#' {
+		s := strings.ReplaceAll(strings.TrimPrefix(string(raw), "\ufeff"), "\r\n", "\n")
+		for _, line := range strings.Split(s, "\n") {
+			k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if !ok || k == "" || k[0] == '#' {
 				continue
 			}
-			i := indexByte(line, '=')
-			if i < 0 {
-				continue
-			}
-			k := trimSpace(line[:i])
-			v := trimQuotes(trimSpace(line[i+1:]))
+			k = strings.TrimSpace(k)
+			v = strings.Trim(strings.Trim(strings.TrimSpace(v), `"`), `'`)
 			if _, set := os.LookupEnv(k); !set {
 				_ = os.Setenv(k, v)
 			}
 		}
 	}
+}
+
+// Disabled reports whether an environment value turns a feature off.
+func Disabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "no", "off":
+		return true
+	}
+	return false
+}
+
+// WriteFileAtomic replaces path with data via a temporary file in the same
+// directory, so readers never see a partial file.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(f.Name(), perm)
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	return err
 }

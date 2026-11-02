@@ -6,58 +6,39 @@ import (
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/ipc"
+	"github.com/browser-use/browser-harness/go/internal/proc"
 )
 
-// spawnLock lets only one process spawn a daemon for a name at a time. Best
-// effort: when it cannot be taken, held is false and the caller decides.
-type spawnLock struct {
-	f    *os.File
-	held bool
-}
+var errStarting = errors.New("daemon-starting: another browser-harness daemon is still starting; retry later")
 
-func acquireSpawnLock(name string, timeout time.Duration) *spawnLock {
-	return acquireFileLock(name, ".spawnlock", timeout)
-}
+// fileLock is a cross-process lock on its own descriptor, so it also
+// serialises goroutines of one process. The zero value is not held.
+type fileLock struct{ f *os.File }
 
-// acquireStartLock serialises starting a cloud or BU_CDP_URL daemon for one name,
-// from before the browser is created until the daemon answers. It is a file
-// lock on its own descriptor, so it also serialises goroutines of one process.
-func acquireStartLock(name string, timeout time.Duration) (*spawnLock, error) {
-	lk := acquireFileLock(name, ".startlock", timeout)
-	if !lk.held {
-		return nil, errors.New("daemon-starting: another browser-harness daemon is still starting; retry later")
-	}
-	return lk, nil
-}
-
-func acquireFileLock(name, suffix string, timeout time.Duration) *spawnLock {
-	path := ipc.PidPath(name)
-	path = path[:len(path)-len(".pid")] + suffix
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // The lock path is derived from the validated daemon name.
+// lockStart takes name's lock of the given kind, waiting up to timeout. Kinds:
+// "spawn" guards spawning a local daemon; "start" is held from creating a cloud
+// or BU_CDP_URL browser until its daemon answers.
+func lockStart(name, kind string, timeout time.Duration) (*fileLock, error) {
+	f, err := os.OpenFile(ipc.LockPath(name, kind), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // The lock path is derived from the validated daemon name.
 	if err != nil {
-		return &spawnLock{}
+		return nil, errStarting
 	}
-	if st, err := f.Stat(); err == nil && st.Size() == 0 {
-		_, _ = f.Write([]byte("1"))
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		if tryLock(f) {
-			return &spawnLock{f: f, held: true}
+	for deadline := time.Now().Add(timeout); ; time.Sleep(100 * time.Millisecond) {
+		if proc.TryLock(f) {
+			return &fileLock{f}, nil
 		}
 		if !time.Now().Before(deadline) {
 			_ = f.Close()
-			return &spawnLock{}
+			return nil, errStarting
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func (l *spawnLock) release() {
+func (l *fileLock) release() {
 	if l == nil || l.f == nil {
 		return
 	}
-	unlockFile(l.f)
+	proc.Unlock(l.f)
 	_ = l.f.Close()
 	l.f = nil
 }
