@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,5 +43,13 @@ func TestCleanupCloudBrowsers(t *testing.T) {
 	got, err = CleanupCloudBrowsers(30*time.Minute, false)
 	if err != nil || got[0]["action"] != "stopped" || len(stopped) != 1 || stopped[0] != "/browsers/old" {
 		t.Fatalf("stop: %v %v %v", got, err, stopped)
+	}
+}
+
+func TestInvalidDaemonNamesAreRejected(t *testing.T) {
+	for _, err := range []error{EnsureDaemon(0, "../x", nil), RestartDaemon("../x", false), func() error { _, e := StartRemoteDaemon("a/b", "", nil); return e }()} {
+		if err == nil || !strings.Contains(err.Error(), "invalid BU_NAME") {
+			t.Errorf("got %v", err)
+		}
 	}
 }

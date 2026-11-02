@@ -191,6 +191,9 @@ func (s *spawned) exited() bool {
 // wait<0 means "default".
 func EnsureDaemon(wait float64, name string, env map[string]string) error {
 	n := pick(name)
+	if err := ipc.Check(n); err != nil {
+		return err
+	}
 	if DaemonAlive(name) {
 		// Stale daemons still answer meta requests; require a real CDP result.
 		for i := 0; i < 2; i++ {
@@ -386,6 +389,9 @@ func quoted(s string) string { return "'" + s + "'" }
 // only sent to a process whose identity is verified by IPC or start fingerprint.
 func RestartDaemon(name string, requireClean bool) error {
 	n := pick(name)
+	if err := ipc.Check(n); err != nil {
+		return err
+	}
 	pidPath := ipc.PidPath(n)
 	var pendingGen *generation
 	pendingUnverified := false

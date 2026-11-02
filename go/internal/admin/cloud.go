@@ -16,6 +16,7 @@ import (
 
 	"github.com/browser-use/browser-harness/go/internal/auth"
 	"github.com/browser-use/browser-harness/go/internal/daemon"
+	"github.com/browser-use/browser-harness/go/internal/ipc"
 )
 
 // HTTPError mirrors urllib's HTTPError text, which callers and agents see.
@@ -211,6 +212,9 @@ func resolveProfileName(name string) (string, error) {
 func StartRemoteDaemon(name, profileName string, create map[string]any) (map[string]any, error) {
 	if name == "" {
 		name = "remote"
+	}
+	if err := ipc.Check(name); err != nil {
+		return nil, err
 	}
 	show, err := shouldShowLiveView()
 	if err != nil {

@@ -3,9 +3,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/browser-use/browser-harness/go/internal/cli"
+	"github.com/browser-use/browser-harness/go/internal/ipc"
 	"github.com/browser-use/browser-harness/go/internal/mcpserver"
 	"github.com/browser-use/browser-harness/go/internal/paths"
 	"github.com/browser-use/browser-harness/go/internal/telemetry"
@@ -14,6 +16,12 @@ import (
 
 func main() {
 	paths.LoadEnv()
+	if n := os.Getenv("BU_NAME"); n != "" {
+		if err := ipc.Check(n); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
 	cmd, args := "", os.Args[1:]
 	if len(args) > 0 {
 		cmd = args[0]
