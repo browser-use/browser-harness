@@ -70,6 +70,29 @@ controls use raw `Input.dispatchKeyEvent` keyDown/keyUp pairs with `key`, `code`
 `windowsVirtualKeyCode`, and modifiers, without `text` or a separate char event.
 Ctrl+A uses `key='a'`, `code='KeyA'`, virtual key 65, and modifiers 2 on Windows.
 
+## Shorts scheduling and verification
+
+- Before uploading, inspect both Videos and Shorts with no visibility filter and
+  check each list's pagination. Drafts and private items matter for duplicate
+  detection; scheduled items matter for publication-slot conflicts.
+- Video elements > Related video > Add opens a video picker. Its search accepts
+  an exact video ID. After saving, verify the visible Related video card and the
+  read-only `linkedVideoId` property on `ytcp-shorts-content-links-picker`.
+- Visibility > Schedule expands date, time, and time-zone controls. The time-zone
+  button opens a menu whose first item identifies the local UTC offset. Selecting
+  Schedule keeps the video private until the future publication time. Verify the
+  final `Video scheduled` confirmation rather than the wizard's transient state.
+- Scheduling during pending checks can show `We're still checking your content`.
+  This is a pending-result notice, not a finding of a policy violation. Revisit
+  the checks until they finish or until the task's explicit wait limit is reached.
+- In Channel content, hovering over Scheduled reveals the full publication date
+  and time and states that the video is currently private. Move to a neutral area
+  before hovering another row: the previous tooltip can overlap that row and
+  intercept the pointer, leaving stale text visible.
+- The saved Details page's Visibility card opens a read-only confirmation of the
+  stored date and time. Close without changes after checking it. A disabled Save
+  button helps confirm that verification did not alter the video.
+
 ## Checks and pinned comments
 
 - The wizard's `Initial check` can show separate `Copyright` and
