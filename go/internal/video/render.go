@@ -141,7 +141,10 @@ function inspect(name, reduced) {
 
 let previous = null;
 try { previous = current_tab().targetId; } catch (e) {}  // a stale session heals on the next call
-const target = new_tab(cfg.url);
+// Not new_tab: it reuses a blank attached tab, which the finally block would close.
+const target = cdp('Target.createTarget', {url: 'about:blank', background: true}).targetId;
+switch_tab(target);
+goto_url(cfg.url);
 let result;
 try {
   wait_for_load();
@@ -351,7 +354,9 @@ func privacyReview(rec string, c *Composition) (string, []capture, error) {
 const exportScript = `
 let previous = null;
 try { previous = current_tab().targetId; } catch (e) {}  // a stale session heals on the next call
-new_tab(cfg.url);
+// Not new_tab: it reuses a blank attached tab, which the close step would close.
+switch_tab(cdp('Target.createTarget', {url: 'about:blank', background: true}).targetId);
+goto_url(cfg.url);
 wait_for_load();
 let ready = false;
 for (let i = 0; i < 100 && !ready; i++) {
