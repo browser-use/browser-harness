@@ -193,6 +193,7 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree").nodes` has every element's role, name, and `backendDOMNodeId` — filter in JavaScript before printing (it is thousands of nodes). Coordinates: `const q = cdp("DOM.getBoxModel", {backendNodeId: n}).model.content; const x = (q[0] + q[2] + q[4] + q[6]) / 4, y = (q[1] + q[3] + q[5] + q[7]) / 4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
+- Never use `capture_screenshot(path, {full: true})` to read or find content — it is slow and the downscaled image is unreadable; scroll and take viewport shots instead, and use it only when the user asks for an image of the whole page.
 - After navigation, call `wait_for_load()`.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
