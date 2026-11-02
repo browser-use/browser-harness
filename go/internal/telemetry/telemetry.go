@@ -30,7 +30,7 @@ const (
 )
 
 var (
-	disableEnvs = []string{"BH_TELEMETRY", "BROWSER_HARNESS_TELEMETRY", "ANONYMIZED_TELEMETRY"}
+	disableEnvs = []string{"BH_TELEMETRY", "ANONYMIZED_TELEMETRY"}
 	installIDRE = regexp.MustCompile(`^[0-9a-f-]{32,36}$`)
 )
 

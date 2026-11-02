@@ -23,9 +23,9 @@ func abs(p string) string {
 	return p
 }
 
-// Home is BH_HOME, BROWSER_HARNESS_HOME, $XDG_CONFIG_HOME/browser-harness or ~/.config/browser-harness.
+// Home is BH_HOME, $XDG_CONFIG_HOME/browser-harness or ~/.config/browser-harness.
 func Home() string {
-	if raw := firstEnv("BH_HOME", "BROWSER_HARNESS_HOME"); raw != "" {
+	if raw := os.Getenv("BH_HOME"); raw != "" {
 		return abs(raw)
 	}
 	if base := os.Getenv("XDG_CONFIG_HOME"); base != "" {
@@ -63,15 +63,6 @@ func envOr(key, def string) string {
 		return abs(raw)
 	}
 	return def
-}
-
-func firstEnv(keys ...string) string {
-	for _, k := range keys {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // LoadEnv reads <repo>/.env (source checkouts) then <workspace>/.env; existing variables win.

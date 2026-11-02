@@ -57,4 +57,4 @@ If the quick path fails after `--doctor`, inspect `go/internal/admin/`, `go/inte
 
 To upgrade, rerun the install commands above; `browser-harness --version` prints the installed version. Telemetry is anonymous and opt-out with `browser-harness telemetry disable`.
 
-State lives under `${XDG_CONFIG_HOME:-~/.config}/browser-harness` by default: auth, agent workspace, runtime sockets, logs, screenshots, and temp files. Override with `BH_HOME` or `BROWSER_HARNESS_HOME`.
+State lives under `${XDG_CONFIG_HOME:-~/.config}/browser-harness` by default: auth, agent workspace, runtime sockets, logs, screenshots, and temp files. Override with `BH_HOME`.
