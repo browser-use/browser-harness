@@ -245,14 +245,17 @@ func (r *runner) prepare(base *helpers.H) error {
 	if r.ready[base] {
 		return nil
 	}
-	r.ready[base] = true
 	if base == r.h && r.lazy {
-		r.lazy = false
 		if err := connectDefault(); err != nil {
 			return err
 		}
+		r.lazy = false
 	}
-	return base.UseAgentTab(helpers.AgentID())
+	if err := base.UseAgentTab(helpers.AgentID()); err != nil {
+		return err
+	}
+	r.ready[base] = true
+	return nil
 }
 
 func (r *runner) typingIntoPassword(a args, name string) bool {
@@ -542,7 +545,11 @@ func (r *runner) on(name string) (*goja.Object, error) {
 	if obj := r.daemons[name]; obj != nil {
 		return obj, nil
 	}
-	if err := admin.Connect(name); err != nil {
+	connect := func() error { return admin.Connect(name) }
+	if name == ipc.Name() {
+		connect = connectDefault
+	}
+	if err := connect(); err != nil {
 		return nil, err
 	}
 	obj := r.rt.NewObject()

@@ -322,6 +322,14 @@ func recordings(rest []string) int {
 }
 
 func runSnippet(code string) result {
+	// Strict mode fails closed before any snippet code runs, so a snippet cannot start a daemon first.
+	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
+		if err := admin.RequireExistingDaemon(""); err != nil {
+			msg := "browser-harness: " + err.Error()
+			fmt.Fprintln(os.Stderr, msg)
+			return result{code: 1, errMsg: &msg, task: &code}
+		}
+	}
 	r := runJS(code)
 	r.task = &code
 	return r

@@ -441,18 +441,21 @@ func Connect(name string) error {
 	return EnsureDaemon(-1, name, nil)
 }
 
-// ConnectDefault is Connect for the default daemon, first provisioning a cloud browser
-// when BU_AUTOSPAWN is set and there is no daemon, local Chrome or explicit CDP endpoint.
+// ConnectDefault health-checks the default daemon and starts or heals it, first provisioning
+// a cloud browser when BU_AUTOSPAWN is set and there is no daemon, local Chrome or CDP endpoint.
 func ConnectDefault() error {
-	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") != "1" && os.Getenv("BU_AUTOSPAWN") != "" &&
-		os.Getenv("BU_CDP_URL") == "" && os.Getenv("BU_CDP_WS") == "" && !DaemonAlive("") && !localChromeListening() {
+	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
+		return RequireExistingDaemon("")
+	}
+	if os.Getenv("BU_AUTOSPAWN") != "" && os.Getenv("BU_CDP_URL") == "" && os.Getenv("BU_CDP_WS") == "" &&
+		!DaemonAlive("") && !localChromeListening() {
 		if _, err := auth.APIKey(); err == nil {
 			if _, err := StartRemoteDaemon(ipc.Name(), "", nil); err != nil {
 				return err
 			}
 		}
 	}
-	return Connect("")
+	return EnsureDaemon(-1, "", nil)
 }
 
 // localChromeListening is whether Chrome answers on 9222 or 9223; an unrelated
