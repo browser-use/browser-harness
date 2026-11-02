@@ -1,4 +1,4 @@
-// Package recorder ports recorder.py: one screenshot plus one trace line per
+// Package recorder records one screenshot plus one trace line per
 // action, stored as <workspace>/recordings/<name>/{meta.json,events.jsonl,NNNN.jpg}.
 // Recording failures are swallowed; they must never break a run.
 package recorder

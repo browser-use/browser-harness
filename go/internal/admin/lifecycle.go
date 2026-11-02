@@ -1,5 +1,4 @@
-// Package admin ports browser_harness/admin.py: daemon lifecycle, cloud
-// browsers and profiles, diagnostics and updates.
+// Package admin is daemon lifecycle, cloud browsers and profiles, and diagnostics.
 package admin
 
 import (
@@ -361,14 +360,14 @@ func EnsureDaemon(wait float64, name string, env map[string]string) error {
 func RequireExistingDaemon(name string) error {
 	n := pick(name)
 	if !DaemonAlive(n) {
-		return fmt.Errorf("required daemon %s is not running", pyQuote(n))
+		return fmt.Errorf("required daemon %s is not running", quoted(n))
 	}
 	m, err := ipc.Call(n, 3*time.Second, map[string]any{"method": "Target.getTargets", "params": map[string]any{}})
 	if err != nil {
-		return fmt.Errorf("required daemon %s is unhealthy: %v", pyQuote(n), err)
+		return fmt.Errorf("required daemon %s is unhealthy: %v", quoted(n), err)
 	}
 	if _, ok := m["result"]; !ok {
-		return fmt.Errorf("required daemon %s failed its CDP health check", pyQuote(n))
+		return fmt.Errorf("required daemon %s failed its CDP health check", quoted(n))
 	}
 	return nil
 }
@@ -381,7 +380,7 @@ func StopRemoteDaemon(name string) error {
 	return RestartDaemon(name, true)
 }
 
-func pyQuote(s string) string { return "'" + s + "'" }
+func quoted(s string) string { return "'" + s + "'" }
 
 // RestartDaemon stops a daemon (callers re-spawn via EnsureDaemon). Signals are
 // only sent to a process whose identity is verified by IPC or start fingerprint.
@@ -398,23 +397,23 @@ func RestartDaemon(name string, requireClean bool) error {
 	daemonPid := ipc.Identify(n, 5*time.Second)
 	isAlive := daemonPid != 0 || ipc.Ping(n, time.Second)
 	if requireClean && !isAlive {
-		return fmt.Errorf("daemon %s is unavailable for required clean shutdown", pyQuote(n))
+		return fmt.Errorf("daemon %s is unavailable for required clean shutdown", quoted(n))
 	}
 	if !isAlive && pendingUnverified {
-		return fmt.Errorf("pending daemon %s is live but has no verifiable process fingerprint; it was not signaled and its ownership records were preserved", pyQuote(n))
+		return fmt.Errorf("pending daemon %s is live but has no verifiable process fingerprint; it was not signaled and its ownership records were preserved", quoted(n))
 	}
 	if !isAlive && pendingGen != nil {
 		lk := acquireSpawnLock(n, 5*time.Second)
 		if !lk.held {
-			return fmt.Errorf("pending daemon %s is changing ownership; it was not signaled", pyQuote(n))
+			return fmt.Errorf("pending daemon %s is changing ownership; it was not signaled", quoted(n))
 		}
 		defer lk.release()
 		cur := fingerprintedGeneration(pidPath)
 		if cur == nil || *cur != *pendingGen {
-			return fmt.Errorf("pending daemon %s changed ownership; the successor was not signaled and its records were preserved", pyQuote(n))
+			return fmt.Errorf("pending daemon %s changed ownership; the successor was not signaled and its records were preserved", quoted(n))
 		}
 		if ipc.Ping(n, 200*time.Millisecond) {
-			return fmt.Errorf("pending daemon %s became ready during cancellation; run --reload again", pyQuote(n))
+			return fmt.Errorf("pending daemon %s became ready during cancellation; run --reload again", quoted(n))
 		}
 		terminate(pendingGen.PID)
 		ipc.CleanupEndpoint(n)
@@ -432,13 +431,13 @@ func RestartDaemon(name string, requireClean bool) error {
 		m, err := ipc.Call(n, timeout, map[string]any{"meta": "shutdown"})
 		if requireClean {
 			if err != nil {
-				return fmt.Errorf("daemon %s did not confirm clean shutdown: %v", pyQuote(n), err)
+				return fmt.Errorf("daemon %s did not confirm clean shutdown: %v", quoted(n), err)
 			}
 			if m["ok"] != true || truthy(m["error"]) {
 				if e, ok := m["error"].(string); ok && e != "" {
 					return errors.New(e)
 				}
-				return fmt.Errorf("daemon %s did not confirm clean shutdown", pyQuote(n))
+				return fmt.Errorf("daemon %s did not confirm clean shutdown", quoted(n))
 			}
 		}
 	}

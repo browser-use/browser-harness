@@ -1,5 +1,4 @@
-// Package daemon is the CDP websocket holder and IPC relay, ported from
-// browser_harness/daemon.py. One daemon per BU_NAME.
+// Package daemon is the CDP websocket holder and IPC relay. One daemon per BU_NAME.
 package daemon
 
 import (
@@ -128,7 +127,7 @@ type Daemon struct {
 	stopOnce   sync.Once
 	stop       chan struct{}
 
-	sessionState  chan struct{} // held across CDP calls like Python's asyncio.Lock
+	sessionState  chan struct{} // held across CDP calls
 	dedicatedLock chan struct{}
 	remoteStopped bool
 }

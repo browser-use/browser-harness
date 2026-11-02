@@ -199,11 +199,11 @@ func resolveProfileName(name string) (string, error) {
 	}
 	switch len(ids) {
 	case 0:
-		return "", fmt.Errorf("no cloud profile named %s -- call list_cloud_profiles() or sync_local_profile() first", pyQuote(name))
+		return "", fmt.Errorf("no cloud profile named %s -- call list_cloud_profiles() or sync_local_profile() first", quoted(name))
 	case 1:
 		return ids[0], nil
 	}
-	return "", fmt.Errorf("%d cloud profiles named %s -- pass profileId=<uuid> instead", len(ids), pyQuote(name))
+	return "", fmt.Errorf("%d cloud profiles named %s -- pass profileId=<uuid> instead", len(ids), quoted(name))
 }
 
 // StartRemoteDaemon provisions a cloud browser and starts a daemon attached to it;
@@ -217,7 +217,7 @@ func StartRemoteDaemon(name, profileName string, create map[string]any) (map[str
 		return nil, err
 	}
 	if DaemonAlive(name) {
-		return nil, fmt.Errorf("daemon %s already alive -- restart_daemon(%s) first", pyQuote(name), pyQuote(name))
+		return nil, fmt.Errorf("daemon %s already alive -- restart_daemon(%s) first", quoted(name), quoted(name))
 	}
 	if create == nil {
 		create = map[string]any{}

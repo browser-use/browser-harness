@@ -1,4 +1,4 @@
-// Package ipc is the daemon transport, wire-compatible with browser_harness/_ipc.py:
+// Package ipc is the daemon transport:
 // one JSON request line, one JSON response line. AF_UNIX (0600) on POSIX, TCP
 // loopback plus a token in a port file on Windows.
 package ipc

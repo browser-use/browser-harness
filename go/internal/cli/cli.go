@@ -66,7 +66,7 @@ const usage = `Usage:
 
 type exit struct {
 	code int
-	msg  *string // a string SystemExit (Python printed it to stderr)
+	msg  *string // printed to stderr
 }
 
 func telemetryCommand(args []string) string {
@@ -92,7 +92,7 @@ func telemetryCommand(args []string) string {
 	return "usage"
 }
 
-// tail keeps the last limit bytes written plus the total rune count, like run.py's _StreamTail.
+// tail keeps the last limit bytes written plus the total rune count.
 type tail struct {
 	mu     sync.Mutex
 	limit  int

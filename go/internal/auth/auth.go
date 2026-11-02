@@ -1,4 +1,4 @@
-// Package auth ports browser_harness/auth.py: Browser Use Cloud API key storage
+// Package auth is Browser Use Cloud API key storage
 // and the browser, device-code and stdin login flows.
 package auth
 
@@ -30,7 +30,7 @@ const (
 	timeoutSeconds  = 600
 )
 
-// ErrRequired keeps the model-facing message from auth.py.
+// ErrRequired is the model-facing message agents act on.
 var ErrRequired = errors.New("cloud-auth-required: run `browser-harness auth login`")
 
 func base() string {

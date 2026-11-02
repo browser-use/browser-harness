@@ -1,5 +1,5 @@
 // Package browser finds local Chromium-family profiles and their DevTools
-// endpoints (the discovery half of daemon.py, shared with admin).
+// endpoints, for the daemon and admin.
 package browser
 
 import (

@@ -1,4 +1,4 @@
-// Package telemetry is the best-effort, opt-out PostHog telemetry from telemetry.py.
+// Package telemetry is the best-effort, opt-out PostHog telemetry.
 package telemetry
 
 import (
@@ -214,7 +214,7 @@ func cdpHostname() any {
 	return strings.ToLower(u.Hostname())
 }
 
-// CLIEvent is one cli_event; nil pointers become null like Python's None.
+// CLIEvent is one cli_event; nil pointers encode as null.
 type CLIEvent struct {
 	Action, Command         string
 	Task, Browser, Output   *string

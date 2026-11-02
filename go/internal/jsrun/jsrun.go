@@ -99,7 +99,7 @@ type args struct {
 	pos  int // arguments before the options object
 }
 
-// parse treats a trailing plain object as options, like Python keywords. A tab
+// parse treats a trailing plain object as options. A tab
 // object (it has targetId) in a positional slot stays positional.
 func parse(call goja.FunctionCall, positional int) args {
 	n := len(call.Arguments)

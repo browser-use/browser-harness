@@ -174,7 +174,7 @@ func Run(version string) int {
 	// Anything else that prints (daemon setup guidance) goes to stderr.
 	os.Stdout = os.Stderr
 	if err := newServer(version).Run(context.Background(), &mcp.IOTransport{Reader: os.Stdin, Writer: out}); err != nil {
-		os.Stderr.WriteString("browser-harness-mcp: " + err.Error() + "\n")
+		os.Stderr.WriteString("browser-harness mcp: " + err.Error() + "\n")
 		return 1
 	}
 	return 0
