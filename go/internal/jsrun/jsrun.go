@@ -381,6 +381,9 @@ func (r *runner) install() {
 		return admin.StartRemoteDaemon(a.str(0, "name", "remote"), a.str(1, "profileName", ""), create)
 	})
 	r.bind("stop_remote_daemon", 1, func(a args) (any, error) { return none(admin.StopRemoteDaemon(a.str(0, "name", "remote"))) })
+	r.bind("cleanup_cloud_browsers", 2, func(a args) (any, error) {
+		return admin.CleanupCloudBrowsers(time.Duration(a.num(0, "older_than", 30)*float64(time.Minute)), a.flag(1, "dry_run", false))
+	})
 	r.bind("list_cloud_profiles", 0, func(a args) (any, error) { return admin.ListCloudProfiles() })
 	r.bind("list_local_profiles", 0, func(a args) (any, error) { return admin.ListLocalProfiles() })
 	r.bind("sync_local_profile", 5, func(a args) (any, error) {

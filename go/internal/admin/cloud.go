@@ -326,3 +326,50 @@ func SyncLocalProfile(profile, browserName, cloudID string, include, exclude []s
 	}
 	return m[1], nil
 }
+
+// CleanupCloudBrowsers stops active cloud browsers started more than olderThan ago.
+func CleanupCloudBrowsers(olderThan time.Duration, dryRun bool) ([]map[string]any, error) {
+	var active []map[string]any
+	for page, seen := 1, 0; ; page++ {
+		listing, err := browserUse(fmt.Sprintf("/browsers?pageSize=100&pageNumber=%d", page), "GET", nil)
+		if err != nil {
+			return nil, err
+		}
+		l, _ := listing.(map[string]any)
+		items, _ := l["items"].([]any)
+		for _, it := range items {
+			if b, _ := it.(map[string]any); b != nil && b["finishedAt"] == nil {
+				active = append(active, b)
+			}
+		}
+		seen += len(items)
+		if total, _ := l["totalItems"].(float64); len(items) == 0 || seen >= int(total) {
+			break
+		}
+	}
+	out := []map[string]any{}
+	for _, b := range active {
+		id, _ := b["id"].(string)
+		startedAt, _ := b["startedAt"].(string)
+		started, err := time.Parse(time.RFC3339, startedAt)
+		if err != nil {
+			return nil, fmt.Errorf("browser %s: bad startedAt %q", id, startedAt)
+		}
+		age := time.Since(started)
+		action := "skipped"
+		if age > olderThan {
+			action = "would_stop"
+			if !dryRun {
+				action = "stopped"
+				if err := stopCloudBrowser(id, true); err != nil {
+					action = "stop_failed: " + err.Error()
+				}
+			}
+		}
+		out = append(out, map[string]any{
+			"id": id, "started_at": startedAt, "age_minutes": float64(age.Round(6*time.Second)) / float64(time.Minute),
+			"action": action,
+		})
+	}
+	return out, nil
+}

@@ -2,9 +2,8 @@
 
 `https://api.browser-use.com/api/v3` (REST). All five endpoints below were
 exercised end-to-end on 2026-05-05 with a real `BROWSER_USE_API_KEY`; the
-companion script `cleanup-zombies.py` next to this file *is* the
-field-test — running it lists active browsers and stops zombies via the
-same wire calls the harness uses internally.
+built-in `cleanup_cloud_browsers()` helper (below) lists active browsers and
+stops zombies via the same wire calls.
 
 This skill is for users who already start cloud browsers via
 `start_remote_daemon()` and want to manage the surrounding lifecycle —
@@ -105,25 +104,26 @@ Returns the same shape as the listing items:
 }
 ```
 
-`browser_harness.admin.list_cloud_profiles()` already wraps the listing
+`list_cloud_profiles()` already wraps the listing
 + per-id GET; prefer it unless you need raw access.
 
-## Companion script: `cleanup-zombies.py`
+## Stopping zombies: `cleanup_cloud_browsers()`
 
-A self-contained operator script next to this file. Run it with:
+Built into `browser-harness` snippets:
 
-```bash
-BROWSER_USE_API_KEY=... python agent-workspace/domain-skills/browser-use-cloud/cleanup-zombies.py
-# stops every active browser older than 30 minutes (default)
+```js
+cleanup_cloud_browsers();
+// stops every active browser older than 30 minutes (default)
 
-BROWSER_USE_API_KEY=... python .../cleanup-zombies.py --older-than 5 --dry-run
-# preview only; no PATCH /stop sent
+for (const b of cleanup_cloud_browsers({older_than: 5, dry_run: true}))
+  print(`${b.action} ${b.id} ${b.age_minutes}min`);
+// preview only; no PATCH /stop sent. action: skipped | would_stop | stopped | stop_failed: ...
 ```
 
-The script is the practical residue of the API verification — running it
-exercises four of the five endpoints (`GET /browsers`, plus
-`PATCH .../stop` per zombie). Use it as the live regression check
-whenever this skill is updated.
+It calls `GET /browsers` (paginated) plus `PATCH .../stop` per zombie. Use a
+dry run as the live regression check whenever this skill is updated.
+It stops every matching browser on the API key, including other users' and
+agents' sessions, so dry-run first on a shared key.
 
 ## Dashboard navigation (when API isn't enough)
 
@@ -208,8 +208,8 @@ Live-tested 2026-05-05 against `https://api.browser-use.com/api/v3`:
 | `/usage` | GET | 404 | **no public endpoint** |
 | `/` | GET | 404 | no root metadata |
 
-Companion script `cleanup-zombies.py` re-runs the listing + stop subset
-end-to-end and is the regression artefact for this skill. A full E2E
+`cleanup_cloud_browsers()` re-runs the listing + stop subset end-to-end and
+is the regression check for this skill. A full E2E
 loop (spawn → list → stop → re-list) was executed on 2026-05-05 against
 the production API and printed:
 
