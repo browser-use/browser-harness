@@ -9,33 +9,25 @@ The daemon's `attach_first_page()` handles this by creating an `about:blank` tab
 ## Startup sequence
 
 1. Check if a daemon is already running with `daemon_alive()`
-2. If stale sockets exist but daemon is dead, clean them up
+2. `ensure_daemon()` starts one, clearing stale sockets left by a dead daemon
 3. List open tabs with `list_tabs()` to see what's available
 4. `ensure_real_tab()` attaches to a real page
 5. `switch_tab(target_id)` attaches without changing the visible Chrome tab; use `activate_tab(target_id)` only for a user-requested visible switch
 
-```python
-if not daemon_alive():
-    import os, ipc
-    ipc.cleanup_endpoint("default")
-    pid = ipc.pid_path("default")
-    if pid.exists(): pid.unlink()
-    ensure_daemon()
+```js
+if (!daemon_alive()) ensure_daemon();
 
-tabs = list_tabs()
-for t in tabs:
-    print(t["url"][:60])
+for (const t of list_tabs()) print(t.url.slice(0, 60));
 
-tab = ensure_real_tab()
+const tab = ensure_real_tab();
 ```
 
 ## Bringing Chrome to front
 
 If Chrome is behind other windows or on another desktop and the user explicitly wants it shown:
 
-```python
-import subprocess
-subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate'])
+```bash
+osascript -e 'tell application "Google Chrome" to activate'
 ```
 
 For normal agent work, do not activate Chrome. Screenshots and CDP input work
@@ -46,7 +38,7 @@ pauses visibility-dependent rendering while hidden.
 
 Prefer navigating an existing tab over `new_tab()`. Harness-created tabs open in the background.
 
-```python
-tab = ensure_real_tab()
-goto_url("https://example.com")
+```js
+const tab = ensure_real_tab();
+goto_url("https://example.com");
 ```

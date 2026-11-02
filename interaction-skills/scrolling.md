@@ -11,9 +11,9 @@ scroll times out:
 1. Do not call `activate_tab()`; a timeout is not permission to foreground
    Chrome.
 2. Temporarily call
-   `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`, retry the same
+   `cdp("Emulation.setFocusEmulationEnabled", {enabled: true})`, retry the same
    `scroll(...)` once, and re-read the page or container scroll position.
-3. Disable focus emulation in a `finally` block.
+3. Disable focus emulation (`{enabled: false}`) in a `finally` block.
 
 If background scrolling still fails, stop and name that exact limitation.
 Call `activate_tab()` only when the user explicitly asks to see or visibly

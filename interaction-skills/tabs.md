@@ -4,14 +4,14 @@ Use **CDP for control**, **UI automation for user-visible order**.
 
 ## Pure CDP (portable: macOS / Linux / Windows)
 
-```python
-tabs = list_tabs()                    # includes chrome:// pages too
-real_tabs = list_tabs(include_chrome=False)
-tid = new_tab("https://example.com")  # create + attach in the background
-switch_tab(tid)                       # attach harness, move the horse marker
-activate_tab(tid)                     # optional: explicitly show it in Chrome
-print(current_tab())
-print(page_info())
+```js
+const tabs = list_tabs();                     // includes chrome:// pages too
+const realTabs = list_tabs({include_chrome: false});
+const tid = new_tab("https://example.com");  // create + attach in the background
+switch_tab(tid);                              // attach harness, move the horse marker
+activate_tab(tid);                            // optional: explicitly show it in Chrome
+print(current_tab());
+print(page_info());
 ```
 
 What CDP is good at:
@@ -67,7 +67,7 @@ Typical tools:
   input trouble is not permission to foreground Chrome; use background CDP and
   temporary focus emulation first.
 - `Target.activateTarget` is the CDP-side "show this tab".
-- `list_tabs()` includes `chrome://newtab/` by default; ask for `include_chrome=False` when you want only real pages.
+- `list_tabs()` includes `chrome://newtab/` by default; ask for `{include_chrome: false}` when you want only real pages.
 - `chrome://omnibox-popup.top-chrome/` can appear as a fake page target; ignore it for user-facing tab lists.
 - If a page has `w=0 h=0`, you may be attached to the wrong target or a non-window surface.
 - For dynamic UIs, re-read element rects after opening dropdowns / modals before coordinate-clicking.

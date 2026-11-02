@@ -7,10 +7,10 @@ Cover how viewport size changes affect layout, coordinate clicks, and any workfl
 `maxTouchPoints` is optional, but Chrome validates it as 1–16 even when touch
 emulation is being disabled. Omit it when disabling:
 
-```python
-cdp("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=5)
-cdp("Emulation.setTouchEmulationEnabled", enabled=False)
+```js
+cdp("Emulation.setTouchEmulationEnabled", {enabled: true, maxTouchPoints: 5});
+cdp("Emulation.setTouchEmulationEnabled", {enabled: false});
 ```
 
-Do not pass `maxTouchPoints=0`; Chrome rejects the supplied value before acting
-on `enabled=False`.
+Do not pass `maxTouchPoints: 0`; Chrome rejects the supplied value before acting
+on `enabled: false`.
