@@ -36,14 +36,16 @@ type Trace struct {
 var newHelpers = helpers.New
 
 type runner struct {
-	rt    *goja.Runtime
-	h     *helpers.H
-	out   io.Writer
-	trace Trace
+	rt      *goja.Runtime
+	h       *helpers.H
+	out     io.Writer
+	trace   Trace
+	tabs    map[[2]string]*helpers.H // (daemon, tab) -> pinned helpers
+	daemons map[string]*goja.Object  // on(name) results
 }
 
 func newRunner(out io.Writer) *runner {
-	r := &runner{rt: goja.New(), h: newHelpers(admin.Name()), out: out}
+	r := &runner{rt: goja.New(), h: newHelpers(admin.Name()), out: out, tabs: map[[2]string]*helpers.H{}, daemons: map[string]*goja.Object{}}
 	r.rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	r.install()
 	return r
@@ -96,7 +98,8 @@ func (r *runner) loadAgentHelpers() error {
 type args struct {
 	call goja.FunctionCall
 	opts map[string]any
-	pos  int // arguments before the options object
+	pos  int        // arguments before the options object
+	h    *helpers.H // the daemon and tab this call acts on
 }
 
 // parse treats a trailing plain object as options. A tab
@@ -186,10 +189,24 @@ func (a args) strMap(i int, name string) map[string]string {
 // --- binding, tracing and recording ---
 
 func (r *runner) bind(name string, positional int, fn func(a args) (any, error)) {
-	_ = r.rt.Set(name, func(call goja.FunctionCall) goja.Value {
+	r.bindOn(r.rt.GlobalObject(), r.h, name, positional, fn)
+}
+
+// bindOn installs a helper on obj; a {tab: id} option runs it on that tab of base's daemon.
+func (r *runner) bindOn(obj *goja.Object, base *helpers.H, name string, positional int, fn func(a args) (any, error)) {
+	_ = obj.Set(name, func(call goja.FunctionCall) goja.Value {
 		a := parse(call, positional)
+		a.h = base
+		var v any
+		var err error
 		start := time.Now()
-		v, err := fn(a)
+		if t, ok := a.opts["tab"]; ok {
+			delete(a.opts, "tab")
+			a.h, err = r.onTab(base, t)
+		}
+		if err == nil {
+			v, err = fn(a)
+		}
 		r.record(name, call, a, time.Since(start), err)
 		if err != nil {
 			panic(r.rt.NewGoError(err))
@@ -218,7 +235,7 @@ func (r *runner) record(name string, call goja.FunctionCall, a args, d time.Dura
 	}
 	if err == nil && recorder.Actions[name] {
 		dur := float64(d.Milliseconds()) / 1000
-		_, _ = r.h.Send(map[string]any{"meta": "record_observe", "call": recorder.Call{
+		_, _ = a.h.Send(map[string]any{"meta": "record_observe", "call": recorder.Call{
 			Helper: name, Args: raw, Kwargs: a.opts, Duration: &dur, Env: recorder.FromProcess()}}, 65*time.Second)
 	}
 }
@@ -262,72 +279,20 @@ func none(err error) (any, error) { return nil, err }
 func (r *runner) install() {
 	h := r.h
 	_ = r.rt.Set("print", r.print)
+	_ = r.rt.Set("on", func(name string) *goja.Object {
+		obj, err := r.on(name)
+		if err != nil {
+			panic(r.rt.NewGoError(err))
+		}
+		return obj
+	})
 	console := r.rt.NewObject()
 	_ = console.Set("log", r.print)
 	_ = console.Set("error", r.print)
 	_ = r.rt.Set("console", console)
 
-	// Page and CDP.
-	r.bind("cdp", 1, func(a args) (any, error) {
-		params := map[string]any{}
-		for k, v := range a.opts {
-			if k != "session_id" {
-				params[k] = v
-			}
-		}
-		s, _ := a.opts["session_id"].(string)
-		return h.CDP(a.str(0, "method", ""), params, s)
-	})
-	r.bind("drain_events", 0, func(a args) (any, error) { return h.DrainEvents() })
-	r.bind("js", 2, func(a args) (any, error) { return h.JS(a.str(0, "expression", ""), a.str(1, "target_id", "")) })
-	r.bind("goto_url", 1, func(a args) (any, error) { return h.GotoURL(a.str(0, "url", "")) })
-	r.bind("page_info", 0, func(a args) (any, error) { return h.PageInfo() })
+	r.installBrowser(r.rt.GlobalObject(), h)
 
-	// Input.
-	r.bind("click_at_xy", 4, func(a args) (any, error) {
-		return none(h.ClickAtXY(a.num(0, "x", 0), a.num(1, "y", 0), a.str(2, "button", "left"), int(a.num(3, "clicks", 1))))
-	})
-	r.bind("type_text", 1, func(a args) (any, error) { return none(h.TypeText(a.str(0, "text", ""))) })
-	r.bind("fill_input", 4, func(a args) (any, error) {
-		return none(h.FillInput(a.str(0, "selector", ""), a.str(1, "text", ""), a.flag(2, "clear_first", true), a.num(3, "timeout", 0)))
-	})
-	r.bind("press_key", 2, func(a args) (any, error) { return none(h.PressKey(a.str(0, "key", ""), int(a.num(1, "modifiers", 0)))) })
-	r.bind("scroll", 4, func(a args) (any, error) {
-		return none(h.Scroll(a.num(0, "x", 0), a.num(1, "y", 0), a.num(2, "dy", -300), a.num(3, "dx", 0)))
-	})
-	r.bind("dispatch_key", 3, func(a args) (any, error) {
-		return none(h.DispatchKey(a.str(0, "selector", ""), a.str(1, "key", "Enter"), a.str(2, "event", "keypress")))
-	})
-	r.bind("upload_file", 2, func(a args) (any, error) { return none(h.UploadFile(a.str(0, "selector", ""), a.strs(1, "path"))) })
-	r.bind("capture_screenshot", 3, func(a args) (any, error) {
-		return h.CaptureScreenshot(a.str(0, "path", ""), a.flag(1, "full", false), int(a.num(2, "max_dim", 0)))
-	})
-
-	// Tabs.
-	r.bind("list_tabs", 1, func(a args) (any, error) { return h.ListTabs(a.flag(0, "include_chrome", true)) })
-	r.bind("current_tab", 0, func(a args) (any, error) { return h.CurrentTab() })
-	r.bind("activate_tab", 1, func(a args) (any, error) { return h.ActivateTab(a.str(0, "target", "")) })
-	r.bind("switch_tab", 2, func(a args) (any, error) { return h.SwitchTab(a.str(0, "target", ""), a.flag(1, "activate", false)) })
-	r.bind("new_tab", 1, func(a args) (any, error) { return h.NewTab(a.str(0, "url", "about:blank")) })
-	r.bind("close_tab", 1, func(a args) (any, error) { return none(h.CloseTab(a.str(0, "target", ""))) })
-	r.bind("ensure_real_tab", 0, func(a args) (any, error) { return h.EnsureRealTab() })
-	r.bind("iframe_target", 1, func(a args) (any, error) {
-		id, err := h.IframeTarget(a.str(0, "url_substr", ""))
-		if id == "" {
-			return nil, err
-		}
-		return id, err
-	})
-
-	// Waiting and HTTP.
-	r.bind("wait", 1, func(a args) (any, error) { helpers.Wait(a.num(0, "seconds", 1)); return nil, nil })
-	r.bind("wait_for_load", 1, func(a args) (any, error) { return h.WaitForLoad(a.num(0, "timeout", 15)) })
-	r.bind("wait_for_element", 3, func(a args) (any, error) {
-		return h.WaitForElement(a.str(0, "selector", ""), a.num(1, "timeout", 10), a.flag(2, "visible", false))
-	})
-	r.bind("wait_for_network_idle", 2, func(a args) (any, error) {
-		return h.WaitForNetworkIdle(a.num(0, "timeout", 10), int(a.num(1, "idle_ms", 500)))
-	})
 	r.bind("http_get", 3, func(a args) (any, error) {
 		return helpers.HTTPGet(a.str(0, "url", ""), a.strMap(1, "headers"), a.num(2, "timeout", 20))
 	})
@@ -408,4 +373,109 @@ func (r *runner) install() {
 		}
 		return nil
 	})
+}
+
+// installBrowser binds the page, input, tab and wait helpers for one daemon onto obj.
+func (r *runner) installBrowser(obj *goja.Object, base *helpers.H) {
+	// Page and CDP.
+	r.bindOn(obj, base, "cdp", 1, func(a args) (any, error) {
+		params := map[string]any{}
+		for k, v := range a.opts {
+			if k != "session_id" {
+				params[k] = v
+			}
+		}
+		s, _ := a.opts["session_id"].(string)
+		return a.h.CDP(a.str(0, "method", ""), params, s)
+	})
+	r.bindOn(obj, base, "drain_events", 0, func(a args) (any, error) { return a.h.DrainEvents() })
+	r.bindOn(obj, base, "js", 2, func(a args) (any, error) { return a.h.JS(a.str(0, "expression", ""), a.str(1, "target_id", "")) })
+	r.bindOn(obj, base, "goto_url", 1, func(a args) (any, error) { return a.h.GotoURL(a.str(0, "url", "")) })
+	r.bindOn(obj, base, "page_info", 0, func(a args) (any, error) { return a.h.PageInfo() })
+
+	// Input.
+	r.bindOn(obj, base, "click_at_xy", 4, func(a args) (any, error) {
+		return none(a.h.ClickAtXY(a.num(0, "x", 0), a.num(1, "y", 0), a.str(2, "button", "left"), int(a.num(3, "clicks", 1))))
+	})
+	r.bindOn(obj, base, "type_text", 1, func(a args) (any, error) { return none(a.h.TypeText(a.str(0, "text", ""))) })
+	r.bindOn(obj, base, "fill_input", 4, func(a args) (any, error) {
+		return none(a.h.FillInput(a.str(0, "selector", ""), a.str(1, "text", ""), a.flag(2, "clear_first", true), a.num(3, "timeout", 0)))
+	})
+	r.bindOn(obj, base, "press_key", 2, func(a args) (any, error) {
+		return none(a.h.PressKey(a.str(0, "key", ""), int(a.num(1, "modifiers", 0))))
+	})
+	r.bindOn(obj, base, "scroll", 4, func(a args) (any, error) {
+		return none(a.h.Scroll(a.num(0, "x", 0), a.num(1, "y", 0), a.num(2, "dy", -300), a.num(3, "dx", 0)))
+	})
+	r.bindOn(obj, base, "dispatch_key", 3, func(a args) (any, error) {
+		return none(a.h.DispatchKey(a.str(0, "selector", ""), a.str(1, "key", "Enter"), a.str(2, "event", "keypress")))
+	})
+	r.bindOn(obj, base, "upload_file", 2, func(a args) (any, error) { return none(a.h.UploadFile(a.str(0, "selector", ""), a.strs(1, "path"))) })
+	r.bindOn(obj, base, "capture_screenshot", 3, func(a args) (any, error) {
+		return a.h.CaptureScreenshot(a.str(0, "path", ""), a.flag(1, "full", false), int(a.num(2, "max_dim", 0)))
+	})
+
+	// Tabs.
+	r.bindOn(obj, base, "list_tabs", 1, func(a args) (any, error) { return a.h.ListTabs(a.flag(0, "include_chrome", true)) })
+	r.bindOn(obj, base, "current_tab", 0, func(a args) (any, error) { return a.h.CurrentTab() })
+	r.bindOn(obj, base, "activate_tab", 1, func(a args) (any, error) { return a.h.ActivateTab(a.str(0, "target", "")) })
+	r.bindOn(obj, base, "switch_tab", 2, func(a args) (any, error) { return a.h.SwitchTab(a.str(0, "target", ""), a.flag(1, "activate", false)) })
+	r.bindOn(obj, base, "new_tab", 1, func(a args) (any, error) { return a.h.NewTab(a.str(0, "url", "about:blank")) })
+	r.bindOn(obj, base, "close_tab", 1, func(a args) (any, error) { return none(a.h.CloseTab(a.str(0, "target", ""))) })
+	r.bindOn(obj, base, "ensure_real_tab", 0, func(a args) (any, error) { return a.h.EnsureRealTab() })
+	r.bindOn(obj, base, "iframe_target", 1, func(a args) (any, error) {
+		id, err := a.h.IframeTarget(a.str(0, "url_substr", ""))
+		if id == "" {
+			return nil, err
+		}
+		return id, err
+	})
+
+	// Waiting and HTTP.
+	r.bindOn(obj, base, "wait", 1, func(a args) (any, error) { helpers.Wait(a.num(0, "seconds", 1)); return nil, nil })
+	r.bindOn(obj, base, "wait_for_load", 1, func(a args) (any, error) { return a.h.WaitForLoad(a.num(0, "timeout", 15)) })
+	r.bindOn(obj, base, "wait_for_element", 3, func(a args) (any, error) {
+		return a.h.WaitForElement(a.str(0, "selector", ""), a.num(1, "timeout", 10), a.flag(2, "visible", false))
+	})
+	r.bindOn(obj, base, "wait_for_network_idle", 2, func(a args) (any, error) {
+		return a.h.WaitForNetworkIdle(a.num(0, "timeout", 10), int(a.num(1, "idle_ms", 500)))
+	})
+}
+
+func (r *runner) onTab(base *helpers.H, t any) (*helpers.H, error) {
+	id, _ := t.(string)
+	if m, ok := t.(map[string]any); ok {
+		id, _ = m["targetId"].(string)
+		if id == "" {
+			id, _ = m["target_id"].(string)
+		}
+	}
+	if id == "" {
+		return nil, errors.New("tab: expected a target id or a tab object")
+	}
+	key := [2]string{base.Name, id}
+	if h := r.tabs[key]; h != nil {
+		return h, nil
+	}
+	h, err := base.OnTab(id)
+	if err == nil {
+		r.tabs[key] = h
+	}
+	return h, err
+}
+
+// on returns the browser helpers of another daemon, e.g. a cloud browser next to local Chrome.
+func (r *runner) on(name string) (*goja.Object, error) {
+	if obj := r.daemons[name]; obj != nil {
+		return obj, nil
+	}
+	if !admin.DaemonAlive(name) {
+		if err := admin.EnsureDaemon(-1, name, nil); err != nil {
+			return nil, err
+		}
+	}
+	obj := r.rt.NewObject()
+	r.installBrowser(obj, newHelpers(name))
+	r.daemons[name] = obj
+	return obj, nil
 }

@@ -15,6 +15,7 @@ import (
 	"image/png"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -39,9 +40,11 @@ var internalPrefixes = []string{"chrome://", "chrome-untrusted://", "devtools://
 // M is a JSON object.
 type M = map[string]any
 
-// H drives one named daemon.
+// H drives one named daemon, on its attached tab or on a pinned tab (see OnTab).
 type H struct {
 	Name      string
+	Target    string  // pinned tab; "" follows the daemon's attached tab
+	session   string  // the pinned tab's session
 	selectAll float64 // cached select-all modifier: 4 on macOS browsers, else 2
 	// Send is the IPC round trip; tests replace it.
 	Send func(req M, timeout time.Duration) (M, error)
@@ -63,6 +66,16 @@ func New(name string) *H {
 	return h
 }
 
+// OnTab returns helpers that act on target without changing the daemon's attached tab.
+func (h *H) OnTab(target string) (*H, error) {
+	m, err := h.send(M{"meta": "attach", "target_id": target}, callTimeout)
+	if err != nil {
+		return nil, err
+	}
+	sid, _ := m["session_id"].(string)
+	return &H{Name: h.Name, Target: target, session: sid, selectAll: h.selectAll, Send: h.Send}, nil
+}
+
 func (h *H) send(req M, timeout time.Duration) (M, error) {
 	m, err := h.Send(req, timeout)
 	if err != nil {
@@ -82,6 +95,9 @@ func (h *H) CDP(method string, params M, session string) (M, error) {
 func (h *H) cdpTimeout(method string, params M, session string, timeout time.Duration) (M, error) {
 	if params == nil {
 		params = M{}
+	}
+	if session == "" && h.session != "" && !strings.HasPrefix(method, "Target.") {
+		session = h.session
 	}
 	req := M{"method": method, "params": params, "session_id": nil}
 	if session != "" {
@@ -158,7 +174,10 @@ func (h *H) evaluate(expr, session string) (any, error) {
 		case "-0":
 			return math.Copysign(0, -1), nil
 		}
-		return strings.TrimSuffix(u, "n"), nil
+		if n, ok := new(big.Int).SetString(strings.TrimSuffix(u, "n"), 10); ok {
+			return n, nil // a BigInt
+		}
+		return u, nil
 	}
 	return nil, nil
 }
@@ -529,6 +548,14 @@ func (h *H) ListTabs(includeChrome bool) ([]Tab, error) {
 }
 
 func (h *H) CurrentTab() (Tab, error) {
+	if h.Target != "" {
+		r, err := h.CDP("Target.getTargetInfo", M{"targetId": h.Target}, "")
+		if err != nil {
+			return nil, err
+		}
+		t, _ := r["targetInfo"].(M)
+		return tab(t["targetId"], t["title"], t["url"]), nil
+	}
 	m, err := h.send(M{"meta": "current_tab"}, callTimeout)
 	if err != nil {
 		return nil, err
@@ -557,11 +584,11 @@ func (h *H) SwitchTab(target string, activate bool) (string, error) {
 			return "", err
 		}
 	}
-	r, err := h.CDP("Target.attachToTarget", M{"targetId": target, "flatten": true}, "")
+	r, err := h.send(M{"meta": "attach", "target_id": target}, callTimeout)
 	if err != nil {
 		return "", err
 	}
-	sid, _ := r["sessionId"].(string)
+	sid, _ := r["session_id"].(string)
 	if _, err := h.send(M{"meta": "set_session", "session_id": sid, "target_id": target}, callTimeout); err != nil {
 		return "", err
 	}
@@ -686,11 +713,14 @@ func (h *H) WaitForElement(selector string, timeout float64, visible bool) (bool
 // WaitForNetworkIdle waits until no requests are in flight on the attached
 // session and no Network events arrived for idleMs.
 func (h *H) WaitForNetworkIdle(timeout float64, idleMs int) (bool, error) {
-	s, err := h.send(M{"meta": "session"}, callTimeout)
-	if err != nil {
-		return false, err
+	var active any = h.session
+	if h.session == "" {
+		s, err := h.send(M{"meta": "session"}, callTimeout)
+		if err != nil {
+			return false, err
+		}
+		active = s["session_id"]
 	}
-	active := s["session_id"]
 	inflight := map[any]bool{}
 	last := time.Now()
 	return h.poll(timeout, 100*time.Millisecond, func() (bool, error) {

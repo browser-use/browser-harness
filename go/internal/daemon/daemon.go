@@ -117,6 +117,8 @@ type Daemon struct {
 	session    string
 	targetID   string
 	dedicated  string
+	tabs       map[string]string // targetId -> cached flat session
+	tabTargets map[string]string // session -> targetId
 	events     []event
 	dialog     json.RawMessage
 	shutting   bool
@@ -141,6 +143,7 @@ func unlock(l chan struct{}) { <-l }
 func New(cfg Config, logf func(string)) *Daemon {
 	return &Daemon{
 		cfg: cfg, logf: logf, replaces: map[string]string{}, recoveries: map[*recovery]struct{}{},
+		tabs: map[string]string{}, tabTargets: map[string]string{},
 		stop: make(chan struct{}), sessionState: newLock(), dedicatedLock: newLock(),
 	}
 }
@@ -179,7 +182,32 @@ func (d *Daemon) attach(ctx context.Context, tid string) (string, error) {
 	var r struct {
 		SessionID string `json:"sessionId"`
 	}
-	return r.SessionID, json.Unmarshal(raw, &r)
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return "", err
+	}
+	d.mu.Lock()
+	if old := d.tabs[tid]; old != "" {
+		delete(d.tabTargets, old)
+	}
+	d.tabs[tid], d.tabTargets[r.SessionID] = r.SessionID, tid
+	d.mu.Unlock()
+	return r.SessionID, nil
+}
+
+// attachTab returns the cached session for a tab, attaching once. Reusing the
+// session keeps per-session state such as device emulation across tab switches.
+func (d *Daemon) attachTab(ctx context.Context, tid string) (string, error) {
+	d.mu.Lock()
+	sid := d.tabs[tid]
+	d.mu.Unlock()
+	if sid != "" {
+		return sid, nil
+	}
+	sid, err := d.attach(ctx, tid)
+	if err == nil {
+		d.enableDefaultDomains(ctx, sid)
+	}
+	return sid, err
 }
 
 func trunc(s string, n int) string {
@@ -242,8 +270,10 @@ func (d *Daemon) attachFirstPage(ctx context.Context, replaces string, enableDom
 	}
 
 	var pages []Target
+	// Recovering on local Chrome: the user's other tabs are not ours to take.
+	recoverLocal := replaces != "" && d.cfg.Kind == "local"
 	pick := func(f func(Target) bool) {
-		if len(pages) > 0 {
+		if len(pages) > 0 || recoverLocal {
 			return
 		}
 		for _, t := range targets {
@@ -256,7 +286,7 @@ func (d *Daemon) attachFirstPage(ctx context.Context, replaces string, enableDom
 	pick(isReusableBlank) // fresh browsers (e.g. Browser Use cloud) start on about:blank
 	pick(isReusableNewTab)
 	takeOver := ""
-	if len(pages) == 0 && harnessOpenedInspect() {
+	if len(pages) == 0 && !recoverLocal && harnessOpenedInspect() {
 		// After permissions are granted the only tab is often chrome://inspect.
 		for _, t := range targets {
 			if isInspectTab(t) {
@@ -402,6 +432,16 @@ func (d *Daemon) recordEvent(method string, params json.RawMessage, sid string) 
 	}
 	var markSession string
 	switch method {
+	case "Target.detachedFromTarget":
+		var v struct {
+			SessionID string `json:"sessionId"`
+		}
+		if json.Unmarshal(params, &v) == nil && v.SessionID != "" {
+			if tid := d.tabTargets[v.SessionID]; tid != "" && d.tabs[tid] == v.SessionID {
+				delete(d.tabs, tid)
+			}
+			delete(d.tabTargets, v.SessionID)
+		}
 	case "Page.javascriptDialogOpening":
 		d.dialog = params
 	case "Page.javascriptDialogClosed":
@@ -635,6 +675,16 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 		wg.Wait()
 		d.scheduleTabMarker(newSID)
 		return map[string]any{"session_id": nullable(newSID)}
+	case "attach":
+		tid, _ := req["target_id"].(string)
+		if tid == "" {
+			return map[string]any{"error": "'target_id'"}
+		}
+		sid, err := d.attachTab(ctx, tid)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		return map[string]any{"session_id": sid}
 	case "pending_dialog":
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -690,9 +740,12 @@ func (d *Daemon) shutdown() map[string]any {
 // forever for a frame. Never on discovered local Chrome: that would move the user's tabs.
 func (d *Daemon) foreground(ctx context.Context, sid string) {
 	d.mu.Lock()
-	tid, cur := d.targetID, d.session
+	tid := d.tabTargets[sid]
+	if sid == d.session {
+		tid = d.targetID
+	}
 	d.mu.Unlock()
-	if d.cfg.Kind == "local" || tid == "" || sid != cur {
+	if d.cfg.Kind == "local" || tid == "" {
 		return
 	}
 	actx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -866,7 +919,11 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn, token string) {
 		d.logf(fmt.Sprintf("conn: %v", jerr))
 		resp = map[string]any{"error": jerr.Error()}
 	} else {
-		resp = d.Handle(ctx, req, token)
+		// Clients send one line and wait; a read returning means they hung up.
+		cctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() { _, _ = conn.Read(make([]byte, 1)); cancel() }()
+		resp = d.Handle(cctx, req, token)
 	}
 	_ = err
 	b, merr := json.Marshal(resp)
