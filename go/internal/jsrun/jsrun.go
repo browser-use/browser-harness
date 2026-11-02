@@ -40,6 +40,7 @@ type runner struct {
 	h       *helpers.H
 	out     io.Writer
 	trace   Trace
+	lazy    bool                     // the CLI skipped starting the default daemon
 	tabs    map[[2]string]*helpers.H // (daemon, tab) -> pinned helpers
 	daemons map[string]*goja.Object  // on(name) results
 }
@@ -52,8 +53,15 @@ func newRunner(out io.Writer) *runner {
 }
 
 // Run executes a snippet, printing to out. Uncaught errors come back with the JS stack.
-func Run(code string, out io.Writer) (Trace, error) {
+func Run(code string, out io.Writer) (Trace, error) { return run(code, out, false) }
+
+// RunLazy is Run for snippets the CLI starts without a daemon (they begin with
+// start_remote_daemon); the default daemon starts on its first browser helper.
+func RunLazy(code string, out io.Writer) (Trace, error) { return run(code, out, true) }
+
+func run(code string, out io.Writer, lazy bool) (Trace, error) {
 	r := newRunner(out)
+	r.lazy = lazy
 	if err := r.loadAgentHelpers(); err != nil {
 		return r.trace, err
 	}
@@ -200,7 +208,13 @@ func (r *runner) bindOn(obj *goja.Object, base *helpers.H, name string, position
 		var v any
 		var err error
 		start := time.Now()
-		if t, ok := a.opts["tab"]; ok {
+		if base == r.h && r.lazy {
+			r.lazy = false
+			if !admin.DaemonAlive("") {
+				err = admin.EnsureDaemon(-1, "", nil)
+			}
+		}
+		if t, ok := a.opts["tab"]; ok && err == nil {
 			delete(a.opts, "tab")
 			a.h, err = r.onTab(base, t)
 		}

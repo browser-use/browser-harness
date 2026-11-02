@@ -164,9 +164,6 @@ func Main(args []string) int {
 			}
 		}
 	}
-	if out := stdoutTail.text(); out != "" {
-		ev.Output = &out
-	}
 	if stdoutTail.length > 0 {
 		ev.OutputLength = &stdoutTail.length
 	}
@@ -387,14 +384,18 @@ func runSnippet(code string) result {
 			return r
 		}
 	}
-	r := runJS(code)
+	r := runJS(code, cloudAdmin)
 	r.task = &code
 	return r
 }
 
 // runJS executes the snippet in-process and collects its helper trace.
-func runJS(code string) result {
-	trace, err := jsrun.Run(code, os.Stdout)
+func runJS(code string, lazy bool) result {
+	run := jsrun.Run
+	if lazy {
+		run = jsrun.RunLazy
+	}
+	trace, err := run(code, os.Stdout)
 	r := result{steps: trace.Steps, stepCount: trace.StepCount}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
