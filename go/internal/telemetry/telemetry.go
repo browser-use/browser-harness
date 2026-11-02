@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,7 +25,6 @@ import (
 const (
 	posthogKey  = "phc_rCPCLPtaXB3EuBdiH7JLKtU2Wj5iPnuwdsbw58CnjYXc"
 	posthogHost = "https://eu.i.posthog.com"
-	maxTaskLen  = 20_000
 )
 
 var (
@@ -217,7 +215,7 @@ func cdpHostname() any {
 // CLIEvent is one cli_event; nil pointers encode as null.
 type CLIEvent struct {
 	Action, Command         string
-	Task, Browser, Output   *string
+	Task, Browser           *string
 	OutputLength, StepCount *int
 	Steps                   any
 	Duration                float64
@@ -239,18 +237,30 @@ func intp(p *int) any {
 }
 
 // CaptureCLIEvent sends the event from a detached process; failures are silent.
+// Snippet text, output, helper arguments and error details can hold page data
+// from the user's browser, so only their sizes, helper names and error class leave the machine.
 func CaptureCLIEvent(e CLIEvent) {
 	if !Enabled() {
 		return
 	}
-	var task, taskLen any
+	var taskLen any
 	if e.Task != nil {
-		t := []rune(*e.Task)
-		taskLen = len(t)
-		if len(t) > maxTaskLen {
-			t = t[:maxTaskLen]
+		taskLen = len([]rune(*e.Task))
+	}
+	var steps []any
+	if s, ok := e.Steps.([]any); ok {
+		for _, st := range s {
+			m, _ := st.(map[string]any)
+			steps = append(steps, map[string]any{"helper": m["helper"], "duration_seconds": m["duration_seconds"], "error": m["error"] != nil})
 		}
-		task = string(t)
+	}
+	var errClass any
+	if e.Error != nil {
+		c, _, _ := strings.Cut(strings.TrimPrefix(*e.Error, "GoError: "), ":")
+		if r := []rune(strings.TrimSpace(c)); len(r) > 80 {
+			c = string(r[:80])
+		}
+		errClass = strings.TrimSpace(c)
 	}
 	props := base()
 	for k, v := range map[string]any{
@@ -259,9 +269,8 @@ func CaptureCLIEvent(e CLIEvent) {
 		"client": orNil(os.Getenv("BH_CLIENT")), "client_version": orNil(os.Getenv("BH_CLIENT_VERSION")),
 		"agent_client": agentClient(), "model": orNil(os.Getenv("BROWSER_USE_AGENT_MODEL")),
 		"model_provider": orNil(os.Getenv("BROWSER_USE_MODEL_PROVIDER")),
-		"task":           task, "task_length": taskLen, "output": strp(e.Output),
-		"output_length": intp(e.OutputLength), "steps": e.Steps, "step_count": intp(e.StepCount),
-		"duration_seconds": e.Duration, "exit_code": e.ExitCode, "error_message": strp(e.Error),
+		"task_length":    taskLen, "output_length": intp(e.OutputLength), "steps": steps, "step_count": intp(e.StepCount),
+		"duration_seconds": e.Duration, "exit_code": e.ExitCode, "error_class": errClass,
 	} {
 		props[k] = v
 	}
@@ -324,8 +333,18 @@ func send(payload map[string]any) {
 	if err != nil {
 		return
 	}
-	cmd := exec.Command(self, "__telemetry-send")
-	cmd.Stdin = bytes.NewReader(compact(job))
+	// A file, not a stdin pipe: Go feeds pipes from a goroutine that dies when the CLI exits.
+	f, err := os.CreateTemp("", "bh-telemetry-*.json")
+	if err != nil {
+		return
+	}
+	_, werr := f.Write(compact(job))
+	f.Close()
+	if werr != nil {
+		os.Remove(f.Name())
+		return
+	}
+	cmd := exec.Command(self, "__telemetry-send", f.Name())
 	Detach(cmd)
 	if cmd.Start() == nil {
 		go func() { _ = cmd.Wait() }()
@@ -339,7 +358,11 @@ func RunSender() int {
 		Timeout float64         `json:"timeout"`
 		Payload json.RawMessage `json:"payload"`
 	}
-	raw, _ := io.ReadAll(os.Stdin)
+	if len(os.Args) < 3 {
+		return 0
+	}
+	raw, _ := os.ReadFile(os.Args[2])
+	os.Remove(os.Args[2])
 	if json.Unmarshal(raw, &job) != nil {
 		return 0
 	}
