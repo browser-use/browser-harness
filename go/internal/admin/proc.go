@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +37,7 @@ func processStartTime(pid int) string {
 		}
 		return f[19]
 	case "darwin":
-		out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
+		out, err := exec.CommandContext(context.Background(), "ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // Query process metadata using an integer PID.
 		if err != nil {
 			return ""
 		}
@@ -51,10 +52,10 @@ func processStartTime(pid int) string {
 func isDaemonProcess(pid int) bool {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+		cmd = exec.CommandContext(context.Background(), "powershell", "-NoProfile", "-NonInteractive", "-Command", //nolint:gosec // The PowerShell expression interpolates only an integer PID.
 			fmt.Sprintf("(Get-CimInstance Win32_Process -Filter 'ProcessId=%d').CommandLine", pid))
 	} else {
-		cmd = exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid))
+		cmd = exec.CommandContext(context.Background(), "ps", "-o", "command=", "-p", strconv.Itoa(pid)) //nolint:gosec // Query process metadata using an integer PID.
 	}
 	out, err := runWithTimeout(cmd, 2*time.Second)
 	if err != nil || strings.TrimSpace(out) == "" {
@@ -86,7 +87,7 @@ type pidRecord struct {
 }
 
 func readPidRecord(path string) (pidRecord, bool) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // Read a local daemon PID record.
 	if err != nil {
 		return pidRecord{}, false
 	}
@@ -165,7 +166,10 @@ func publishPid(path string, pid int) {
 	if fp := processStartTime(pid); fp != "" {
 		started = fp
 	}
-	b, _ := json.Marshal(map[string]any{"pid": pid, "started": started})
+	b, err := json.Marshal(map[string]any{"pid": pid, "started": started})
+	if err != nil {
+		return
+	}
 	tmp := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), time.Now().UnixNano())
 	if os.WriteFile(tmp, b, 0o600) == nil {
 		_ = os.Rename(tmp, path)

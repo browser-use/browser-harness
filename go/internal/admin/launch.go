@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -78,7 +79,7 @@ func profileDirectoryArgs(base string) []string {
 		return nil
 	}
 	last := "Default"
-	if raw, err := os.ReadFile(filepath.Join(base, "Local State")); err == nil {
+	if raw, err := os.ReadFile(filepath.Join(base, "Local State")); err == nil { //nolint:gosec // Read Local State from a discovered browser profile.
 		var st struct {
 			Profile struct {
 				LastUsed any `json:"last_used"`
@@ -111,7 +112,7 @@ func hasLocalState(base string) bool {
 // launchBrowser prefers the browser whose profile already has the inspect toggle on.
 // openApp runs macOS `open`; tests override it.
 var openApp = func(args ...string) error {
-	_, err := runWithTimeout(exec.Command("open", args...), 10*time.Second)
+	_, err := runWithTimeout(exec.CommandContext(context.Background(), "open", args...), 10*time.Second) //nolint:gosec // Open the selected browser application with explicit arguments.
 	return err
 }
 
@@ -135,7 +136,7 @@ func launchBrowser() *launchResult {
 		if fi, err := os.Stat(raw); err != nil || fi.IsDir() {
 			continue
 		}
-		cmd := exec.Command(raw)
+		cmd := exec.CommandContext(context.Background(), raw) //nolint:gosec // The operator selects the browser executable.
 		detach(cmd)
 		if cmd.Start() != nil {
 			continue // exists but cannot execute: fall through to discovery
@@ -189,7 +190,7 @@ func launchBrowser() *launchResult {
 		if target == "" {
 			target = "chrome"
 		}
-		cmd := exec.Command("cmd", append([]string{"/c", "start", "", target}, args...)...)
+		cmd := exec.CommandContext(context.Background(), "cmd", append([]string{"/c", "start", "", target}, args...)...) //nolint:gosec // Launch a known browser target with profile arguments.
 		detach(cmd)
 		if cmd.Start() != nil {
 			return nil
@@ -203,7 +204,7 @@ func launchBrowser() *launchResult {
 	}
 	for _, c := range cmds {
 		if p, err := exec.LookPath(c); err == nil {
-			cmd := exec.Command(p, args...)
+			cmd := exec.CommandContext(context.Background(), p, args...) //nolint:gosec // Launch a discovered browser executable with profile arguments.
 			detach(cmd)
 			if cmd.Start() != nil {
 				return nil
@@ -229,7 +230,7 @@ func cleanupUnattachedLaunch(l *launchResult) {
 func openChromeInspect() bool {
 	const u = "chrome://inspect/#remote-debugging"
 	if runtime.GOOS == "darwin" {
-		cmd := exec.Command("osascript", "-e", `tell application "Google Chrome" to activate`,
+		cmd := exec.CommandContext(context.Background(), "osascript", "-e", `tell application "Google Chrome" to activate`,
 			"-e", `tell application "Google Chrome" to open location "`+u+`"`)
 		if _, err := runWithTimeout(cmd, 5*time.Second); err == nil {
 			return true
@@ -249,8 +250,8 @@ func openChromeInspectOnce() {
 	}
 	_ = os.MkdirAll(filepath.Dir(marker), 0o700)
 	now := time.Now()
-	if f, err := os.OpenFile(marker, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-		f.Close()
+	if f, err := os.OpenFile(marker, os.O_CREATE|os.O_WRONLY, 0o600); err == nil { //nolint:gosec // Create the inspect marker in the configured directory.
+		_ = f.Close()
 	}
 	_ = os.Chtimes(marker, now, now)
 }
@@ -261,10 +262,10 @@ func chromeRunning() bool {
 	var err error
 	var names []string
 	if runtime.GOOS == "windows" {
-		out, err = runWithTimeout(exec.Command("tasklist"), 5*time.Second)
+		out, err = runWithTimeout(exec.CommandContext(context.Background(), "tasklist"), 5*time.Second)
 		names = []string{"chrome.exe", "msedge.exe", "helium.exe"}
 	} else {
-		out, err = runWithTimeout(exec.Command("ps", "-A", "-o", "comm="), 5*time.Second)
+		out, err = runWithTimeout(exec.CommandContext(context.Background(), "ps", "-A", "-o", "comm="), 5*time.Second)
 		names = []string{"Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge", "helium"}
 	}
 	if err != nil {

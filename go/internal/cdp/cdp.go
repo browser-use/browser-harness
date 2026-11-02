@@ -82,6 +82,7 @@ func Dial(ctx context.Context, url string, timeout time.Duration, onEvent EventF
 	ws, resp, err := websocket.Dial(dctx, url, &websocket.DialOptions{HTTPHeader: http.Header{}})
 	if err != nil {
 		if resp != nil {
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("server rejected WebSocket connection: HTTP %d", resp.StatusCode)
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -91,11 +92,12 @@ func Dial(ctx context.Context, url string, timeout time.Duration, onEvent EventF
 	}
 	ws.SetReadLimit(MaxFrame)
 	c := &Client{ws: ws, pending: map[int64]call{}, detached: [2]map[string]bool{{}, {}}, onEvent: onEvent, done: make(chan struct{})}
-	go c.readLoop()
+	// The connection outlives the opening handshake and individual callers.
+	go c.readLoop(context.WithoutCancel(ctx))
 	return c, nil
 }
 
-func (c *Client) readLoop() {
+func (c *Client) readLoop(ctx context.Context) {
 	defer func() {
 		c.mu.Lock()
 		if c.err == nil {
@@ -109,7 +111,7 @@ func (c *Client) readLoop() {
 		close(c.done)
 	}()
 	for {
-		_, data, err := c.ws.Read(context.Background())
+		_, data, err := c.ws.Read(ctx)
 		if err != nil {
 			return
 		}

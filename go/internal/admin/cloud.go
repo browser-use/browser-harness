@@ -2,11 +2,13 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -34,17 +36,23 @@ func browserUse(path, method string, body any) (any, error) {
 	}
 	var rd io.Reader
 	if body != nil {
-		b, _ := json.Marshal(body)
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
 		rd = bytes.NewReader(b)
 	}
-	req, _ := http.NewRequest(method, daemon.BUAPI+path, rd)
+	req, err := http.NewRequestWithContext(context.Background(), method, daemon.BUAPI+path, rd)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("X-Browser-Use-API-Key", key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("<urlopen error %v>", err)
+		return nil, fmt.Errorf("<urlopen error %w>", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return nil, &HTTPError{Code: resp.StatusCode, Reason: http.StatusText(resp.StatusCode)}
@@ -73,17 +81,21 @@ func stopCloudBrowser(id string, strict bool) error {
 		}
 	}
 	if strict {
-		return fmt.Errorf("failed to stop remote browser %s: %v", id, last)
+		return fmt.Errorf("failed to stop remote browser %s: %w", id, last)
 	}
 	return nil
 }
 
 func cdpWSFromURL(cdpURL string) (string, error) {
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Get(cdpURL + "/json/version")
+	req, err := http.NewRequestWithContext(context.Background(), "GET", cdpURL+"/json/version", nil)
+	if err != nil {
+		return "", &url.Error{Op: "Get", URL: cdpURL + "/json/version", Err: err}
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return "", &HTTPError{Code: resp.StatusCode, Reason: http.StatusText(resp.StatusCode)}
 	}
@@ -258,7 +270,7 @@ func StartRemoteDaemon(name, profileName string, create map[string]any) (map[str
 	}()
 	if startErr != nil {
 		if cerr := stopCloudBrowser(id, true); cerr != nil {
-			return nil, fmt.Errorf("remote daemon startup and cloud browser cleanup both failed (2 sub-exceptions): %v; %v", startErr, cerr)
+			return nil, fmt.Errorf("remote daemon startup and cloud browser cleanup both failed (2 sub-exceptions): %w; %w", startErr, cerr)
 		}
 		return nil, startErr
 	}
@@ -276,9 +288,9 @@ func ListLocalProfiles() (any, error) {
 	if err != nil {
 		return nil, errors.New(profileUseMissing)
 	}
-	out, err := exec.Command(p, "list", "--json").Output()
+	out, err := exec.CommandContext(context.Background(), p, "list", "--json").Output() //nolint:gosec // Run the installed profile-use tool with explicit arguments.
 	if err != nil {
-		return nil, fmt.Errorf("Command '['profile-use', 'list', '--json']' returned non-zero exit status: %v", err)
+		return nil, fmt.Errorf("Command '['profile-use', 'list', '--json']' returned non-zero exit status: %w", err)
 	}
 	var v any
 	return v, json.Unmarshal(out, &v)
@@ -309,13 +321,13 @@ func SyncLocalProfile(profile, browserName, cloudID string, include, exclude []s
 	for _, d := range exclude {
 		args = append(args, "--exclude-domain", d)
 	}
-	cmd := exec.Command(p, args...)
+	cmd := exec.CommandContext(context.Background(), p, args...) //nolint:gosec // Run the installed profile-use tool with operator-selected sync options.
 	cmd.Env = append(os.Environ(), "BROWSER_USE_API_KEY="+key)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
-	os.Stdout.Write(stdout.Bytes())
-	os.Stderr.Write(stderr.Bytes())
+	_, _ = os.Stdout.Write(stdout.Bytes())
+	_, _ = os.Stderr.Write(stderr.Bytes())
 	code := 0
 	if runErr != nil {
 		var ee *exec.ExitError

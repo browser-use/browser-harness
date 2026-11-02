@@ -1,12 +1,12 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,8 +31,6 @@ func InstallMode() string {
 	}
 	return "release"
 }
-
-var versionRE = regexp.MustCompile(`(?i)^\s*v?(\d+(?:\.\d+)*)(?:(a|b|rc)(\d+))?`)
 
 func shortText(s string) string {
 	r := []rune(s)
@@ -99,7 +97,7 @@ func osRelease() string {
 	if runtime.GOOS == "windows" {
 		return ""
 	}
-	out, err := exec.Command("uname", "-r").Output()
+	out, err := exec.CommandContext(context.Background(), "uname", "-r").Output()
 	if err != nil {
 		return ""
 	}
@@ -184,11 +182,15 @@ func DoctorJSON(strict bool) int {
 	if strict {
 		ok = up && ready
 	}
-	raw, _ := json.Marshal(map[string]any{
+	raw, err := json.Marshal(map[string]any{
 		"schema_version": 1, "healthy": ok, "require_existing_daemon": strict, "version": Version(),
 		"install_mode": InstallMode(), "chrome_running": chrome,
 		"daemon": map[string]any{"name": Name(), "alive": up, "browser_ready": ready},
 	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	fmt.Println(string(raw))
 	if ok {
 		return 0

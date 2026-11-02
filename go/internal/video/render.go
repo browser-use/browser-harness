@@ -69,7 +69,7 @@ func samples(c *Composition) []sample {
 
 // serve exposes the recording on loopback so the renderer can load its frames.
 func serve(rec string) (string, func(), error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, err
 	}
@@ -84,7 +84,10 @@ var runHarness = func(script string, cfg any, timeout time.Duration, out any) er
 	if err := admin.EnsureDaemon(-1, "", nil); err != nil {
 		return err
 	}
-	raw, _ := json.Marshal(cfg)
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
 	var c map[string]any
 	_ = json.Unmarshal(raw, &c)
 	type res struct {
@@ -99,9 +102,12 @@ var runHarness = func(script string, cfg any, timeout time.Duration, out any) er
 	select {
 	case r := <-done:
 		if r.err != nil {
-			return fmt.Errorf("browser step failed: %v", r.err)
+			return fmt.Errorf("browser step failed: %w", r.err)
 		}
-		b, _ := json.Marshal(r.v)
+		b, err := json.Marshal(r.v)
+		if err != nil {
+			return err
+		}
 		return json.Unmarshal(b, out)
 	case <-time.After(timeout):
 		return fmt.Errorf("browser step timed out after %s", timeout)
@@ -201,7 +207,7 @@ func review(rec string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := os.MkdirAll(reviewDir, 0o755); err != nil {
+	if err := os.MkdirAll(reviewDir, 0o755); err != nil { //nolint:gosec // Review directories intentionally remain readable and traversable.
 		stop()
 		return 0, err
 	}
@@ -261,14 +267,14 @@ func hashes(rec string, names []string) (map[string]string, error) {
 // --- images ---
 
 func loadRGB(path string) (*image.RGBA, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // Read a frame from the selected local recording.
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	src, _, err := image.Decode(f)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %v", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, src.Bounds().Dx(), src.Bounds().Dy()))
 	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
@@ -318,7 +324,7 @@ func contactSheet(caps []capture, output, title string) error {
 func privacyReview(rec string, c *Composition) (string, []capture, error) {
 	dir := filepath.Join(rec, ".privacy-review")
 	_ = os.RemoveAll(dir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // Review directories intentionally remain readable and traversable.
 		return "", nil, err
 	}
 	var caps []capture
@@ -383,12 +389,12 @@ true;
 func run(dir string, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // Run the selected media tool with explicit arguments.
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s: %v: %s", name, err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
 }
@@ -421,7 +427,7 @@ func export(rec, output string, reviewedFlag bool) error {
 	if err != nil {
 		return err
 	}
-	if cur, _ := os.ReadFile(filepath.Join(rec, "composition.js")); !bytes.Equal(cur, comp) {
+	if cur, _ := os.ReadFile(filepath.Join(rec, "composition.js")); !bytes.Equal(cur, comp) { //nolint:gosec // Read the composition from the selected local recording.
 		return errors.New("composition.js is not the current compiled brief; rerun review")
 	}
 	now, err := hashes(rec, reviewed)
@@ -448,7 +454,7 @@ func export(rec, output string, reviewedFlag bool) error {
 			return fmt.Errorf("refusing to overwrite %s", p)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(webm), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(webm), 0o755); err != nil { //nolint:gosec // Export directories intentionally remain readable and traversable.
 		return err
 	}
 
@@ -482,7 +488,7 @@ func export(rec, output string, reviewedFlag bool) error {
 	}
 	var closed bool
 	if cerr := runHarness(closeScript, map[string]any{"url": url, "previous": started.Previous}, 15*time.Second, &closed); cerr != nil && err == nil {
-		err = fmt.Errorf("could not restore Chrome download behavior; restart Chrome: %v", cerr)
+		err = fmt.Errorf("could not restore Chrome download behavior; restart Chrome: %w", cerr)
 	}
 	if err != nil {
 		return err

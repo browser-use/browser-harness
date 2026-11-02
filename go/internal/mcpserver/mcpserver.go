@@ -118,11 +118,11 @@ var (
 // screenshotInfo adds the PNG's size to capture_screenshot's path.
 func screenshotInfo(v any) (any, error) {
 	path, _ := v.(string)
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // Read the screenshot returned by the capture helper.
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	cfg, err := png.DecodeConfig(f)
 	if err != nil {
 		return nil, err
@@ -174,7 +174,7 @@ func Run(version string) int {
 	// Anything else that prints (daemon setup guidance) goes to stderr.
 	os.Stdout = os.Stderr
 	if err := newServer(version).Run(context.Background(), &mcp.IOTransport{Reader: os.Stdin, Writer: out}); err != nil {
-		os.Stderr.WriteString("browser-harness mcp: " + err.Error() + "\n")
+		_, _ = os.Stderr.WriteString("browser-harness mcp: " + err.Error() + "\n")
 		return 1
 	}
 	return 0

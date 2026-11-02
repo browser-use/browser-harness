@@ -38,9 +38,9 @@ func Home() string {
 func EnsurePrivateDir(dir string) string {
 	_, err := os.Stat(dir)
 	existed := err == nil
-	_ = os.MkdirAll(dir, 0o777)
+	_ = os.MkdirAll(dir, 0o777) //nolint:gosec // Preserve umask-based creation of parent directories before restricting the leaf.
 	if !existed && runtime.GOOS != "windows" {
-		_ = os.Chmod(dir, 0o700)
+		_ = os.Chmod(dir, 0o700) //nolint:gosec // Owner execute permission is required for directory traversal.
 	}
 	return dir
 }
@@ -81,7 +81,7 @@ func LoadEnv() {
 	}
 	files = append(files, filepath.Join(WorkspaceDir(), ".env"))
 	for _, f := range files {
-		raw, err := os.ReadFile(f)
+		raw, err := os.ReadFile(f) //nolint:gosec // Load environment files from the configured repository and workspace.
 		if err != nil {
 			continue
 		}

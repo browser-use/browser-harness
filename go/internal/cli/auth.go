@@ -26,7 +26,10 @@ func Auth(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		printJSON(os.Stdout, st)
+		if err := printJSON(os.Stdout, st); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 		return 0
 	case "logout":
 		removed, err := auth.Clear()
@@ -38,7 +41,10 @@ func Auth(args []string) int {
 		if removed {
 			status = "logged-out"
 		}
-		printJSON(os.Stdout, map[string]string{"status": status, "path": auth.Path()})
+		if err := printJSON(os.Stdout, map[string]string{"status": status, "path": auth.Path()}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 		return 0
 	case "login":
 	default:
@@ -76,7 +82,7 @@ func Auth(args []string) int {
 	}
 	if err != nil {
 		if jsonOut {
-			printJSON(os.Stderr, map[string]string{"status": "error", "reason": err.Error()})
+			_ = printJSON(os.Stderr, map[string]string{"status": "error", "reason": err.Error()})
 		} else {
 			fmt.Fprintln(os.Stderr, err)
 		}
@@ -85,7 +91,11 @@ func Auth(args []string) int {
 	return 0
 }
 
-func printJSON(w io.Writer, v any) {
-	raw, _ := json.MarshalIndent(v, "", "  ")
-	fmt.Fprintln(w, string(raw))
+func printJSON(w io.Writer, v any) error {
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(raw))
+	return err
 }

@@ -3,6 +3,7 @@ package telemetry
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -51,7 +52,11 @@ func load() map[string]any {
 func save(m map[string]any) {
 	p := configPath()
 	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	if os.WriteFile(p, indent(m), 0o600) == nil && runtime.GOOS != "windows" {
+	raw := indent(m)
+	if raw == nil {
+		return
+	}
+	if os.WriteFile(p, raw, 0o600) == nil && runtime.GOOS != "windows" {
 		_ = os.Chmod(p, 0o600)
 	}
 }
@@ -341,6 +346,10 @@ func send(payload map[string]any) {
 		timeout = t
 	}
 	job := map[string]any{"url": host + "/i/v0/e/", "timeout": timeout, "payload": payload}
+	raw := compact(job)
+	if raw == nil {
+		return
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return
@@ -350,16 +359,16 @@ func send(payload map[string]any) {
 	if err != nil {
 		return
 	}
-	_, werr := f.Write(compact(job))
-	f.Close()
-	if werr != nil {
-		os.Remove(f.Name())
+	_, werr := f.Write(raw)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(f.Name())
 		return
 	}
-	cmd := exec.Command(self, "__telemetry-send", f.Name())
+	cmd := exec.CommandContext(context.Background(), self, "__telemetry-send", f.Name()) //nolint:gosec // Start this binary as the detached telemetry sender.
 	Detach(cmd)
 	if cmd.Start() != nil {
-		os.Remove(f.Name())
+		_ = os.Remove(f.Name())
 		return
 	}
 	go func() { _ = cmd.Wait() }()
@@ -376,30 +385,36 @@ func RunSender() int {
 		return 0
 	}
 	raw, _ := os.ReadFile(os.Args[2])
-	os.Remove(os.Args[2])
+	_ = os.Remove(os.Args[2])
 	if json.Unmarshal(raw, &job) != nil {
 		return 0
 	}
-	req, err := http.NewRequest("POST", job.URL, bytes.NewReader(job.Payload))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", job.URL, bytes.NewReader(job.Payload))
 	if err != nil {
 		return 0
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "browser-harness")
 	if resp, err := (&http.Client{Timeout: time.Duration(job.Timeout * float64(time.Second))}).Do(req); err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	return 0
 }
 
 func indent(v any) []byte {
-	raw, _ := json.MarshalIndent(v, "", "  ")
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil
+	}
 	return append(raw, '\n')
 }
 
 func compact(v any) []byte {
-	raw, _ := json.Marshal(v)
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
 	return raw
 }
 
-func printJSON(v any) { os.Stdout.Write(indent(v)) }
+func printJSON(v any) { _, _ = os.Stdout.Write(indent(v)) }

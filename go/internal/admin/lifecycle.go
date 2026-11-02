@@ -2,6 +2,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -152,7 +153,7 @@ type spawned struct {
 }
 
 func spawnDaemon(name string, env map[string]string) (*spawned, error) {
-	cmd := exec.Command(Self(), "__daemon")
+	cmd := exec.CommandContext(context.Background(), Self(), "__daemon") //nolint:gosec // Start this binary as the local daemon.
 	e := os.Environ()
 	if name != "" {
 		e = append(e, "BU_NAME="+name)
@@ -163,7 +164,7 @@ func spawnDaemon(name string, env map[string]string) (*spawned, error) {
 	cmd.Env = e
 	if f, err := os.OpenFile(ipc.LogPath(pick(name)), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 		cmd.Stderr = f
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 	}
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
@@ -228,7 +229,6 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 	// Only a local Chrome handshake parked on the approval sheet drops the deadline.
 	approvalUnbounded := local && !explicit
 	var launched *launchResult
-	openedInspect := false
 	for attempt := 0; attempt < 3; attempt++ {
 		var proc *spawned
 		pending := 0
@@ -352,8 +352,7 @@ func ensureDaemon(wait float64, name string, env map[string]string, startLocked 
 			}
 			continue
 		}
-		if local && !openedInspect && needsRemoteDebuggingPrompt(msg) {
-			openedInspect = true
+		if local && needsRemoteDebuggingPrompt(msg) {
 			if v := browser.RemoteDebuggingUserEnabled(); v != nil && *v {
 				fmt.Fprintln(os.Stderr, "browser-harness: Chrome is asking \"Allow remote debugging?\". Approve that exact popup; no replacement connection was started.")
 				return errors.New("permission-blocked: Chrome did not approve the connection; browser-harness did not retry or create another connection.")
@@ -384,7 +383,7 @@ func RequireExistingDaemon(name string) error {
 	}
 	m, err := ipc.Call(n, 3*time.Second, map[string]any{"method": "Target.getTargets", "params": map[string]any{}})
 	if err != nil {
-		return fmt.Errorf("required daemon %s is unhealthy: %v", quoted(n), err)
+		return fmt.Errorf("required daemon %s is unhealthy: %w", quoted(n), err)
 	}
 	if _, ok := m["result"]; !ok {
 		return fmt.Errorf("required daemon %s failed its CDP health check", quoted(n))
@@ -459,7 +458,7 @@ func RestartDaemon(name string, requireClean bool) error {
 		}
 		if requireClean {
 			if err != nil {
-				return fmt.Errorf("daemon %s did not confirm clean shutdown: %v", quoted(n), err)
+				return fmt.Errorf("daemon %s did not confirm clean shutdown: %w", quoted(n), err)
 			}
 			if m["ok"] != true || truthy(m["error"]) {
 				if e, ok := m["error"].(string); ok && e != "" {

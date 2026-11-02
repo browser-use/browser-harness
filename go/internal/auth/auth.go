@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,7 +68,7 @@ func Path() string {
 }
 
 func loadFile(p string) (map[string]any, error) {
-	raw, err := os.ReadFile(p)
+	raw, err := os.ReadFile(p) //nolint:gosec // The operator configures the auth file path.
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]any{}, nil
 	}
@@ -164,17 +165,22 @@ func recordFromToken(data map[string]any, source string) (Record, error) {
 }
 
 func writePrivate(p string, data map[string]any) error {
-	b, _ := json.MarshalIndent(data, "", "  ")
+	b, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
 	tmp := p + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // Write the private temporary auth file beside the configured auth file.
 	if err != nil {
 		return err
 	}
 	if _, err := f.Write(append(b, '\n')); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
 	if err := os.Rename(tmp, p); err != nil {
 		return err
 	}
@@ -185,13 +191,16 @@ func writePrivate(p string, data map[string]any) error {
 func Save(r Record) error {
 	p := Path()
 	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	_ = os.Chmod(filepath.Dir(p), 0o700)
+	_ = os.Chmod(filepath.Dir(p), 0o700) //nolint:gosec // Owner execute permission is required for the private auth directory.
 	m, err := loadFile(p)
 	if err != nil {
 		return err
 	}
 	var asMap map[string]any
-	b, _ := json.Marshal(r)
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
 	_ = json.Unmarshal(b, &asMap)
 	m["browser_use"] = asMap
 	return writePrivate(p, m)
@@ -216,13 +225,21 @@ func Clear() (bool, error) {
 }
 
 func postJSON(u string, payload any) (map[string]any, error) {
-	b, _ := json.Marshal(payload)
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Post(u, "application/json", bytes.NewReader(b))
+	b, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("network error: %v", err)
+		return nil, err
 	}
-	defer resp.Body.Close()
+	client := &http.Client{Timeout: 60 * time.Second}
+	req, err := http.NewRequestWithContext(context.Background(), "POST", u, bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("network error: %w", &url.Error{Op: "Post", URL: u, Err: err})
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("network error: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	var data map[string]any
 	_ = json.Unmarshal(body, &data)
@@ -278,34 +295,35 @@ func BrowserLogin(open, jsonOut bool, out io.Writer) error {
 	sum := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 	state := token(32)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
+	defer func() { _ = ln.Close() }()
 	redirect := fmt.Sprintf("http://%s%s", ln.Addr().String(), callbackPath)
 	data, err := postJSON(base()+"/cloud/cli-auth/browser", map[string]any{
 		"client_id": clientID(), "response_type": "code", "redirect_uri": redirect,
 		"code_challenge": challenge, "code_challenge_method": "S256", "state": state, "device_name": deviceName(),
 	})
 	if err != nil {
-		ln.Close()
 		return err
 	}
 	authURL := firstString(data, "authorization_uri", "auth_url")
 	if authURL == "" {
-		ln.Close()
 		return errors.New("auth start response did not include authorization_uri")
 	}
 	opened := open && Opener(authURL) == nil
 	if jsonOut {
-		writeJSON(out, map[string]any{"status": "needs_user_auth", "auth_url": authURL, "callback": redirect, "expires_in": nullableInt(data["expires_in"]), "opened": opened})
+		if err := writeJSON(out, map[string]any{"status": "needs_user_auth", "auth_url": authURL, "callback": redirect, "expires_in": nullableInt(data["expires_in"]), "opened": opened}); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintln(out, "Open this URL to sign in to Browser Use Cloud:")
-		fmt.Fprintln(out, authURL)
+		_, _ = fmt.Fprintln(out, "Open this URL to sign in to Browser Use Cloud:")
+		_, _ = fmt.Fprintln(out, authURL)
 		if opened {
-			fmt.Fprintln(out, "Waiting for login to complete...")
+			_, _ = fmt.Fprintln(out, "Waiting for login to complete...")
 		} else {
-			fmt.Fprintln(out, "Waiting for login to complete after you open the URL...")
+			_, _ = fmt.Fprintln(out, "Waiting for login to complete after you open the URL...")
 		}
 	}
 	type cb struct{ code, errCode, desc string }
@@ -327,11 +345,14 @@ func BrowserLogin(open, jsonOut bool, out io.Writer) error {
 		default:
 		}
 	})}
-	go srv.Serve(ln)
-	defer srv.Shutdown(context.Background())
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 	var c cb
 	select {
 	case c = <-got:
+	case err := <-serveErr:
+		return err
 	case <-time.After(timeoutSeconds * time.Second):
 		return errors.New("timed out waiting for browser auth callback")
 	}
@@ -375,12 +396,14 @@ func DeviceLogin(open, jsonOut bool, out io.Writer) error {
 		if complete != "" {
 			vc = complete
 		}
-		writeJSON(out, map[string]any{"status": "needs_user_auth", "verification_uri": verify, "verification_uri_complete": vc, "user_code": userCode, "expires_in": nullableInt(data["expires_in"]), "opened": opened})
+		if err := writeJSON(out, map[string]any{"status": "needs_user_auth", "verification_uri": verify, "verification_uri_complete": vc, "user_code": userCode, "expires_in": nullableInt(data["expires_in"]), "opened": opened}); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintln(out, "Open this URL to sign in to Browser Use Cloud:")
-		fmt.Fprintln(out, openURI)
-		fmt.Fprintf(out, "Code: %s\n", userCode)
-		fmt.Fprintln(out, "Waiting for login to complete...")
+		_, _ = fmt.Fprintln(out, "Open this URL to sign in to Browser Use Cloud:")
+		_, _ = fmt.Fprintln(out, openURI)
+		_, _ = fmt.Fprintf(out, "Code: %s\n", userCode)
+		_, _ = fmt.Fprintln(out, "Waiting for login to complete...")
 	}
 	interval := intOr(data["interval"], 5)
 	if interval < 1 {
@@ -430,9 +453,11 @@ func StdinLogin(in io.Reader, isTTY bool, jsonOut bool, out io.Writer) error {
 		return err
 	}
 	if jsonOut {
-		writeJSON(out, StoredOutput())
+		if err := writeJSON(out, StoredOutput()); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintln(out, "Browser Use Cloud API key stored.")
+		_, _ = fmt.Fprintln(out, "Browser Use Cloud API key stored.")
 	}
 	return nil
 }
@@ -446,9 +471,11 @@ func storeAndReport(tok map[string]any, source string, jsonOut bool, out io.Writ
 		return err
 	}
 	if jsonOut {
-		writeJSON(out, StoredOutput())
+		if err := writeJSON(out, StoredOutput()); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintln(out, msg)
+		_, _ = fmt.Fprintln(out, msg)
 	}
 	return nil
 }
@@ -463,9 +490,13 @@ func nullableInt(v any) any {
 	return nil
 }
 
-func writeJSON(w io.Writer, v any) {
-	raw, _ := json.Marshal(v)
-	fmt.Fprintln(w, string(raw))
+func writeJSON(w io.Writer, v any) error {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(raw))
+	return err
 }
 
 // StoredOutput is the success line after a login.

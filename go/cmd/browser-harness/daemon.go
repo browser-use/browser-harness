@@ -28,12 +28,12 @@ func runDaemon() int {
 	logPath := ipc.LogPath(cfg.Name)
 	_ = os.WriteFile(logPath, nil, 0o600)
 	logf := func(msg string) {
-		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // The daemon log path comes from the local runtime configuration.
 		if err != nil {
 			return
 		}
-		fmt.Fprintln(f, msg)
-		f.Close()
+		_, _ = fmt.Fprintln(f, msg)
+		_ = f.Close()
 	}
 	pidPath := ipc.PidPath(cfg.Name)
 	publishOwnPID(pidPath)
@@ -47,7 +47,7 @@ func runDaemon() int {
 		logf("fatal: " + err.Error())
 		code = 1
 	}
-	_ = d.StopRemote(false)
+	_ = d.StopRemote(ctx, false)
 	_ = os.Remove(pidPath)
 	return code
 }
@@ -57,7 +57,7 @@ func runDaemon() int {
 func publishOwnPID(path string) {
 	pid := os.Getpid()
 	published := strconv.Itoa(pid)
-	if raw, err := os.ReadFile(path); err == nil {
+	if raw, err := os.ReadFile(path); err == nil { //nolint:gosec // Read the local daemon PID record.
 		var rec struct {
 			PID json.Number `json:"pid"`
 		}

@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,11 +64,6 @@ const usage = `Usage:
   print(page_info())
   JS
 `
-
-type exit struct {
-	code int
-	msg  *string // printed to stderr
-}
 
 func telemetryCommand(args []string) string {
 	if len(args) == 0 {
@@ -135,7 +131,7 @@ func redirect(f **os.File, t *tail) func() {
 		close(done)
 	}()
 	return func() {
-		w.Close()
+		_ = w.Close()
 		<-done
 		*f = orig
 	}
@@ -243,7 +239,7 @@ func run(args []string) result {
 		return done(0)
 	}
 	if first == "--debug-clicks" {
-		os.Setenv("BH_DEBUG_CLICKS", "1")
+		_ = os.Setenv("BH_DEBUG_CLICKS", "1")
 		args = args[1:]
 	}
 	if len(args) > 0 || term.IsTerminal(int(os.Stdin.Fd())) {
@@ -340,13 +336,17 @@ func recordings(rest []string) int {
 func localChromeListening() bool {
 	c := &http.Client{Timeout: 300 * time.Millisecond}
 	for _, p := range []int{9222, 9223} {
-		resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/json/version", p))
+		req, err := http.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("http://127.0.0.1:%d/json/version", p), nil)
+		if err != nil {
+			continue
+		}
+		resp, err := c.Do(req)
 		if err != nil {
 			continue
 		}
 		var v map[string]any
 		err = json.NewDecoder(resp.Body).Decode(&v)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if s, ok := v["webSocketDebuggerUrl"].(string); err == nil && ok && s != "" {
 			return true
 		}

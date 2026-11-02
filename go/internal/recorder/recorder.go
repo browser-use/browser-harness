@@ -122,7 +122,11 @@ func AutoSetting(e Env) (bool, string) {
 func SetAuto(e Env, enabled bool) error {
 	p := configPath()
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, jsonLine(map[string]bool{"enabled": enabled}), 0o600); err != nil {
+	raw, err := jsonLine(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, p); err != nil {
@@ -194,7 +198,7 @@ func Latest() string {
 }
 
 func isAuto(d string) bool {
-	raw, err := os.ReadFile(filepath.Join(d, "meta.json"))
+	raw, err := os.ReadFile(filepath.Join(d, "meta.json")) //nolint:gosec // Read metadata from the selected local recording.
 	if err != nil {
 		return false
 	}
@@ -209,7 +213,11 @@ func writeMeta(d, name string, title any, auto bool) error {
 	if auto {
 		meta["auto"] = true
 	}
-	return os.WriteFile(filepath.Join(d, "meta.json"), jsonLine(meta), 0o644)
+	raw, err := jsonLine(meta)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(d, "meta.json"), raw, 0o644)
 }
 
 func autoStart(e Env) (string, error) {
@@ -222,7 +230,7 @@ func autoStart(e Env) (string, error) {
 		name = fmt.Sprintf("%s-%d", stamp, n)
 	}
 	d := filepath.Join(Root(), name)
-	if err := os.MkdirAll(d, 0o755); err != nil {
+	if err := os.MkdirAll(d, 0o755); err != nil { //nolint:gosec // Recording directories intentionally remain readable and traversable.
 		return "", err
 	}
 	if err := writeMeta(d, name, nil, true); err != nil {
@@ -308,7 +316,7 @@ func Start(e Env, name, title string, p Page) (string, error) {
 		name = time.Now().Format("rec-20060102-150405")
 	}
 	d := filepath.Join(Root(), name)
-	if err := os.MkdirAll(d, 0o755); err != nil {
+	if err := os.MkdirAll(d, 0o755); err != nil { //nolint:gosec // Recording directories intentionally remain readable and traversable.
 		return "", err
 	}
 	var t any
@@ -373,14 +381,14 @@ func capture(d string, c Call, p Page) {
 		n := len(frames(d)) + 1
 		for {
 			frame := fmt.Sprintf("%04d.jpg", n)
-			f, err := os.OpenFile(filepath.Join(d, frame), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+			f, err := os.OpenFile(filepath.Join(d, frame), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644) //nolint:gosec // Recording frames intentionally remain readable.
 			if errors.Is(err, os.ErrExist) {
 				n++
 				continue
 			}
 			if err == nil {
 				_, _ = f.Write(raw)
-				f.Close()
+				_ = f.Close()
 				ev["frame"] = frame
 			} else {
 				ev["frame_error"] = truncate(err.Error(), 200)
@@ -388,12 +396,16 @@ func capture(d string, c Call, p Page) {
 			break
 		}
 	}
-	f, err := os.OpenFile(filepath.Join(d, "events.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(filepath.Join(d, "events.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // Recording events intentionally remain readable.
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	_, _ = f.Write(jsonLine(ev))
+	defer func() { _ = f.Close() }()
+	raw, err := jsonLine(ev)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(raw)
 }
 
 func truncate(s string, n int) string {
@@ -464,10 +476,12 @@ func mask(v any, ctx map[string]any) string {
 }
 
 // jsonLine is one JSON value plus a newline, with page text left unescaped.
-func jsonLine(v any) []byte {
+func jsonLine(v any) ([]byte, error) {
 	var b bytes.Buffer
 	e := json.NewEncoder(&b)
 	e.SetEscapeHTML(false)
-	_ = e.Encode(v)
-	return b.Bytes()
+	if err := e.Encode(v); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
 }

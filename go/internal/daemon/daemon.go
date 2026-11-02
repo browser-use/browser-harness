@@ -419,12 +419,13 @@ func (d *Daemon) recordReplacement(stale, repl string) {
 	}
 }
 
-func (d *Daemon) scheduleTabMarker(sid string) {
+func (d *Daemon) scheduleTabMarker(ctx context.Context, sid string) {
 	if !TabMarkerEnabled() || sid == "" {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// Marking continues after the triggering request returns.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
 		_, _ = d.send(ctx, "Runtime.evaluate", map[string]any{"expression": tabMarkerJS}, sid)
 	}()
@@ -464,13 +465,13 @@ func (d *Daemon) recordEvent(method string, params json.RawMessage, sid string) 
 	}
 	d.mu.Unlock()
 	if markSession != "" {
-		d.scheduleTabMarker(markSession)
+		d.scheduleTabMarker(context.Background(), markSession)
 	}
 }
 
 // Start resolves the browser endpoint, connects and attaches.
 func (d *Daemon) Start(ctx context.Context) error {
-	wsURL, err := browser.WSURL()
+	wsURL, err := browser.WSURLContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -489,10 +490,10 @@ func (d *Daemon) Start(ctx context.Context) error {
 				"This can happen when network policy blocks the connection, the WS URL is wrong or expired, or the remote endpoint is down. "+
 				"If you use Browser Use cloud, verify auth and get a fresh URL via start_remote_daemon().", err)
 		}
-		if v := browser.RemoteDebuggingUserEnabled(); d.cfg.Kind == "local" && (strings.Contains(low, "timed out") || strings.Contains(low, "403")) && v != nil && *v {
+		if v := browser.RemoteDebuggingUserEnabledContext(ctx); d.cfg.Kind == "local" && (strings.Contains(low, "timed out") || strings.Contains(low, "403")) && v != nil && *v {
 			return errors.New("permission-blocked: Chrome did not approve the remote debugging connection; browser-harness did not retry or create another connection")
 		}
-		return fmt.Errorf("CDP WS handshake failed: %v -- click Allow in Chrome if prompted, then retry", err)
+		return fmt.Errorf("CDP WS handshake failed: %w -- click Allow in Chrome if prompted, then retry", err)
 	}
 	d.cdp = c
 	_, err = d.attachFirstPage(ctx, "", true)
@@ -516,7 +517,7 @@ func SafeConnectionLabel(raw string) string {
 }
 
 // StopRemote PATCHes the cloud browser to stop; strict callers get the last error.
-func (d *Daemon) StopRemote(strict bool) error {
+func (d *Daemon) StopRemote(ctx context.Context, strict bool) error {
 	if d.cfg.RemoteID == "" {
 		return nil
 	}
@@ -528,7 +529,7 @@ func (d *Daemon) StopRemote(strict bool) error {
 	}
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
-		last = StopCloudBrowser(d.cfg.RemoteID)
+		last = StopCloudBrowser(ctx, d.cfg.RemoteID)
 		if last == nil {
 			d.mu.Lock()
 			d.remoteStopped = true
@@ -542,25 +543,28 @@ func (d *Daemon) StopRemote(strict bool) error {
 		}
 	}
 	if strict {
-		return fmt.Errorf("failed to stop remote browser %s: %v", d.cfg.RemoteID, last)
+		return fmt.Errorf("failed to stop remote browser %s: %w", d.cfg.RemoteID, last)
 	}
 	return nil
 }
 
 // StopCloudBrowser sends one PATCH /browsers/{id} {"action":"stop"}.
-func StopCloudBrowser(id string) error {
+func StopCloudBrowser(ctx context.Context, id string) error {
 	key, err := auth.APIKey()
 	if err != nil {
 		return err
 	}
-	req, _ := http.NewRequest("PATCH", BUAPI+"/browsers/"+id, bytes.NewReader([]byte(`{"action": "stop"}`)))
+	req, err := http.NewRequestWithContext(ctx, "PATCH", BUAPI+"/browsers/"+id, bytes.NewReader([]byte(`{"action": "stop"}`)))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("X-Browser-Use-API-Key", key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP Error %d", resp.StatusCode)
 	}
@@ -690,7 +694,7 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 		}
 		d.enableDefaultDomains(ctx, newSID)
 		wg.Wait()
-		d.scheduleTabMarker(newSID)
+		d.scheduleTabMarker(ctx, newSID)
 		return map[string]any{"session_id": nullable(newSID)}
 	case "attach":
 		tid, _ := req["target_id"].(string)
@@ -753,7 +757,7 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 		}
 		return map[string]any{"dialog": d.dialog}
 	case "shutdown":
-		return d.shutdown()
+		return d.shutdown(ctx)
 	case "record_observe", "record_start", "record_stop", "record_dir":
 		return d.handleRecord(ctx, meta, req)
 	}
@@ -767,7 +771,7 @@ func nullable(s string) any {
 	return s
 }
 
-func (d *Daemon) shutdown() map[string]any {
+func (d *Daemon) shutdown(ctx context.Context) map[string]any {
 	d.mu.Lock()
 	if d.shutting {
 		d.mu.Unlock()
@@ -782,7 +786,7 @@ func (d *Daemon) shutdown() map[string]any {
 		d.mu.Unlock()
 		return map[string]any{"error": "stale-session recovery did not stop"}
 	}
-	if err := d.StopRemote(true); err != nil {
+	if err := d.StopRemote(context.WithoutCancel(ctx), true); err != nil {
 		// A failed cloud stop keeps the daemon alive so a later shutdown can retry.
 		lock(d.sessionState)
 		d.mu.Lock()
@@ -898,7 +902,7 @@ func (d *Daemon) relay(ctx context.Context, req map[string]any) map[string]any {
 
 // Serve accepts IPC connections until shutdown, then closes owned resources.
 func (d *Daemon) Serve(ctx context.Context) error {
-	l, token, err := ipc.Listen(d.cfg.Name)
+	l, token, err := ipc.ListenContext(ctx, d.cfg.Name)
 	if err != nil {
 		return err
 	}
@@ -912,7 +916,7 @@ func (d *Daemon) Serve(ctx context.Context) error {
 		case <-d.cdp.Done():
 			d.logf("cdp websocket closed")
 		}
-		l.Close()
+		_ = l.Close()
 	}()
 	var conns sync.WaitGroup
 	for {
@@ -938,7 +942,7 @@ func (d *Daemon) Serve(ctx context.Context) error {
 		ded := d.dedicated
 		d.mu.Unlock()
 		if ded != "" {
-			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			c, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			if _, err := d.send(c, "Target.closeTarget", map[string]any{"targetId": ded}, ""); err != nil {
 				d.logf(fmt.Sprintf("close dedicated tab on shutdown: %v", err))
 			} else {
@@ -965,7 +969,7 @@ func orLocal(s string) string {
 }
 
 func (d *Daemon) serveConn(ctx context.Context, conn net.Conn, token string) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	line, err := bufio.NewReaderSize(conn, 1<<16).ReadBytes('\n')
 	if len(line) == 0 {
 		return
@@ -988,7 +992,11 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn, token string) {
 	_ = err
 	b, merr := json.Marshal(resp)
 	if merr != nil {
-		b, _ = json.Marshal(map[string]any{"error": merr.Error()})
+		b, merr = json.Marshal(map[string]string{"error": merr.Error()})
+		if merr != nil {
+			d.logf(fmt.Sprintf("conn: %v", merr))
+			return
+		}
 	}
 	_, _ = conn.Write(append(b, '\n'))
 }

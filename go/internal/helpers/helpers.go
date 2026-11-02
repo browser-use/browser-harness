@@ -5,6 +5,7 @@ package helpers
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -215,7 +216,7 @@ func snippet(expr string) string {
 func (h *H) evaluate(expr, session string) (any, error) {
 	r, err := h.CDP("Runtime.evaluate", M{"expression": expr, "returnByValue": true, "awaitPromise": true}, session)
 	if err != nil {
-		return nil, fmt.Errorf("%v; expression: %s", err, snippet(expr))
+		return nil, fmt.Errorf("%w; expression: %s", err, snippet(expr))
 	}
 	result, _ := r["result"].(M)
 	details, _ := r["exceptionDetails"].(M)
@@ -301,7 +302,7 @@ func (h *H) detach(session string) error {
 }
 
 func quote(s string) string {
-	b, _ := json.Marshal(s)
+	b, _ := json.Marshal(s) //nolint:errchkjson // Strings always encode to JSON.
 	return string(b)
 }
 
@@ -382,12 +383,12 @@ func (h *H) debugClick(x, y float64) {
 		if _, err := h.CaptureScreenshot(path, false, 0); err != nil {
 			return err
 		}
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // Read the screenshot created by this debug operation.
 		if err != nil {
 			return err
 		}
 		src, err := png.Decode(f)
-		f.Close()
+		_ = f.Close()
 		if err != nil {
 			return err
 		}
@@ -406,12 +407,16 @@ func (h *H) debugClick(x, y float64) {
 				img.Set(int(px+w), int(py+d), red)
 			}
 		}
-		out, err := os.Create(path)
+		out, err := os.Create(path) //nolint:gosec // Replace the screenshot with its debug overlay.
 		if err != nil {
 			return err
 		}
-		defer out.Close()
-		return png.Encode(out, img)
+		err = png.Encode(out, img)
+		cerr := out.Close()
+		if err != nil {
+			return err
+		}
+		return cerr
 	}()
 	if err != nil {
 		fmt.Printf("[debug_click] overlay failed: %v\n", err)
@@ -584,7 +589,7 @@ func (h *H) Scroll(x, y, dy, dx float64) error {
 		return err
 	}
 	// Disable even if enabling failed: Chrome may have applied it before its reply was lost.
-	defer h.CDP("Emulation.setFocusEmulationEnabled", M{"enabled": false}, "")
+	defer func() { _, _ = h.CDP("Emulation.setFocusEmulationEnabled", M{"enabled": false}, "") }()
 	if _, ferr := h.CDP("Emulation.setFocusEmulationEnabled", M{"enabled": true}, ""); ferr != nil {
 		return err
 	}
@@ -949,7 +954,7 @@ func HTTPGet(url string, headers map[string]string, timeout float64) (string, er
 		return fetchUse(url, headers, timeout, key)
 	}
 	ctx := &http.Client{Timeout: time.Duration(timeout * float64(time.Second))}
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -962,7 +967,7 @@ func HTTPGet(url string, headers map[string]string, timeout float64) (string, er
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("HTTP Error %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
@@ -992,12 +997,15 @@ func fetchUse(url string, headers map[string]string, timeout float64, key string
 	if len(headers) > 0 {
 		payload["headers"] = headers
 	}
-	body, _ := json.Marshal(payload)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
 	base := os.Getenv("FETCH_USE_URL")
 	if base == "" {
 		base = "https://fetch.browser-use.com"
 	}
-	req, err := http.NewRequest("POST", base+"/fetch", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", base+"/fetch", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -1010,7 +1018,7 @@ func fetchUse(url string, headers map[string]string, timeout float64, key string
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out struct {
 		Body  string `json:"body"`
 		Error string `json:"error"`

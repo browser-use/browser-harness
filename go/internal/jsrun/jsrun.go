@@ -95,12 +95,12 @@ func cleanError(err error) error {
 // agent_helpers.js in the workspace may define extra globals for every snippet.
 func (r *runner) loadAgentHelpers() error {
 	p := filepath.Join(paths.WorkspaceDir(), "agent_helpers.js")
-	src, err := os.ReadFile(p)
-	if err != nil {
-		return nil
+	src, err := os.ReadFile(p) //nolint:gosec // Load agent-authored helpers from the configured workspace.
+	if err == nil {
+		_, err = r.rt.RunScript(p, string(src))
+		return cleanError(err)
 	}
-	_, err = r.rt.RunScript(p, string(src))
-	return cleanError(err)
+	return nil
 }
 
 // --- argument helpers: f(a, b, {option: value}) ---
@@ -245,7 +245,7 @@ var typing = map[string]bool{"type_text": true, "press_key": true, "fill_input":
 func (r *runner) typingIntoPassword(a args, name string) bool {
 	expr := `document.activeElement?.type === "password"`
 	if name == "fill_input" || name == "dispatch_key" {
-		b, _ := json.Marshal(a.str(0, "selector", ""))
+		b, _ := json.Marshal(a.str(0, "selector", "")) //nolint:errchkjson // Strings always encode to JSON.
 		expr = `document.querySelector(` + string(b) + `)?.type === "password"`
 	}
 	v, err := a.h.JS(expr, "")
@@ -259,7 +259,10 @@ func (r *runner) record(name string, call goja.FunctionCall, a args, d time.Dura
 		raw = append(raw, call.Arguments[i].Export())
 	}
 	if r.trace.StepCount <= maxSteps {
-		b, _ := json.Marshal(append(raw, a.opts))
+		b, marshalErr := json.Marshal(append(raw, a.opts))
+		if marshalErr != nil {
+			b = nil // Unencodable helper arguments leave an empty trace summary.
+		}
 		s := strings.TrimSuffix(strings.TrimPrefix(string(b), "["), "]")
 		if len(s) > maxArgsLen {
 			s = s[:maxArgsLen]
@@ -308,7 +311,7 @@ func (r *runner) print(call goja.FunctionCall) goja.Value {
 			parts[i] = a.String()
 		}
 	}
-	fmt.Fprintln(r.out, strings.Join(parts, " "))
+	_, _ = fmt.Fprintln(r.out, strings.Join(parts, " ")) // a closed stdout (e.g. | head) must not fail the snippet
 	return goja.Undefined()
 }
 
@@ -341,20 +344,20 @@ func (r *runner) install() {
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(r.out, "recording to %v\n", m["dir"])
+		_, _ = fmt.Fprintf(r.out, "recording to %v\n", m["dir"])
 		return m["dir"], nil
 	})
 	r.bind("stop_recording", 0, func(a args) (any, error) {
 		m, err := r.recordMeta("record_stop", nil)
 		if err != nil || m["dir"] == nil {
 			if err == nil {
-				fmt.Fprintln(r.out, "no active recording")
+				_, _ = fmt.Fprintln(r.out, "no active recording")
 			}
 			return nil, err
 		}
-		fmt.Fprintf(r.out, "recording saved: %v (%v frames)\n", m["dir"], m["frames"])
+		_, _ = fmt.Fprintf(r.out, "recording saved: %v (%v frames)\n", m["dir"], m["frames"])
 		if f, _ := m["frames"].(float64); f == 0 {
-			fmt.Fprintf(r.out, "warning: no frames captured — see frame_error in %v\n", filepath.Join(fmt.Sprint(m["dir"]), "events.jsonl"))
+			_, _ = fmt.Fprintf(r.out, "warning: no frames captured — see frame_error in %v\n", filepath.Join(fmt.Sprint(m["dir"]), "events.jsonl"))
 		}
 		return m["dir"], nil
 	})

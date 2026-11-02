@@ -570,14 +570,14 @@ func containsStr(list []string, s string) bool {
 // --- files ---
 
 func readJSON(path string, v any) error {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // Read a file from the selected local recording.
 	if err != nil {
 		return err
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
-		return fmt.Errorf("%s: %v", filepath.Base(path), err)
+		return fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
 	return nil
 }
@@ -591,12 +591,15 @@ func writeJSON(path string, v any) error {
 }
 
 func renderComposition(c *Composition) []byte {
-	raw, _ := json.MarshalIndent(c, "", "  ")
+	raw, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return nil
+	}
 	return []byte("window.COMPOSITION = " + string(raw) + ";\n")
 }
 
 func fileHash(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // Hash a file from the selected local recording.
 	if err != nil {
 		return "", err
 	}
@@ -606,14 +609,6 @@ func fileHash(path string) (string, error) {
 func sha(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-func copyFile(src, dst string) error {
-	raw, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, raw, 0o644)
 }
 
 // sourceHashes covers everything the brief was written against.
@@ -672,11 +667,11 @@ type rawEvent struct {
 }
 
 func readEvents(rec string) ([]rawEvent, error) {
-	f, err := os.Open(filepath.Join(rec, "events.jsonl"))
+	f, err := os.Open(filepath.Join(rec, "events.jsonl")) //nolint:gosec // Read events from the selected local recording.
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out []rawEvent
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 1<<24)
@@ -684,7 +679,7 @@ func readEvents(rec string) ([]rawEvent, error) {
 		var e rawEvent
 		if line := strings.TrimSpace(sc.Text()); line != "" {
 			if err := json.Unmarshal([]byte(line), &e); err != nil {
-				return nil, fmt.Errorf("events.jsonl line %d: %v", len(out)+1, err)
+				return nil, fmt.Errorf("events.jsonl line %d: %w", len(out)+1, err)
 			}
 		}
 		out = append(out, e)
@@ -770,7 +765,7 @@ func initRecording(rec string, requireExplicit bool) error {
 }
 
 func readJSONLoose(path string, v any) error {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // Read a file from the selected local recording.
 	if err != nil {
 		return err
 	}

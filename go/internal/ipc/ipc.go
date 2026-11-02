@@ -5,6 +5,7 @@ package ipc
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -110,7 +111,7 @@ type Conn struct {
 
 func Connect(name string, timeout time.Duration) (*Conn, error) {
 	if !IsWindows {
-		c, err := net.DialTimeout("unix", SockPath(name), timeout)
+		c, err := (&net.Dialer{Timeout: timeout}).DialContext(context.Background(), "unix", SockPath(name))
 		if err != nil {
 			return nil, err
 		}
@@ -121,7 +122,7 @@ func Connect(name string, timeout time.Duration) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), timeout)
+	c, err := (&net.Dialer{Timeout: timeout}).DialContext(context.Background(), "tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +167,7 @@ func Call(name string, timeout time.Duration, req map[string]any) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	resp, err := c.Request(req)
 	if err != nil {
 		return nil, err
@@ -200,16 +201,21 @@ func Identify(name string, timeout time.Duration) int {
 
 // Listen binds the daemon endpoint and returns the listener plus the Windows token.
 func Listen(name string) (net.Listener, string, error) {
+	return ListenContext(context.Background(), name)
+}
+
+// ListenContext binds the daemon endpoint using ctx.
+func ListenContext(ctx context.Context, name string) (net.Listener, string, error) {
 	if !IsWindows {
 		p := SockPath(name)
 		_ = os.Remove(p)
 		// umask 077 makes bind create the socket as 0600 with no chmod window.
 		restore := privateUmask()
-		l, err := net.Listen("unix", p)
+		l, err := (&net.ListenConfig{}).Listen(ctx, "unix", p)
 		restore()
 		return l, "", err
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, "", err
 	}
@@ -217,14 +223,18 @@ func Listen(name string) (net.Listener, string, error) {
 	_, _ = rand.Read(buf)
 	token := hex.EncodeToString(buf)
 	pf := PortPath(name)
-	data, _ := json.Marshal(map[string]any{"port": l.Addr().(*net.TCPAddr).Port, "token": token})
+	data, err := json.Marshal(map[string]any{"port": l.Addr().(*net.TCPAddr).Port, "token": token})
+	if err != nil {
+		_ = l.Close()
+		return nil, "", err
+	}
 	tmp := pf + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		l.Close()
+		_ = l.Close()
 		return nil, "", err
 	}
 	if err := os.Rename(tmp, pf); err != nil {
-		l.Close()
+		_ = l.Close()
 		return nil, "", err
 	}
 	return l, token, nil

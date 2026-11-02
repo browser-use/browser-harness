@@ -33,7 +33,7 @@ func acquireStartLock(name string, timeout time.Duration) (*spawnLock, error) {
 func acquireFileLock(name, suffix string, timeout time.Duration) *spawnLock {
 	path := ipc.PidPath(name)
 	path = path[:len(path)-len(".pid")] + suffix
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // The lock path is derived from the validated daemon name.
 	if err != nil {
 		return &spawnLock{}
 	}
@@ -46,7 +46,7 @@ func acquireFileLock(name, suffix string, timeout time.Duration) *spawnLock {
 			return &spawnLock{f: f, held: true}
 		}
 		if !time.Now().Before(deadline) {
-			f.Close()
+			_ = f.Close()
 			return &spawnLock{}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -58,6 +58,6 @@ func (l *spawnLock) release() {
 		return
 	}
 	unlockFile(l.f)
-	l.f.Close()
+	_ = l.f.Close()
 	l.f = nil
 }
