@@ -102,7 +102,7 @@ func (h *H) NameTab(name, target string) error {
 
 // Resolve turns a tab name into its target id; ids and unknown names pass through.
 func (h *H) Resolve(target string) string {
-	if target == "" || isTargetID(target) {
+	if target == "" {
 		return target
 	}
 	if names, err := h.TabNames(); err == nil && names[target] != "" {
@@ -125,14 +125,6 @@ func (h *H) named(id string) bool {
 		}
 	}
 	return false
-}
-
-func isTargetID(s string) bool {
-	if len(s) != 32 {
-		return false
-	}
-	_, err := hex.DecodeString(s)
-	return err == nil
 }
 
 // OnTab returns helpers that act on target (an id or a tab name) without changing the daemon's attached tab.
@@ -222,6 +214,12 @@ func (h *H) cdpTimeout(method string, params M, session string, timeout time.Dur
 			h.session, _ = a["session_id"].(string)
 			req["session_id"] = h.session
 			m, err = h.send(req, timeout)
+		} else if h.agent != "" {
+			// The agent's own tab was closed (perhaps by another agent): fall back to the attached tab.
+			h.Target, h.session = "", ""
+			_, _ = h.send(M{"meta": "agent_tab", "agent": h.agent, "set": ""}, callTimeout)
+			req["session_id"] = nil
+			m, err = h.send(req, timeout)
 		}
 	}
 	if err != nil {
@@ -234,8 +232,15 @@ func (h *H) cdpTimeout(method string, params M, session string, timeout time.Dur
 	return res, nil
 }
 
-func (h *H) DrainEvents() ([]any, error) {
-	m, err := h.send(M{"meta": "drain_events"}, callTimeout)
+func (h *H) DrainEvents() ([]any, error) { return h.drain("") }
+
+// drain returns buffered events; with session, only that session's, leaving the rest.
+func (h *H) drain(session string) ([]any, error) {
+	req := M{"meta": "drain_events"}
+	if session != "" {
+		req["session_id"] = session
+	}
+	m, err := h.send(req, callTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -803,8 +808,10 @@ func (h *H) SwitchTab(target string, activate bool) (string, error) {
 		return "", err
 	}
 	sid, _ := r["session_id"].(string)
-	if _, err := h.send(M{"meta": "set_session", "session_id": sid, "target_id": target}, callTimeout); err != nil {
-		return "", err
+	if h.agent == "" { // an agent switches only its own tab, never the daemon's shared one
+		if _, err := h.send(M{"meta": "set_session", "session_id": sid, "target_id": target}, callTimeout); err != nil {
+			return "", err
+		}
 	}
 	if !markerOff() {
 		_, _ = h.CDP("Runtime.evaluate", M{"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"}, sid)
@@ -970,7 +977,7 @@ func (h *H) WaitForNetworkIdle(timeout float64, idleMs int) (bool, error) {
 	inflight := map[any]bool{}
 	last := time.Now()
 	return h.poll(timeout, 100*time.Millisecond, func() (bool, error) {
-		events, err := h.DrainEvents()
+		events, err := h.drain(fmt.Sprint(active))
 		if err != nil {
 			return false, err
 		}

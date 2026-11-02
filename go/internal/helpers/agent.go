@@ -36,7 +36,7 @@ func AgentIdentity() (id, name string) {
 		return "id:" + v, ""
 	}
 	pid := os.Getppid()
-	for i := 0; i < 8 && pid > 1; i++ {
+	for i := 0; i < 32 && pid > 1; i++ { // deep enough for nested shells and wrappers
 		name, ppid, start, ok := procInfo(pid)
 		if !ok {
 			return "", ""

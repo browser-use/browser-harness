@@ -120,7 +120,6 @@ type Daemon struct {
 	tabs       map[string]string // targetId -> cached flat session
 	tabTargets map[string]string // session -> targetId
 	tabNames   map[string]string // agent-chosen name -> targetId
-	netOff     map[string]bool   // sessions whose Network domain set_session disabled
 	claimed    map[string]bool   // blank tabs new_tab already reused; each goes to one caller
 	agentTabs  map[string]string // agent -> its own current tab
 	attachMu   sync.Mutex        // one attach per tab at a time, so the cache never holds two sessions
@@ -148,7 +147,7 @@ func unlock(l chan struct{}) { <-l }
 func New(cfg Config, logf func(string)) *Daemon {
 	return &Daemon{
 		cfg: cfg, logf: logf, replaces: map[string]string{}, recoveries: map[*recovery]struct{}{},
-		tabs: map[string]string{}, tabTargets: map[string]string{}, tabNames: map[string]string{}, netOff: map[string]bool{}, claimed: map[string]bool{}, agentTabs: map[string]string{},
+		tabs: map[string]string{}, tabTargets: map[string]string{}, tabNames: map[string]string{}, claimed: map[string]bool{}, agentTabs: map[string]string{},
 		stop: make(chan struct{}), sessionState: newLock(), dedicatedLock: newLock(),
 	}
 }
@@ -199,6 +198,36 @@ func (d *Daemon) attach(ctx context.Context, tid string) (string, error) {
 	return r.SessionID, nil
 }
 
+// pruneClosed forgets claims, agent tabs and names of tabs that are gone.
+func (d *Daemon) pruneClosed(ctx context.Context) error {
+	targets, err := d.targets(ctx)
+	if err != nil {
+		return err
+	}
+	open := map[string]bool{}
+	for _, t := range targets {
+		open[t.TargetID] = true
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for t := range d.claimed {
+		if !open[t] {
+			delete(d.claimed, t)
+		}
+	}
+	for a, t := range d.agentTabs {
+		if !open[t] {
+			delete(d.agentTabs, a)
+		}
+	}
+	for n, t := range d.tabNames {
+		if !open[t] {
+			delete(d.tabNames, n)
+		}
+	}
+	return nil
+}
+
 // attachTab returns the cached session for a tab, attaching once. Reusing the
 // session keeps per-session state such as device emulation across tab switches.
 func (d *Daemon) attachTab(ctx context.Context, tid string) (string, error) {
@@ -206,14 +235,7 @@ func (d *Daemon) attachTab(ctx context.Context, tid string) (string, error) {
 	defer d.attachMu.Unlock()
 	d.mu.Lock()
 	sid := d.tabs[tid]
-	off := sid != "" && d.netOff[sid]
-	delete(d.netOff, sid)
 	d.mu.Unlock()
-	if off { // pinned calls need Network events again, e.g. wait_for_network_idle
-		c, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, _ = d.send(c, "Network.enable", nil, sid)
-		cancel()
-	}
 	if sid != "" {
 		return sid, nil
 	}
@@ -631,9 +653,17 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 	case "ping":
 		return map[string]any{"pong": true, "pid": os.Getpid(), "browser_kind": d.cfg.Kind}
 	case "drain_events":
+		only, _ := req["session_id"].(string)
 		d.mu.Lock()
-		out := d.events
-		d.events = nil
+		var out, kept []event
+		for _, e := range d.events {
+			if only == "" || e.SessionID != nil && *e.SessionID == only {
+				out = append(out, e)
+			} else {
+				kept = append(kept, e) // other sessions' events stay for their own snippets
+			}
+		}
+		d.events = kept
 		d.mu.Unlock()
 		if out == nil {
 			out = []event{}
@@ -651,6 +681,15 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 			return map[string]any{"error": "not_attached"}
 		}
 		info, err := d.targetInfo(ctx, tid)
+		if err != nil && d.cdp != nil {
+			// The attached tab was closed (e.g. by an agent); attach another, as stale sessions do.
+			if _, aerr := d.attachFirstPage(ctx, sid, true); aerr == nil {
+				d.mu.Lock()
+				tid, sid = d.targetID, d.session
+				d.mu.Unlock()
+				info, err = d.targetInfo(ctx, tid)
+			}
+		}
 		if err != nil {
 			return map[string]any{"error": "cdp_disconnected"}
 		}
@@ -696,7 +735,6 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 	case "set_session":
 		lock(d.sessionState)
 		d.mu.Lock()
-		old := d.session
 		d.session, _ = req["session_id"].(string)
 		if t, _ := req["target_id"].(string); t != "" {
 			d.targetID = t
@@ -704,24 +742,8 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 		newSID := d.session
 		d.mu.Unlock()
 		unlock(d.sessionState)
-		// Disable Network on the old session (keeps background-tab traffic out of
-		// the event buffer) in parallel with enabling the new one.
-		var wg sync.WaitGroup
-		if old != "" && old != newSID {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				c, cancel := context.WithTimeout(ctx, 2*time.Second)
-				defer cancel()
-				if _, err := d.send(c, "Network.disable", nil, old); err == nil {
-					d.mu.Lock()
-					d.netOff[old] = true
-					d.mu.Unlock()
-				}
-			}()
-		}
+		// The old session keeps Network enabled: other snippets may still act on that tab.
 		d.enableDefaultDomains(ctx, newSID)
-		wg.Wait()
 		d.scheduleTabMarker(ctx, newSID)
 		return map[string]any{"session_id": nullable(newSID)}
 	case "attach":
@@ -761,6 +783,12 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 	case "claim_tab":
 		tid, _ := req["target_id"].(string)
 		d.mu.Lock()
+		prune := len(d.claimed) >= 64
+		d.mu.Unlock()
+		if prune {
+			_ = d.pruneClosed(ctx) // best effort: a failed prune only delays forgetting closed tabs
+		}
+		d.mu.Lock()
 		ok := tid != "" && !d.claimed[tid]
 		d.claimed[tid] = true
 		d.mu.Unlock()
@@ -781,23 +809,13 @@ func (d *Daemon) Handle(ctx context.Context, req map[string]any, token string) a
 		d.mu.Unlock()
 		return map[string]any{"ok": true}
 	case "tab_names":
-		// Drop names of closed tabs, then return name -> targetId.
-		targets, err := d.targets(ctx)
-		if err != nil {
+		if err := d.pruneClosed(ctx); err != nil {
 			return map[string]any{"error": err.Error()}
-		}
-		open := map[string]bool{}
-		for _, t := range targets {
-			open[t.TargetID] = true
 		}
 		d.mu.Lock()
 		names := map[string]any{}
 		for n, t := range d.tabNames {
-			if open[t] {
-				names[n] = t
-			} else {
-				delete(d.tabNames, n)
-			}
+			names[n] = t
 		}
 		d.mu.Unlock()
 		return map[string]any{"names": names}

@@ -43,13 +43,13 @@ type runner struct {
 	trace     Trace
 	lazy      bool                     // the CLI skipped starting the default daemon
 	inBrowser bool                     // set while installBrowser binds the browser helpers
-	agentTab  bool                     // the agent's own current tab has been looked up
+	ready     map[*helpers.H]bool      // helpers whose daemon and agent tab are set up
 	tabs      map[[2]string]*helpers.H // (daemon, tab) -> pinned helpers
 	daemons   map[string]*goja.Object  // on(name) results
 }
 
 func newRunner(out io.Writer) *runner {
-	r := &runner{rt: goja.New(), h: newHelpers(admin.Name()), out: out, tabs: map[[2]string]*helpers.H{}, daemons: map[string]*goja.Object{}}
+	r := &runner{rt: goja.New(), h: newHelpers(admin.Name()), out: out, tabs: map[[2]string]*helpers.H{}, daemons: map[string]*goja.Object{}, ready: map[*helpers.H]bool{}}
 	r.rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	r.install()
 	return r
@@ -212,28 +212,23 @@ func (r *runner) bindOn(obj *goja.Object, base *helpers.H, name string, position
 		var v any
 		var err error
 		start := time.Now()
-		if browser && base == r.h && r.lazy {
-			r.lazy = false
-			if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
-				err = admin.RequireExistingDaemon("")
-			} else if !admin.DaemonAlive("") {
-				err = admin.EnsureDaemon(-1, "", nil)
-			}
-		}
-		if browser && base == r.h && !r.agentTab && err == nil {
-			r.agentTab = true
-			err = r.h.UseAgentTab(helpers.AgentID())
+		if browser {
+			err = r.prepare(base)
 		}
 		if t, ok := a.opts["tab"]; ok && browser && err == nil {
 			delete(a.opts, "tab")
 			a.h, err = r.onTab(base, t)
 		}
+		// Checked whether or not a recording is running: one may start automatically.
 		password := false
-		if err == nil && browser && typing[name] && recorder.Dir(recorder.FromProcess()) != "" {
+		if err == nil && browser && typing[name] {
 			password = r.typingIntoPassword(a, name)
 		}
 		if err == nil {
 			v, err = fn(a)
+		}
+		if err == nil && !password && name == "fill_input" {
+			password = r.typingIntoPassword(a, name) // the field may only exist once fill_input waited for it
 		}
 		r.record(name, call, a, time.Since(start), err, password)
 		if err != nil {
@@ -247,8 +242,30 @@ func (r *runner) bindOn(obj *goja.Object, base *helpers.H, name string, position
 // since a page may move focus away from a password field as it is typed into.
 var typing = map[string]bool{"type_text": true, "press_key": true, "fill_input": true, "dispatch_key": true}
 
+// prepare starts a lazily skipped default daemon and selects the agent's own tab, once per daemon.
+func (r *runner) prepare(base *helpers.H) error {
+	if r.ready[base] {
+		return nil
+	}
+	r.ready[base] = true
+	if base == r.h && r.lazy {
+		r.lazy = false
+		if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
+			if err := admin.RequireExistingDaemon(""); err != nil {
+				return err
+			}
+		} else if !admin.DaemonAlive("") {
+			if err := admin.EnsureDaemon(-1, "", nil); err != nil {
+				return err
+			}
+		}
+	}
+	return base.UseAgentTab(helpers.AgentID())
+}
+
 func (r *runner) typingIntoPassword(a args, name string) bool {
-	expr := `document.activeElement?.type === "password"`
+	// Follow focus into shadow roots: activeElement stops at the shadow host.
+	expr := `(() => { let e = document.activeElement; while (e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return e?.type === "password"; })()`
 	if name == "fill_input" || name == "dispatch_key" {
 		b, _ := json.Marshal(a.str(0, "selector", "")) //nolint:errchkjson // Strings always encode to JSON.
 		expr = `document.querySelector(` + string(b) + `)?.type === "password"`
@@ -294,7 +311,11 @@ func cut(s string, n int) string {
 }
 
 func (r *runner) recordMeta(meta string, extra map[string]any) (map[string]any, error) {
-	req := map[string]any{"meta": meta, "call": recorder.Call{Env: recorder.FromProcess()}}
+	// Record the agent's own tab, not whichever tab the daemon has attached.
+	if err := r.prepare(r.h); err != nil {
+		return nil, err
+	}
+	req := map[string]any{"meta": meta, "call": recorder.Call{Env: recorder.FromProcess(), Session: r.h.PinnedSession()}}
 	for k, v := range extra {
 		req[k] = v
 	}
@@ -508,6 +529,8 @@ func (r *runner) onTab(base *helpers.H, t any) (*helpers.H, error) {
 	if id == "" {
 		return nil, errors.New("tab: expected a target id or a tab object")
 	}
+	// Key by target id: a tab name may move to another tab during the snippet.
+	id = base.Resolve(id)
 	key := [2]string{base.Name, id}
 	if h := r.tabs[key]; h != nil {
 		return h, nil
@@ -527,7 +550,11 @@ func (r *runner) on(name string) (*goja.Object, error) {
 	if obj := r.daemons[name]; obj != nil {
 		return obj, nil
 	}
-	if !admin.DaemonAlive(name) {
+	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
+		if err := admin.RequireExistingDaemon(name); err != nil {
+			return nil, err
+		}
+	} else if !admin.DaemonAlive(name) {
 		if err := admin.EnsureDaemon(-1, name, nil); err != nil {
 			return nil, err
 		}
