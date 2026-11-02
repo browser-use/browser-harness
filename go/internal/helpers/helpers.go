@@ -50,6 +50,7 @@ type H struct {
 	Target    string          // pinned tab; "" follows the daemon's attached tab
 	session   string          // the pinned tab's session
 	opened    map[string]bool // tabs this snippet opened; still about:blank while they load
+	agent     string          // owns a current tab of its own in the daemon (see UseAgentTab)
 	selectAll float64         // cached select-all modifier: 4 on macOS browsers, else 2
 	// Send is the IPC round trip; tests replace it.
 	Send func(req M, timeout time.Duration) (M, error)
@@ -143,6 +144,45 @@ func (h *H) OnTab(target string) (*H, error) {
 	}
 	sid, _ := m["session_id"].(string)
 	return &H{Name: h.Name, Target: target, session: sid, selectAll: h.selectAll, opened: h.opened, Send: h.Send}, nil
+}
+
+// UseAgentTab gives these helpers agent's own current tab: the tab it last opened or
+// switched to in any of its snippets. Without one they act on the daemon's attached tab.
+func (h *H) UseAgentTab(agent string) error {
+	if agent == "" {
+		return nil
+	}
+	h.agent = agent
+	m, err := h.send(M{"meta": "agent_tab", "agent": agent}, callTimeout)
+	if err != nil {
+		return err
+	}
+	if tid, _ := m["target_id"].(string); tid != "" {
+		return h.pin(tid)
+	}
+	return nil
+}
+
+// pin points these helpers at target in place, so every bound helper follows.
+func (h *H) pin(target string) error {
+	m, err := h.send(M{"meta": "attach", "target_id": target}, callTimeout)
+	if err != nil {
+		return err
+	}
+	h.Target, h.session = target, fmt.Sprint(m["session_id"])
+	return nil
+}
+
+// adopt makes target this agent's current tab.
+func (h *H) adopt(target string) error {
+	if h.agent == "" {
+		return nil
+	}
+	if err := h.pin(target); err != nil {
+		return err
+	}
+	_, err := h.send(M{"meta": "agent_tab", "agent": h.agent, "set": target}, callTimeout)
+	return err
 }
 
 // PinnedSession is the pinned tab's session, or "" for the attached tab.
@@ -767,9 +807,9 @@ func (h *H) SwitchTab(target string, activate bool) (string, error) {
 		return "", err
 	}
 	if !markerOff() {
-		_, _ = h.CDP("Runtime.evaluate", M{"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"}, "")
+		_, _ = h.CDP("Runtime.evaluate", M{"expression": "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"}, sid)
 	}
-	return sid, nil
+	return sid, h.adopt(target)
 }
 
 // NewTab opens url in a background tab, reusing the attached tab when it is blank,
@@ -777,8 +817,12 @@ func (h *H) SwitchTab(target string, activate bool) (string, error) {
 func (h *H) NewTab(url string) (string, error) {
 	if h.Target != "" { // a new tab has nothing to do with a pinned one
 		u := *h
-		u.Target, u.session = "", ""
-		return u.NewTab(url)
+		u.Target, u.session, u.agent = "", "", ""
+		id, err := u.NewTab(url)
+		if err == nil {
+			err = h.adopt(id)
+		}
+		return id, err
 	}
 	if h.opened == nil {
 		h.opened = map[string]bool{}
@@ -801,7 +845,7 @@ func (h *H) NewTab(url string) (string, error) {
 					return "", err
 				}
 				h.opened[id] = true
-				return id, nil
+				return id, h.adopt(id)
 			}
 		}
 	}
@@ -826,6 +870,9 @@ func (h *H) NewTab(url string) (string, error) {
 func (h *H) CloseTab(target string) error {
 	target = h.Resolve(target)
 	if target == "" {
+		target = h.Target
+	}
+	if target == "" {
 		cur, err := h.CurrentTab()
 		if err != nil {
 			return err
@@ -833,6 +880,10 @@ func (h *H) CloseTab(target string) error {
 		target, _ = cur["targetId"].(string)
 	}
 	_, err := h.CDP("Target.closeTarget", M{"targetId": target}, "")
+	if err == nil && h.agent != "" && target == h.Target {
+		h.Target, h.session = "", "" // back to the daemon's attached tab
+		_, err = h.send(M{"meta": "agent_tab", "agent": h.agent, "set": ""}, callTimeout)
+	}
 	return err
 }
 

@@ -87,11 +87,12 @@ browser lane while non-browser work continues in parallel. Sequential tab
 switching, input, and screenshot capture are safe. Do not create another local
 daemon merely because several agents exist.
 
-Two agents that switch tabs and act simultaneously can race, causing one to act
-on or capture the other's tab. Agents sharing the default daemon at the same time
-should each open their own tab and pass it to every call (`{tab: t}`) instead of
-switching. For isolated simultaneous work, use separate remote browsers when
-Browser Use Cloud authentication is already available. A named local daemon is a last resort when simultaneous isolation is
+Each agent has its own current tab: the tab it last opened or switched to, kept
+across all of its snippets, so agents sharing the default daemon do not move each
+other. The agent is the process that runs your commands; set `BH_AGENT_ID` to
+choose it explicitly (`BH_AGENT_ID=none` shares the daemon's attached tab). For
+isolated simultaneous work, use separate remote browsers when Browser Use Cloud
+authentication is already available. A named local daemon is a last resort when simultaneous isolation is
 required, remote auth is unavailable or unsuitable, and the extra Chrome
 approval prompt is acceptable. It creates another controller and dedicated tab
 in the same local Chrome profile, not another Chrome profile or process.

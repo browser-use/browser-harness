@@ -43,6 +43,7 @@ type runner struct {
 	trace     Trace
 	lazy      bool                     // the CLI skipped starting the default daemon
 	inBrowser bool                     // set while installBrowser binds the browser helpers
+	agentTab  bool                     // the agent's own current tab has been looked up
 	tabs      map[[2]string]*helpers.H // (daemon, tab) -> pinned helpers
 	daemons   map[string]*goja.Object  // on(name) results
 }
@@ -218,6 +219,10 @@ func (r *runner) bindOn(obj *goja.Object, base *helpers.H, name string, position
 			} else if !admin.DaemonAlive("") {
 				err = admin.EnsureDaemon(-1, "", nil)
 			}
+		}
+		if browser && base == r.h && !r.agentTab && err == nil {
+			r.agentTab = true
+			err = r.h.UseAgentTab(helpers.AgentID())
 		}
 		if t, ok := a.opts["tab"]; ok && browser && err == nil {
 			delete(a.opts, "tab")

@@ -12,6 +12,7 @@ import (
 
 func fakeDaemon(t *testing.T) *[]helpers.M {
 	t.Helper()
+	t.Setenv("BH_AGENT_ID", "none") // these tests count requests; agent tabs add a lookup
 	var reqs []helpers.M
 	saved := newHelpers
 	t.Cleanup(func() { newHelpers = saved })
