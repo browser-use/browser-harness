@@ -12,6 +12,12 @@ switch_tab(tid);                              // attach harness, move the horse 
 activate_tab(tid);                            // optional: explicitly show it in Chrome
 print(current_tab());
 print(page_info());
+
+// Act on another tab without switching: every browser helper takes {tab}.
+const other = new_tab("https://example.org");
+switch_tab(tid);
+print(js("location.host", {tab: other}));
+capture_screenshot("/tmp/other.png", {tab: other});
 ```
 
 What CDP is good at:

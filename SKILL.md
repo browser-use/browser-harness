@@ -31,6 +31,13 @@ JS
 - Options go in a trailing object: `capture_screenshot(path, {max_dim: 1800})`,
   `list_tabs({include_chrome: false})`. `print(...)` prints strings as-is and
   other values as JSON; `console.log` is the same.
+- Every browser helper also takes `{tab: id}` to act on that tab without
+  switching: `fill_input("#q", "x", {tab: t})`, `js("document.title", {tab: t})`,
+  `capture_screenshot(path, {tab: t})`. `id` is what `new_tab()` returns or a
+  `list_tabs()` entry.
+- `on(name)` returns the same helpers for another daemon, so one snippet can
+  drive local Chrome and a cloud browser: after `start_remote_daemon("work")`,
+  `const cloud = on("work"); cloud.goto_url(url); cloud.page_info()`.
 - First navigation for a task is `new_tab(url)`, not `goto_url(url)`. The daemon
   preserves the attached tab across separate CLI invocations, so do not call
   `new_tab()` again in every script.
@@ -77,10 +84,10 @@ switching, input, and screenshot capture are safe. Do not create another local
 daemon merely because several agents exist.
 
 Two agents that switch tabs and act simultaneously can race, causing one to act
-on or capture the other's tab. For truly simultaneous interactive work, use
-separate remote browsers when Browser Use Cloud authentication is already
-available. Otherwise serialize browser operations through the default local
-daemon. A named local daemon is a last resort when simultaneous isolation is
+on or capture the other's tab. Agents sharing the default daemon at the same time
+should each open their own tab and pass it to every call (`{tab: t}`) instead of
+switching. For isolated simultaneous work, use separate remote browsers when
+Browser Use Cloud authentication is already available. A named local daemon is a last resort when simultaneous isolation is
 required, remote auth is unavailable or unsuitable, and the extra Chrome
 approval prompt is acceptable. It creates another controller and dedicated tab
 in the same local Chrome profile, not another Chrome profile or process.

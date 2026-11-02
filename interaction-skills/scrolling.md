@@ -4,18 +4,14 @@ Separate page scroll, nested containers, virtualized lists, and dropdown menus, 
 
 ## Hidden tabs
 
-Start with the normal `scroll(...)` helper. Chrome on Windows can leave a
-mouse-wheel command unanswered when the attached tab is not visible. If that
-scroll times out:
+Use the normal `scroll(...)` helper. Chrome can leave a mouse-wheel command
+unanswered when the tab is hidden. On cloud and `BU_CDP_URL` browsers the daemon
+brings its own tab forward first; on local Chrome `scroll` retries once with
+focus emulation, which does not move the user's tabs. Re-read the page or
+container scroll position to confirm it moved.
 
-1. Do not call `activate_tab()`; a timeout is not permission to foreground
-   Chrome.
-2. Temporarily call
-   `cdp("Emulation.setFocusEmulationEnabled", {enabled: true})`, retry the same
-   `scroll(...)` once, and re-read the page or container scroll position.
-3. Disable focus emulation (`{enabled: false}`) in a `finally` block.
-
-If background scrolling still fails, stop and name that exact limitation.
+If background scrolling still fails, do not call `activate_tab()`; a timeout is
+not permission to foreground Chrome. Stop and name that exact limitation.
 Call `activate_tab()` only when the user explicitly asks to see or visibly
 switch to the tab. Do not replace wheel input with custom `Runtime.evaluate`
 scrolling or a cross-frame JavaScript walker; those paths change page semantics
