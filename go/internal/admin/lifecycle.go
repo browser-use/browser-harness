@@ -162,8 +162,14 @@ func healthy(name string, timeout time.Duration) error {
 	return nil
 }
 
+// isLocalMode is whether a daemon started with env, over this process's environment, drives a local Chrome.
 func isLocalMode(env map[string]string) bool {
-	return env["BU_CDP_WS"] == "" && env["BU_CDP_URL"] == "" && os.Getenv("BU_CDP_WS") == "" && os.Getenv("BU_CDP_URL") == ""
+	return browser.CDPEndpoint(func(k string) string {
+		if v := env[k]; v != "" {
+			return v
+		}
+		return os.Getenv(k)
+	}) == ""
 }
 
 func needsRemoteDebuggingPrompt(msg string) bool {
@@ -451,8 +457,7 @@ func ConnectDefault() error {
 	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
 		return RequireExistingDaemon("")
 	}
-	if os.Getenv("BU_AUTOSPAWN") != "" && os.Getenv("BU_CDP_URL") == "" && os.Getenv("BU_CDP_WS") == "" &&
-		!DaemonAlive("") && !localChromeListening() {
+	if os.Getenv("BU_AUTOSPAWN") != "" && isLocalMode(nil) && !DaemonAlive("") && !browser.LocalChromeListening() {
 		if _, err := auth.APIKey(); err == nil {
 			if _, err := StartRemoteDaemon(ipc.Name(), "", nil); err != nil {
 				return err
@@ -460,17 +465,6 @@ func ConnectDefault() error {
 		}
 	}
 	return EnsureDaemon(-1, "", nil)
-}
-
-// localChromeListening is whether Chrome answers on 9222 or 9223; an unrelated
-// listener there must not skip the cloud bootstrap.
-func localChromeListening() bool {
-	for _, p := range []int{9222, 9223} {
-		if _, err := browser.WebSocketURL(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", p), 300*time.Millisecond); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 // StopRemoteDaemon cleanly stops a daemon and its billable cloud browser.

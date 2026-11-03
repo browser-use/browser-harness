@@ -261,6 +261,29 @@ func WSFromActivePort(httpURL string) string {
 	return ""
 }
 
+// localPorts are the DevTools ports a local Chrome is looked for on.
+var localPorts = []int{9222, 9223}
+
+// CDPEndpoint is the explicit CDP endpoint getenv gives, BU_CDP_WS before BU_CDP_URL;
+// "" means the browser is a local Chrome found by discovery.
+func CDPEndpoint(getenv func(string) string) string {
+	if v := getenv("BU_CDP_WS"); v != "" {
+		return v
+	}
+	return getenv("BU_CDP_URL")
+}
+
+// LocalChromeListening is whether Chrome answers on a local DevTools port; an unrelated
+// listener there does not count.
+func LocalChromeListening() bool {
+	for _, p := range localPorts {
+		if _, err := WebSocketURL(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", p), 300*time.Millisecond); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // WSURL resolves the CDP websocket from BU_CDP_WS, BU_CDP_URL or local discovery.
 func WSURL(ctx context.Context) (string, error) {
 	if u := os.Getenv("BU_CDP_WS"); u != "" {
@@ -335,7 +358,7 @@ func WSURL(ctx context.Context) (string, error) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	for _, p := range []int{9222, 9223} {
+	for _, p := range localPorts {
 		ws, err := WebSocketURL(ctx, fmt.Sprintf("http://127.0.0.1:%d", p), time.Second)
 		if err == nil {
 			return ws, nil

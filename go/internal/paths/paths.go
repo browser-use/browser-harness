@@ -92,6 +92,15 @@ func LoadEnv() {
 	}
 }
 
+// Enabled reports whether an environment value explicitly turns a feature on.
+func Enabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // Disabled reports whether an environment value turns a feature off.
 func Disabled(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {

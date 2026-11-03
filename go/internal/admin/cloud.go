@@ -11,13 +11,13 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/browser-use/browser-harness/go/internal/auth"
 	"github.com/browser-use/browser-harness/go/internal/browser"
 	"github.com/browser-use/browser-harness/go/internal/cloud"
 	"github.com/browser-use/browser-harness/go/internal/ipc"
+	"github.com/browser-use/browser-harness/go/internal/paths"
 )
 
 // api calls the Browser Use Cloud API; admin callers have no deadline beyond the client's.
@@ -59,10 +59,10 @@ func shouldShowLiveView() (bool, error) {
 	if !set {
 		return true, nil
 	}
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "0", "false", "no", "off":
+	switch {
+	case paths.Disabled(raw):
 		return false, nil
-	case "1", "true", "yes", "on":
+	case paths.Enabled(raw):
 		return true, nil
 	}
 	return false, errors.New("BH_OPEN_LIVE_URL must be one of: 1, true, yes, on, 0, false, no, off")

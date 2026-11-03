@@ -64,7 +64,7 @@ func ConfigFromEnv() Config {
 	switch {
 	case c.RemoteID != "":
 		c.Kind = "cloud"
-	case os.Getenv("BU_CDP_WS") != "" || os.Getenv("BU_CDP_URL") != "":
+	case browser.CDPEndpoint(os.Getenv) != "":
 		c.Kind = "cdp"
 	default:
 		c.Kind = "local"

@@ -21,6 +21,7 @@ import (
 	"github.com/browser-use/browser-harness/go/internal/proc"
 	"github.com/browser-use/browser-harness/go/internal/version"
 
+	"github.com/browser-use/browser-harness/go/internal/browser"
 	"github.com/browser-use/browser-harness/go/internal/paths"
 )
 
@@ -162,10 +163,7 @@ func base() map[string]any {
 }
 
 func cdpHostname() any {
-	v := os.Getenv("BU_CDP_WS")
-	if v == "" {
-		v = os.Getenv("BU_CDP_URL")
-	}
+	v := browser.CDPEndpoint(os.Getenv)
 	if v == "" {
 		return nil
 	}
