@@ -35,3 +35,15 @@ Some economics questions display a green correct-answer heading while the explan
 In reserve/deposit tables with instructions to reuse rounded values, calculate reserves first, round them, then subtract those rounded reserves from deposits to obtain loans. Independently rounding deposits times the lending fraction can differ by one dollar and be rejected.
 
 The Final check label can carry over to a newly displayed part even when that part has not yet been attempted. Read the current part and verify its fields; the button label alone does not establish its attempt history. A correction accepted at Final check can retain full credit, while a rejected Final check can lock that part. Verify the eventual question score.
+
+## Matrix answer editor
+
+Focus the answer field before expanding More and choosing the bracketed matrix icon. The Matrix Answer dialog starts with a default size. Changing either dimension can resize and recenter the dialog, moving both the remaining dimension controls and OK; take a fresh screenshot after each change.
+
+An inserted matrix can be resized using its pencil menu. Select a matrix cell to reveal the pencil, then choose Set Size or an insert/delete row or column action. Empty cell placeholders are aligned within their columns, and entering a wider value can shift placeholders in other rows. Locate each remaining placeholder from the updated screenshot.
+
+Allow focus to settle before entering a cell value. A click just outside a placeholder can append text after the entire matrix instead. Inspect the completed matrix for stray trailing text before submitting. Remove such text by focusing after it and using Backspace, then verify the matrix itself remains intact.
+
+## Incomplete multipart navigation
+
+Navigating away from an unfinished multipart question can display a warning that only completed parts will receive credit. Cancel that navigation when a pending part needs clarification; do not assume skipping to another question preserves the ability to finish it later. A separate course shell can be inspected while the original player remains open.
