@@ -26,6 +26,7 @@ Available interaction skills:
 Available domain skills:
 - tiktok/upload.md
 - polymarket/scraping.md
+- ai-boost-shopify-app/qa-notes.md
 
 ## Tool call shape
 
