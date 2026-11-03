@@ -233,7 +233,11 @@ func (s *spawned) exited() bool {
 // EnsureDaemon is idempotent: it heals stale daemons, launches a closed Chrome,
 // and walks the user through chrome://inspect when remote debugging is off.
 // wait<0 means "default".
+// With BH_REQUIRE_EXISTING_DAEMON=1 it only health-checks an existing daemon.
 func EnsureDaemon(wait float64, name string, env map[string]string) error {
+	if os.Getenv("BH_REQUIRE_EXISTING_DAEMON") == "1" {
+		return RequireExistingDaemon(name)
+	}
 	return ensureDaemon(wait, name, env, false)
 }
 

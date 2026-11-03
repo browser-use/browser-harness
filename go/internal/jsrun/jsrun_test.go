@@ -100,3 +100,35 @@ func TestOptionsVersusPositional(t *testing.T) {
 		}
 	}
 }
+
+// A caught setup failure leaves the default daemon unprepared: the next helper reconnects
+// (healing a daemon that died) and selects the agent tab again before it runs.
+func TestFailedSetupReconnects(t *testing.T) {
+	reqs := fakeDaemon(t)
+	t.Setenv("BH_AGENT_ID", "review")
+	t.Setenv("BH_AGENT_WORKSPACE", t.TempDir())
+	connects, tabs := 0, 0
+	connectDefault = func() error { connects++; return nil }
+	inner := newHelpers
+	newHelpers = func(name string) *helpers.H {
+		h := inner(name)
+		send := h.Send
+		h.Send = func(req helpers.M, d time.Duration) (helpers.M, error) {
+			if req["meta"] == "agent_tab" {
+				if tabs++; tabs == 1 {
+					return nil, errors.New("daemon died")
+				}
+				return helpers.M{}, nil
+			}
+			return send(req, d)
+		}
+		return h
+	}
+	var out bytes.Buffer
+	if _, err := Run(`try { js("1"); } catch (e) { print("caught"); } print(js("document.title")); js("2");`, &out); err != nil {
+		t.Fatal(err)
+	}
+	if connects != 2 || tabs != 2 || !strings.Contains(out.String(), "caught") {
+		t.Fatalf("connects=%d tabs=%d out=%q reqs=%d", connects, tabs, out.String(), len(*reqs))
+	}
+}

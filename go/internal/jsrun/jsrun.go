@@ -245,14 +245,17 @@ func (r *runner) prepare(base *helpers.H) error {
 	if r.ready[base] {
 		return nil
 	}
+	// Until setup succeeds, every helper reconnects, so a daemon that died meanwhile is healed.
 	if base == r.h && r.lazy {
 		if err := connectDefault(); err != nil {
 			return err
 		}
-		r.lazy = false
 	}
 	if err := base.UseAgentTab(helpers.AgentID()); err != nil {
 		return err
+	}
+	if base == r.h {
+		r.lazy = false
 	}
 	r.ready[base] = true
 	return nil

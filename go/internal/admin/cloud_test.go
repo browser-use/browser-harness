@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -145,5 +147,23 @@ func TestConnectionCarriesTabsAndAgents(t *testing.T) {
 	c := daemonConnection("doc")
 	if c == nil || c.Kind != "cloud" || c.Tabs != 3 || len(c.Names) != 1 || c.Names[0] != "cart" || len(c.Agents) != 1 || c.Agents[0].URL != "https://b.test/" {
 		t.Fatalf("got %+v", c)
+	}
+}
+
+// Strict mode never starts a daemon, whichever caller asks.
+func TestStrictEnsureDaemonDoesNotStart(t *testing.T) {
+	t.Setenv("BH_RUNTIME_DIR", t.TempDir())
+	t.Setenv("BH_REQUIRE_EXISTING_DAEMON", "1")
+	marker := filepath.Join(t.TempDir(), "started")
+	core := filepath.Join(t.TempDir(), "core")
+	if err := os.WriteFile(core, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BH_CORE", core)
+	if err := EnsureDaemon(0, "strict", nil); err == nil || !strings.Contains(err.Error(), "is not running") {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("strict mode started a daemon")
 	}
 }
