@@ -47,3 +47,9 @@ Allow focus to settle before entering a cell value. A click just outside a place
 ## Incomplete multipart navigation
 
 Navigating away from an unfinished multipart question can display a warning that only completed parts will receive credit. Cancel that navigation when a pending part needs clarification; do not assume skipping to another question preserves the ability to finish it later. A separate course shell can be inspected while the original player remains open.
+
+## Show work editor
+
+The Show work dialog initially renders a loading panel, then expands and recenters. Wait for the full canvas before interacting. Select the A text tool, click the blank canvas, and enter the explanation. Save closes the dialog; verify the green Work saved indicator before navigating.
+
+In math answer fields, Home and Shift+End operate within the current exponent or fraction component. Move out of that component before selecting the entire expression. Insert an exponent, wait for it to render, then use ArrowRight to return to the baseline before inserting subsequent terms. Capture after each step; batching insertion with navigation can replace the prior selection or append inside the exponent.
