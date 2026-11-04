@@ -290,7 +290,7 @@ Output (from the run on 2026-11-03):
 
 | Field | Source | Notes |
 |---|---|---|
-| `Make`, `Model`, `ModelYear`, `Series`, `Trim` | DecodeVinValues | `HONDA` / `Accord` / `2003` / `` / `EX-V6`; all values are strings, missing = `""` |
+| `Make`, `Model`, `ModelYear`, `Series`, `Trim` | DecodeVinValues | `HONDA` / `Accord` / `2003` / `""` / `EX-V6`; all values are strings, missing = `""` |
 | `BodyClass`, `DriveType`, `DisplacementL`, `EngineCylinders`, `FuelTypePrimary` | DecodeVinValues | `DisplacementL` is unrounded (`2.998832712`) |
 | `PlantCity`, `PlantCountry`, `Manufacturer` | DecodeVinValues | `MARYSVILLE`, `UNITED STATES (USA)`, `AMERICAN HONDA MOTOR CO., INC.` |
 | `ErrorCode`, `ErrorText`, `SuggestedVIN` | DecodeVinValues | `0` clean; `1` bad check digit; `6` incomplete VIN; `400` invalid characters; several codes join with commas (`1,400`) |
