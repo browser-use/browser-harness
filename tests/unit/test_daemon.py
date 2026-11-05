@@ -845,3 +845,83 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_close_tab_not_attached_returns_error():
+    d = daemon.Daemon()
+    d.cdp = _FakeCDP()
+    d.target_id = None
+    res = asyncio.run(d.handle({"meta": "close_tab"}))
+    assert res == {"error": "not_attached"}
+
+
+def test_close_tab_closes_non_current_tab_without_switching():
+    d = daemon.Daemon()
+    d.cdp = _FakeCDP()
+    d.target_id = "tab-current"
+    d.session = "session-current"
+
+    res = asyncio.run(d.handle({"meta": "close_tab", "target_id": "tab-other"}))
+
+    assert res == {"success": True}
+    assert d.target_id == "tab-current"
+    assert d.session == "session-current"
+    assert ("Target.closeTarget", {"targetId": "tab-other"}, None) in d.cdp.calls
+    attach_calls = [m for m, _p, _s in d.cdp.calls if m == "Target.attachToTarget"]
+    assert attach_calls == []
+
+
+def test_close_tab_current_switches_to_surviving_tab_and_closes_old():
+    existing = [
+        {"targetId": "tab-current", "url": "https://a.com", "type": "page"},
+        {"targetId": "tab-survivor", "url": "https://b.com", "type": "page"},
+    ]
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP(existing)
+    d.target_id = "tab-current"
+    d.session = "session-current"
+
+    res = asyncio.run(d.handle({"meta": "close_tab"}))
+
+    assert res == {"success": True}
+    assert d.target_id == "tab-survivor"
+    assert d.session == "session-for-tab-survivor"
+    assert ("Target.closeTarget", {"targetId": "tab-current"}, None) in d.cdp.calls
+    assert ("Network.disable", None, "session-current") in d.cdp.calls
+    for domain in ("Page", "DOM", "Runtime", "Network"):
+        assert (f"{domain}.enable", None, "session-for-tab-survivor") in d.cdp.calls
+    assert "session-current" not in d._session_replacements
+
+
+def test_close_tab_current_creates_about_blank_when_no_other_tabs():
+    existing = [
+        {"targetId": "tab-current", "url": "https://a.com", "type": "page"},
+    ]
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP(existing)
+    d.target_id = "tab-current"
+    d.session = "session-current"
+
+    res = asyncio.run(d.handle({"meta": "close_tab"}))
+
+    assert res == {"success": True}
+    assert d.target_id == "created-1"
+    assert d.session == "session-for-created-1"
+    assert ("Target.closeTarget", {"targetId": "tab-current"}, None) in d.cdp.calls
+    assert "session-current" not in d._session_replacements
+
+
+def test_close_tab_returns_error_when_close_target_fails():
+    class _FailingCloseCDP(_AttachCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            if method == "Target.closeTarget":
+                return {"success": False}
+            return await super().send_raw(method, params=params, session_id=session_id)
+
+    d = daemon.Daemon()
+    d.cdp = _FailingCloseCDP([{"targetId": "tab-current", "type": "page", "url": "https://a.com"}])
+    d.target_id = "tab-current"
+    d.session = "session-current"
+
+    res = asyncio.run(d.handle({"meta": "close_tab"}))
+    assert res == {"error": "Target.closeTarget failed"}

@@ -454,9 +454,7 @@ def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
     Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
     target_id = _target_id(target)
-    if target_id is None:
-        target_id = current_tab()["targetId"]
-    cdp("Target.closeTarget", targetId=target_id)
+    return _send({"meta": "close_tab", "target_id": target_id})
 
 
 def ensure_real_tab():

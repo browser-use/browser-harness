@@ -511,6 +511,34 @@ def test_new_tab_reuses_an_empty_data_document(monkeypatch):
     assert calls == [("goto_url", "https://example.com")]
 
 
+def test_close_tab_sends_meta_close_tab_with_none_for_current_tab(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(request) or {"success": True})
+    helpers.close_tab()
+    assert calls == [{"meta": "close_tab", "target_id": None}]
+
+
+def test_close_tab_sends_target_id_string(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(request) or {"success": True})
+    helpers.close_tab("tab-123")
+    assert calls == [{"meta": "close_tab", "target_id": "tab-123"}]
+
+
+def test_close_tab_accepts_dict_with_targetId(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(request) or {"success": True})
+    helpers.close_tab({"targetId": "tab-456"})
+    assert calls == [{"meta": "close_tab", "target_id": "tab-456"}]
+
+
+def test_close_tab_accepts_dict_with_target_id(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(request) or {"success": True})
+    helpers.close_tab({"target_id": "tab-789"})
+    assert calls == [{"meta": "close_tab", "target_id": "tab-789"}]
+
+
 # --- press_key physical key identity (#685) ---
 
 
