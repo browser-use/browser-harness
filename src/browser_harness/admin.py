@@ -188,8 +188,8 @@ def _pending_pid_record(path):
     return pid if _is_daemon_process(pid) else None
 
 
-def _fingerprinted_pending_generation(path):
-    """Return (PID, start fingerprint) only while that generation is alive."""
+def _pending_generation_record(path):
+    """Return a validated (PID, start fingerprint) record without probing it."""
     try:
         record = json.loads(path.read_text())
         pid = record["pid"]
@@ -198,8 +198,17 @@ def _fingerprinted_pending_generation(path):
         return None
     if type(pid) is not int or not 0 < pid < (1 << 31) or fingerprint is None:
         return None
+    return (pid, fingerprint)
+
+
+def _fingerprinted_pending_generation(path):
+    """Return (PID, start fingerprint) only while that generation is alive."""
+    generation = _pending_generation_record(path)
+    if generation is None:
+        return None
+    pid, fingerprint = generation
     current = _process_start_time(pid)
-    return (pid, fingerprint) if current is not None and current == fingerprint else None
+    return generation if current is not None and current == fingerprint else None
 
 
 def _fingerprinted_pending_pid(path):
@@ -225,6 +234,40 @@ def _publish_pid(path, pid):
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
     tmp.write_text(value)
     os.replace(tmp, path)
+
+
+def _stop_pending_generation(
+    name, generation, wait=5.0, process_dead=False, process=None
+):
+    """Stop and clean one lock-protected pending daemon generation."""
+    import signal
+
+    pid, fingerprint = generation
+    if not process_dead and _process_start_time(pid) == fingerprint:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError, SystemError, OverflowError):
+            pass
+        if process is not None and process.pid == pid:
+            try:
+                process.wait(timeout=wait)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=wait)
+        deadline = time.monotonic() + wait
+        while _process_start_time(pid) == fingerprint and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if _process_start_time(pid) == fingerprint:
+            raise RuntimeError(
+                f"daemon-stopping: pending browser-harness daemon {pid} did not exit; retry later"
+            )
+    ipc.cleanup_endpoint(name)
+    path = ipc.pid_path(name)
+    if _pending_generation_record(path) == generation:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _parked_daemon_pid(name=None):
@@ -558,6 +601,8 @@ def ensure_daemon(wait=None, name=None, env=None):
     # default caller's deadline, so Browser Use cloud startup is unaffected.
     launched_browser = None
     opened_inspect = False
+    pending_pid = None
+    pending_generation = None
     for _ in range(3):
         e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
         try:
@@ -582,6 +627,9 @@ def ensure_daemon(wait=None, name=None, env=None):
                     )
                     _publish_pid(ipc.pid_path(name or NAME), p.pid)
                     pending_pid = p.pid
+                pending_generation = _pending_generation_record(
+                    ipc.pid_path(name or NAME)
+                )
         else:
             p = subprocess.Popen(
                 [sys.executable, "-m", "browser_harness.daemon"],
@@ -601,7 +649,9 @@ def ensure_daemon(wait=None, name=None, env=None):
             if p is not None and p.poll() is not None:
                 pending_died = True
                 break
-            if p is None and pending_pid and _pending_pid_record(ipc.pid_path(name or NAME)) != pending_pid:
+            if p is None and pending_pid and (
+                _pending_pid_record(ipc.pid_path(name or NAME)) != pending_pid
+            ):
                 pending_died = True
                 break
             log_tail = _log_tail(name) or ""
@@ -633,11 +683,60 @@ def ensure_daemon(wait=None, name=None, env=None):
             # we observed. Another waiter may already have published a healthy
             # successor while this caller was leaving its wait loop.
             with _spawn_lock(name, timeout=1.0) as cleanup_lock:
-                if cleanup_lock.fd is not None and _pid_number(ipc.pid_path(name or NAME)) == pending_pid:
+                pid_path = ipc.pid_path(name or NAME)
+                current_generation = _pending_generation_record(pid_path)
+                owned_child_died = p is not None and p.poll() is not None
+                owns_dead_generation = (
+                    cleanup_lock.fd is not None
+                    and pending_generation is not None
+                    and (
+                        current_generation == pending_generation
+                        or (owned_child_died and not pid_path.exists())
+                    )
+                )
+                legacy_dead_generation = False
+                if (
+                    cleanup_lock.fd is not None
+                    and pending_generation is None
+                    and pending_pid
+                ):
                     try:
-                        ipc.pid_path(name or NAME).unlink()
-                    except FileNotFoundError:
+                        legacy_dead_generation = (
+                            pid_path.read_text().strip() == str(pending_pid)
+                            and _pending_pid_record(pid_path) is None
+                        )
+                    except OSError:
                         pass
+                if owns_dead_generation:
+                    _stop_pending_generation(
+                        name or NAME,
+                        pending_generation,
+                        process_dead=p is not None and p.poll() is not None,
+                    )
+                elif legacy_dead_generation:
+                    ipc.cleanup_endpoint(name or NAME)
+                    pid_path.unlink(missing_ok=True)
+                if owns_dead_generation or legacy_dead_generation:
+                    if not permission_wait and launched_browser is None and _chrome_not_running(msg):
+                        # Keep cleanup and browser launch in one critical section:
+                        # otherwise another caller can publish a successor that
+                        # restart_daemon() below would kill.
+                        launched_browser = _launch_browser()
+                        if launched_browser is None:
+                            raise RuntimeError(
+                                "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+                            )
+                        print(
+                            "browser-harness: Chrome isn't running — launching it. "
+                            'If Chrome shows an "Allow remote debugging?" popup, click Allow.',
+                            file=sys.stderr,
+                        )
+                        from .daemon import supported_browser_running
+
+                        boot_deadline = time.time() + 15
+                        while time.time() < boot_deadline and not supported_browser_running():
+                            time.sleep(0.3)
+
             if permission_wait:
                 # A denied/expired approval may already have dropped its sheet.
                 # Never auto-spawn a replacement here: that would immediately
@@ -646,6 +745,9 @@ def ensure_daemon(wait=None, name=None, env=None):
                     "permission-blocked: the pending Chrome connection ended before approval; "
                     "browser-harness did not retry or create another connection."
                 )
+            # Retry whether we launched Chrome or found that another caller had
+            # already replaced the dead generation. The next iteration joins
+            # that successor rather than stopping it.
             continue
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup
@@ -665,18 +767,34 @@ def ensure_daemon(wait=None, name=None, env=None):
                 "permission-blocked: Chrome did not approve the connection; browser-harness did not retry or create another connection."
             )
         if local and launched_browser is None and _chrome_not_running(msg):
-            # Chrome is closed — launch the browser and retry
-            restart_daemon(name)
-            launched_browser = _launch_browser()
-            if launched_browser is None:
-                raise RuntimeError(
-                    "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+            # A timeout (rather than an observed child exit) reaches this path.
+            # Serialize the same generation check used above so a concurrent
+            # caller's successor is never stopped by stale recovery work.
+            with _spawn_lock(name, timeout=1.0) as recovery_lock:
+                owns_generation = (
+                    recovery_lock.fd is not None
+                    and pending_generation is not None
+                    and _pending_generation_record(ipc.pid_path(name or NAME))
+                    == pending_generation
                 )
-            print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
-            from .daemon import supported_browser_running
-            boot_deadline = time.time() + 15
-            while time.time() < boot_deadline and not supported_browser_running():
-                time.sleep(0.3)
+                if not owns_generation:
+                    continue
+                _stop_pending_generation(
+                    name or NAME,
+                    pending_generation,
+                    process=p,
+                )
+                launched_browser = _launch_browser()
+                if launched_browser is None:
+                    raise RuntimeError(
+                        "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+                    )
+                print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
+                from .daemon import supported_browser_running
+
+                boot_deadline = time.time() + 15
+                while time.time() < boot_deadline and not supported_browser_running():
+                    time.sleep(0.3)
             continue
         if local and not opened_inspect and _needs_chrome_remote_debugging_prompt(msg):
             opened_inspect = True
