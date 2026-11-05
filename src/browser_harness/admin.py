@@ -1030,6 +1030,12 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
     show_live_view = _should_show_remote_live_view()
     if daemon_alive(name):
         raise RuntimeError(f"daemon {name!r} already alive -- restart_daemon({name!r}) first")
+    stale = ipc.read_remote_marker(name) or {}
+    if stale.get("browser_id"):
+        # Its daemon died without stopping it (e.g. SIGKILL). The new daemon's
+        # marker would overwrite the only record of it, so stop it first.
+        _stop_cloud_browser(stale["browser_id"], strict=True)
+        ipc.clear_remote_marker(name)
     if profileName:
         if "profileId" in create_kwargs:
             raise RuntimeError("pass profileName OR profileId, not both")

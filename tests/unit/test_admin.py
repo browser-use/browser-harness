@@ -371,6 +371,37 @@ def test_stop_remote_daemon_stops_the_browser_of_a_killed_daemon(tmp_path, monke
     assert admin.ipc.read_remote_marker("work") is None
 
 
+def test_start_remote_daemon_stops_the_browser_a_killed_daemon_left_under_that_name(tmp_path, monkeypatch):
+    """The new browser's marker overwrote the killed daemon's one; its browser billed until the cloud timeout."""
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    admin.ipc.write_remote_marker("work", "cloud", "b-old")
+    calls = []
+
+    def stop(browser_id, strict=False):
+        calls.append(("stop", browser_id, strict))
+        if len(calls) == 1:
+            raise RuntimeError("cloud API down")
+
+    def fake_browser_use(path, method, body=None):
+        calls.append((path, method))
+        return {"id": "b-new", "cdpUrl": "http://127.0.0.1:9333"}
+
+    monkeypatch.setattr(admin, "_stop_cloud_browser", stop)
+    monkeypatch.setattr(admin, "_browser_use", fake_browser_use)
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda url: "ws://example.test/devtools/browser/1")
+    monkeypatch.setattr(admin, "ensure_daemon", lambda **kwargs: None)
+    monkeypatch.setattr(admin, "_show_live_url", lambda url: None)
+
+    with pytest.raises(RuntimeError, match="cloud API down"):
+        admin.start_remote_daemon("work")
+    assert calls == [("stop", "b-old", True)]
+    assert admin.ipc.read_remote_marker("work") == {"kind": "cloud", "browser_id": "b-old"}
+
+    admin.start_remote_daemon("work")
+    assert calls[1:] == [("stop", "b-old", True), ("/browsers", "POST")]
+    assert admin.ipc.read_remote_marker("work") is None
+
 def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
     monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default", "stale", "remote"])
 
