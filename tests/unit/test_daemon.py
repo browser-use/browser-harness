@@ -32,6 +32,8 @@ def test_publish_own_pid_never_truncates_parent_record(tmp_path, monkeypatch):
             "ws://127.0.0.1:18792",
         ),
         ("wss://provider.example/session/private-id?token=secret", "wss://provider.example"),
+        ("wss://0123abcd-session.cdp.browser-use.com/devtools/browser/uuid", "wss://*.browser-use.com"),
+        ("ws://10.0.0.7:9222/devtools/browser/id", "ws://10.0.0.7:9222"),
         ("wss://[::1]:9222/devtools/browser/id", "wss://[::1]:9222"),
         ("not-a-url", "<redacted-cdp-endpoint>"),
     ],
@@ -73,6 +75,133 @@ def test_shutdown_keeps_daemon_alive_when_cloud_stop_fails(monkeypatch):
 
     assert response == {"error": "billing stop failed"}
     assert d.stop.is_set() is False
+
+
+@pytest.mark.parametrize(("kind", "marked"), [("cloud", True), ("cdp", True), ("local", False)])
+def test_connecting_to_a_remote_browser_binds_the_name(monkeypatch, kind, marked):
+    import types
+
+    written = []
+
+    class FakeClient:
+        def __init__(self, url):
+            self._event_registry = types.SimpleNamespace(handle_event=None)
+
+        async def start(self):
+            pass
+
+    async def attach(self, **kwargs):
+        return {}
+
+    monkeypatch.setattr(daemon, "log", lambda msg: None)
+    monkeypatch.setattr(daemon, "get_ws_url", lambda: "ws://127.0.0.1:1/devtools/browser/x")
+    monkeypatch.setattr(daemon, "CDPClient", FakeClient)
+    monkeypatch.setattr(daemon, "_PatientCDPClient", FakeClient)
+    monkeypatch.setattr(daemon.Daemon, "attach_first_page", attach)
+    monkeypatch.setattr(daemon, "BROWSER_KIND", kind)
+    monkeypatch.setattr(daemon, "REMOTE_ID", "b-1" if kind == "cloud" else None)
+    monkeypatch.setattr(daemon.ipc, "write_remote_marker", lambda *a: written.append(a))
+
+    asyncio.run(daemon.Daemon().start())
+
+    assert written == ([(daemon.NAME, kind, "b-1" if kind == "cloud" else None)] if marked else [])
+
+
+def test_explicit_shutdown_frees_the_remote_name(monkeypatch):
+    cleared = []
+    d = daemon.Daemon()
+    d.stop = asyncio.Event()
+    monkeypatch.setattr(daemon, "stop_remote", lambda strict=False: True)
+    monkeypatch.setattr(daemon.ipc, "clear_remote_marker", cleared.append)
+
+    assert asyncio.run(d.handle({"meta": "shutdown"})) == {"ok": True}
+    assert cleared == [daemon.NAME]
+
+
+def test_daemon_exits_when_the_cdp_websocket_goes_away(monkeypatch):
+    """A cloud browser timing out closes CDP with 1001. The daemon used to stay
+    alive and stale forever; now the end of the socket stops it."""
+    import types
+    import websockets
+    from cdp_use.client import CDPClient
+
+    logs = []
+    monkeypatch.setattr(daemon, "log", logs.append)
+
+    async def main():
+        async def close_going_away(ws):
+            await asyncio.sleep(0.05)
+            await ws.close(1001, "browser session ended")
+
+        async with websockets.serve(close_going_away, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            client = CDPClient(f"ws://127.0.0.1:{port}")
+            await client.start()
+            d = types.SimpleNamespace(cdp=client, stop=asyncio.Event())
+            await asyncio.wait_for(daemon._watch_cdp(d), 5)
+            return d.stop.is_set()
+
+    assert asyncio.run(main()) is True
+    assert any("code=1001" in line for line in logs)
+
+
+def test_owner_watch_stops_the_daemon_only_after_the_owner_dies(monkeypatch):
+    import subprocess
+    import sys
+    import types
+
+    monkeypatch.setattr(daemon, "log", lambda msg: None)
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+
+    async def main():
+        d = types.SimpleNamespace(stop=asyncio.Event())
+        watch = asyncio.create_task(daemon._watch_owner(d, owner.pid, interval=0.05))
+        await asyncio.sleep(0.3)
+        alive_stop = d.stop.is_set()
+        owner.kill()
+        owner.wait()
+        await asyncio.wait_for(watch, 5)
+        return alive_stop, d.stop.is_set()
+
+    try:
+        assert asyncio.run(main()) == (False, True)
+    finally:
+        owner.kill()
+
+
+@pytest.mark.parametrize(("raw", "pid"), [("", None), ("abc", None), ("0", None), ("-3", None), ("4242", 4242)])
+def test_owner_pid_is_opt_in_and_validated(monkeypatch, raw, pid):
+    monkeypatch.setattr(daemon, "log", lambda msg: None)
+    monkeypatch.setenv("BH_OWNER_PID", raw)
+
+    assert daemon._owner_pid() == pid
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGHUP"])
+def test_sigterm_and_sighup_run_the_normal_shutdown(tmp_path, sig):
+    """Without a handler SIGTERM killed the daemon outright, so its finally
+    block never stopped the cloud browser. Run in a child: if the handler is
+    missing the signal kills that child, not pytest."""
+    import subprocess
+    import sys
+
+    code = f"""
+import asyncio, os, signal, types
+from browser_harness import daemon
+daemon.log = lambda msg: None
+async def main():
+    d = types.SimpleNamespace(stop=asyncio.Event())
+    daemon._stop_on_signals(d)
+    os.kill(os.getpid(), signal.{sig})
+    await asyncio.wait_for(d.stop.wait(), 5)
+    print("graceful")
+asyncio.run(main())
+"""
+    env = {**os.environ, "BH_HOME": str(tmp_path), "ANONYMIZED_TELEMETRY": "false"}
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=30)
+
+    assert (out.returncode, out.stdout.strip()) == (0, "graceful"), out.stderr
 
 
 class _FakeCDP:
