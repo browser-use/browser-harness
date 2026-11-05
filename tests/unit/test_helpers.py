@@ -73,6 +73,83 @@ def test_screenshot_timeout_has_context(tmp_path):
             helpers.capture_screenshot(str(tmp_path / "shot.png"))
 
 
+@pytest.mark.parametrize("kwargs", [{}, {"activate": False}])
+def test_screenshot_does_not_activate_without_opt_in(fake_png, tmp_path, kwargs):
+    path = tmp_path / "shot.png"
+    with patch(
+        "browser_harness.helpers.cdp",
+        return_value={"data": fake_png(800, 400)},
+    ) as cdp, patch("browser_harness.helpers._send") as send, patch(
+        "browser_harness.helpers.time.sleep"
+    ) as sleep:
+        helpers.capture_screenshot(str(path), **kwargs)
+
+    send.assert_not_called()
+    sleep.assert_not_called()
+    assert cdp.call_args.args == ("Page.captureScreenshot",)
+    assert path.exists()
+
+
+def test_screenshot_opt_in_activates_current_target_before_capture_and_preserves_options(
+    fake_png, tmp_path
+):
+    path = tmp_path / "shot.png"
+    tab = {"targetId": "target-7", "url": "https://example.com", "title": "Example"}
+    events = []
+
+    def send(request):
+        events.append(("send", request))
+        return tab
+
+    def cdp(method, **kwargs):
+        events.append(("cdp", method, kwargs))
+        if method == "Page.captureScreenshot":
+            return {"data": fake_png(1600, 800)}
+        return {}
+
+    with patch("browser_harness.helpers._send", side_effect=send), patch(
+        "browser_harness.helpers.time.sleep",
+        side_effect=lambda delay: events.append(("sleep", delay)),
+    ), patch(
+        "browser_harness.helpers.cdp", side_effect=cdp
+    ):
+        result = helpers.capture_screenshot(
+            str(path), full=True, max_dim=800, activate=True
+        )
+
+    assert events == [
+        ("send", {"meta": "current_tab"}),
+        ("cdp", "Target.activateTarget", {"targetId": "target-7"}),
+        ("sleep", 0.3),
+        (
+            "cdp",
+            "Page.captureScreenshot",
+            {
+                "_response_timeout": helpers.SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS,
+                "format": "png",
+                "captureBeyondViewport": True,
+            },
+        ),
+    ]
+    assert result == str(path)
+    assert Image.open(path).size == (800, 400)
+
+
+def test_screenshot_activation_failure_does_not_capture_or_write(tmp_path):
+    path = tmp_path / "shot.png"
+    tab = {"targetId": "target-7", "url": "https://example.com", "title": "Example"}
+    with patch("browser_harness.helpers._send", return_value=tab), patch(
+        "browser_harness.helpers.cdp", side_effect=RuntimeError("activation failed")
+    ) as cdp, patch("browser_harness.helpers.time.sleep") as sleep:
+        with pytest.raises(RuntimeError, match="activation failed"):
+            helpers.capture_screenshot(str(path), activate=True)
+
+    assert cdp.call_args.args == ("Target.activateTarget",)
+    assert cdp.call_args.kwargs == {"targetId": "target-7"}
+    sleep.assert_not_called()
+    assert not path.exists()
+
+
 def _seed_skill(tmp_path):
     site = tmp_path / "domain-skills" / "example"
     site.mkdir(parents=True)
