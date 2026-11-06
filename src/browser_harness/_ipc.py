@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, json, os, re, secrets, socket, stat, subprocess, sys, time
 from pathlib import Path
 
 from . import paths
@@ -195,7 +195,44 @@ def expected_token():
     return _server_token
 
 
+def _endpoint_snapshot(path: Path):
+    """Snapshot identity of an endpoint file/socket so retries never unlink a
+    successor daemon's newly published endpoint."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    content = None
+    if stat.S_ISREG(st.st_mode):
+        try:
+            content = path.read_bytes()
+        except OSError:
+            pass
+    return (st.st_dev, st.st_ino, st.st_ctime_ns, st.st_mtime_ns, st.st_size), content
+
+
+def _same_endpoint(initial, current) -> bool:
+    if initial is None or current is None:
+        return initial is current
+    init_stat, init_bytes = initial
+    curr_stat, curr_bytes = current
+    if init_bytes is not None and curr_bytes is not None and init_bytes != curr_bytes:
+        return False
+    return init_stat == curr_stat
+
+
 def cleanup_endpoint(name):  # best-effort; silent if already gone
     p = _sock_path(name) if not IS_WINDOWS else port_path(name)
-    try: p.unlink()
-    except FileNotFoundError: pass
+    initial = _endpoint_snapshot(p)
+    for attempt in range(10):
+        if attempt > 0 and not _same_endpoint(initial, _endpoint_snapshot(p)):
+            return
+        try:
+            p.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:  # PermissionError: handle not yet released after SIGTERM
+            if attempt < 9:
+                time.sleep(0.1)
+
