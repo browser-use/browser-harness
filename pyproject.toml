@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp==2.1.1"]
+mcp = ["mcp==2.2.0"]
 
 [project.scripts]
 browser-harness = "browser_harness.run:main"
