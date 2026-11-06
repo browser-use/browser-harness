@@ -62,6 +62,19 @@ def test_origin_relaunch_uses_origin_not_regular_brave(monkeypatch, origin_profi
     ("Google/Chrome", "Google Chrome"),
     ("Google/Chrome Canary", "Google Chrome Canary"),
     ("Application Support/Microsoft Edge", "Microsoft Edge"),
+    ("Google/Chrome Beta", "Google Chrome Beta"),
+    ("Google/Chrome Dev", "Google Chrome Dev"),
+    (".config/google-chrome-beta", "Google Chrome Beta"),
+    (".config/google-chrome-unstable", "Google Chrome Dev"),
 ])
 def test_launch_mapping_preserves_existing_browsers(profile, app):
     assert admin._browser_launch_spec(profile)[0] == app
+
+
+@pytest.mark.parametrize("profile,posix_cmds", [
+    (".config/google-chrome-beta", ("google-chrome-beta",)),
+    (".config/google-chrome-unstable", ("google-chrome-unstable",)),
+    (".config/google-chrome", ("google-chrome-stable", "google-chrome")),
+])
+def test_linux_chrome_channels_launch_matching_binary(profile, posix_cmds):
+    assert admin._browser_launch_spec(profile)[1] == posix_cmds
