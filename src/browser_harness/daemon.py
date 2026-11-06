@@ -7,6 +7,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .owned_scope import OWNED_CAPABILITY, ScopeTable
 from cdp_use.client import CDPClient
 
 
@@ -372,6 +373,10 @@ def stop_remote(strict=False):
     return False
 
 
+def _ping_reply():
+    return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND, "capabilities": [OWNED_CAPABILITY]}
+
+
 def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
@@ -438,6 +443,7 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        self.scopes = ScopeTable(lambda *a, **k: self.cdp.send_raw(*a, **k), _ping_reply())
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -624,6 +630,8 @@ class Daemon:
         )))
 
     def _record_event(self, method, params, session_id=None):
+        if self.scopes.absorb_event(method, params, session_id):
+            return
         self.events.append({"method": method, "params": params, "session_id": session_id})
         if method == "Page.javascriptDialogOpening":
             self.dialog = params
@@ -669,12 +677,18 @@ class Daemon:
         expected = ipc.expected_token()
         if expected is not None and req.get("token") != expected:
             return {"error": "unauthorized"}
+        if "scope" in req:
+            return await self.scopes.handle(req)
         meta = req.get("meta")
         # Liveness probe — lets clients confirm the listener is actually this
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
+        if meta == "ping":        return _ping_reply()
+        if meta == "begin_owned_target":
+            if self._shutting_down:
+                return {"error": "daemon is shutting down"}
+            return await self.scopes.begin()
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
@@ -858,6 +872,9 @@ async def serve(d):
                             d.dedicated_target_id = None
                         except Exception as e:
                             log(f"close dedicated tab on shutdown: {e}")
+            if d.cdp:
+                for err in await d.scopes.close_all():
+                    log(f"close owned scope on shutdown: {err}")
         else:
             log("skip dedicated-tab cleanup: stale-session recovery did not stop")
         ipc.cleanup_endpoint(NAME)
