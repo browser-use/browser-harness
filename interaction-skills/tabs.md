@@ -59,6 +59,27 @@ Typical tools:
 - `wmctrl`
 - desktop-environment scripting (`gdbus`, KWin, GNOME Shell extensions, etc.)
 
+## Several Chrome profiles
+
+Each Chrome profile is its own CDP browser context, and every profile's tabs show up in `list_tabs()`. A new target
+lands in the default context, so `new_tab()` (or a plain `Target.createTarget`) can open in a profile that is not
+logged in to the site you want: you then see a login wall, or the wrong account's data, although the user is
+signed in "in Chrome".
+
+Open the tab in the profile of a tab that is already on that site:
+
+```python
+targets = cdp("Target.getTargets")["targetInfos"]
+ctx = next(t["browserContextId"] for t in targets
+           if t["type"] == "page" and "example.com" in t.get("url", ""))
+tid = cdp("Target.createTarget", url="https://example.com/dashboard", background=True,
+          browserContextId=ctx)["targetId"]
+switch_tab(tid)
+```
+
+The context id changes when Chrome restarts: look it up on every run, never store it. If no tab of the right
+profile is open, ask the user to open one rather than guessing.
+
 ## Rules that held up in practice
 
 - `switch_tab()` intentionally does **not** change Chrome's visible tab.
