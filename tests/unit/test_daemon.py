@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+import pathlib
 
 import pytest
 
@@ -845,3 +847,74 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def _write_devtools_active_port(profile, port=9222, ws_path="/devtools/browser/guid"):
+    profile.mkdir(parents=True)
+    (profile / "DevToolsActivePort").write_text(f"{port}\n{ws_path}\n", encoding="utf-8")
+    return profile
+
+
+def _tcc_block_devtools_active_port(monkeypatch, blocked_dir):
+    """Make DevToolsActivePort under blocked_dir raise PermissionError, as macOS TCC does
+    when the launching process lacks Full Disk Access."""
+    real_read_text = pathlib.Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self.name == "DevToolsActivePort" and self.parent == blocked_dir:
+            raise PermissionError(1, "Operation not permitted", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", read_text)
+
+
+def test_ws_from_devtools_active_port_skips_tcc_blocked_profile(tmp_path, monkeypatch):
+    blocked = _write_devtools_active_port(tmp_path / "blocked", port=9222)
+    readable = _write_devtools_active_port(tmp_path / "readable", port=9223, ws_path="/devtools/browser/other")
+    monkeypatch.setattr(daemon, "PROFILES", (blocked, readable))
+    _tcc_block_devtools_active_port(monkeypatch, blocked)
+
+    ws = daemon._ws_from_devtools_active_port("http://127.0.0.1:9223/json/version")
+
+    assert ws == "ws://127.0.0.1:9223/devtools/browser/other"
+
+
+def test_get_ws_url_reaches_fallback_probe_when_tcc_blocks_profiles(tmp_path, monkeypatch):
+    blocked = _write_devtools_active_port(tmp_path / "blocked", port=9333)
+    monkeypatch.setattr(daemon, "PROFILES", (blocked,))
+    _tcc_block_devtools_active_port(monkeypatch, blocked)
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(daemon.time, "sleep", lambda _seconds: None)
+
+    base = 1000.0
+    calls = {"n": 0}
+
+    def fake_time():
+        calls["n"] += 1
+        # deadline, first loop condition and `now`; then escape the 30s wait
+        return base if calls["n"] <= 3 else base + 31
+
+    monkeypatch.setattr(daemon.time, "time", fake_time)
+
+    class _Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(url, timeout=None):
+        if url == "http://127.0.0.1:9222/json/version":
+            return _Response({"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/fallback"})
+        raise OSError(f"unexpected urlopen: {url}")
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    # Uncaught PermissionError here used to kill the daemon before the 9222/9223 probes.
+    assert daemon.get_ws_url() == "ws://127.0.0.1:9222/devtools/browser/fallback"
