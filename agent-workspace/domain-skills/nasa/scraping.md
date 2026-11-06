@@ -262,7 +262,6 @@ Not covered: NASA Exoplanet Archive (`exoplanetarchive.ipac.caltech.edu`). Its r
 | Thumbnail (JPEG) | `https://epic.gsfc.nasa.gov/archive/natural/YYYY/MM/DD/thumbs/{image}.jpg` |
 | Enhanced PNG | `https://epic.gsfc.nasa.gov/archive/enhanced/YYYY/MM/DD/png/{image}.png` |
 
-
 ## Gotchas
 
 - **DEMO_KEY limit is effectively 10/hour per IP, not 30** — The `X-Ratelimit-Limit` header shows `10` in practice. When the daily budget (~50 req) is exhausted, the `retry-after` header is set to ~80,000 seconds (about 22 hours). Register a free personal key at https://api.nasa.gov/ to get 1,000/hour.
