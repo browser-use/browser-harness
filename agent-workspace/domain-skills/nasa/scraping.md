@@ -4,7 +4,7 @@
 
 ## Do this first
 
-**All `api.nasa.gov` endpoints share the same rate-limit pool under DEMO_KEY. EPIC and Exoplanet Archive are on separate domains with no rate limit.**
+**All `api.nasa.gov` endpoints share the same rate-limit pool under DEMO_KEY. EPIC is on a separate domain with no rate limit.**
 
 ```python
 import json
@@ -30,7 +30,7 @@ Rate limit headers on every `api.nasa.gov` response:
 - `X-Ratelimit-Remaining` — calls left this window
 - `Retry-After` — seconds until next window (only on 429)
 
-**EPIC (`epic.gsfc.nasa.gov`) and Exoplanet Archive (`exoplanetarchive.ipac.caltech.edu`) share no rate-limit pool with `api.nasa.gov`.**
+**EPIC (`epic.gsfc.nasa.gov`) shares no rate-limit pool with `api.nasa.gov`.**
 
 ## Common workflows
 
@@ -231,49 +231,7 @@ print(all_dates[0])   # {'date': '2026-04-16'}  (newest first)
 print(all_dates[-1])  # {'date': '2015-06-13'}  (oldest)
 ```
 
-### Exoplanet Archive — TAP/ADQL queries
-
-No API key or rate limit. SQL-like ADQL queries over the full archive.
-
-```python
-import json
-from helpers import http_get
-
-# Short-period planets with known radii
-planets = json.loads(http_get(
-    "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
-    "?query=select+pl_name,hostname,pl_orbper+from+ps+where+pl_orbper+%3C+10"
-    "&format=json"
-))
-print(f"Rows: {len(planets)}")      # 17675 (table 'ps' includes duplicate measurements)
-print(planets[0])
-# {'pl_name': 'GJ 1214 b', 'hostname': 'GJ 1214', 'pl_orbper': 1.58040482}
-```
-
-```python
-# Use 'pscomppars' for one row per planet (composite best-estimate params)
-planets = json.loads(http_get(
-    "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
-    "?query=select+pl_name,hostname,disc_year,discoverymethod,pl_orbper,pl_rade,pl_masse,pl_eqt,sy_dist"
-    "+from+pscomppars+where+disc_year+%3E+2020+and+pl_rade+is+not+null"
-    "+order+by+disc_year+desc"
-    "&format=json&maxrec=5"
-))
-for p in planets:
-    print(p['pl_name'], p['disc_year'], p['discoverymethod'], f"r={p['pl_rade']}Re")
-# Confirmed output:
-# KMT-2024-BLG-1870L b 2026 Microlensing r=13.8Re
-# LHS 1903 b 2026 Transit r=1.382Re
-# TOI-375 d 2026 Radial Velocity r=13.6Re
-```
-
-Key tables:
-- `ps` — all measurements per planet (multiple rows per planet, all sources)
-- `pscomppars` — one row per confirmed planet (best composite parameters)
-
-Key columns: `pl_name`, `hostname`, `disc_year`, `discoverymethod`, `pl_orbper` (orbital period, days), `pl_rade` (radius in Earth radii), `pl_masse` (mass in Earth masses), `pl_eqt` (equilibrium temp K), `sy_dist` (distance in parsec).
-
-URL-encode operators: `<` = `%3C`, `>` = `%3E`, spaces = `+`.
+Not covered: NASA Exoplanet Archive (`exoplanetarchive.ipac.caltech.edu`). Its robots.txt disallows every path for ClaudeBot, anthropic-ai and Claude-Web.
 
 ## URL reference
 
@@ -304,19 +262,13 @@ URL-encode operators: `<` = `%3C`, `>` = `%3E`, spaces = `+`.
 | Thumbnail (JPEG) | `https://epic.gsfc.nasa.gov/archive/natural/YYYY/MM/DD/thumbs/{image}.jpg` |
 | Enhanced PNG | `https://epic.gsfc.nasa.gov/archive/enhanced/YYYY/MM/DD/png/{image}.png` |
 
-### Exoplanet Archive (no key, no rate limit)
-
-```
-https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=<ADQL>&format=json&maxrec=<N>
-```
-
 ## Gotchas
 
 - **DEMO_KEY limit is effectively 10/hour per IP, not 30** — The `X-Ratelimit-Limit` header shows `10` in practice. When the daily budget (~50 req) is exhausted, the `retry-after` header is set to ~80,000 seconds (about 22 hours). Register a free personal key at https://api.nasa.gov/ to get 1,000/hour.
 
 - **All `api.nasa.gov` paths share one rate-limit pool** — APOD, NEO, Mars Rover, and all other `api.nasa.gov` paths draw from the same DEMO_KEY bucket. Calling any one of them depletes the limit for all others.
 
-- **EPIC and Exoplanet Archive are fully free** — `epic.gsfc.nasa.gov` returns no rate-limit headers and is not throttled. `exoplanetarchive.ipac.caltech.edu/TAP/sync` is similarly unrestricted. Use these freely without fear of exhausting DEMO_KEY.
+- **EPIC is fully free** — `epic.gsfc.nasa.gov` returns no rate-limit headers and is not throttled. Use it freely without fear of exhausting DEMO_KEY.
 
 - **NEO date range max is 7 days** — Requests spanning more than 7 days return HTTP 400. Paginate with 7-day windows and use `links.next` from the response to get the next URL.
 
@@ -331,9 +283,5 @@ https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query=<ADQL>&format=json&maxr
 - **EPIC image name encodes type in the prefix** — Natural images use `epic_1b_` prefix; enhanced color-corrected images use `epic_RGB_` prefix. The API returns the correct filename in `img['image']`; don't guess the prefix.
 
 - **EPIC `/api/natural/all` returns newest-first** — The list of 3,477+ available dates starts from today and goes back to 2015-06-13. Not all days have images (gaps during spacecraft maintenance).
-
-- **Exoplanet `ps` table has multiple rows per planet** — Different publications report different measurements for the same planet. Use `pscomppars` for one-row-per-planet composite parameters. `ps` is useful when you need all reported values or want to filter by specific reference.
-
-- **Exoplanet null values come back as `None` in JSON** — Many fields like `pl_masse` are `null` for planets without mass measurements. Always guard with `if row['pl_masse'] is not None`.
 
 - **`http_get` in helpers.py uses stdlib `urllib`** — On some macOS Python 3.11 installs, SSL certificate verification fails (`CERTIFICATE_VERIFY_FAILED`). If you hit this, run `curl` via `subprocess` as a fallback, or install certifi and patch the default SSL context. The harness's browser CDP connection is not affected; only `http_get` is.

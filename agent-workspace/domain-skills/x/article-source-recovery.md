@@ -17,9 +17,9 @@ Article cards commonly point to `https://x.com/i/article/<id>`. An anonymous vis
 
 ## Cross-post fallback
 
-Authors sometimes cross-post the same article on LinkedIn or another public profile and link the canonical external page there. A LinkedIn sign-in modal may cover the page visually while the public post text and anchors remain in the DOM.
+Authors sometimes cross-post the same article on their own blog or another public profile and link the canonical external page there. Skip LinkedIn: www.linkedin.com/robots.txt disallows every path for Claude-User, ChatGPT-User, Perplexity-User and other named AI agents.
 
-Inspect the public DOM rather than entering credentials:
+On an allowed public page, inspect the DOM rather than entering credentials:
 
 ```javascript
 ({
@@ -32,7 +32,7 @@ Inspect the public DOM rather than entering credentials:
 })
 ```
 
-LinkedIn wraps external links as `https://www.linkedin.com/redir/redirect?url=<encoded-url>&...`. Decode the `url` query parameter, open that canonical URL directly, and validate the article title and content there.
+If a link is wrapped in a redirect, decode its target URL, open that canonical URL directly, and validate the article title and content there. Check that page's robots.txt first.
 
 ## Guardrails
 

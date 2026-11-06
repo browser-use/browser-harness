@@ -50,7 +50,7 @@ The trending page is JS-rendered. `article.Box-row` selector confirmed working (
 
 ```python
 import json
-goto_url("https://github.com/trending")          # or /trending/python?since=weekly
+goto_url("https://github.com/trending")          # or /trending/python
 wait_for_load()
 wait(2)                                       # extra 2s — React hydration completes after readyState
 
@@ -77,14 +77,14 @@ result = js("""
 })()
 """)
 repos = json.loads(result)
-# stars_period text is e.g. "737 stars today" or "47,053 stars this week"
+# stars_period text is e.g. "737 stars today"
 ```
 
-Supported URL params:
+Supported URLs:
 - `/trending` — all languages, today
 - `/trending/python` — filtered to Python
-- `/trending?since=weekly` or `?since=monthly`
-- `/trending/python?since=weekly` — combined
+
+Do not add `?since=weekly` or `?since=monthly`: github.com/robots.txt has `Disallow: /*?since=*` for ClaudeBot, anthropic-ai and `User-agent: *`.
 
 ### Search repositories (API)
 
