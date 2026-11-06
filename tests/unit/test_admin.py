@@ -3,6 +3,7 @@ import os
 import signal
 import time
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1228,6 +1229,95 @@ def test_permission_blocked_exit_is_not_retried(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="did not retry or create another connection"):
         admin_mod.ensure_daemon(wait=0.1)
     assert len(spawned) == 1
+
+
+def test_daemon_env_preserves_relative_paths_when_changing_directory(tmp_path, monkeypatch):
+    source = Path(admin.__file__).resolve().parents[1]
+    workspace = tmp_path / "task-workspace"
+    workspace.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (workspace / "modules").mkdir()
+    (workspace / "modules" / "cwd_probe.py").write_text("VALUE = 42\n")
+    monkeypatch.chdir(workspace)
+    relative_paths = {
+        "BH_HOME": "state",
+        "BROWSER_HARNESS_HOME": "legacy-state",
+        "XDG_CONFIG_HOME": "xdg",
+        "BH_CONFIG_DIR": "config",
+        "BH_RUNTIME_DIR": "../runtime",
+        "BH_TMP_DIR": "artifacts",
+        "BH_AGENT_WORKSPACE": "helpers",
+        "BH_AUTH_PATH": "auth.json",
+    }
+    for key, value in relative_paths.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(source), "modules", ""]))
+    overrides = {"BH_TMP_DIR": "override-artifacts", "BU_NAME": "override"}
+    env = admin._daemon_env("named", overrides)
+
+    for key, value in relative_paths.items():
+        assert env[key] == str((workspace / overrides.get(key, value)).absolute())
+        assert os.environ[key] == value
+    assert overrides == {"BH_TMP_DIR": "override-artifacts", "BU_NAME": "override"}
+    assert env["BU_NAME"] == "override"
+    assert admin._daemon_env("named", {})["BU_NAME"] == "named"
+
+    probe = subprocess.run(
+        [sys.executable, "-c", """
+import json
+import cwd_probe
+from browser_harness import _ipc as ipc, auth, paths
+print(json.dumps({
+    "runtime": str(ipc._RUNTIME), "tmp": str(ipc._TMP),
+    "config": str(paths.config_dir()), "workspace": str(paths.workspace_dir()),
+    "auth": str(auth.auth_path()), "value": cwd_probe.VALUE,
+}))
+"""],
+        cwd=runtime, env=env, capture_output=True, text=True, timeout=10, check=True,
+    )
+    assert json.loads(probe.stdout) == {
+        "runtime": str(runtime), "tmp": str(workspace / "override-artifacts"),
+        "config": str(workspace / "config"), "workspace": str(workspace / "helpers"),
+        "auth": str(workspace / "auth.json"), "value": 42,
+    }
+
+
+@pytest.mark.parametrize("local", [True, False])
+def test_ensure_daemon_spawns_outside_callers_working_directory(tmp_path, monkeypatch, local):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    workspace = tmp_path / "task-workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", runtime)
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / "daemon.log")
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setattr(admin, "_parked_daemon_pid", lambda name=None: None)
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name=None: None)
+    monkeypatch.setattr(admin, "_process_start_time", lambda pid: None)
+    child_cwds = []
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: bool(child_cwds))
+    popen = subprocess.Popen
+
+    def spawn_probe(args, **kwargs):
+        assert args == [sys.executable, "-m", "browser_harness.daemon"]
+        # Exercise the daemon's real spawn options without requiring a browser.
+        with popen(
+            [sys.executable, "-c", "import os; print(os.getcwd())"],
+            **{**kwargs, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True},
+        ) as child:
+            stdout, stderr = child.communicate(timeout=10)
+            assert child.returncode == 0, stderr
+            child_cwds.append(Path(stdout.strip()))
+        return FakeProcess()
+
+    monkeypatch.setattr(admin.subprocess, "Popen", spawn_probe)
+
+    admin.ensure_daemon(wait=1, env={} if local else {"BU_CDP_URL": "http://127.0.0.1:9222"})
+
+    assert child_cwds == [runtime]
 
 
 def test_cold_spawn_publishes_child_before_releasing_lock(tmp_path, monkeypatch):
