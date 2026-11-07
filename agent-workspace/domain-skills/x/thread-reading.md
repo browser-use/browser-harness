@@ -51,5 +51,8 @@ for t in [1, 4, 7, 11, 16, 22, 28]:
 
 ## Traps
 
-- The daemon's `cdp("Input.dispatchMouseEvent", type="mouseMoved", ...)` can time out on x.com. Clicks and scrolls work. Do not hover; click or read the DOM.
+- The daemon's `mouseMoved` and `mouseWheel` CDP events time out on x.com (so `scroll()` can hang). Scroll with `js('window.scrollBy(0, 1500)')` instead. Clicks work.
+- A quoted post has no `href`: it is a `[role=link]` div. Find it by its text and `click_at_xy` inside it; the tab then navigates to the quoted status URL.
+- Some post videos never load logged out: `video.readyState` stays 0, `duration` is null and `play()` hangs. Do not loop on it. Use the poster image (`pbs.twimg.com/amplify_video_thumb/...`) and any screenshots in the thread instead, or ask the user for a logged-in profile.
+- Prompt screenshots attached to a post are `img[src*="pbs.twimg.com/media/"]`; swap `name=360x360` for `name=large` in the URL and `curl` it to read the full-size image.
 - The clipboard (`pbpaste`) often holds the link the user means by "this post". Check it before you ask.

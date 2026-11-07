@@ -47,14 +47,36 @@ Left panel, top to bottom: preset card, References / Extend Video tabs, referenc
 ### Prompt editor is a rich-text mention editor, not a textarea
 
 - The box is `div[contenteditable=true]` (ProseMirror-style). `document.querySelector("textarea")` is null.
-- `type_text()` with `\n` inside the string drops everything after the first newline. Type one line at a time and send `press_key("Enter", modifiers=8)` (Shift+Enter) between lines. Plain Enter also works for a new paragraph but Shift+Enter is safer. The full prompt (4,000+ chars) arrives intact this way.
+- `type_text()` with `\n` inside the string drops everything after the first newline. Type one line at a time and send `press_key("Enter", modifiers=8)` (Shift+Enter) between lines.
+- Focus gets stolen mid-prompt (toasts, the low-credit banner, re-renders). When that happens the rest of the lines vanish silently. Re-focus the editor and move the caret to the end before every line, and verify the length grew:
+
+```python
+def ed(): return js('return document.querySelector("[contenteditable=true]").innerText')
+def focus_end():
+    js('''(()=>{const e=document.querySelector("[contenteditable=true]"); e.focus();
+      const r=document.createRange(); r.selectNodeContents(e); r.collapse(false);
+      const s=window.getSelection(); s.removeAllRanges(); s.addRange(r);})()''')
+def typed(line):
+    for _ in range(3):
+        n=len(ed()); focus_end(); type_text(line); wait(0.25)
+        if len(ed())>n: return True
+for para in prompt.split("\n\n"):
+    for i,line in enumerate(para.split("\n")):
+        if i: focus_end(); press_key("Enter", modifiers=8)
+        typed(line)
+    focus_end(); press_key("Enter", modifiers=8); press_key("Enter", modifiers=8)
+```
+
+- Do not trust a coordinate click on the editor's bounding-box center: the left panel scrolls, so the box can extend above the viewport and the click lands on another control. Use `focus_end()` instead.
 - References get an `@` mention. Type `@`, wait ~1.5 s for the "Image 1" popup, then `press_key("Enter")`. Clicking the popup row does not insert the chip; Enter does. Check with `js('return document.querySelector("[contenteditable=true]").innerText')` for "@Image 1".
 - `press_key("a", modifiers=4)` then Backspace clears the editor.
 - The editor grows with the text and pushes the controls below it down. Re-screenshot or locate buttons by text before you click Duration / Quality / Generate.
 
 ### Settings
 
-- Duration is a slider popover (4, 10, 15, 20, 30). Click the far-right end of the track for 30 s.
+- Duration is a Radix slider popover (`[role=slider][aria-valuemax="30"]`, min 4, step 1). Click the Duration box, click the track at `x + (target-4)/26 * width`, then nudge with ArrowLeft/ArrowRight until `aria-valuenow` reads the target. 4, 10, 15, 20, 30 are only tick labels; any integer works.
+- Cost at 16:9: 10 s 480p = 30 credits, 30 s 720p = 210, 30 s 1080p = 480, 5 s 1080p = 80.
+- Pro allows parallel videos (up to 3). Clicking Generate while another card says "Generating" queues a second card; the editor and settings stay as they were, so you can change the prompt and fire again at once.
 - Quality is a list: 480p, 720p, 1080p. Locate the row by text:
 
 ```python
