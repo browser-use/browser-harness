@@ -8,6 +8,7 @@ Higgsfield (`higgsfield.ai`) is a credit-based AI image and video suite. The use
 - Image tool, GPT Image 2 preselected: `https://higgsfield.ai/ai/image?model=gpt_image_2`
 - Pricing (credit rates): `https://higgsfield.ai/pricing`. `/settings` and `/billing` are 404.
 - Profile: `https://higgsfield.ai/@<handle>` (the avatar click goes here; it does not show credits).
+- Account pages (direct, logged in): `/me/settings` (credits left, % of pool), `/me/settings/subscription` (plan, credits per month, renewal date, active unlimited models), `/me/settings/usage` (per-generation credit log with timestamps and a dollar total). These are the fastest way to read the balance and to audit what a session cost.
 
 ## Credits
 
