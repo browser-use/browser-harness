@@ -426,11 +426,11 @@ def switch_tab(target, activate=False):
     _mark_tab()
     return sid
 
-def new_tab(url="about:blank"):
+def new_tab(url="about:blank", new_window=False):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
+    if url != "about:blank" and not new_window:
         try:
             cur = current_tab()
             cur_url = cur.get("url") or ""
@@ -444,7 +444,10 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+    create_params = {"url": "about:blank", "background": True}
+    if new_window:
+        create_params["newWindow"] = True
+    tid = cdp("Target.createTarget", **create_params)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
