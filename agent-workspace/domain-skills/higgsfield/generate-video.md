@@ -12,8 +12,17 @@ Higgsfield (`higgsfield.ai`) is a credit-based AI image and video suite. The use
 ## Credits
 
 - $1 = 20 credits. Seedance 2.5 at 16:9: 30 s costs 480 credits at 1080p and 210 at 720p. 5 s at 1080p costs 80. GPT Image 2 at 2K costs about 6.5 credits per image.
-- The credit balance is not printed anywhere on the public pages. The Generate button shows the cost of the current settings. A low-balance toast ("You'll run out of credits in N days") appears after Generate.
-- Hovering the avatar or the gift icon to find the balance does not work from the daemon: `mouseMoved` times out. Skip it.
+- The balance and plan live in the account menu behind the avatar. A coordinate click on the avatar navigates to `/@handle` instead; click the button by its aria-label and read the popover:
+
+```python
+js('[...document.querySelectorAll("button")].find(e=>e.getAttribute("aria-label")==="Account menu").click()')
+wait(4)   # the menu says "Loading..." for a few seconds
+js('return document.querySelector("[role=menu],[data-radix-popper-content-wrapper]").innerText')
+# -> "<handle>\n\nPro Plan\n...\nCredits\n393 left\nTop-up credits\n...\nManage Account\n..."
+```
+
+- The Generate button shows the cost of the current settings. A low-balance toast ("You'll run out of credits in N days") appears after Generate; its "Add credits" button opens the top-up modal, which does not show the balance either.
+- Hovering the avatar or the gift icon does not work from the daemon: `mouseMoved` times out. Use the aria-label click above.
 
 ## Image tool (character sheets)
 
