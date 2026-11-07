@@ -101,6 +101,21 @@ return {generating:/Generating/.test(t), vids};''')
 
 - `curl -L` the mp4 directly; no cookies needed. 30 s 720p is about 42 MB with audio.
 
+## Genjutsu (motion transfer from a reference video)
+
+URL: `https://higgsfield.ai/ai/video?model=genjutsu`. Tabs in the left panel: Motion transfer / Objects swap, an optional Style, a reference-video box (4 to 30 s), a character-images box (up to 30), a Prompt toggle, Model, Quality (720p), a "Use free generations" toggle, Generate.
+
+- Cost shows only after a reference video is attached: a 19 s 9:16 clip at 720p read "Generate 133". Pro includes a few free Genjutsu runs ("1 left"); with the free toggle on the button reads "Generate 133 Free" and no credits are charged.
+- Reference video: click the "Add a reference video" box, `upload_file("input[type=file]", path)` (the input accepts video only and exists only while the picker is open). Confirm in the "Edit reference" crop/trim dialog (button text "Confirm"). The video is NOT attached until you click its tile in the Uploads grid afterwards, then Confirm again. Check the box text no longer starts with "Add a reference video".
+- Character image: click the "Add your characters" box. Its picker has Uploads / Generations / Liked tabs. Earlier uploads (the character sheet) are there; click the tile. A green check marks it; the thumbnail appears in the box.
+- The Prompt editor only exists while the Prompt switch (`[role=switch]` next to the text "Prompt") reads `aria-checked="true"`. With the switch off, the `[contenteditable]` still reports a size but the Model button sits on top of it, so clicks and keystrokes go to the Model search box instead and open a "No models found" popup. Check `document.elementFromPoint` hits the editor before typing.
+- The `@` popup lists `Video 1` before `Image 1`. Enter takes the first row, so plain Enter inserts `@Video 1`. Use ArrowDown before Enter, or just write "the attached character image"; the attached image is used either way.
+- A 19 s motion transfer at 720p took about N minutes (see History). The result mp4 is on the same cloudfront host as other generations.
+
+## Motion Control (Kling 3.0)
+
+URL: `https://higgsfield.ai/ai/video/motion?model=kling-3-motion-control`. Motion video (3 to 30 s) + a character image with a visible face and body. "Scene control mode" picks whether the background comes from the image or the video. The Generate button read "7" with nothing attached; expect it to scale with duration. The model list also offers Seedance 2.5, Genjutsu, Kling 4.0 and Kling 4.0 Flash for motion control.
+
 ## Traps
 
 - Promo popups ("Unlimited Seedance 2.5", "Don't know where to start?") overlay the page. Close them with their X before you click near the bottom-right or top-center.
