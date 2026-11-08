@@ -23,8 +23,9 @@ PAGES = {
     # localhost is another site than 127.0.0.1, so Chrome loads the iframe out of process
     "/iframe": '<h1>iframe</h1><iframe src="http://localhost:{port}/child"></iframe>',
     "/child": "<p>child</p>",
-    "/worker": "<h1>worker</h1><script>new Worker(URL.createObjectURL(new Blob(['1'], {{type: 'text/javascript'}})));"
-               "new Worker('/w.js')</script>",
+    # a blob worker, a worker from a URL, a worker stopped before it starts, a shared worker
+    "/worker": "<h1>worker</h1><script>const src = () => URL.createObjectURL(new Blob(['1'], {{type: 'text/javascript'}}));"
+               "new Worker(src()); new Worker('/w.js'); new Worker(src()).terminate(); new SharedWorker(src())</script>",
     "/w.js": "1",
 }
 

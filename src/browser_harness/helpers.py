@@ -535,15 +535,16 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
     Network events into the daemon's global event buffer; without this filter
     they would poison the idle check on the current tab.
 
-    An out-of-process iframe's document and a worker's script start on the tab
-    but finish on the iframe's or worker's own target. Once that target attaches
-    (its targetId is the iframe's frameId, or the worker script's requestId),
-    the request is no longer waited for.
+    Two kinds of request start on the tab but finish elsewhere, so they are not
+    waited for: a worker's script (CDP sends it with an empty loaderId, "fetched
+    from worker"; it finishes on the worker's target, or never if the worker
+    stops first), and an out-of-process iframe's document once the iframe's
+    target attaches (the daemon auto-attaches them; targetId == frameId).
     """
     deadline = time.time() + timeout
     last_activity = time.time()
     inflight = {}  # requestId -> frameId
-    children = set()  # targetIds of the tab's out-of-process iframes and workers
+    children = set()  # targetIds of the tab's attached iframes (== their frameId) and workers
     active_session = _send({"meta": "session"}).get("session_id")
     while time.time() < deadline:
         for e in drain_events():
@@ -552,7 +553,8 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
             method = e.get("method", "")
             params = e.get("params", {})
             if method == "Network.requestWillBeSent":
-                inflight[params.get("requestId")] = params.get("frameId")
+                if params.get("loaderId") != "":
+                    inflight[params.get("requestId")] = params.get("frameId")
                 last_activity = time.time()
             elif method in ("Network.loadingFinished", "Network.loadingFailed"):
                 inflight.pop(params.get("requestId"), None)
@@ -562,7 +564,7 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
             elif method == "Target.attachedToTarget":
                 children.add(params["targetInfo"]["targetId"])
         if inflight:
-            inflight = {r: f for r, f in inflight.items() if r not in children and f not in children}
+            inflight = {r: f for r, f in inflight.items() if f not in children}
         if not inflight and (time.time() - last_activity) * 1000 >= idle_ms:
             return True
         time.sleep(0.1)

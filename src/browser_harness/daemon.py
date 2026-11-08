@@ -552,9 +552,9 @@ class Daemon:
         important on the set_session path, where the helper's IPC socket has
         a 5s read timeout.
 
-        Auto-attach makes Chrome report each out-of-process iframe and worker of
-        the tab as Target.attachedToTarget on this session. Their document or
-        script request starts on this session but finishes on the child's, so
+        Auto-attach makes Chrome report each out-of-process iframe of the tab
+        as Target.attachedToTarget on this session. The iframe's document
+        request starts on this session but finishes on the iframe's, so
         wait_for_network_idle() uses these events to stop waiting for it. The
         children are not paused and get no domains enabled.
         """
