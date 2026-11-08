@@ -38,11 +38,7 @@ def on_site():
             return
     except Exception:
         pass
-    url = API + "documents.json?per_page=1&fields[]=document_number"
-    if js("location.href").startswith(("about:", "chrome")):
-        new_tab(url)
-    else:
-        goto_url(url)
+    new_tab(API + "documents.json?per_page=1&fields[]=document_number")
     wait_for_load()
     time.sleep(2)
     if js("location.origin") != SITE:
@@ -295,7 +291,7 @@ slug 'usda': HTTP 400 {"errors":{"agencies":"invalid value"}}
 | `/api/v1/documents/facets/type?conditions[...]` | counts by type: `{"NOTICE":{"count":6,"name":"Notice"},"PRORULE":{...},"RULE":{...}}` (EPA, 2026-11-02..08) |
 | `/api/v1/agencies`, `/api/v1/agencies/<slug>` | agency list / one agency (`child_slugs`, `parent_id`, `url`) |
 | `/api/v1/documentation.json` | the OpenAPI spec behind the interactive docs page (parameter and field enums, agency slug enum) |
-| `/documents/YYYY/MM/DD/<document_number>/<title-slug>` | `html_url`, a robots-allowed document page |
+| `/documents/YYYY/MM/DD/<document_number>/<title-slug>` | `html_url`, the document page for people: link to it, do not script it (read the document's fields from the API) |
 
 ## Fields
 
