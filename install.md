@@ -18,6 +18,32 @@ print(page_info())
 PY
 ```
 
+That keeps the command global while still pointing at the real repo checkout, so when the agent edits `agent-workspace/agent_helpers.py` the next `browser-harness` uses the new code immediately. Prefer a stable path like `~/Developer/browser-harness`, not `/tmp`.
+
+## Make browser-harness global for the current agent
+
+After the repo is installed, register this repo's `SKILL.md` with the agent you are using:
+
+- **Codex**: add this file as a global skill at `$CODEX_HOME/skills/browser-harness/SKILL.md` (often `~/.codex/skills/browser-harness/SKILL.md`). A symlink to this repo's `SKILL.md` is fine.
+
+  ```bash
+  mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness" && ln -sf "$PWD/SKILL.md" "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness/SKILL.md"
+  ```
+
+- **Claude Code**: add an import to `~/.claude/CLAUDE.md` that points at this repo's `SKILL.md`, for example `@~/Developer/browser-harness/SKILL.md`.
+
+- **OpenCode**: add this repo's `SKILL.md` as a global skill under `$OPN_HOME/skill/browser-harness/SKILL.md` (typically `~/.opencode/skill/browser-harness/SKILL.md`). A symlink is fine; on Windows without admin, copy the file instead.
+
+- **OpenCode**: add this repo's `SKILL.md` as a global skill under `~/.config/opencode/skills/browser-harness/SKILL.md`. A symlink is fine; on Windows without admin, copy the file instead.
+
+  ```bash
+  # Unix (symlink preferred)
+  mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/browser-harness" && ln -sf "$PWD/SKILL.md" "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/browser-harness/SKILL.md"
+
+  # Windows (PowerShell, symlink needs admin — fall back to copy)
+  $opn="$env:USERPROFILE\.config\opencode\skills\browser-harness"; New-Item -ItemType Directory -Force -Path $opn | Out-Null; try { New-Item -ItemType SymbolicLink -Path "$opn\SKILL.md" -Target "$PWD\SKILL.md" -Force } catch { Copy-Item "$PWD\SKILL.md" "$opn\SKILL.md" -Force }
+
+This makes new Codex, Claude Code, or OpenCode sessions in other folders load the runtime browser harness instructions automatically.
 If `page_info()` prints, configure recording consent below, then stop.
 
 `--python 3.12` prevents uv from selecting old releases that support older Python versions. `--upgrade --force` replaces any previous `browser-harness` tool install with the latest stable release. It does not uninstall unrelated commands such as `browser-use-Browser` or `browser-use-Terminal`.
