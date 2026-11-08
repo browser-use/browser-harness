@@ -328,6 +328,8 @@ def get_ws_url():
         now = time.time()
         if now >= next_liveness_check:
             if not supported_browser_running():
+                if stale_active_ports:
+                    break
                 raise RuntimeError(
                     "chrome-not-running: no supported Chromium-family browser is running -- start Chrome, then retry"
                 )

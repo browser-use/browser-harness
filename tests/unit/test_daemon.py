@@ -40,7 +40,8 @@ def test_safe_connection_label_removes_credentials_paths_and_queries(url, label)
     assert daemon._safe_connection_label(url) == label
 
 
-def test_get_ws_url_reports_existing_devtools_file_with_unreachable_port(monkeypatch, tmp_path):
+@pytest.mark.parametrize("browser_running", [True, False])
+def test_get_ws_url_reports_existing_devtools_file_with_unreachable_port(monkeypatch, tmp_path, browser_running):
     active_file = tmp_path / "DevToolsActivePort"
     active_file.write_text("64302\n/devtools/browser/stale-id\n")
     now = [1000.0]
@@ -52,7 +53,7 @@ def test_get_ws_url_reports_existing_devtools_file_with_unreachable_port(monkeyp
         raise OSError("connection refused")
 
     monkeypatch.setattr(daemon, "PROFILES", [tmp_path])
-    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: browser_running)
     monkeypatch.setattr(daemon, "_devtools_port_live", lambda _base: False)
     monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", lambda: [tmp_path])
     monkeypatch.setattr(daemon.time, "time", lambda: now[0])
