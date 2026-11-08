@@ -106,6 +106,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - Browser Use API is camelCase on the wire. cdpUrl, proxyCountryCode, etc.
 - Remote cdpUrl is HTTPS, not ws. Resolve the websocket URL via /json/version.
 - Stop cloud browsers with PATCH /browsers/{id} + {"action":"stop"}.
+- One js()/cdp() call's request is capped at 64 MiB; larger raises "IPC request too large" — split the payload.
 - After every meaningful action, re-screenshot before assuming it worked. Use the image to verify changed state, open menus, navigation, visible errors, and whether the page is in the state you expected.
 - Use screenshots to drive exploration. They are often the fastest way to find the next click target, notice hidden blockers, and decide if a selector is even worth writing.
 - Prefer compositor-level actions over framework hacks. Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.

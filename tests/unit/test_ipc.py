@@ -1,3 +1,6 @@
+import asyncio, tempfile
+from pathlib import Path
+
 from browser_harness import _ipc as ipc
 
 
@@ -105,3 +108,46 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
         assert ipc.ping("default", timeout=0.0) is False, (
             f"ping() should require pong is exactly True; got: {resp!r}"
         )
+
+
+# --- serve(): request size limit ---
+
+class _EchoLenDaemon:
+    def __init__(self):
+        self.stop = asyncio.Event()
+
+    async def handle(self, req):
+        return {"len": len(req["x"])}
+
+
+def _round_trip(monkeypatch, payload):
+    """Real daemon.serve() over a real socket; returns the client's parsed reply."""
+    from browser_harness import daemon
+    # Short dir under /tmp: AF_UNIX path is capped at 104 bytes on macOS.
+    monkeypatch.setattr(ipc, "_RUNTIME", Path(tempfile.mkdtemp(dir="/tmp")))
+    monkeypatch.setattr(daemon, "NAME", "bhtest")
+    monkeypatch.setattr(daemon, "log", lambda msg: None)
+
+    async def run():
+        d = _EchoLenDaemon()
+        server = asyncio.create_task(daemon.serve(d))
+        await asyncio.sleep(0.1)
+        def client():
+            c, token = ipc.connect("bhtest", timeout=5.0)
+            try: return ipc.request(c, token, {"x": payload})
+            finally: c.close()
+        try: return await asyncio.to_thread(client)
+        finally:
+            d.stop.set(); await server
+
+    return asyncio.run(run())
+
+
+def test_request_over_64kib_round_trips(monkeypatch):
+    assert _round_trip(monkeypatch, "x" * (70 << 10)) == {"len": 70 << 10}
+
+
+def test_request_over_limit_gets_clear_error(monkeypatch):
+    monkeypatch.setattr(ipc, "IPC_LIMIT", 1 << 20)
+    resp = _round_trip(monkeypatch, "x" * (2 << 20))
+    assert "too large" in resp["error"] and "1048576" in resp["error"], resp

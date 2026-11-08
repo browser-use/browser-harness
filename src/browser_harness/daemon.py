@@ -359,7 +359,17 @@ class Daemon:
 async def serve(d):
     async def handler(reader, writer):
         try:
-            line = await reader.readline()
+            try:
+                line = await reader.readuntil(b"\n")
+            except asyncio.IncompleteReadError as e:
+                line = e.partial  # EOF before newline: same as readline()
+            except asyncio.LimitOverrunError:
+                # Drain the line so the client's sendall finishes and it reads this error, not EPIPE.
+                size = 0
+                while chunk := await reader.read(1 << 20):
+                    size += len(chunk)
+                    if chunk.endswith(b"\n"): break
+                raise ValueError(f"IPC request too large: {size} bytes, limit {ipc.IPC_LIMIT} bytes") from None
             if not line: return
             resp = await d.handle(json.loads(line))
             writer.write((json.dumps(resp, default=str) + "\n").encode())
