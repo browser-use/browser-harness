@@ -95,8 +95,16 @@ browser-harness --doctor
 Use the output:
 
 - `chrome running` FAIL: ask the user to open Chrome, or use isolated/cloud browser.
-- `daemon alive` FAIL: Chrome remote debugging permission is missing, Chrome is closed, or the CDP endpoint is not reachable.
+- `daemon alive` FAIL: Chrome remote debugging permission is missing, Chrome is closed, or the CDP endpoint is not reachable. Read the daemon's specific error before changing browser settings.
 - update available: run `browser-harness --update -y` when you decide to upgrade.
+
+If the error says `DevToolsActivePort exists but its port is not listening`, the
+profile contains a stale port file and the browser has no reachable endpoint at
+that port. On Chromium 136+ the default user-data directory may ignore
+`--remote-debugging-port`; remove that flag to let the browser choose its port,
+or use a non-default `--user-data-dir` when a fixed port is required. Check the
+matching browser's `chrome://inspect/#remote-debugging` or
+`edge://inspect/#remote-debugging` page, then retry.
 
 For a machine-readable health check, an orchestrator can set `BU_NAME` to an
 already-provisioned daemon and run:

@@ -40,6 +40,37 @@ def test_safe_connection_label_removes_credentials_paths_and_queries(url, label)
     assert daemon._safe_connection_label(url) == label
 
 
+def test_get_ws_url_reports_existing_devtools_file_with_unreachable_port(monkeypatch, tmp_path):
+    active_file = tmp_path / "DevToolsActivePort"
+    active_file.write_text("64302\n/devtools/browser/stale-id\n")
+    now = [1000.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    def urlopen(*_args, **_kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(daemon, "PROFILES", [tmp_path])
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(daemon, "_devtools_port_live", lambda _base: False)
+    monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", lambda: [tmp_path])
+    monkeypatch.setattr(daemon.time, "time", lambda: now[0])
+    monkeypatch.setattr(daemon.time, "sleep", sleep)
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        daemon.get_ws_url()
+
+    message = str(exc_info.value)
+    assert "DevToolsActivePort exists but its port is not listening" in message
+    assert str(active_file) in message
+    assert "port 64302" in message
+    assert "file modified" in message
+    assert "edge://inspect/#remote-debugging" in message
+    assert "default user-data-dir may ignore --remote-debugging-port" in message
+
+
 def test_remote_stop_retries_and_succeeds(monkeypatch):
     attempts = []
     monkeypatch.setattr(daemon, "REMOTE_ID", "browser-1")

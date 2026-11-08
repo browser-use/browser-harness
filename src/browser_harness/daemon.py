@@ -1,5 +1,6 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
 import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+from datetime import datetime
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -290,10 +291,12 @@ def get_ws_url():
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
     deadline = time.time() + 30
     next_liveness_check = 0.0
+    stale_active_ports = {}
     while time.time() < deadline:
         for base in PROFILES:
+            active_path = base / "DevToolsActivePort"
             try:
-                active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
+                active = active_path.read_text(encoding="utf-8", errors="replace").splitlines()
             except (FileNotFoundError, NotADirectoryError):
                 continue
             port = active[0].strip() if active else ""
@@ -313,7 +316,13 @@ def get_ws_url():
                 # the ws path Chrome wrote to DevToolsActivePort still works.
                 if e.code == 404 and ws_path:
                     return f"ws://127.0.0.1:{port}{ws_path}"
-            except (OSError, KeyError, ValueError):
+            except OSError:
+                if base not in stale_active_ports and not _devtools_port_live(base):
+                    try:
+                        stale_active_ports[base] = (port, active_path, active_path.stat().st_mtime)
+                    except OSError:
+                        pass
+            except (KeyError, ValueError):
                 pass
         # Closed browser leaves stale DevToolsActivePort files
         now = time.time()
@@ -337,6 +346,26 @@ def get_ws_url():
                 raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
         except (OSError, KeyError, ValueError):
             continue
+    if stale_active_ports:
+        details = "; ".join(
+            f"{active_path} (port {port}, file modified {datetime.fromtimestamp(mtime).astimezone().isoformat(timespec='seconds')})"
+            for port, active_path, mtime in stale_active_ports.values()
+        )
+        enabled_profiles = set(remote_debugging_toggle_profiles())
+        if any(base in enabled_profiles for base in stale_active_ports):
+            hint = (
+                "Remote debugging is enabled but the endpoint is unavailable. Check the browser-specific inspect "
+                "page (Edge: edge://inspect/#remote-debugging; Chrome: chrome://inspect/#remote-debugging). "
+                "On Chromium 136+ the default "
+                "user-data-dir may ignore --remote-debugging-port; remove that flag to use the browser-selected "
+                "port, or use a non-default --user-data-dir."
+            )
+        else:
+            hint = (
+                "Check Allow remote debugging at chrome://inspect/#remote-debugging or "
+                "edge://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser."
+            )
+        raise RuntimeError(f"DevToolsActivePort exists but its port is not listening: {details}. {hint}")
     if remote_debugging_user_enabled() is False:
         raise RuntimeError('remote debugging is turned off for this browser instance — enable chrome://inspect/#remote-debugging (tick "Allow remote debugging for this browser instance")')
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
