@@ -23,6 +23,9 @@ PAGES = {
     # localhost is another site than 127.0.0.1, so Chrome loads the iframe out of process
     "/iframe": '<h1>iframe</h1><iframe src="http://localhost:{port}/child"></iframe>',
     "/child": "<p>child</p>",
+    # the iframe starts out of process, then comes back in process and loads a slow image
+    "/swap": '<h1>swap</h1><iframe src="http://localhost:{port}/child" onload="this.onload = null; this.src = \'/slowimg\'"></iframe>',
+    "/slowimg": '<img src="/slow">',
     # a blob worker, a worker from a URL, a worker stopped before it starts, a shared worker
     "/worker": "<h1>worker</h1><script>const src = () => URL.createObjectURL(new Blob(['1'], {{type: 'text/javascript'}}));"
                "new Worker(src()); new Worker('/w.js'); new Worker(src()).terminate(); new SharedWorker(src())</script>",
@@ -116,3 +119,13 @@ t = time.time(); ok = wait_for_network_idle()
 print(json.dumps({"ok": ok, "s": time.time() - t}))
 """))
     assert r["ok"] is True and SLOW_S - 0.5 < r["s"] < SLOW_S + 3, r
+
+
+def test_iframe_back_in_process_holds_idle_for_its_requests(harness):
+    # Its target attaches, then detaches when it navigates back to the tab's site; the tab then reports its image.
+    r = json.loads(harness("""
+import json
+goto_url("BASE/swap"); ok = wait_for_network_idle()
+print(json.dumps({"ok": ok, "img": js("frames[0].document.images[0]?.complete")}))
+"""))
+    assert r == {"ok": True, "img": True}, r
