@@ -1450,7 +1450,7 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
     assert pid_file.exists()
 
 
-def test_cold_start_daemon_exit_launches_browser_before_retry(monkeypatch, tmp_path):
+def test_cold_start_daemon_exit_launches_browser_before_retry(monkeypatch, tmp_path, capsys):
     """Regression for #786: when the daemon exits immediately because zero
     supported browser processes exist (true cold start), ensure_daemon must
     launch a browser and retry, instead of respawning the same doomed daemon
@@ -1521,6 +1521,14 @@ def test_cold_start_daemon_exit_launches_browser_before_retry(monkeypatch, tmp_p
 
     assert launched == [1], "cold-start daemon exit must call _launch_browser() exactly once"
     assert restarts, "cold-start daemon exit must restart the daemon before the retry"
+    # #786 (Windows confirmation by grzesioc, 2026-11-08): on 0.1.13 the
+    # "Chrome isn't running — launching it" hint never appears because the
+    # rescue is unreachable from the pending_died path. Pin the hint as
+    # part of the user-visible cold-start contract.
+    captured = capsys.readouterr()
+    assert "Chrome isn't running" in captured.err, (
+        "cold-start rescue must print the 'Chrome isn't running — launching it' hint to stderr"
+    )
 
 
 def test_cold_start_rescue_skipped_when_successor_published(monkeypatch, tmp_path):
