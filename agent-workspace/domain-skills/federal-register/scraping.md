@@ -94,10 +94,11 @@ def documents(slug, since, until=None):
         d = fetch_json(url)
         first = first or d
         if d["count"] > 2000:
-            raise RuntimeError(f"{d['count']} documents: the API pages through the first 2000 only; split the date range")
+            raise RuntimeError(f"{d['count']} documents: the API pages through the first 2000 only, and its docs say to use the date range filters for more")
         rows += d.get("results", [])  # a 0-count answer has no "results" key
         url = d.get("next_page_url")
-    assert len(rows) == first["count"], (len(rows), first["count"])
+    if len(rows) != first["count"]:
+        raise RuntimeError(f"got {len(rows)} rows, count says {first['count']}: paging changed; stopping")
     return first["description"], rows
 
 on_site()
@@ -115,11 +116,11 @@ for d in docs:
     extra = " | ".join(x for x in (d["comments_close_on"] and f"comments close {d['comments_close_on']}",
                                     d["effective_on"] and f"effective {d['effective_on']}",
                                     d["significant"] and "significant") if x)
-    print(f"\n{d['publication_date']} {d['type']:<13} {d['document_number']}  {d['title'][:100]}")
+    print(f"\n{d['publication_date']} {d['type']:<13} {d['document_number']}  {d['title'][:100].rstrip()}")
     print(f"   {(d['action'] or '-')[:60]} | dockets {d['docket_ids'][:2]} | RIN {d['regulation_id_numbers'][:1]}" + (f" | {extra}" if extra else ""))
     print("  ", d["html_url"])
-out = os.path.join(tempfile.gettempdir(), f"federal_register_{ag['slug']}_{monday}.json")
-with open(out, "w") as f:
+fd, out = tempfile.mkstemp(prefix=f"federal_register_{ag['slug']}_{monday}_", suffix=".json")  # a new file each run
+with os.fdopen(fd, "w") as f:
     json.dump(docs, f)
 print("\nsaved:", os.path.basename(out), "in tempfile.gettempdir()")
 ```
@@ -144,7 +145,7 @@ by day: {'2026-11-06': 2, '2026-11-05': 10, '2026-11-03': 2, '2026-11-02': 2}
    Final rule. | dockets ['EPA-R09-OAR-2026-1684', 'FRL-13268-02-R9'] | RIN [] | effective 2026-12-07
    https://www.federalregister.gov/documents/2026/11/05/2026-22647/air-plan-revisions-arizona-maricopa-county-air-quality-department-new-source-review-emission
 
-2026-11-05 Proposed Rule 2026-22592  Air Plan Approval; District of Columbia; Enhanced Vehicle Emission Inspection and Maintenance (I/M) 
+2026-11-05 Proposed Rule 2026-22592  Air Plan Approval; District of Columbia; Enhanced Vehicle Emission Inspection and Maintenance (I/M)
    Proposed rule. | dockets ['EPA-R03-OAR-2026-1024', 'FRL-12072-01-R3'] | RIN [] | comments close 2026-12-07
    https://www.federalregister.gov/documents/2026/11/05/2026-22592/air-plan-approval-district-of-columbia-enhanced-vehicle-emission-inspection-and-maintenance-im
 
@@ -152,7 +153,7 @@ by day: {'2026-11-06': 2, '2026-11-05': 10, '2026-11-03': 2, '2026-11-02': 2}
    Proposed rule. | dockets ['EPA-R09-OAR-2026-8252', 'FRL-13635-01-R9'] | RIN [] | comments close 2026-12-07
    https://www.federalregister.gov/documents/2026/11/05/2026-22588/air-quality-implementation-plans-california-san-joaquin-valley-2015-8-hour-ozone-nonattainment-area
 
-2026-11-05 Proposed Rule 2026-22585  Approval and Promulgation of State Plans for Designated Facilities and Pollutants; Arizona; Control 
+2026-11-05 Proposed Rule 2026-22585  Approval and Promulgation of State Plans for Designated Facilities and Pollutants; Arizona; Control
    Proposed rule. | dockets ['EPA-R09-OAR-2026-5710', 'FRL-13516-01-R9'] | RIN [] | comments close 2026-12-07
    https://www.federalregister.gov/documents/2026/11/05/2026-22585/approval-and-promulgation-of-state-plans-for-designated-facilities-and-pollutants-arizona-control-of
 
@@ -196,7 +197,7 @@ by day: {'2026-11-06': 2, '2026-11-05': 10, '2026-11-03': 2, '2026-11-02': 2}
    Notice. | dockets ['EPA-HQ-OPPT-2026-1849', 'FRL-13203-07-OCSPP'] | RIN []
    https://www.federalregister.gov/documents/2026/11/02/2026-22291/certain-new-chemicals-or-significant-new-uses-statements-of-findings-july-2026
 
-saved: federal_register_environmental-protection-agency_2026-11-02.json in tempfile.gettempdir()
+saved: federal_register_environmental-protection-agency_2026-11-02_r6qb0qti.json in tempfile.gettempdir()
 ```
 
 ### 2. A department with sub-agencies: breakdown, comment deadlines, next issue (plain HTTP, no browser)
@@ -243,13 +244,14 @@ monday = today - datetime.timedelta(days=today.weekday())
 docs = week_docs(AGENCY, monday.isoformat(), (monday + datetime.timedelta(days=6)).isoformat(),
                  ["document_number", "publication_date", "type", "title", "agencies", "comments_close_on", "html_url"])
 print(f"{ag['name']}: {len(ag['child_slugs'])} sub-agencies | week {monday}..{monday + datetime.timedelta(days=6)}: {len(docs)} documents")
-by_sub = collections.Counter(next((a["name"] for a in d["agencies"] if a.get("slug") != AGENCY), ag["name"] + " (itself)") for d in docs)
+by_sub = collections.Counter(" + ".join(a["name"] for a in d["agencies"] if a.get("slug") != AGENCY) or ag["name"] + " (itself)"
+                             for d in docs)  # a document can list several sub-agencies
 print("by sub-agency:", by_sub.most_common())
 print("by type:", dict(collections.Counter(d["type"] for d in docs)))
 open_comments = sorted((d["comments_close_on"], d["document_number"], d["title"]) for d in docs if d["comments_close_on"])
 print(f"\n{len(open_comments)} with a comment deadline:")
 for close, num, title in open_comments:
-    print(f"  closes {close}  {num}  {title[:90]}")
+    print(f"  closes {close}  {num}  {title[:90].rstrip()}")
 
 # The next issue is already listed before its date: documents dated after today
 nxt = week_docs(AGENCY, (today + datetime.timedelta(days=1)).isoformat(), (today + datetime.timedelta(days=7)).isoformat(),
@@ -271,7 +273,7 @@ by sub-agency: [('Agriculture Department (itself)', 6), ('Food and Nutrition Adm
 by type: {'Notice': 16, 'Rule': 2}
 
 6 with a comment deadline:
-  closes 2027-01-04  2026-22309  Notice of Request for Revision to and Extension of Approval of an Information Collection; 
+  closes 2027-01-04  2026-22309  Notice of Request for Revision to and Extension of Approval of an Information Collection;
   closes 2027-01-04  2026-22438  Notice of Request for an Extension of a Currently Approved Information Collection
   closes 2027-01-04  2026-22442  Notice of Request for an Extension of a Currently Approved Information Collection
   closes 2027-01-04  2026-22445  Notice of Request for Approval of an Existing Collection for Borlaug Fellowship Program OM

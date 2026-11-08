@@ -1,13 +1,13 @@
 # USGS Earthquakes - Latest M4.5+ Earthquakes Near a Place (FDSN event API + real-time GeoJSON feeds)
 
-Field-tested against earthquake.usgs.gov on 2026-11-08 using a Browser Use cloud browser (logged out) plus `curl` from a laptop. About 60 browser requests (page loads and in-page `fetch()`) and 10 curl calls, all serial: every answer was HTTP 200 except the deliberate 400 probes below and the 404 on the Feed Lifecycle Policy link. No 429, no challenge, no key, no login.
+Field-tested against earthquake.usgs.gov on 2026-11-08 using a Browser Use cloud browser (logged out) plus `curl` from a laptop. About 60 browser requests (page loads and in-page `fetch()`) and 10 curl calls in all (block 3 makes 3), all serial: every earthquake.usgs.gov data call was HTTP 200 except the deliberate 400 probes below; the non-200 pages were the 404s for earthquake.usgs.gov/robots.txt and the Feed Lifecycle Policy link, and curl's CloudFront 403 on www.usgs.gov/robots.txt. No 429, no challenge, no key, no login.
 
 robots.txt (checked 2026-11-08): earthquake.usgs.gov/robots.txt is HTTP 404 (no rules, no named AI-agent groups); www.usgs.gov/robots.txt (read in the browser; curl gets a CloudFront 403) has only `User-agent: *` (disallows /core/, /profiles/, /admin/, /search/, /user/login/ and similar) and this skill uses no www.usgs.gov path. Terms: no ToS for the API; the USGS Copyrights and Credits page says "USGS-authored or produced data and information are considered to be in the U.S. Public Domain" and asks that credit be given; the Liability page only disclaims warranties; no AI, scraping, key or non-commercial clause.
 
 ## Quick summary
 
 - **No scraping.** Two official, keyless JSON sources, `Access-Control-Allow-Origin: *`, `cache-control: public, max-age=60`:
-  - `GET https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&minmagnitude=4.5&latitude=..&longitude=..&maxradiuskm=500&starttime=..&orderby=time&limit=N` - any place, any time range. `count?` takes the same parameters and returns `{"count":15,"maxAllowed":20000}` (or plain text `15` without `format=geojson`).
+  - `GET https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&eventtype=earthquake&minmagnitude=4.5&latitude=..&longitude=..&maxradiuskm=500&starttime=..&orderby=time&limit=N` - any place, any time range. `count?` takes the same parameters and returns `{"count":15,"maxAllowed":20000}` (or plain text `15` without `format=geojson`).
   - `GET https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/<level>_<period>.geojson` - prebuilt worldwide lists, level `significant`, `4.5`, `2.5`, `1.0`, `all`; period `hour`, `day`, `week`, `month`; "Updated every minute". Filter by distance yourself.
 - **Which one:** the API docs say "automated applications should use Real-time GeoJSON Feeds for displaying earthquake information whenever possible". Use a feed when the window fits (past 30 days or less); use `query` for older events or "the latest N, however old". Block 2 shows both return the same 6 events for Tokyo, past week.
 - **Set `starttime`.** Without it the query searches only the last 30 days (docs default `NOW - 30 days`). London: 0 events by default, latest real one 2013-11-21 with `starttime=1900-01-01`.
@@ -85,7 +85,7 @@ def utc(ms):
 on_usgs_tab()
 print("service version:", get(API + "version"))
 for name, (lat, lon) in PLACES.items():
-    where = f"latitude={lat}&longitude={lon}&maxradiuskm={RADIUS_KM}&minmagnitude={MIN_MAG}"
+    where = f"latitude={lat}&longitude={lon}&maxradiuskm={RADIUS_KM}&minmagnitude={MIN_MAG}&eventtype=earthquake"
     n30 = json.loads(get(API + "count?format=geojson&" + where))["count"]  # default window: last 30 days
     d = json.loads(get(API + f"query?format=geojson&{where}&starttime={SINCE}&orderby=time&limit={N}"))
     print(f"\n{name} ({lat}, {lon}): {n30} M{MIN_MAG}+ within {RADIUS_KM} km in the last 30 days; latest {len(d['features'])}:")
@@ -96,7 +96,7 @@ for name, (lat, lon) in PLACES.items():
         flags = " ".join(x for x in [p["alert"] and f"PAGER {p['alert']}", p["tsunami"] and "tsunami-flag",
                                      p["felt"] and f"felt {p['felt']}"] if x)
         print(f"  {utc(p['time'])}  M{p['mag']:.1f} {p['magType']:<4} {dist:5.0f} km  depth {depth:5.1f} km  "
-              f"{p['status']:<9} {p['place']}  {flags}")
+              f"{p['status']:<9} {p['place']}  {flags}".rstrip())
         print(f"      {f['id']}  {p['url']}")
 ```
 
@@ -106,7 +106,7 @@ Output (from the run on 2026-11-08):
 service version: 2.8.4
 
 Tokyo (35.6762, 139.6503): 15 M4.5+ within 500 km in the last 30 days; latest 5:
-  2026-11-08 20:16 UTC  M4.5 mwr    363 km  depth  55.7 km  reviewed  43 km E of Onagawa Chō, Japan  
+  2026-11-08 20:16 UTC  M4.5 mwr    363 km  depth  55.7 km  reviewed  43 km E of Onagawa Chō, Japan
       us7000twz2  https://earthquake.usgs.gov/earthquakes/eventpage/us7000twz2
   2026-11-07 16:04 UTC  M5.5 mww    200 km  depth  38.1 km  reviewed  10 km NW of Hamakita, Japan  PAGER green felt 71
       us7000twt0  https://earthquake.usgs.gov/earthquakes/eventpage/us7000twt0
@@ -142,7 +142,7 @@ Los Angeles (34.0522, -118.2437): 1 M4.5+ within 500 km in the last 30 days; lat
       nc75202001  https://earthquake.usgs.gov/earthquakes/eventpage/nc75202001
 
 Istanbul (41.0082, 28.9784): 1 M4.5+ within 500 km in the last 30 days; latest 5:
-  2026-10-30 10:45 UTC  M4.7 mb     427 km  depth  10.0 km  reviewed  42 km SE of Sykiá, Greece  
+  2026-10-30 10:45 UTC  M4.7 mb     427 km  depth  10.0 km  reviewed  42 km SE of Sykiá, Greece
       us7000tu7m  https://earthquake.usgs.gov/earthquakes/eventpage/us7000tu7m
   2026-04-11 14:31 UTC  M4.8 mww    197 km  depth  10.0 km  reviewed  16 km N of Simav, Turkey  felt 1
       us6000spb7  https://earthquake.usgs.gov/earthquakes/eventpage/us6000spb7
@@ -160,15 +160,15 @@ London (51.5074, -0.1278): 0 M4.5+ within 500 km in the last 30 days; latest 5:
       usp000g02w  https://earthquake.usgs.gov/earthquakes/eventpage/usp000g02w
   2007-04-28 07:18 UTC  M4.6 mb      92 km  depth  10.0 km  reviewed  1 km WNW of Lympne, United Kingdom  felt 201
       usp000fase  https://earthquake.usgs.gov/earthquakes/eventpage/usp000fase
-  2002-09-22 23:53 UTC  M4.8 mb     178 km  depth   9.4 km  reviewed  2 km ESE of Wombourn, United Kingdom  
+  2002-09-22 23:53 UTC  M4.8 mb     178 km  depth   9.4 km  reviewed  2 km ESE of Wombourn, United Kingdom
       usp000bcxg  https://earthquake.usgs.gov/earthquakes/eventpage/usp000bcxg
-  2002-07-22 05:45 UTC  M4.8 mb     439 km  depth  17.2 km  reviewed  2 km ENE of Haanrade, Netherlands  
+  2002-07-22 05:45 UTC  M4.8 mb     439 km  depth  17.2 km  reviewed  2 km ENE of Haanrade, Netherlands
       usp000b8j3  https://earthquake.usgs.gov/earthquakes/eventpage/usp000b8j3
 ```
 
 ### 2. Same task from the real-time feed, checked against the query API (browser)
 
-The feed is the whole world (82 M4.5+ events in the past week); keep the ones within the radius. The last call asks the query API for the same window and diffs the event IDs.
+The feed is the whole world (82 M4.5+ events in the past week); keep the earthquakes within the radius. The last call asks the query API for the same window, ending at the feed's build time, and diffs the event IDs.
 
 ```python
 import json, math, time
@@ -219,17 +219,18 @@ feed = get_json(FEED)
 m = feed["metadata"]
 print(f"{m['title']}: {m['count']} events worldwide, generated {iso(m['generated'])} UTC")
 near = sorted(((km(LAT, LON, f["geometry"]["coordinates"][1], f["geometry"]["coordinates"][0]), f) for f in feed["features"]
-               if km(LAT, LON, f["geometry"]["coordinates"][1], f["geometry"]["coordinates"][0]) <= RADIUS_KM),
+               if f["properties"]["type"] == "earthquake"  # the feed also carries other event types
+               and km(LAT, LON, f["geometry"]["coordinates"][1], f["geometry"]["coordinates"][0]) <= RADIUS_KM),
               key=lambda x: -x[1]["properties"]["time"])
 print(f"within {RADIUS_KM} km of {NAME}: {len(near)}")
 for d, f in near:
     p = f["properties"]
     print(f"  {iso(p['time'])}  M{p['mag']:.1f} {p['magType']:<4} {d:4.0f} km  {p['type']:<10} {p['place']}  ({f['id']})")
 
-# Same window through the query API, to show the two agree.
+# Same window through the query API, ending at the feed's build time, to show the two agree.
 oldest = min(f["properties"]["time"] for f in feed["features"])
-q = get_json(API + f"query?format=geojson&minmagnitude=4.5&latitude={LAT}&longitude={LON}&maxradiuskm={RADIUS_KM}"
-             f"&starttime={iso(oldest)}&orderby=time")
+q = get_json(API + f"query?format=geojson&minmagnitude=4.5&eventtype=earthquake&latitude={LAT}&longitude={LON}&maxradiuskm={RADIUS_KM}"
+             f"&starttime={iso(oldest)}&endtime={iso(m['generated'])}&orderby=time")
 a, b = {f["id"] for _, f in near}, {f["id"] for f in q["features"]}
 print(f"query API, same window: {len(b)} events; only in feed {sorted(a - b)}, only in query {sorted(b - a)}")
 ```
@@ -237,7 +238,7 @@ print(f"query API, same window: {len(b)} events; only in feed {sorted(a - b)}, o
 Output (from the run on 2026-11-08):
 
 ```text
-USGS Magnitude 4.5+ Earthquakes, Past Week: 82 events worldwide, generated 2026-11-08T23:24:25 UTC
+USGS Magnitude 4.5+ Earthquakes, Past Week: 82 events worldwide, generated 2026-11-08T23:47:25 UTC
 within 500 km of Tokyo: 6
   2026-11-08T20:16:30  M4.5 mwr   363 km  earthquake 43 km E of Onagawa Chō, Japan  (us7000twz2)
   2026-11-07T16:04:35  M5.5 mww   200 km  earthquake 10 km NW of Hamakita, Japan  (us7000twt0)
@@ -254,7 +255,7 @@ curl's default User-Agent got HTTP 200 on earthquake.usgs.gov (www.usgs.gov answ
 
 ```bash
 LAT=34.0522; LON=-118.2437   # Los Angeles
-Q="https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&minmagnitude=4.5&latitude=$LAT&longitude=$LON&maxradiuskm=500&starttime=1900-01-01&orderby=time&limit=3"
+Q="https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&eventtype=earthquake&minmagnitude=4.5&latitude=$LAT&longitude=$LON&maxradiuskm=500&starttime=1900-01-01&orderby=time&limit=3"
 curl -sS --fail "$Q" | python3 -c '
 import json, sys
 from datetime import datetime, timezone
@@ -267,7 +268,7 @@ for f in d["features"]:
     print(t, "M%.1f" % p["mag"], p["magType"], p["place"], "| lat %.3f lon %.3f depth %.1f km" % (c[1], c[0], c[2]), "|", f["id"])
 '
 sleep 1
-echo "$(curl -sS "https://earthquake.usgs.gov/fdsnws/event/1/count?minmagnitude=4.5&latitude=$LAT&longitude=$LON&maxradiuskm=500&starttime=2026-01-01") M4.5+ within 500 km since 2026-01-01"
+echo "$(curl -sS "https://earthquake.usgs.gov/fdsnws/event/1/count?eventtype=earthquake&minmagnitude=4.5&latitude=$LAT&longitude=$LON&maxradiuskm=500&starttime=2026-01-01") M4.5+ within 500 km since 2026-01-01"
 sleep 1
 curl -sS -o /dev/null -w 'both maxradius and maxradiuskm: HTTP %{http_code}\n' "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=$LAT&longitude=$LON&maxradiuskm=500&maxradius=3"
 ```
@@ -305,6 +306,7 @@ both maxradius and maxradiuskm: HTTP 400
 
 ## Gotchas
 
+- **Not every event is an earthquake.** Without `eventtype=earthquake` the API also returns other types: 554 M4.5+ events since 1900 are typed `nuclear explosion` (2026-11-08). The blocks filter on it; the feeds cannot, so block 2 checks `properties.type`.
 - **Default window is 30 days** for both `query` and `count`. Anchorage: `count` said 1 (Oct 15) while the latest-5 list with `starttime=1900-01-01` also showed Oct 6, July and August events.
 - **`minmagnitude` is inclusive.** The docs say "larger than", but M4.5 events come back for `minmagnitude=4.5` (Tokyo us7000twz2, London 2013).
 - **`nodata=404` does not change GeoJSON.** No match is HTTP 200 with `"features":[]` and `count: 0`, with or without `nodata`.

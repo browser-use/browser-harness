@@ -15,7 +15,7 @@ robots.txt (lichess.org/robots.txt, read 2026-11-08): one `User-agent: *` group,
 
 ### 1. Today's daily puzzle: position (FEN), solution, rating, plays, themes, source game (browser)
 
-Self-contained. Prints the puzzle and its solution; the solution is a spoiler, so show it only when asked.
+Self-contained. Prints the puzzle and its solution for the agent; the solution is a spoiler, so pass it on to the user only when they ask for it.
 
 ```python
 import json, re, time
@@ -38,15 +38,25 @@ def open_lichess(url):
 
 # The page renders from <script id="page-init-data">, which the puzzle app removes once it boots, so read the
 # same URL's HTML once more from inside the tab (same origin, no cookies) and parse that block.
-INIT_JS = r"""(async () => { const r = await fetch(%s, {credentials: 'omit'}); const t = await r.text();
-  const m = t.match(/<script[^>]*id="page-init-data"[^>]*>([\s\S]*?)<\/script>/);
-  return {status: r.status, init: m ? m[1] : null}; })()"""
+# js() gives up after a few seconds, so start the fetch, then poll for it.
+START_JS = r"""(() => { window.__li = window.__li || {}; const id = String(Math.random()).slice(2); window.__li[id] = null;
+  fetch(%s, {credentials: 'omit'}).then(async r => { const t = await r.text();
+    const m = t.match(/<script[^>]*id="page-init-data"[^>]*>([\s\S]*?)<\/script>/);
+    window.__li[id] = {status: r.status, init: m ? m[1] : null}; })
+  .catch(e => { window.__li[id] = {status: 0, init: null, error: String(e)}; });
+  return id; })()"""
+POLL_JS = """(() => { const v = window.__li[%s]; if (v) delete window.__li[%s]; return v; })()"""
 
-def page_init(path):
-    r = js(INIT_JS % json.dumps(path))
+def page_init(path, timeout=60):
+    rid = json.dumps(js(START_JS % json.dumps(path)))
+    t0 = time.time()
+    while (r := js(POLL_JS % (rid, rid))) is None:
+        if time.time() - t0 > timeout:
+            raise RuntimeError(f"{path}: no answer after {timeout}s; stopping")
+        time.sleep(0.3)
     time.sleep(PAUSE)
     if r["status"] != 200 or not r["init"]:
-        raise RuntimeError(f"{path}: HTTP {r['status']}, page-init-data {'found' if r['init'] else 'missing'}; stopping")
+        raise RuntimeError(f"{path}: HTTP {r['status']}, page-init-data {'found' if r['init'] else 'missing'} {r.get('error', '')}; stopping")
     return json.loads(r["init"])
 
 # ---- minimal chess board: replays the game's SAN moves to get the puzzle FEN, turns the UCI solution into SAN ----
@@ -251,7 +261,7 @@ line, b = [], board
 for u in pz["solution"]:
     m = (sq(u[:2]), sq(u[2:4]), u[4:] or None)
     line.append(b.san(m))
-    b = b.push(m)
+    b = b.push_uci(u)  # raises on an illegal move, so bad page data never prints a made-up line
 
 to_move = "white" if board.turn_white else "black"
 print(f"daily puzzle {pz['id']}  https://lichess.org/training/{pz['id']}  (read {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())})")
@@ -266,11 +276,11 @@ print(f"from game {game['id']} ({'rated ' if game['rated'] else ''}{game['perf']
 print("game moves before the puzzle:", " ".join(f"{i // 2 + 1}.{m}" if i % 2 == 0 else m for i, m in enumerate(moves)))
 ```
 
-Output (from the verifier's run in a fresh cloud browser on 2026-11-08):
+Output (from a run in a fresh cloud browser on 2026-11-08):
 
 ```text
-daily puzzle pnNfB  https://lichess.org/training/pnNfB  (read 2026-11-08 23:33 UTC)
-rating 1958 | plays 25025 | themes ['mateIn2', 'middlegame', 'short', 'sacrifice', 'deflection', 'bodenMate'] | isDaily True
+daily puzzle pnNfB  https://lichess.org/training/pnNfB  (read 2026-11-08 23:49 UTC)
+rating 2144 | plays 25768 | themes ['mateIn2', 'middlegame', 'short', 'sacrifice', 'deflection', 'bodenMate'] | isDaily True
 white to move after h5 (ply 36); FEN r1bqk2r/1p1n1pb1/4p1p1/1P1pP2p/pB1P1PQP/3B1N2/1P4P1/3K3R w kq - 0 19
 page says: Your turn / Find the best move for white.
 solution UCI ['g4e6', 'f7e6', 'd3g6']  SAN Qxe6+ fxe6 Bxg6#  -> final FEN r1bqk2r/1p1n2b1/4p1B1/1P1pP2p/pB1P1P1P/5N2/1P4P1/3K3R b kq - 0 20
@@ -291,7 +301,7 @@ game moves before the puzzle: 1.e4 e6 2.d4 d5 3.Nd2 Nf6 4.e5 Nfd7 5.Qg4 c5 6.c3 
 
 ## Gotchas
 
-- **Puzzle rating and plays move during the day.** Reads of the same daily puzzle on 2026-11-08: 2008 / 24,453 plays, then 2085 / 24,646 at 23:26 UTC, 2052 / 24,828 at 23:30, 1971 / 24,921 at 23:32, 1958 / 25,025 at 23:33. Print the read time with the numbers.
+- **Puzzle rating and plays move during the day.** Reads of the same daily puzzle on 2026-11-08: 2008 / 24,453 plays, then 2085 / 24,646 at 23:26 UTC, 2052 / 24,828 at 23:30, 1971 / 24,921 at 23:32, 1958 / 25,025 at 23:33, 1985 / 25,681 at 23:47, 2144 / 25,768 at 23:49. Print the read time with the numbers.
 - **`page-init-data` is gone from the live DOM** after the puzzle app boots (`document.scripts` has no such block), which is why the block re-reads the HTML. It is the page's own URL, not an API.
 - **The tab title gets a horse marker** from the harness (`🐴 Just a moment...`): match with `includes`, not `startsWith`.
 
