@@ -79,7 +79,8 @@ name = lambda x: (x.get("knownName") or x.get("orgName") or {}).get("en")
 on_api_tab()
 # 1. The prize: date, amount, laureates, share, motivation
 d = checked(get_json(API + f"nobelPrizes?nobelPrizeYear={YEAR}&nobelPrizeCategory={CATEGORY}"), nobelPrizeYear=YEAR, nobelPrizeCategory=CATEGORY)
-assert d["meta"]["count"] == 1, d["meta"]
+if d["meta"]["count"] != 1:
+    raise ValueError(f"expected one prize, got {d['meta']}")
 p = d["nobelPrizes"][0]
 print(f"{p['categoryFullName']['en']} {p['awardYear']} | announced {p.get('dateAwarded')} | prize amount {p['prizeAmount']:,} SEK "
       f"(adjusted {p['prizeAmountAdjusted']:,}) | {len(p.get('laureates', []))} laureates")
@@ -93,6 +94,8 @@ print("motivation:" if len(motivations) == 1 else "motivations:", *[f'"{m}"' for
 # 2. One call for all laureates' full records: affiliation at the time of the award, birth
 d = checked(get_json(API + f"laureates?nobelPrizeYear={YEAR}&nobelPrizeCategory={CATEGORY}"), nobelPrizeYear=YEAR, nobelPrizeCategory=CATEGORY)
 print(f"\nlaureates endpoint, same filter: count {d['meta']['count']}")
+if len(d["laureates"]) != d["meta"]["count"]:  # one prize has at most 3 laureates and a page holds 25, so this never pages
+    raise ValueError(f"got {len(d['laureates'])} of {d['meta']['count']} laureates; page with offset")
 for l in d["laureates"]:
     prize = next(x for x in l["nobelPrizes"] if x["awardYear"] == str(YEAR) and x["category"]["en"] == p["category"]["en"])
     aff = "; ".join(f"{a['name']['en']}, {a.get('city', {}).get('en', '?')}, {a.get('country', {}).get('en', '?')}" for a in prize.get("affiliations", []))
@@ -131,7 +134,7 @@ newest Physics prize in the API: 2026 (2026-10-06): Francis Halzen | 12,000,000 
 
 ### 2. Search laureates by name, every prize of one year, a year with no prize (plain HTTP, no browser)
 
-Python standard library only, truthful User-Agent, 5 calls at 1 s spacing.
+Python standard library only, truthful User-Agent, 5 calls at 1 s spacing. The name search pages with `offset` until it has `meta.count` laureates (25 per page; "John" matched 43, 2 pages); motivations are cut to 90 characters with `...` for display.
 
 ```python
 import json, time, urllib.error, urllib.parse, urllib.request
@@ -159,16 +162,22 @@ def call(path, **params):
         time.sleep(30)
 
 name = lambda x: (x.get("knownName") or x.get("orgName") or {}).get("en")
+short = lambda s, n=90: s if len(s) <= n else s[:n - 3].rstrip() + "..."  # preview; the full text is in the record
 
-# 1. Laureates whose name matches, with every prize they won
+# 1. Laureates whose name matches, with every prize they won (25 per page by default; page with offset until meta.count)
 d = call("laureates", name=NAME)
+while len(d["laureates"]) < d["meta"]["count"]:
+    page = call("laureates", name=NAME, offset=len(d["laureates"]))
+    if not page["laureates"]:
+        raise RuntimeError(f"paging stopped at {len(d['laureates'])} of {d['meta']['count']}")
+    d["laureates"] += page["laureates"]
 print(f"laureates matching {NAME!r}: {d['meta']['count']}")
 for l in d["laureates"]:
     kind = "organization" if "orgName" in l else l.get("gender", "?")
     print(f"  {name(l)} (id {l['id']}, {kind}, wikidata {l.get('wikidata', {}).get('id')})")
     for p in l["nobelPrizes"]:
         aff = "; ".join(a["name"]["en"] for a in p.get("affiliations", []))
-        print(f"     {p['awardYear']} {p['category']['en']:<10} share {p['portion']:<4} {p['prizeAmount']:>9,} SEK  {p['motivation']['en'][:90]}" + (f" | {aff}" if aff else ""))
+        print(f"     {p['awardYear']} {p['category']['en']:<10} share {p['portion']:<4} {p['prizeAmount']:>9,} SEK  {short(p['motivation']['en'])}" + (f" | {aff}" if aff else ""))
 
 # 2. Every prize in one year
 d = call("nobelPrizes", nobelPrizeYear=YEAR)
@@ -197,10 +206,10 @@ laureates matching 'Curie': 3
   Irène Joliot-Curie (id 194, female, wikidata Q7504)
      1935 Chemistry  share 1/2    159,917 SEK  in recognition of their synthesis of new radioactive elements | Institut du Radium
   Marie Curie (id 6, female, wikidata Q7186)
-     1903 Physics    share 1/4    141,358 SEK  in recognition of the extraordinary services they have rendered by their joint researches 
-     1911 Chemistry  share 1      140,695 SEK  in recognition of her services to the advancement of chemistry by the discovery of the ele | Sorbonne University
+     1903 Physics    share 1/4    141,358 SEK  in recognition of the extraordinary services they have rendered by their joint research...
+     1911 Chemistry  share 1      140,695 SEK  in recognition of her services to the advancement of chemistry by the discovery of the... | Sorbonne University
   Pierre Curie (id 5, male, wikidata Q37463)
-     1903 Physics    share 1/4    141,358 SEK  in recognition of the extraordinary services they have rendered by their joint researches  | École municipale de physique et de chimie industrielles (Municipal School of Industrial Physics and Chemistry)
+     1903 Physics    share 1/4    141,358 SEK  in recognition of the extraordinary services they have rendered by their joint research... | École municipale de physique et de chimie industrielles (Municipal School of Industrial Physics and Chemistry)
 
 2025: 6 prizes
   2025-10-08 Chemistry              11,000,000 SEK  Susumu Kitagawa (1/3), Richard Robson (1/3), Omar M. Yaghi (1/3)
@@ -222,7 +231,8 @@ laureate/99999: no record, only meta
 curl -sS --fail "https://api.nobelprize.org/2.1/nobelPrizes?nobelPrizeYear=2025&nobelPrizeCategory=phy" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-assert d["meta"].get("nobelPrizeCategory") == "phy", d["meta"]  # an unknown category is dropped silently
+if d["meta"].get("nobelPrizeCategory") != "phy":  # an unknown category is dropped silently
+    raise SystemExit("API ignored nobelPrizeCategory=phy: " + json.dumps(d["meta"]))
 for p in d["nobelPrizes"]:
     print(p["categoryFullName"]["en"], p["awardYear"], "|", p["dateAwarded"], "|", format(p["prizeAmount"], ","), "SEK")
     for l in p["laureates"]:

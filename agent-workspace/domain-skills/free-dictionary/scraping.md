@@ -17,7 +17,7 @@ robots.txt (checked 2026-11-09): api.dictionaryapi.dev/robots.txt is HTTP 200 wi
 
 ### 1. Define words: part of speech, IPA, audio links (checked), first example, synonyms (browser)
 
-Self-contained. `call()` returns the response on 200/404, waits out a 429, retries a 5xx twice and otherwise raises, so a failure never looks like "no definition". Each audio link gets one `HEAD` and its status is printed with the Wikimedia file page from `sourceUrl`.
+Self-contained. `call()` returns the response on 200/404, waits on a 429 (`Retry-After` if sent, else the whole 5-minute window), retries a 5xx twice and otherwise raises, so a failure never looks like "no definition". Each audio link gets one `HEAD` and its status is printed with the Wikimedia file page from `sourceUrl`.
 
 ```python
 import json, time
@@ -44,7 +44,7 @@ def on_api_tab():
 START_JS = """(() => { window.__fd = window.__fd || {}; const id = String(Math.random()).slice(2); window.__fd[id] = null;
   fetch(%s, {credentials: 'omit', method: %s})
     .then(async r => { window.__fd[id] = {status: r.status, type: r.headers.get('content-type'), len: r.headers.get('content-length'),
-      reset: r.headers.get('x-ratelimit-reset'), text: %s}; })
+      retry: r.headers.get('retry-after'), text: %s}; })
     .catch(e => { window.__fd[id] = {status: 0, type: '', text: String(e)}; });
   return id; })()"""
 POLL_JS = """(() => { const v = window.__fd[%s]; if (v) delete window.__fd[%s]; return v; })()"""
@@ -65,13 +65,16 @@ def call(url, method="GET", tries=3, timeout=60, ok=(200, 404)):
             return r
         if attempt == tries - 1 or r["status"] not in (0, 429, 500, 502, 503, 504):
             raise RuntimeError(f"{url}: HTTP {r['status']} {r['text'][:120]!r}; stopping")
-        wait = max(5, int(r.get("reset") or 0) - int(time.time())) if r["status"] == 429 else 10 * (attempt + 1)
-        time.sleep(min(wait, 300))
+        # 429: honour Retry-After (seconds) if sent, else wait out the whole 5-minute window. Not x-ratelimit-reset:
+        # Cloudflare serves cached copies of it (see Gotchas).
+        retry = str(r.get("retry") or "")
+        wait = (int(retry) if retry.isdigit() else 300) if r["status"] == 429 else 10 * (attempt + 1)
+        time.sleep(min(max(wait, 5), 300))
 
 def define(word):
     """-> dict with IPA, audio links, and per part of speech: first definition, first example, synonyms.
     A word the API does not have -> {"word": ..., "missing": <the 404 body>}."""
-    r = call(API + quote(word.strip().lower()))
+    r = call(API + quote(word.strip().lower(), safe=""))  # safe="": a "/" in the term stays inside one path segment
     if r["status"] == 404:
         return {"word": word, "missing": json.loads(r["text"])}
     entries = json.loads(r["text"])  # a list: one entry per etymology
@@ -178,7 +181,7 @@ audio HEAD: HTTP 502 text/plain; charset=UTF-8
 - **Audio links were dead on 2026-11-09.** Every `/media/pronunciations/en/*.mp3` tried (serendipity-au, serendipity-us, hello-au, run-us) answered HTTP 502 `error code: 502` to curl, urllib and the cloud browser, between 23:21 and 23:25 UTC. Report the link with its status and give the `sourceUrl` file page as a link for people. Do not script commons.wikimedia.org to resolve it: its robots.txt disallows `/w/` and `/api/` for `User-agent: *`.
 - **Synonyms live at two levels.** Both `meanings[].synonyms` and `definitions[].synonyms` carry them; the blocks merge both, in order, without duplicates.
 - **Several entries per word.** `bank` returns 4 entries (one per etymology), each with its own meanings; read all of them, not `[0]` only.
-- **Rate-limit headers are cached.** On a Cloudflare `HIT` the `x-ratelimit-*` headers are the cached copy (serendipity sent an `x-ratelimit-reset` of 2026-07-30, months in the past, and a `remaining` count that did not drop between calls), so they do not count your calls. Pace yourself.
+- **Rate-limit headers are cached.** On a Cloudflare `HIT` the `x-ratelimit-*` headers are the cached copy (serendipity sent an `x-ratelimit-reset` of 2026-07-30, months in the past, and a `remaining` count that did not drop between calls), so they do not count your calls and block 1 does not use them for its 429 wait. Pace yourself.
 - **Cache misses can 502.** An uncached word (`bliss`) gave one Cloudflare 502, then 200 ten seconds later; cached words answered instantly. Block 1 retries a 5xx twice with 10 s and 20 s waits.
 - **Tab marker.** The harness prefixes the tab title with a horse emoji; block 1 checks only the origin and that the body starts with `[`.
 

@@ -18,7 +18,7 @@ robots.txt (checked 2026-11-09): api.tidesandcurrents.noaa.gov/robots.txt answer
 
 ### 1. Today's high and low tides at The Battery, plus where the water is now (browser)
 
-Self-contained. Finds the station by name, gets today's high/low predictions, then compares the last 6-minute observation with the 6-minute prediction for the same minute. `fetch()` runs same-origin from the API docs page. `get_json()` raises on the API's HTTP-200 error objects and backs off on 429/5xx.
+Self-contained. Finds the station by name, gets today's high/low predictions, then, if the station has a tide gauge (its products list `Water Levels`; subordinate stations have predictions only), compares the last 6-minute observation with the 6-minute prediction for the same minute. `fetch()` runs same-origin from the API docs page. `get_json()` raises on the API's HTTP-200 error objects and backs off on 429/5xx.
 
 ```python
 import json, time, urllib.parse
@@ -94,20 +94,25 @@ for p in hilo:
     print(f"  {'High' if p['type'] == 'H' else 'Low ':<4}  {p['t'][11:]}  {float(p['v']):5.2f} ft")
 
 # 3. Is the water where it should be right now? Last observation of the past hour (6-min, preliminary) vs the 6-min prediction.
-obs = data(range=1, station=st["id"], product="water_level", datum=DATUM, time_zone="lst_ldt")["data"][-1]
-now = obs["t"]
-if now[:10] != hilo[0]["t"][:10]:
-    raise RuntimeError(f"latest observation is from {now}, not today ({hilo[0]['t'][:10]}): sensor gap or stale answer; stopping")
-pred6 = {p["t"]: float(p["v"]) for p in data(date="today", station=st["id"], product="predictions", datum=DATUM,
-                                                 time_zone="lst_ldt", interval="6")["predictions"]}
-print(f"\nobserved {now} local: {float(obs['v']):.2f} ft (quality {obs['q']}: p = preliminary); predicted {pred6[now]:.2f} ft; "
-      f"difference {float(obs['v']) - pred6[now]:+.2f} ft")
-nxt = next((p for p in hilo if p["t"] > now), None)
-print("next today:", f"{'high' if nxt['type'] == 'H' else 'low'} tide at {nxt['t'][11:]} ({float(nxt['v']):.2f} ft)" if nxt else "none left today")
+#    Only stations with a tide gauge have observations: subordinate (S) stations list "Tide Predictions" but no "Water Levels".
+products = {p["name"] for p in get_json(META + f"stations/{st['id']}/products.json")["products"]}
+if "Water Levels" not in products:
+    print(f"\nno water level gauge at {st['id']} (products: {sorted(products)}): predictions only")
+else:
+    obs = data(range=1, station=st["id"], product="water_level", datum=DATUM, time_zone="lst_ldt")["data"][-1]
+    now = obs["t"]
+    if now[:10] != hilo[0]["t"][:10]:
+        raise RuntimeError(f"latest observation is from {now}, not today ({hilo[0]['t'][:10]}): sensor gap or stale answer; stopping")
+    pred6 = {p["t"]: float(p["v"]) for p in data(date="today", station=st["id"], product="predictions", datum=DATUM,
+                                                     time_zone="lst_ldt", interval="6")["predictions"]}
+    print(f"\nobserved {now} local: {float(obs['v']):.2f} ft (quality {obs['q']}: p = preliminary); predicted {pred6[now]:.2f} ft; "
+          f"difference {float(obs['v']) - pred6[now]:+.2f} ft")
+    nxt = next((p for p in hilo if p["t"] > now), None)
+    print("next today:", f"{'high' if nxt['type'] == 'H' else 'low'} tide at {nxt['t'][11:]} ({float(nxt['v']):.2f} ft)" if nxt else "none left today")
 print("page for people:", f"https://tidesandcurrents.noaa.gov/noaatidepredictions.html?id={st['id']}")
 ```
 
-Output (from the run on 2026-11-09, 23:23 UTC):
+Output (from the run on 2026-11-09, 23:42 UTC; with `"41st"` the same block picks subordinate station 8518695 and prints `no water level gauge at 8518695 (products: ['Superseded  Benchmarks', 'Tide Predictions']): predictions only`):
 
 ```text
 3502 prediction stations; 'battery' in NY: [('8518750', 'NEW YORK (The Battery)', 'R')]
@@ -119,7 +124,7 @@ high/low tide predictions, 2026-11-09 local, feet above MLLW:
   Low   14:18   0.04 ft
   High  20:07   4.55 ft
 
-observed 2026-11-09 18:18 local: 3.34 ft (quality p: p = preliminary); predicted 3.73 ft; difference -0.39 ft
+observed 2026-11-09 18:36 local: 3.57 ft (quality p: p = preliminary); predicted 3.97 ft; difference -0.40 ft
 next today: high tide at 20:07 (4.55 ft)
 page for people: https://tidesandcurrents.noaa.gov/noaatidepredictions.html?id=8518750
 ```
@@ -229,7 +234,7 @@ Output (from the run on 2026-11-09, 23:24 UTC):
 - **Wrong station ID still returns plausible tides.** 8454000 (Providence, RI) answers like any NY station would. Confirm `name` from `/mdapi/prod/webapi/stations/<id>.json`.
 - **Subordinate stations do high/low only.** `interval=h` on 8518695 (East 41st Street, NYC) is HTTP 200 `No Predictions data was found. Please make sure the Datum input is valid.`, the same message as an unknown station. The message blames the datum either way.
 - **`date=latest` and `date=recent` answer each other's question.** Docs: `latest` = last point within 18 min, `recent` = last 3 days. On 2026-11-09, 8 alternating calls from the browser: `latest` gave the 720-point 3-day series 2 of 4 times, `recent` gave a single point 1 of 4 times; 3 of 3 `recent` calls from Python urllib gave a single point. Block 1 uses `range=1` (9 or 10 points, correct in every call that day), takes the last point and checks its date.
-- **Predictions are astronomical.** Observed water at The Battery was 0.39 ft below prediction at 18:18; wind and pressure move it. Use `product=water_level` for what is happening.
+- **Predictions are astronomical.** Observed water at The Battery was 0.40 ft below prediction at 18:36; wind and pressure move it. Use `product=water_level` for what is happening.
 - **No published rate limit.** The docs: CO-OPS throttles "the quantity / volume of data queries received from a singular customer" and recommends "sleep statements" between calls. The blocks sleep 2 s.
 - **Tab marker.** The harness prefixes the tab title with a horse emoji; block 1 matches a substring of the title only.
 
