@@ -10,6 +10,21 @@ from .admin import daemon_browser_ready
 from .daemon import remote_debugging_toggle_profiles
 
 _APPLESCRIPT = r'''using terms from application "System Events"
+    on hasApprovalTitle(nodeRef)
+        try
+            if (role of nodeRef as text) is "AXHeading" and ¬
+                (name of nodeRef as text) is "Allow remote debugging?" then
+                return true
+            end if
+        end try
+        try
+            repeat with childRef in UI elements of nodeRef
+                if my hasApprovalTitle(childRef) then return true
+            end repeat
+        end try
+        return false
+    end hasApprovalTitle
+
     on clickAllow(nodeRef)
         try
             if (role of nodeRef as text) is "AXButton" and ¬
@@ -34,7 +49,13 @@ tell application "System Events"
             repeat with w in windows
                 try
                     repeat with s in sheets of w
+                        set isTargetSheet to false
                         if (name of s as text) is "Allow remote debugging?" then
+                            set isTargetSheet to true
+                        else
+                            set isTargetSheet to my hasApprovalTitle(s)
+                        end if
+                        if isTargetSheet then
                             if my clickAllow(s) then
                                 set resultText to "ready"
                                 exit repeat
