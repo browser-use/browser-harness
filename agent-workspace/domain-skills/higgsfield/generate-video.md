@@ -91,7 +91,7 @@ click_at_xy(r["x"], r["y"])
 ### Seedance 2.5 Draft (cheap takes that can be upgraded)
 
 - The model picker lists "Seedance 2.5 Draft" as its own model (480p, 4 to 30 s). URL: `https://higgsfield.ai/ai/video?model=seedance_2_5_draft`. The Generate button reads "Generate draft\n<cost>"; the Quality list shows "480p DRAFT — Draft your idea before generating in full quality" plus greyed 720p/1080p.
-- Cost equals plain 480p: 5 s = 15 credits, 10 s = 30, 15 s = 45, 30 s = 90. The saving is not the draft itself but that a finished draft carries an upgrade action to full quality, so you only pay 1080p once for the take you keep. (ByteDance's draft re-renders with the same seed; it is close, not frame-exact, and drafts expire after 7 days on the API.)
+- Cost equals plain 480p: 5 s = 15 credits, 10 s = 30, 15 s = 45, 30 s = 90. The finished History card carries a button "GENERATE IN 1080P\n<cost>" (aria-label "Generate final 1080p video"). For a 5 s draft it read 80, the same as a native 5 s 1080p render, so draft + upgrade is 15 + 80. Drafts pay off only when you would otherwise reroll at 1080p: pick the take at 480p, upgrade once. ByteDance re-renders the upgrade with the draft's seed; it is close, not frame-exact, and API drafts expire after 7 days. A 5 s draft came back in 73 s while 10 to 30 s jobs took 4 to 12 minutes, so short drafts are also the fastest loop on the site.
 - The model picker is a dialog; locate the row by exact text, e.g. `/^Seedance 2\.5 Draft$/`, on an element with fewer than 4 children, then click its rect. Other rows in the same dialog: Seedance 2.0 / 2.0 Fast / 2.0 Mini (4 to 15 s), Seedance 2.5 Edit, Kling 4.0 / 4.0 Flash, Wan 3.0 Prime, MiniMax H3.
 
 ### Waiting for the result
