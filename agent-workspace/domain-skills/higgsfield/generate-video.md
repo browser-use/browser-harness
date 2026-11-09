@@ -88,6 +88,12 @@ click_at_xy(r["x"], r["y"])
 - Settings persist across page reloads in the same session (duration stayed at 30 s after navigating away).
 - Generate button: find by `/^Generate/.test(button.innerText)`; its text carries the credit cost, e.g. "Generate\n210".
 
+### Seedance 2.5 Draft (cheap takes that can be upgraded)
+
+- The model picker lists "Seedance 2.5 Draft" as its own model (480p, 4 to 30 s). URL: `https://higgsfield.ai/ai/video?model=seedance_2_5_draft`. The Generate button reads "Generate draft\n<cost>"; the Quality list shows "480p DRAFT — Draft your idea before generating in full quality" plus greyed 720p/1080p.
+- Cost equals plain 480p: 5 s = 15 credits, 10 s = 30, 15 s = 45, 30 s = 90. The saving is not the draft itself but that a finished draft carries an upgrade action to full quality, so you only pay 1080p once for the take you keep. (ByteDance's draft re-renders with the same seed; it is close, not frame-exact, and drafts expire after 7 days on the API.)
+- The model picker is a dialog; locate the row by exact text, e.g. `/^Seedance 2\.5 Draft$/`, on an element with fewer than 4 children, then click its rect. Other rows in the same dialog: Seedance 2.0 / 2.0 Fast / 2.0 Mini (4 to 15 s), Seedance 2.5 Edit, Kling 4.0 / 4.0 Flash, Wan 3.0 Prime, MiniMax H3.
+
 ### Waiting for the result
 
 - After Generate, a "History" card shows a "Generating" chip and the right rail shows the prompt, quality, duration, ratio and seed. A 30 s Seedance 2.5 720p render took about 4.5 minutes.
@@ -120,3 +126,5 @@ URL: `https://higgsfield.ai/ai/video/motion?model=kling-3-motion-control`. Motio
 
 - Promo popups ("Unlimited Seedance 2.5", "Don't know where to start?") overlay the page. Close them with their X before you click near the bottom-right or top-center.
 - The Seedance landing on `/ai/video` shows a big "Make videos in one click" panel on the right. It is only a tutorial; all controls are in the left panel.
+- "Protected content detected" + "Credits refunded" chips on a History card mean the moderation filter blocked the job; the credits come back. A prompt that names a real brand (a coffee shop sign) with a reference image triggered it; the same reference with a brand-free prompt passed.
+- The prompt editor can sit below the fold after a long prompt. Cmd+A / Backspace only clears it when the click actually landed inside it, so call `scrollIntoView({block:"center"})` on `[contenteditable=true]` first, click its rect, then verify `innerText.length` is 0 before typing. A click at an off-screen rect types into nothing and appends to the old prompt instead.
