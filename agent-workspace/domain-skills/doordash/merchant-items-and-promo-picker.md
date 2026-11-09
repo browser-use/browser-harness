@@ -16,3 +16,10 @@
 - In the observed UI, 20%, 25%, 30% and Custom were available; the menu did not expose `[role=option]`. Use its screenshot-visible controls.
 - Newly saved, in-stock items may be absent from the promotion picker even after a fresh wizard load. This is not proof that the menu save failed. Verify the menu separately, then retry the picker after propagation. Do not substitute other items or report an active campaign while the intended selection is unavailable.
 - Recheck exact selected items, percentage, audience, schedule, ongoing/end-date setting and fees before accepting terms. A preview or prepared wizard is not launch evidence.
+
+## Diagnosing picker/catalog mismatch
+
+- The item picker can retrieve its full candidate list from POST `/unified-gateway-dash/ax_portal/ads/v1/products/search`, then filter search text locally. Its request includes `PRODUCT_CLASSIFICATION_MENU_ITEM`, search-term and merchant-PDRN filters, and menu-item search options. Inspect the actual observed request; do not invent eligibility or overwrite responses to inject missing products.
+- A fresh successful backend search can still omit a new item that is already visible on the public storefront. Treat marketing search and menu publication as separate systems; escalate or wait for indexing rather than recreating the item.
+- Public store search may require Enter; item cards are lazy-rendered when scrolled into view.
+- Photo upload may report Uploaded before the preview editor appears. Wait for Preview and adjust your photo, inspect framing, then Done. A later editor message can say the photo is visible while continuing moderation remains active. Preserve that distinction in completion reports.

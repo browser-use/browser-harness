@@ -16,3 +16,9 @@
 - The initial selector uses semantic buttons and `[role=option]`. The main form's discount control may not expose a button role; use a fresh screenshot to locate it.
 - Dynamic audience discounts can be checked by default. Verify both dynamic-discount controls when the owner requested a fixed discount for everyone.
 - Inspect actual dates, audience, redemption fee and terms before launch. A configured form is not an active offer; reopen the resulting campaign independently.
+
+## Independent launch readback
+
+- Creation can take several seconds to redirect. Check the campaign list before retrying a submit so a delayed success does not create duplicates.
+- Saved performance route: `/manager/marketing/offer-performance?promotionUUID=<uuid>`. Its observed GraphQL `getPromotion` response includes state, exact item UUIDs and each discount fraction, audience, UTC start/end dates, custom schedule and budget configuration.
+- Dashboard labels may format dates in the browser timezone rather than the restaurant timezone. Convert the saved UTC timestamps into the restaurant timezone when reconciling a one-day display difference.
