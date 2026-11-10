@@ -28,6 +28,7 @@ def closed_chrome_masked_by_arc(monkeypatch, tmp_path):
     (arc / "Local State").write_text("{}")
     (arc / "SingletonLock").symlink_to(f"test-host-{os.getpid()}")
     monkeypatch.setattr(daemon, "PROFILES", [chrome, arc])
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
     monkeypatch.setattr(daemon, "REMOTE_ID", None)
     monkeypatch.setattr(daemon, "TOGGLE_BOOT_GRACE", 0)
     monkeypatch.delenv("BU_CDP_WS", raising=False)
@@ -41,12 +42,17 @@ def closed_chrome_masked_by_arc(monkeypatch, tmp_path):
 
 
 def test_closed_toggle_chrome_reports_chrome_not_running(closed_chrome_masked_by_arc):
+    # The masking condition itself: Arc counts as a running supported browser
+    # while the toggle-enabled Chrome profile has no live process behind it.
+    assert daemon.supported_browser_running()
+    assert not daemon.browser_running_for_profile(closed_chrome_masked_by_arc)
     with pytest.raises(RuntimeError, match="chrome-not-running"):
         daemon.get_ws_url()
 
 
 def test_ensure_daemon_launches_browser_for_dead_chrome_not_running_daemon(monkeypatch, tmp_path):
     launches = []
+    restarts = []
     alive = {"value": False}
 
     @contextmanager
@@ -70,8 +76,9 @@ def test_ensure_daemon_launches_browser_for_dead_chrome_not_running_daemon(monke
     monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / "daemon.log")
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
     monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: DeadProcess())
-    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: None)
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarts.append(name))
     monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(daemon, "_devtools_port_live", lambda profile: True)
 
     def fake_launch():
         launches.append(True)
@@ -81,3 +88,6 @@ def test_ensure_daemon_launches_browser_for_dead_chrome_not_running_daemon(monke
     monkeypatch.setattr(admin, "_launch_browser", fake_launch)
     admin.ensure_daemon()
     assert launches == [True]
+    # The daemon that reported chrome-not-running is already dead; restarting
+    # here could stop a healthy successor from a concurrent ensure_daemon().
+    assert restarts == []

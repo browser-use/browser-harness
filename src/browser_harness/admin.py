@@ -522,18 +522,30 @@ def run_doctor_fix_snap():
     return 0
 
 
-def _launch_closed_browser(name=None):
-    """Launch the toggle-enabled browser after a chrome-not-running daemon exit."""
-    restart_daemon(name)
+def _launch_closed_browser(name=None, restart=True):
+    """Launch the toggle-enabled browser after a chrome-not-running daemon exit.
+
+    restart=False when the caller already observed that exact daemon die:
+    restarting could stop a healthy successor a concurrent ensure_daemon()
+    published in the meantime. The wait tracks the launched profile's own
+    DevTools port — any other running Chromium (Arc, Brave) must not
+    satisfy it before the launched browser is actually ready.
+    """
+    if restart:
+        restart_daemon(name)
     launched = _launch_browser()
     if launched is None:
         raise RuntimeError(
             "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
         )
     print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
-    from .daemon import supported_browser_running
+    from .daemon import _devtools_port_live, supported_browser_running
+    profile = launched[1] if launched else None
     boot_deadline = time.time() + 15
-    while time.time() < boot_deadline and not supported_browser_running():
+    while time.time() < boot_deadline:
+        ready = _devtools_port_live(profile) if profile else supported_browser_running()
+        if ready:
+            break
         time.sleep(0.3)
     return launched
 
@@ -664,8 +676,9 @@ def ensure_daemon(wait=None, name=None, env=None):
                 )
             if _chrome_not_running(msg) and launched_browser is None:
                 # The daemon exits on this error, so waiting for it to stay
-                # alive (the branch below) never launches anything.
-                launched_browser = _launch_closed_browser(name)
+                # alive (the branch below) never launches anything. It is
+                # already dead, so do not restart anything here.
+                launched_browser = _launch_closed_browser(name, restart=False)
             continue
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup

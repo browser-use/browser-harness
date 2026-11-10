@@ -338,7 +338,7 @@ def get_ws_url():
         except (OSError, KeyError, ValueError):
             continue
     toggled = remote_debugging_toggle_profiles()
-    if toggled and not any(browser_running_for_profile(base) for base in toggled):
+    if platform.system() != "Windows" and toggled and not any(browser_running_for_profile(base) for base in toggled):
         # The toggle is recorded on, but that browser is closed. Another
         # Chromium-family browser (Arc, Brave, ...) being open must not mask
         # this: admin keys its launch-Chrome recovery off "chrome-not-running".
