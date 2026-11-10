@@ -59,6 +59,8 @@ PY
 
 ## Local Chrome
 
+**Daemon will not start? Check the browser before trusting the error.** `DevToolsActivePort not found — enable chrome://inspect` also fires when Chrome is closed, the toggle is already on, and another Chromium browser (Arc, Brave) is open and masking it. Trust live state, not the message or the file: is the Chrome process running, does the port in `DevToolsActivePort` accept TCP? A stale port file from a closed session is normal. If Chrome is closed, launch it (`open -a "Google Chrome"` on macOS), wait for the port to answer, and retry; the recorded toggle usually means no new Allow popup.
+
 The default daemon can keep many tabs and visit many sites; browser-harness has
 no per-site, screenshot, or result-count limit that requires a new daemon.
 Chrome memory and page complexity are the practical limits. Reuse matching tabs

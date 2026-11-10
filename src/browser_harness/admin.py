@@ -522,6 +522,22 @@ def run_doctor_fix_snap():
     return 0
 
 
+def _launch_closed_browser(name=None):
+    """Launch the toggle-enabled browser after a chrome-not-running daemon exit."""
+    restart_daemon(name)
+    launched = _launch_browser()
+    if launched is None:
+        raise RuntimeError(
+            "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+        )
+    print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
+    from .daemon import supported_browser_running
+    boot_deadline = time.time() + 15
+    while time.time() < boot_deadline and not supported_browser_running():
+        time.sleep(0.3)
+    return launched
+
+
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
     Chrome, and missing Allow on chrome://inspect."""
@@ -646,6 +662,10 @@ def ensure_daemon(wait=None, name=None, env=None):
                     "permission-blocked: the pending Chrome connection ended before approval; "
                     "browser-harness did not retry or create another connection."
                 )
+            if _chrome_not_running(msg) and launched_browser is None:
+                # The daemon exits on this error, so waiting for it to stay
+                # alive (the branch below) never launches anything.
+                launched_browser = _launch_closed_browser(name)
             continue
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup
@@ -666,17 +686,7 @@ def ensure_daemon(wait=None, name=None, env=None):
             )
         if local and launched_browser is None and _chrome_not_running(msg):
             # Chrome is closed — launch the browser and retry
-            restart_daemon(name)
-            launched_browser = _launch_browser()
-            if launched_browser is None:
-                raise RuntimeError(
-                    "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
-                )
-            print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
-            from .daemon import supported_browser_running
-            boot_deadline = time.time() + 15
-            while time.time() < boot_deadline and not supported_browser_running():
-                time.sleep(0.3)
+            launched_browser = _launch_closed_browser(name)
             continue
         if local and not opened_inspect and _needs_chrome_remote_debugging_prompt(msg):
             opened_inspect = True

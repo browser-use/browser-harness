@@ -337,6 +337,14 @@ def get_ws_url():
                 raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
         except (OSError, KeyError, ValueError):
             continue
+    toggled = remote_debugging_toggle_profiles()
+    if toggled and not any(browser_running_for_profile(base) for base in toggled):
+        # The toggle is recorded on, but that browser is closed. Another
+        # Chromium-family browser (Arc, Brave, ...) being open must not mask
+        # this: admin keys its launch-Chrome recovery off "chrome-not-running".
+        raise RuntimeError(
+            "chrome-not-running: the browser with remote debugging enabled is not running -- start Chrome, then retry"
+        )
     if remote_debugging_user_enabled() is False:
         raise RuntimeError('remote debugging is turned off for this browser instance — enable chrome://inspect/#remote-debugging (tick "Allow remote debugging for this browser instance")')
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
