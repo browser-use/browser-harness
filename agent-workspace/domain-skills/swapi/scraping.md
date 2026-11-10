@@ -150,19 +150,21 @@ UA = {"User-Agent": "browser-harness-skill/1.0 (Python urllib)"}
 API = "https://swapi.dev/api/"
 
 def get(url):
-    """GET -> parsed JSON. 404 = {"detail":"Not found."}, raised as LookupError. Waits 30 s once on 429/5xx, then stops."""
+    """GET -> parsed JSON. 404 = {"detail":"Not found."}, raised as LookupError. Waits 30 s once on 429/5xx or a network error, then stops."""
     for attempt in range(2):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
                 status, body = r.status, r.read()
         except urllib.error.HTTPError as e:
             status, body = e.code, e.read()
+        except (urllib.error.URLError, TimeoutError) as e:  # DNS failure, reset, timeout: no HTTP status
+            status, body = 0, str(e).encode()
         time.sleep(0.5)  # serial
         if status == 200:
             return json.loads(body)
         if status == 404:
             raise LookupError(f"HTTP 404 {body.decode()[:100]}")
-        if status not in (429, 500, 502, 503, 504) or attempt == 1:
+        if status not in (0, 429, 500, 502, 503, 504) or attempt == 1:
             raise RuntimeError(f"{url}: HTTP {status} {body[:200]!r}; stopping")
         time.sleep(30)
 
@@ -172,6 +174,8 @@ def search(resource, q):
         d = get(url)
         rows += d["results"]
         url = d["next"]
+    if len(rows) != d["count"]:
+        raise RuntimeError(f"got {len(rows)} rows, count says {d['count']}")
     return rows
 
 def num(s):

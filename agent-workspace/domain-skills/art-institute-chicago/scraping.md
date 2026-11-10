@@ -70,7 +70,7 @@ def get_json(url, tries=3, timeout=60):
             return json.loads(r["text"])
         if r["status"] not in (0, 429, 500, 502, 503, 504) or attempt == tries - 1:
             raise RuntimeError(f"{url}: HTTP {r['status']} {' '.join(r['text'].split())[:200]!r}; stopping")
-        time.sleep(60)  # the anonymous limit is per minute
+        time.sleep(60 if r["status"] == 429 else 5)  # the anonymous limit is per minute; a dead tab or 5xx retries sooner
 
 def q(s):
     return js(f"encodeURIComponent({json.dumps(s)})")
@@ -88,7 +88,7 @@ for title, artist in WORKS:
         if a["is_on_view"]:
             g = get_json(API + f"galleries/{a['gallery_id']}?fields=id,title,number,floor,is_closed")["data"] if a["gallery_id"] else {}
             where = f"ON VIEW in {a['gallery_title']} (floor {g.get('floor')}, gallery is_closed={g.get('is_closed')})"
-        print(f"  {a['id']}  {a['title']}, {a['date_display']}  {a['artist_display'].splitlines()[0]}  [{a['main_reference_number']}]")
+        print(f"  {a['id']}  {a['title']}, {a['date_display']}  {(a['artist_display'] or 'artist unknown').splitlines()[0]}  [{a['main_reference_number']}]")
         loan = re.sub(r"<[^>]+>", "", a["on_loan_display"] or "")  # HTML fragment
         print(f"    {where}" + (f"  loan: {loan}" if loan else ""))
         print(f"    record updated {a['updated_at']}; search index copy {h['timestamp']}, search said on_view={h['is_on_view']} {h['gallery_title']}")

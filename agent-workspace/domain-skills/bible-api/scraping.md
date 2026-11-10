@@ -212,6 +212,7 @@ no such verse (john 3:99): HTTP 404 application/json;charset=utf-8
 - **Default is WEB, not KJV.** Omitting `translation=` gives the World English Bible.
 - **Single-chapter books:** `jude+1` means verse 1, not the chapter (documented). For the whole chapter, add `single_chapter_book_matching=indifferent` (home page; not tested here).
 - **No rate-limit headers.** Responses carry no `X-RateLimit-*` or `Retry-After`; pace yourself (15 per 30 s).
+- **404s count against you.** More than 10 HTTP 404s in 30 s from one IP gets every request a 403 `Forbidden` for an hour (`lib/abuse_middleware.rb` in seven1m/bible_api, read 2026-11-10; not provoked). Block 2 makes 4 404s (robots.txt and three probes) 2.5 s apart. Run it once; on an unexpected 404, fix the reference instead of trying variants.
 - **Tab marker.** The harness prefixes the tab title with a horse emoji; the blocks match a substring of the title only.
 
 ## What does not work
