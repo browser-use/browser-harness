@@ -23,3 +23,5 @@
 - A fresh successful backend search can still omit a new item that is already visible on the public storefront. Treat marketing search and menu publication as separate systems; escalate or wait for indexing rather than recreating the item.
 - Public store search may require Enter; item cards are lazy-rendered when scrolled into view.
 - Photo upload may report Uploaded before the preview editor appears. Wait for Preview and adjust your photo, inspect framing, then Done. A later editor message can say the photo is visible while continuing moderation remains active. Preserve that distinction in completion reports.
+
+- A candidate can be present but marked Ineligible. Hover its status to reveal the reason; “Missing item photo” was observed. This differs from a newly created item being entirely absent. The corresponding marketing product record can have an empty `details.display_info.photo_url` even when Menu Manager reports a visible photo. Record missing candidates and ineligible candidates separately, and recheck after moderation/catalog propagation.
