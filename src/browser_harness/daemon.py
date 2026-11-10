@@ -220,6 +220,17 @@ def log(msg):
     open(LOG, "a", encoding="utf-8", errors="replace").write(f"{msg}\n")
 
 
+def _rotate_log(log_path=None):
+    """Preserve previous daemon output across respawns by rotating non-empty log."""
+    path = Path(log_path or LOG)
+    try:
+        if path.exists() and path.stat().st_size > 0:
+            target = path.with_name(f"{path.name}.1")
+            os.replace(path, target)
+    except OSError:
+        pass
+
+
 def _safe_connection_label(url):
     """Log only endpoint topology, never CDP credentials or provider session paths."""
     try:
@@ -879,7 +890,7 @@ if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
-    open(LOG, "w").close()
+    _rotate_log(LOG)
     _publish_own_pid()
     try:
         asyncio.run(main())

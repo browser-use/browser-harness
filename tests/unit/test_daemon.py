@@ -845,3 +845,28 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_rotate_log_preserves_previous_run_output(tmp_path):
+    log_file = tmp_path / "daemon.log"
+    log_file.write_text("previous fatal error: WS 1006 connection closed\n")
+
+    daemon._rotate_log(log_file)
+
+    assert not log_file.exists()
+    backup = tmp_path / "daemon.log.1"
+    assert backup.exists()
+    assert backup.read_text() == "previous fatal error: WS 1006 connection closed\n"
+
+
+def test_rotate_log_ignores_empty_or_missing_file(tmp_path):
+    log_file = tmp_path / "empty.log"
+    log_file.write_text("")
+
+    daemon._rotate_log(log_file)
+    assert log_file.exists()
+    assert not (tmp_path / "empty.log.1").exists()
+
+    missing = tmp_path / "nonexistent.log"
+    daemon._rotate_log(missing)
+    assert not missing.exists()
