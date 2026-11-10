@@ -22,3 +22,5 @@
 - Creation can take several seconds to redirect. Check the campaign list before retrying a submit so a delayed success does not create duplicates.
 - Saved performance route: `/manager/marketing/offer-performance?promotionUUID=<uuid>`. Its observed GraphQL `getPromotion` response includes state, exact item UUIDs and each discount fraction, audience, UTC start/end dates, custom schedule and budget configuration.
 - Dashboard labels may format dates in the browser timezone rather than the restaurant timezone. Convert the saved UTC timestamps into the restaurant timezone when reconciling a one-day display difference.
+- When using native UI without API readback, reopen the saved Edit form to compare its dates with the performance dashboard. An observed edit view initially showed no selected items; refreshing restored the persisted item and percentage. Never submit the transient empty form or infer a lost campaign from it.
+- Masked date fields can corrupt a pasted full date. Prefer the visible calendar month/year/day controls and read the resulting values before publication.

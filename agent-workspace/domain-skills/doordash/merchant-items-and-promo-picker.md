@@ -25,3 +25,9 @@
 - Photo upload may report Uploaded before the preview editor appears. Wait for Preview and adjust your photo, inspect framing, then Done. A later editor message can say the photo is visible while continuing moderation remains active. Preserve that distinction in completion reports.
 
 - A candidate can be present but marked Ineligible. Hover its status to reveal the reason; “Missing item photo” was observed. This differs from a newly created item being entirely absent. The corresponding marketing product record can have an empty `details.display_info.photo_url` even when Menu Manager reports a visible photo. Record missing candidates and ineligible candidates separately, and recheck after moderation/catalog propagation.
+
+## Fixed-date offer verification
+
+- Post-creation success language may say the campaign is live even when it starts in the future. Reopen campaign Details and verify Scheduled, exact selected item/percentage and start/end dates.
+- Detailed times may explicitly use PT. Preserve the displayed timezone in evidence and compare the actual restaurant opening hours before interpreting the requested date window.
+- Changing the first date can rerender the second field; obtain fresh UI state before editing the end date.
