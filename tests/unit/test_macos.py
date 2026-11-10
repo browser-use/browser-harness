@@ -74,6 +74,12 @@ def test_mac_approve_script_has_locale_independent_fallback(monkeypatch):
     assert "Allow remote debugging?" in script
     assert "entire contents" in script
     assert "position of" in script
+    # The fallback branch itself: reached for non-English sheets, guarded by
+    # the three-button + URL-copy identification, and it presses the button.
+    assert "else if my clickRightmostButton(s)" in script
+    assert "buttonCount is 3" in script
+    assert "mentionsUrl" in script
+    assert 'perform action "AXPress" of bestRef' in script
 
 
 def test_mac_approve_returns_not_found_without_a_prompt(monkeypatch):

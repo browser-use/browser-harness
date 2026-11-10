@@ -28,28 +28,33 @@ _APPLESCRIPT = r'''using terms from application "System Events"
 
     on clickRightmostButton(sheetRef)
         -- Locale-independent fallback: the sheet title and button titles are
-        -- localized (e.g. Russian), so name matching cannot find them. In a
-        -- macOS alert sheet the default action is the rightmost button,
-        -- whatever language it is rendered in. Only used for a sheet with
-        -- at least two buttons while a connection is pending approval.
+        -- localized (e.g. Russian), so name matching cannot find them.
+        -- Identify the prompt structurally before pressing anything: this
+        -- dialog has exactly three buttons and its body copy mentions URL
+        -- access ("any URL" in English, "URL" survives most localizations).
+        -- Fail closed on anything else. In a macOS alert sheet the default
+        -- action is the rightmost button, whatever the UI language.
         set bestRef to missing value
-        set bestX to -1
+        set bestX to 0
         set buttonCount to 0
+        set mentionsUrl to false
         try
             repeat with elRef in entire contents of sheetRef
                 try
                     if (role of elRef as text) is "AXButton" then
                         set buttonCount to buttonCount + 1
                         set bx to item 1 of (position of elRef)
-                        if bx > bestX then
+                        if bestRef is missing value or bx > bestX then
                             set bestX to bx
                             set bestRef to elRef
                         end if
+                    else if (role of elRef as text) is "AXStaticText" then
+                        if (value of elRef as text) contains "URL" then set mentionsUrl to true
                     end if
                 end try
             end repeat
         end try
-        if buttonCount >= 2 and bestRef is not missing value then
+        if buttonCount is 3 and mentionsUrl and bestRef is not missing value then
             perform action "AXPress" of bestRef
             return true
         end if

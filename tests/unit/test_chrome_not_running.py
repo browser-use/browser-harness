@@ -77,8 +77,13 @@ def test_ensure_daemon_launches_browser_for_dead_chrome_not_running_daemon(monke
     monkeypatch.setattr(admin.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
     monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: DeadProcess())
     monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarts.append(name))
-    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
-    monkeypatch.setattr(daemon, "_devtools_port_live", lambda profile: True)
+    port_checks = []
+    monkeypatch.setattr(
+        daemon,
+        "supported_browser_running",
+        lambda: (_ for _ in ()).throw(AssertionError("global readiness path must not be used")),
+    )
+    monkeypatch.setattr(daemon, "_devtools_port_live", lambda profile: port_checks.append(profile) or True)
 
     def fake_launch():
         launches.append(True)
@@ -88,6 +93,8 @@ def test_ensure_daemon_launches_browser_for_dead_chrome_not_running_daemon(monke
     monkeypatch.setattr(admin, "_launch_browser", fake_launch)
     admin.ensure_daemon()
     assert launches == [True]
+    # Recovery waits on the launched profile's own DevTools port.
+    assert port_checks == [tmp_path]
     # The daemon that reported chrome-not-running is already dead; restarting
     # here could stop a healthy successor from a concurrent ensure_daemon().
     assert restarts == []
