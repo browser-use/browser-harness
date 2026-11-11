@@ -422,7 +422,16 @@ def switch_tab(target, activate=False):
     if activate:
         activate_tab(target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    try:
+        _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    except RuntimeError as exc:
+        # A timeout has an unknown outcome. Detach only after an explicit
+        # rejection before the daemon committed the new selection.
+        if not str(exc).startswith("TabBindingWriteFailed:"):
+            raise
+        try: cdp("Target.detachFromTarget", sessionId=sid)
+        except Exception: pass
+        raise
     _mark_tab()
     return sid
 
