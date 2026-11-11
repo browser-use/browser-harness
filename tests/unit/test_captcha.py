@@ -20,6 +20,8 @@ class _SolverCDP:
     async def send_raw(self, method, params=None, session_id=None):
         if not self.available:
             raise RuntimeError(f"{{'code': -32601, 'message': \"'{method}' wasn't found\"}}")
+        if not method.startswith("BrowserUse."):
+            return {}
         if method == "BrowserUse.getCaptchaSolverEnabled":
             return {"enabled": self.enabled}
         self.enabled = params["enabled"]
@@ -35,6 +37,7 @@ def solver(monkeypatch):
     threading.Thread(target=loop.run_forever, daemon=True).start()
     d = daemon.Daemon()
     d.cdp = _SolverCDP(d)
+    d.target_id = "T1"  # the attached tab
 
     def send(req, response_timeout=5.0):
         r = asyncio.run_coroutine_threadsafe(d.handle(req), loop).result(response_timeout)
@@ -102,12 +105,37 @@ def test_waits_for_a_running_solve(solver):
     assert (out["solved"], out["detail"], out["vendor"]) == (True, "solved", "cloudflare")
 
 
-def test_failure_on_any_page_wins(solver):
-    solver.event(STARTED, "A"), solver.event(STARTED, "B", url="https://b.test/")
-    solver.event(FINISHED, "B", url="https://b.test/", success=False)
-    solver.event(FINISHED, "A", url="https://a.test/", success=True)
-    r = helpers.solve_captcha()
-    assert (r["solved"], r["detail"], r["url"]) == (False, "the solver failed", "https://b.test/")
+def test_only_the_current_tab_counts(solver):
+    solver.event(STARTED, "OLD", url="https://old.test/"), solver.event(FINISHED, "OLD", success=False)
+    solver.event(STARTED, "BG", url="https://bg.test/")  # still running in a background tab
+    solver.event(STARTED, url=DEMO), solver.event(FINISHED, url=DEMO, success=True)
+    r = helpers.solve_captcha(start_timeout=0.3, timeout=1)
+    assert (r["solved"], r["detail"], r["url"]) == (True, "solved", DEMO)
+    assert helpers.solve_captcha(start_timeout=0.3)["detail"] == "no captcha solve started within 0.3 s"
+
+
+def test_old_finish_is_no_answer_for_a_new_challenge(solver, monkeypatch):
+    monkeypatch.setattr(daemon, "CAPTCHA_FRESH_S", 0.2)
+    solver.event(STARTED, vendor="recaptcha"), solver.event(FINISHED, vendor="recaptcha", success=True)
+    time.sleep(0.4)  # auto-solved earlier; now an unsupported challenge, no solve starts
+    assert helpers.solve_captcha(start_timeout=0.3)["detail"] == "no captcha solve started within 0.3 s"
+
+
+def test_navigating_away_drops_the_last_pages_finish(solver):
+    solver.event(STARTED, vendor="cloudflare"), solver.event(FINISHED, vendor="cloudflare", success=True)
+    helpers.goto_url("https://lamoda.test/")  # in the same script: no note in between
+    assert helpers.solve_captcha(start_timeout=0.3)["detail"] == "no captcha solve started within 0.3 s"
+
+
+def test_script_note_reports_once_and_a_reported_finish_is_not_returned(solver):
+    solver.event(STARTED, vendor="cloudflare", url="https://a.test/")
+    note = helpers._send({"meta": "captcha", "op": "note"})["note"]
+    assert note.startswith("[Captcha solver running (cloudflare) on https://a.test/ for 0 s. Wait with solve_captcha()")
+    solver.event(FINISHED, vendor="cloudflare", url="https://a.test/", success=True)
+    assert helpers._send({"meta": "captcha", "op": "note"})["note"] == (
+        "[Captcha solver finished: solved (cloudflare) on https://a.test/.]")
+    assert helpers._send({"meta": "captcha", "op": "note"})["note"] == ""
+    assert helpers.solve_captcha(start_timeout=0.3)["detail"] == "no captcha solve started within 0.3 s"
 
 
 def test_solve_with_no_finish_ends_as_lost(solver, monkeypatch):
@@ -158,6 +186,25 @@ def test_someone_else_switching_it_off_drops_ownership(solver):
     t.join(3)
     assert out["detail"] == "solved"
     assert solver.cdp.sets == [True]  # not switched off on their behalf
+
+
+def test_one_callers_release_keeps_the_solver_on_for_another(solver):
+    solver.cdp.enabled = False
+    ta, a = _in_thread(start_timeout=0.4, timeout=5)  # switches it on
+    _until(lambda: solver.cdp.sets == [True])
+    tb, b = _in_thread(start_timeout=1.5, timeout=5)
+    ta.join(3)
+    assert a["detail"] == "no captcha solve started within 0.4 s"
+    time.sleep(0.2)
+    assert tb.is_alive() and solver.cdp.enabled is True  # still on while b waits
+    tb.join(3)
+    _until(lambda: solver.cdp.sets == [True, False])
+
+
+def test_a_dead_callers_lease_expires(solver):
+    solver.cdp.enabled = False
+    helpers._send({"meta": "captcha", "op": "enable", "caller": "dead", "lease": 0.3})  # never releases
+    _until(lambda: solver.cdp.sets == [True, False])
 
 
 def test_concurrent_callers_share_one_result(solver):

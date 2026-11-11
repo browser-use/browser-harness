@@ -31,6 +31,7 @@ from .admin import (
 )
 from . import auth, recorder, telemetry
 from .helpers import *
+from .helpers import _send
 
 HELP = """Browser Harness
 
@@ -106,6 +107,16 @@ def _cloud_auth_configured():
         return True
     except (auth.CloudAuthRequired, auth.AuthError, OSError):
         return False
+
+
+def _print_captcha_note():
+    """Captcha solves running, and finishes not yet shown, so the agent waits instead of reloading."""
+    try:
+        note = _send({"meta": "captcha", "op": "note"}, response_timeout=2).get("note")
+    except Exception:  # no daemon, or one without the captcha op
+        return
+    if note:
+        print(note)
 
 
 def _print_skill():
@@ -406,7 +417,11 @@ def _run(args):
             print(f"browser-harness: {e}", file=sys.stderr)
             sys.exit(1)
     _install_helper_trace()
-    exec(code, globals())
+    try:
+        exec(code, globals())
+    finally:
+        if not cloud_admin:
+            _print_captcha_note()
 
 
 if __name__ == "__main__":
