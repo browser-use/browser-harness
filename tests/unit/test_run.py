@@ -299,3 +299,17 @@ def test_cli_update_forwards_yes_flag(flag, expected_yes):
             run.main()
     assert ei.value.code == 0
     m.assert_called_once_with(yes=expected_yes)
+
+
+def test_script_output_ends_with_the_captcha_note():
+    stdout = StringIO()
+    note = "[Captcha solver running (cloudflare) on https://a.test/ for 3 s. Wait with solve_captcha(); do not reload, navigate or switch tabs.]"
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("browser_harness.run.ensure_daemon"), \
+         patch("browser_harness.run.print_update_banner"), \
+         patch("browser_harness.run._send", return_value={"note": note}) as send, \
+         patch("sys.stdin", StringIO("print('hi')")), \
+         patch("sys.stdout", stdout):
+        run.main()
+    send.assert_called_once_with({"meta": "captcha", "op": "note"}, response_timeout=2)
+    assert stdout.getvalue() == f"hi\n{note}\n"
