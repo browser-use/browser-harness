@@ -24,3 +24,11 @@
 - Dashboard labels may format dates in the browser timezone rather than the restaurant timezone. Convert the saved UTC timestamps into the restaurant timezone when reconciling a one-day display difference.
 - When using native UI without API readback, reopen the saved Edit form to compare its dates with the performance dashboard. An observed edit view initially showed no selected items; refreshing restored the persisted item and percentage. Never submit the transient empty form or infer a lost campaign from it.
 - Masked date fields can corrupt a pasted full date. Prefer the visible calendar month/year/day controls and read the resulting values before publication.
+
+## Included-side customizations
+
+- Creating a customization from an item editor navigates away and can discard unsaved item fields. Save the description first, then choose Add customizations > Create New.
+- A customization group is not automatically attached to the originating item. Use Add to items, select the exact existing item, Apply, then Save. Reopen the item to confirm its customization chip.
+- Create option saves can remain in the option editor after completion. The customization list count updates; navigate back through the group rather than saving duplicate options.
+- For one included side, create dedicated zero-priced options (do not change shared paid side items), set minimum and maximum quantity to 1, and leave Multiple selections off. Reopen the rules and all option prices independently.
+- The item selector may replace its combobox with a search field upon focus; typing during that replacement can lose the first character. Inspect the resulting field value before selecting a result.
