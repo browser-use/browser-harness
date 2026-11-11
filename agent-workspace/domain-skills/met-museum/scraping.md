@@ -78,8 +78,9 @@ def ids(path):
         page = d["objectIDs"] or []  # null, not [], when nothing matches
         out += page
         offset += len(page)
-        if d["total"] > 10000:  # the rest is unreachable here, so an intersection could miss the work
-            raise RuntimeError(f"{path}: {d['total']} matches, past the 10,000 paging cap; narrow the query")
+        if d["total"] > 10000:  # the API serves at most 10,000 IDs per search, so an intersection could miss the work
+            raise RuntimeError(f"{path}: {d['total']} matches, more than the 10,000 the search serves; the answer would be "
+                               "incomplete. Use /v1/objects or the Open Access CSV for complete lists")
         if not page or offset >= d["total"]:
             return d["total"], out
 

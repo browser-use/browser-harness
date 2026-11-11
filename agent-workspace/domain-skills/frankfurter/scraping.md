@@ -94,8 +94,10 @@ inv = get(f"{ECB}/rate/{CCY}/EUR")  # Frankfurter's inversion of it, rounded (0.
 for d, b, q in ((pub, "EUR", CCY), (inv, CCY, "EUR")):
     if (d["base"], d["quote"]) != (b, q):
         raise RuntimeError(f"asked {b}/{q}, got {d['base']}/{d['quote']}")
-if pub["date"] != inv["date"] or pub["date"] != prov["end_date"]:
-    raise RuntimeError(f"dates disagree: EUR pair {pub['date']}, inverted {inv['date']}, provider end {prov['end_date']}")
+if pub["date"] != inv["date"]:
+    raise RuntimeError(f"dates disagree: EUR pair {pub['date']}, inverted {inv['date']}")
+if pub["date"] != prov["end_date"]:  # a separately cached response (cache-control max-age), can lag a new fixing
+    print(f"  note: provider record ends {prov['end_date']}, rate is dated {pub['date']}; quoting the rate's date")
 
 now = datetime.now(ZoneInfo("Europe/Berlin"))  # CET/CEST, the ECB's clock
 want = latest_expected(now)
@@ -109,8 +111,8 @@ if got != want:
 official = pub["rate"]  # EUR 1 = official CCY
 amount = AMOUNT / official
 check = AMOUNT * inv["rate"]
-if abs(round(amount, 2) - round(check, 2)) > 0.01:
-    raise RuntimeError(f"inversion disagrees: {amount:.4f} vs {check:.4f}")
+if abs(official * inv["rate"] - 1) > 1e-4:  # the inverted rate is rounded to 5 significant digits
+    raise RuntimeError(f"inversion disagrees: {official} x {inv['rate']} = {official * inv['rate']:.6f}, not 1")
 print(f"ECB EUR/{pub['quote']} {official} on {pub['date']}; Frankfurter {inv['base']}/{inv['quote']} {inv['rate']}")
 print(f"  {AMOUNT} {CCY} / {official} = {amount:.4f} -> {amount:,.2f} EUR   (via the inverted rate: {check:.4f})")
 

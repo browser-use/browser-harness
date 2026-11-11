@@ -262,10 +262,14 @@ two calls 0 s apart            HTTP 200 code 0, then HTTP 429 code 5 (rate limit
 ### 3. Same call with curl (default HTML-entity encoding)
 
 ```bash
-curl -sS --fail 'https://opentdb.com/api.php?amount=10&category=22&difficulty=hard&type=multiple' | python3 -c '
+sleep 6  # once every 5 s per IP: covers a call made just before this block
+# no --fail: the rate-limit answer is HTTP 429 with a JSON body {"response_code":5,"result":[]}
+curl -sS 'https://opentdb.com/api.php?amount=10&category=22&difficulty=hard&type=multiple' | python3 -c '
 import html, json, sys
 d = json.load(sys.stdin)
-res = d["results"]
+if d["response_code"] == 5:
+    sys.exit("rate limited (response_code 5): wait 5 s and run again")
+res = d.get("results", [])
 if d["response_code"] != 0 or len(res) != 10:
     sys.exit("response_code %s, %d results" % (d["response_code"], len(res)))
 print("questions with an HTML entity before unescape:", sum("&" in r["question"] for r in res), "of", len(res))
