@@ -481,6 +481,40 @@ def iframe_target(url_substr):
     return None
 
 
+# --- captcha ---
+def solve_captcha(start_timeout=20.0, timeout=75.0):
+    """Wait for Browser Use Cloud's captcha solver: a solve running or finished since the last call, or one it starts
+    within start_timeout s. Returns {'solved', 'detail', 'seconds'} (+ 'vendor', 'url'). detail: 'solved', 'the solver
+    failed', 'still solving' (+ 'next': call again), 'no captcha solve started within N s', 'no result from the solver
+    after 150 s' or 'solver unavailable: ...' (not a cloud browser; never raises for that). Turns the solver on if it
+    was off, and off again once no solve runs."""
+    began, since = time.monotonic(), time.time()
+    def out(solved, detail, **extra):
+        return {"solved": solved, "detail": detail, "seconds": round(time.monotonic() - began, 1), **extra}
+    try:
+        _send({"meta": "captcha", "op": "enable"}, response_timeout=10)  # up to three 2 s CDP calls
+    except Exception as e:
+        why = str(e) or type(e).__name__
+        if "wasn't found" in why or "-32601" in why:  # Chrome: no BrowserUse domain
+            why = "this browser has no captcha solver (Browser Use Cloud browsers do)"
+        return out(False, f"solver unavailable: {why[:300]}")
+    while True:
+        state = _send({"meta": "captcha", "op": "poll", "since": since})
+        if state.get("finished"):
+            failed = next((f for f in state["finished"] if not f["success"]), None)  # several pages: the failure wins
+            f = failed or state["finished"][-1]
+            detail = "solved" if not failed else "no result from the solver after 150 s" if f.get("lost") else "the solver failed"
+            return out(not failed, detail, **{k: f[k] for k in ("vendor", "url") if k in f})
+        solving = state.get("solving")
+        limit = timeout if solving is not None else min(start_timeout, timeout)
+        if time.monotonic() - began >= limit:
+            if solving is not None:
+                return out(False, "still solving", **solving, next="call solve_captcha() again")
+            _send({"meta": "captcha", "op": "release"})
+            return out(False, f"no captcha solve started within {limit:g} s")
+        time.sleep(0.25)
+
+
 # --- utility ---
 def wait(seconds=1.0):
     time.sleep(seconds)

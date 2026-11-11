@@ -35,6 +35,7 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
+CAPTCHA_LOST_S = 150  # the solver gives up within 120 s: a solve open longer has no finish coming
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -437,6 +438,12 @@ class Daemon:
         self._session_replacements = {}
         self.events = deque(maxlen=BUF)
         self.dialog = None
+        # Browser Use Cloud's captcha solver, from its BrowserUse.captchaSolver* events (never replayed).
+        self.captcha_active = {}  # targetId -> (monotonic start, {vendor?, url?}): solves with no finished event yet
+        self.captcha_finished = {}  # targetId -> {success, vendor?, url?, lost?}: not yet returned by solve_captcha()
+        self.captcha_taken = (0.0, [])  # (time.time(), finishes) last returned, for callers that began before
+        self.captcha_switched_on = False  # solve_captcha() turned the solver on and owns turning it off
+        self._captcha_off = None  # pending switch-off task: the next switch-on goes out after it
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
@@ -631,6 +638,66 @@ class Daemon:
             self.dialog = None
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
+        elif method.startswith("BrowserUse.captchaSolver"):
+            self._record_captcha(method, params or {})
+
+    def _record_captcha(self, method, params):
+        key = str(params.get("targetId", ""))
+        where = {k: params[k] for k in ("vendor", "url") if isinstance(params.get(k), str) and params[k]}
+        if method == "BrowserUse.captchaSolverStarted":
+            self.captcha_finished.pop(key, None)
+            self.captcha_active[key] = (time.monotonic(), where)
+        elif method == "BrowserUse.captchaSolverFinished":
+            self.captcha_active.pop(key, None)
+            self._captcha_finish(key, {"success": params.get("success") is True, **where})
+        elif method == "BrowserUse.captchaSolverStateChanged" and params.get("enabled") is False:
+            self.captcha_switched_on = False  # someone switched it off: nothing left to restore
+
+    def _captcha_finish(self, key, finish):
+        self.captcha_finished.pop(key, None)  # newest last
+        self.captcha_finished[key] = finish
+        self._captcha_release()
+
+    def _captcha_release(self):
+        """Switch the solver back off once no solve runs, if solve_captcha() switched it on."""
+        if self.captcha_switched_on and not self.captcha_active:
+            self.captcha_switched_on = False
+            self._captcha_off = asyncio.get_running_loop().create_task(
+                _silent(self._captcha_send("setCaptchaSolverEnabled", enabled=False)))
+
+    async def _captcha_send(self, method, **params):
+        return await asyncio.wait_for(self.cdp.send_raw(f"BrowserUse.{method}", params), timeout=2)
+
+    async def captcha(self, op, since=0.0):
+        """solve_captcha()'s view of the solver. op: enable | poll | release."""
+        for key, (started, where) in list(self.captcha_active.items()):
+            if time.monotonic() - started > CAPTCHA_LOST_S:
+                del self.captcha_active[key]
+                self._captcha_finish(key, {"success": False, "lost": True, **where})
+        if op == "enable":
+            if not self.captcha_active and not self.captcha_finished:
+                if self._captcha_off:
+                    await asyncio.wait({self._captcha_off}, timeout=2)
+                try:
+                    if (await self._captcha_send("getCaptchaSolverEnabled")).get("enabled") is not True:
+                        self.captcha_switched_on = True  # owned before the command goes out
+                        await self._captcha_send("setCaptchaSolverEnabled", enabled=True)
+                except Exception as e:
+                    self._captcha_release()  # an enable that never answered may still land
+                    return {"error": str(e) or type(e).__name__}
+            return {"ok": True}
+        if op == "release":
+            self._captcha_release()
+            return {"ok": True}
+        if self.captcha_finished and not self.captcha_active:
+            self.captcha_taken = (time.time(), list(self.captcha_finished.values()))
+            self.captcha_finished.clear()
+            self._captcha_release()
+            return {"finished": self.captcha_taken[1]}
+        if self.captcha_taken[1] and self.captcha_taken[0] >= since:  # a concurrent caller took this call's answer
+            return {"finished": self.captcha_taken[1]}
+        solving = [where for _, where in self.captcha_active.values()]
+        return {"solving": solving[-1] if solving else None}
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -737,6 +804,7 @@ class Daemon:
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
+        if meta == "captcha":     return await self.captcha(req.get("op"), req.get("since", 0.0))
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
             # cancel/drain existing handlers. In particular, a CDP replay that
