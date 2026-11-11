@@ -1,23 +1,39 @@
 """Regression tests for the optional Browser Use cloud API base override."""
 
-from browser_harness import admin, daemon
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+ENV_NAME = "BROWSER_USE_CLOUD_API_BASE"
+US_BASE = "https://api.browser-use.com/api/v3"
+EU_BASE = "https://api.eu.browser-use.com/api/v4"
 
 
-def test_admin_cloud_api_base_default(monkeypatch):
-    monkeypatch.delenv("BROWSER_USE_CLOUD_API_BASE", raising=False)
-    assert admin._cloud_api_base() == "https://api.browser-use.com/api/v3"
+def bu_api_at_import(module: str, value: str | None = None) -> str:
+    env = os.environ.copy()
+    env.pop(ENV_NAME, None)
+    if value is not None:
+        env[ENV_NAME] = value
+
+    pythonpath = str(ROOT / "src")
+    if env.get("PYTHONPATH"):
+        pythonpath += os.pathsep + env["PYTHONPATH"]
+    env["PYTHONPATH"] = pythonpath
+
+    result = subprocess.run(
+        [sys.executable, "-c", f"from browser_harness import {module}; print({module}.BU_API)"],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
-def test_admin_cloud_api_base_override(monkeypatch):
-    monkeypatch.setenv("BROWSER_USE_CLOUD_API_BASE", "https://api.eu.browser-use.com/api/v4/")
-    assert admin._cloud_api_base() == "https://api.eu.browser-use.com/api/v4"
-
-
-def test_daemon_cloud_api_base_default(monkeypatch):
-    monkeypatch.delenv("BROWSER_USE_CLOUD_API_BASE", raising=False)
-    assert daemon._cloud_api_base() == "https://api.browser-use.com/api/v3"
-
-
-def test_daemon_cloud_api_base_override(monkeypatch):
-    monkeypatch.setenv("BROWSER_USE_CLOUD_API_BASE", "https://api.eu.browser-use.com/api/v4/")
-    assert daemon._cloud_api_base() == "https://api.eu.browser-use.com/api/v4"
+def test_bu_api_is_read_at_import_for_both_modules():
+    for module in ("admin", "daemon"):
+        assert bu_api_at_import(module) == US_BASE
+        assert bu_api_at_import(module, EU_BASE + "/") == EU_BASE
