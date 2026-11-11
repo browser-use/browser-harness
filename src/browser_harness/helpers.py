@@ -150,7 +150,14 @@ def _is_illegal_return_error(exc):
 
 # --- navigation / page ---
 def goto_url(url):
+    """Navigate; raise on Chrome navigation errors. Downloads retain the CDP result."""
     r = cdp("Page.navigate", url=url)
+    if r.get("errorText") and not r.get("isDownload"):
+        # Chrome's error code is useful; the requested URL may contain secrets.
+        import re
+        code = re.search(r"\bnet::ERR_[A-Z0-9_]+\b", str(r["errorText"]))
+        reason = code.group(0) if code else "Chrome reported a navigation error"
+        raise RuntimeError(f"Navigation failed: {reason}")
     if os.environ.get("BH_DOMAIN_SKILLS") != "1":
         return r
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
@@ -433,17 +440,18 @@ def new_tab(url="about:blank"):
     if url != "about:blank":
         try:
             cur = current_tab()
+        except Exception:
+            cur = None
+        if cur is not None:
             cur_url = cur.get("url") or ""
-            # Reuse attached tab when it's blank
             if (
                 cur_url in ("", "about:blank", "data:text/html,")
                 or cur_url.startswith("about:blank#")
                 or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
             ):
+                # A failed navigation must not be retried in a second tab.
                 goto_url(url)
                 return cur.get("targetId") or cur.get("target_id")
-        except Exception:
-            pass
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
