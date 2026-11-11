@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Run browser-harness against the isolated Chrome — its own process, its own
+# profile, its own debug port — instead of the one every other session shares.
+# Usage is identical to browser-harness:  harness-iso <<'PY' ... PY
+set -euo pipefail
+
+# Prefer the checkout's own shim over whatever `browser-harness` is on PATH: the
+# console script from a `uv tool install` is pinned to the layout it was built
+# against, so a repo that has since moved its modules leaves it importing a
+# module that no longer exists. The shim is part of the tree it runs.
+SRC="${BASH_SOURCE[0]}"
+while [ -L "$SRC" ]; do
+  D="$(cd -P "$(dirname "$SRC")" && pwd)"; SRC="$(readlink "$SRC")"
+  case "$SRC" in /*) ;; *) SRC="$D/$SRC" ;; esac
+done
+ROOT="$(cd -P "$(dirname "$SRC")" && pwd)"
+HARNESS="$ROOT/browser-harness"
+[ -x "$HARNESS" ] || HARNESS="$(command -v browser-harness)"
+
+PORT="${BU_ISO_PORT:-9333}"
+NAME="${BU_NAME:-iso}"
+# Colon-separated allowlist of profile dirs this port is allowed to be serving.
+# The /tmp entry is transitional — macOS clears /private/tmp on boot, taking the
+# logins and the remote-debugging grant with it. Drop it once the profile moves.
+PROFILES="${BU_ISO_PROFILE:-$HOME/.chrome-harness-profile:/tmp/chrome-fbc-profile}"
+
+# A debug port is just a number, and other apps pick round ones too: Relay's
+# dedicated Chrome (relay/config.py CHROME_PORT) defaults to this very port.
+# Attaching to whatever answers would mean driving someone else's browser, so
+# confirm the listener is a Chrome on a profile we expect before we say a word.
+PID=$(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null | head -1) || true
+if [ -n "${PID:-}" ]; then
+  CMD=$(ps -p "$PID" -o command= 2>/dev/null || true)
+  DIR=$(printf '%s' "$CMD" | tr ' ' '\n' | sed -n 's/^--user-data-dir=//p' | head -1)
+  ok=""
+  IFS=: read -ra want <<< "$PROFILES"
+  for w in "${want[@]}"; do [ -n "$w" ] && [ "$DIR" = "$w" ] && ok=1; done
+  if [ -z "$ok" ]; then
+    echo "harness-iso: 127.0.0.1:$PORT is served by --user-data-dir=${DIR:-<unknown>}, which is not one of" >&2
+    echo "     $PROFILES — refusing to drive another app's browser." >&2
+    echo "     Set BU_ISO_PORT to the harness instance's port, or BU_ISO_PROFILE if this is it." >&2
+    exit 1
+  fi
+fi
+
+# The isolated instance serves /json/version (the shared one 404s on it now), and
+# its profile is not in daemon.py's PROFILES, so file discovery can never find it.
+# Resolving the URL here is what makes a stale pasted browser id impossible.
+WS=$(curl -fsS --max-time 5 "http://127.0.0.1:$PORT/json/version" \
+     | sed -n 's/.*"webSocketDebuggerUrl" *: *"\([^"]*\)".*/\1/p') || true
+if [ -z "$WS" ]; then
+  echo "harness-iso: no isolated Chrome on 127.0.0.1:$PORT — see interaction-skills/isolated-instance.md" >&2
+  exit 1
+fi
+
+# Chrome mints a new browser id every launch, and the daemon reads BU_CDP_WS once,
+# at birth: ensure_daemon() returns early for a live socket, so exporting a fresh
+# URL past an old daemon changes nothing. Retire a daemon still dialling a dead id.
+# The shim relocates runtime files per checkout, so look where it would put them
+# as well as the flat legacy path — a daemon missed here is a daemon left dialing
+# a dead browser id, which is the failure this whole script exists to avoid.
+DEV_ID="$(printf '%s' "$ROOT" | cksum | awk '{print $1}')"
+for RT in "${BH_RUNTIME_DIR:-/tmp/bh-dev-$DEV_ID/runtime}" /tmp; do
+  PID_FILE="$RT/bu-$NAME.pid"
+  [ -f "$PID_FILE" ] || continue
+  DPID=$(cat "$PID_FILE" 2>/dev/null) || continue
+  kill -0 "$DPID" 2>/dev/null || continue
+  if ! ps -p "$DPID" -Eo command= 2>/dev/null | grep -qF "BU_CDP_WS=$WS"; then
+    kill "$DPID" 2>/dev/null || true
+    rm -f "$RT/bu-$NAME.sock" "$PID_FILE"
+  fi
+done
+
+BU_NAME="$NAME" BU_CDP_WS="$WS" exec "$HARNESS" "$@"
