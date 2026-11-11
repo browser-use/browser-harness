@@ -1,5 +1,18 @@
 <img src="https://raw.githubusercontent.com/browser-use/media/main/browser-harness/banner-ink.svg" alt="Browser Harness" width="100%" />
 
+> [!NOTE]
+> **Browser Harness is now the engine inside [Browser Use](https://github.com/browser-use/browser-use).** Use the `browser-use` CLI: same helpers and daemon, plus `browser-use login`, an MCP server (`browser-use --cli-mcp`) and `browser-use skill install`.
+>
+> ```bash
+> uv tool install browser-use
+> browser-use <<'PY'
+> new_tab("https://example.com")
+> print(page_info())
+> PY
+> ```
+>
+> The `browser-harness` command keeps working. Domain skills and interaction skills stay in this repo.
+
 # Browser Harness ♞
 
 Browser Harness lets Claude Code, Codex or Cursor use your real Chrome browser: open pages, click, type, read and download, logged in as you. Paste one prompt into your coding agent to set it up. It talks to Chrome over the DevTools Protocol (CDP), and the agent writes any missing helper as it works, so the harness gets better with each task. Open source, MIT licensed.
@@ -29,7 +42,7 @@ Try browser-harness in [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_
 Paste into Claude Code or Codex (Cursor: use the [MCP config](#cursor) below):
 
 ```text
-Install or upgrade browser-harness to the latest stable version with uv using Python 3.12, register the skill from `browser-harness skill`, and connect it to my browser. Ask whether I want local browser recordings enabled; default to no and preserve my existing preference on upgrades. Follow https://github.com/browser-use/browser-harness/blob/main/install.md if setup or connection fails.
+Install browser-use with `uv tool install browser-use`, run `browser-use skill install` to register the skill, and connect it to my browser. If setup or connection fails, run `browser-use --doctor` and follow its output and the error message.
 ```
 
 The agent will open `chrome://inspect/#remote-debugging`. On first setup, tick
@@ -92,10 +105,10 @@ Use your local browser for logged-in, personal work. When you want many browsers
 
 ## MCP server
 
-`browser-harness-mcp` exposes the browser control helpers as MCP tools over
+`browser-use --cli-mcp` exposes the browser control helpers as MCP tools over
 stdio, so any MCP client (Claude Code, Devin, Cursor, etc.) can drive the
-browser without writing a second CDP layer. See [docs/MCP.md](docs/MCP.md) for
-setup and client configuration.
+browser without writing a second CDP layer. The older `browser-harness-mcp`
+keeps working; see [docs/MCP.md](docs/MCP.md).
 
 ### Cursor
 
@@ -105,10 +118,10 @@ every project. It needs [uv](https://docs.astral.sh/uv/).
 ```json
 {
   "mcpServers": {
-    "browser-harness": {
+    "browser-use": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "browser-harness[mcp]", "browser-harness-mcp"]
+      "args": ["browser-use", "--cli-mcp"]
     }
   }
 }
