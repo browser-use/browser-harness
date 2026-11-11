@@ -738,3 +738,48 @@ def test_js_keeps_base_exception_from_evaluation_when_detach_also_raises():
         KeyboardInterrupt, match="evaluation interrupted"
     ):
         helpers.js("7", target_id="iframe-target")
+
+
+def test_cdp_accepts_the_camelcase_session_id_kwarg():
+    """CDP spells the parameter sessionId; a camelCase kwarg must not be
+    silently dropped into params and misroute the call to the default tab."""
+    with patch("browser_harness.helpers._send", return_value={"result": {}}) as send:
+        helpers.cdp("Page.enable", sessionId="sess-123")
+
+    request = send.call_args[0][0]
+    assert request["session_id"] == "sess-123"
+    assert "sessionId" not in request["params"]
+
+
+def test_cdp_rejects_both_session_id_spellings():
+    with patch("browser_harness.helpers._send", return_value={"result": {}}):
+        with pytest.raises(TypeError, match="both session_id and camelCase sessionId"):
+            helpers.cdp("Page.enable", session_id="a", sessionId="b")
+
+
+def test_cdp_rejects_an_explicit_none_alongside_the_camelcase_kwarg():
+    """An explicit session_id=None is still a supplied value, not an omission."""
+    with patch("browser_harness.helpers._send", return_value={"result": {}}):
+        with pytest.raises(TypeError, match="both session_id and camelCase sessionId"):
+            helpers.cdp("Page.enable", session_id=None, sessionId="b")
+
+
+def test_cdp_leaves_session_id_alone_for_browser_level_target_methods():
+    """Target.detachFromTarget carries sessionId as a real CDP parameter; taking
+    it for routing would send the command out with empty params and leak the
+    iframe session it was meant to release."""
+    with patch("browser_harness.helpers._send", return_value={"result": {}}) as send:
+        helpers.cdp("Target.detachFromTarget", sessionId="sess-123")
+
+    request = send.call_args[0][0]
+    assert request["params"] == {"sessionId": "sess-123"}
+    assert request["session_id"] is None
+
+
+def test_cdp_snake_case_session_id_still_passes_through():
+    with patch("browser_harness.helpers._send", return_value={"result": {}}) as send:
+        helpers.cdp("Page.enable", session_id="sess-456")
+
+    request = send.call_args[0][0]
+    assert request["session_id"] == "sess-456"
+    assert request["params"] == {}
