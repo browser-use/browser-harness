@@ -8,8 +8,9 @@ Use **CDP for control**, **UI automation for user-visible order**.
 tabs = list_tabs()                    # includes chrome:// pages too
 real_tabs = list_tabs(include_chrome=False)
 tid = new_tab("https://example.com")  # create + attach in the background
+window_tid = new_tab("https://example.com", new_window=True)  # separate background window
 switch_tab(tid)                       # attach harness, move the horse marker
-activate_tab(tid)                     # optional: explicitly show it in Chrome
+activate_tab(tid)                     # optional: explicitly show it in the browser
 print(current_tab())
 print(page_info())
 ```
@@ -62,6 +63,8 @@ Typical tools:
 ## Rules that held up in practice
 
 - `switch_tab()` intentionally does **not** change Chrome's visible tab.
+- `new_tab(url, new_window=True)` creates a separate background browser window
+  without activating it.
 - Static screenshots and normal CDP input work on the attached background tab.
 - `activate_tab()` is only for a user-requested visible switch. Rendering or
   input trouble is not permission to foreground Chrome; use background CDP and
