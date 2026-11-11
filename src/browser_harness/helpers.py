@@ -498,6 +498,8 @@ def solve_captcha(start_timeout=20.0, timeout=75.0):
         why = str(e) or type(e).__name__
         if "wasn't found" in why or "-32601" in why:  # Chrome: no BrowserUse domain
             why = "this browser has no captcha solver (Browser Use Cloud browsers do)"
+        elif why == "'method'":  # a daemon started before solve_captcha() existed
+            why = "the daemon predates solve_captcha(); run browser-harness --reload"
         return out(False, f"solver unavailable: {why[:300]}")
     try:
         while True:
