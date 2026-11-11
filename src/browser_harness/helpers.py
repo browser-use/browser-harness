@@ -328,10 +328,13 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def capture_screenshot(path=None, full=False, max_dim=None):
+def capture_screenshot(path=None, full=False, max_dim=None, *, activate=False):
     """Save a PNG of the current viewport. Set max_dim=1800 on a 2× display to
     keep the file under the 2000px-per-side limit some image-aware LLMs enforce."""
     path = path or str(ipc._TMP / "shot.png")
+    if activate:
+        activate_tab(current_tab())
+        time.sleep(0.3)  # Target activation is asynchronous; let Chrome paint it.
     try:
         r = cdp(
             "Page.captureScreenshot",
