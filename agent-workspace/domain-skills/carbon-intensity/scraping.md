@@ -9,7 +9,7 @@ robots.txt (checked 2026-11-12, curl and the cloud browser): https://api.carboni
 ## Quick summary
 
 - **No scraping.** `GET https://api.carbonintensity.org.uk/regional/intensity/<from>/fw24h/postcode/M1` returns 48 half-hour forecasts for the region that M1 belongs to: **North West England** (regionid 3, Electricity North West). Each slot is `{from, to, intensity: {forecast, index}, generationmix[]}` in gCO2/kWh.
-- **Answer for M1 on 2026-11-12 23:32 UTC:** best 2-hour window **Fri 13 Nov 02:00-04:00 UK time (GMT)**, forecast average **21.5 gCO2/kWh** ('very low', wind about 44%). Starting at the next half hour (00:00) averaged 22.2; the worst window (07:00-09:00) averaged 53.2. When the spread is this small, any night slot is fine.
+- **Answer for M1 on 2026-11-12 23:32 UTC (same at 23:54):** best 2-hour window **Fri 13 Nov 02:00-04:00 UK time (GMT)**, forecast average **21.5 gCO2/kWh** ('very low', wind about 44%). Starting at the next half hour (00:00) averaged 22.2; the worst window (07:00-09:00) averaged 53.2. When the spread is this small, any night slot is fine.
 - **Outward code only.** `M1`, `SW1A`, `EH8`. `M1 1AE` is HTTP 400 "No postcode match can be found."; lower case `m1` works.
 - **Great Britain only.** `BT1` (Belfast) is HTTP 400 on `/regional/postcode/`, and **HTTP 200 with body `null`** on the fw24h route. Check `data` is present, never just the status.
 - **UTC, 30-minute slots.** Convert to `Europe/London` (GMT in winter, BST in summer). The first fw24h slot is the half hour already running; the blocks start at the next half hour and stop at now + 24 h.
@@ -82,7 +82,7 @@ def t(s):
     return datetime.strptime(s, "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
 
 def hm(dt):
-    return dt.astimezone(LOCAL).strftime("%a %H:%M")
+    return dt.astimezone(LOCAL).strftime("%a %H:%M %Z")  # zone on every time: a window can cross a GMT/BST change
 
 on_api_tab()
 
@@ -106,14 +106,14 @@ for a, b in zip(slots, slots[1:]):
         raise RuntimeError(f"gap or odd slot between {a[0]} and {b[0]}: stop")
 
 # The first slot is the one already running; start at the next half hour and stay inside now + 24 h.
-start = now.replace(second=0, microsecond=0)
-if start.minute % 30:
-    start += timedelta(minutes=30 - start.minute % 30)
+start = now.replace(minute=now.minute - now.minute % 30, second=0, microsecond=0)
+if start < now:  # 23:30:10 -> 00:00, so the running slot is never picked
+    start += timedelta(minutes=30)
 usable = [s for s in slots if s[0] >= start and s[1] <= now + timedelta(hours=24)]
 n = HOURS * 2
 if len(usable) < n:
     raise RuntimeError(f"only {len(usable)} future slots: stop")
-print(f"\nnow {now:%Y-%m-%d %H:%M} UTC ({hm(now)} UK); {len(reg['data'])} slots returned "
+print(f"\nnow {now:%Y-%m-%d %H:%M} UTC ({hm(now)}); {len(reg['data'])} slots returned "
       f"{reg['data'][0]['from']}..{reg['data'][-1]['to']}, {len(usable)} usable from {start:%H:%M} UTC")
 
 wins = [(sum(s[2] for s in usable[i:i + n]) / n, i) for i in range(len(usable) - n + 1)]
@@ -124,7 +124,7 @@ best = usable[bi:bi + n]
 lo = min(usable, key=lambda s: s[2])
 hi = max(usable, key=lambda s: s[2])
 print(f"slot range: {lo[2]} ({hm(lo[0])}) .. {hi[2]} ({hm(hi[0])}) gCO2/kWh")
-print(f"\nbest {HOURS} h window: {hm(best[0][0])} - {hm(best[-1][1])} UK time "
+print(f"\nbest {HOURS} h window: {hm(best[0][0])} - {hm(best[-1][1])} "
       f"({best[0][0]:%Y-%m-%d %H:%M}..{best[-1][1]:%H:%M} UTC), average {best_avg:.1f} gCO2/kWh")
 for s in best:
     print(f"  {s[0]:%H:%M}-{s[1]:%H:%M} UTC  {s[2]:>3} '{s[3]}'  wind {s[4].get('wind', 0)}%  gas {s[4].get('gas', 0)}%")
@@ -134,30 +134,30 @@ if len(ties) > 1:
 print(f"starting at the next half hour instead ({hm(usable[0][0])}): {now_avg:.1f}; "
       f"worst window ({hm(usable[wi][0])}): {worst_avg:.1f} gCO2/kWh")
 
-print(f"\nanswer: run the dishwasher {hm(best[0][0])} - {hm(best[-1][1])} (UK time), "
+print(f"\nanswer: run the dishwasher {hm(best[0][0])} - {hm(best[-1][1])}, "
       f"forecast average {best_avg:.0f} gCO2/kWh in {reg['shortname']} ({OUTCODE}).")
 print("  Source: Carbon Intensity API (https://api.carbonintensity.org.uk, docs https://carbon-intensity.github.io/api-definitions),")
 print("  regional forecast, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); the 2-hour average is our calculation.")
 ```
 
-Output (from the run on 2026-11-12, 23:32 UTC):
+Output (from the run on 2026-11-12, 23:54 UTC):
 
 ```text
 M1 -> region 3 North West England (Electricity North West)
   latest slot 2026-11-12T23:00Z..2026-11-12T23:30Z UTC: forecast 22 gCO2/kWh 'very low', wind 45.7%, nuclear 39.9%, gas 5.6%
 
-now 2026-11-12 23:32 UTC (Thu 23:32 UK); 48 slots returned 2026-11-12T23:30Z..2026-11-13T23:30Z, 47 usable from 00:00 UTC
-slot range: 21 (Fri 00:00) .. 54 (Fri 08:30) gCO2/kWh
+now 2026-11-12 23:54 UTC (Thu 23:54 GMT); 48 slots returned 2026-11-12T23:30Z..2026-11-13T23:30Z, 47 usable from 00:00 UTC
+slot range: 21 (Fri 00:00 GMT) .. 54 (Fri 08:30 GMT) gCO2/kWh
 
-best 2 h window: Fri 02:00 - Fri 04:00 UK time (2026-11-13 02:00..04:00 UTC), average 21.5 gCO2/kWh
+best 2 h window: Fri 02:00 GMT - Fri 04:00 GMT (2026-11-13 02:00..04:00 UTC), average 21.5 gCO2/kWh
   02:00-02:30 UTC   22 'very low'  wind 43.6%  gas 5.6%
   02:30-03:00 UTC   21 'very low'  wind 43.9%  gas 5.3%
   03:00-03:30 UTC   21 'very low'  wind 43.9%  gas 5.3%
   03:30-04:00 UTC   22 'very low'  wind 43.9%  gas 5.5%
   (2 windows tie at 21.5; earliest shown)
-starting at the next half hour instead (Fri 00:00): 22.2; worst window (Fri 07:00): 53.2 gCO2/kWh
+starting at the next half hour instead (Fri 00:00 GMT): 22.2; worst window (Fri 07:00 GMT): 53.2 gCO2/kWh
 
-answer: run the dishwasher Fri 02:00 - Fri 04:00 (UK time), forecast average 22 gCO2/kWh in North West England (M1).
+answer: run the dishwasher Fri 02:00 GMT - Fri 04:00 GMT, forecast average 22 gCO2/kWh in North West England (M1).
   Source: Carbon Intensity API (https://api.carbonintensity.org.uk, docs https://carbon-intensity.github.io/api-definitions),
   regional forecast, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); the 2-hour average is our calculation.
 ```
@@ -258,12 +258,18 @@ API = "https://api.carbonintensity.org.uk"
 UK = ZoneInfo("Europe/London")
 
 def get(path):
-    """GET -> the response's "data". Python's default User-Agent got HTTP 200. Unknown outcode on fw24h: HTTP 200 null."""
-    try:
-        with urllib.request.urlopen(urllib.request.Request(API + path, headers={"Accept": "application/json"}), timeout=30) as r:
-            d = json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        sys.exit(f"{path}: HTTP {e.code} {e.read().decode()[:160]}")  # e.g. 400 "No postcode match can be found."
+    """GET -> the response's "data". Python's default User-Agent got HTTP 200. Unknown outcode on fw24h: HTTP 200 null.
+    Waits 30 s once on 429/5xx, like block 1."""
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(API + path, headers={"Accept": "application/json"}), timeout=30) as r:
+                d = json.loads(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt == 0:
+                time.sleep(30)
+                continue
+            sys.exit(f"{path}: HTTP {e.code} {e.read().decode()[:160]}")  # e.g. 400 "No postcode match can be found."
     time.sleep(1)  # a rate limit applies (terms); stay serial
     if not isinstance(d, dict) or not d.get("data"):
         sys.exit(f"{path}: no data ({json.dumps(d)[:120]}); GB outward codes only")
@@ -272,8 +278,8 @@ def get(path):
 t = lambda s: datetime.strptime(s, "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
 now = datetime.now(timezone.utc)
 reg = get(f"/regional/intensity/{now:%Y-%m-%dT%H:%MZ}/fw24h/postcode/{OUTCODE}")
-start = now.replace(second=0, microsecond=0)
-start += timedelta(minutes=(30 - start.minute % 30) % 30)  # next half hour; the first slot is already running
+start = now.replace(minute=now.minute - now.minute % 30, second=0, microsecond=0)
+start += timedelta(minutes=30) if start < now else timedelta(0)  # next half hour; the first slot is already running
 slots = [(t(s["from"]), t(s["to"]), s["intensity"]["forecast"]) for s in reg["data"]]
 slots = [s for s in slots if s[0] >= start and s[1] <= now + timedelta(hours=24)]
 n = HOURS * 2
@@ -282,17 +288,17 @@ if len(slots) < n or any(b[0] != a[1] for a, b in zip(slots, slots[1:])):
 avg, i = min((sum(s[2] for s in slots[j:j + n]) / n, j) for j in range(len(slots) - n + 1))
 a, b = slots[i][0].astimezone(UK), slots[i + n - 1][1].astimezone(UK)
 print(f"{reg['shortname']} ({OUTCODE}), {len(slots)} half hours from {start:%H:%M} UTC")
-print(f"best {HOURS} h: {a:%a %d %b %H:%M}-{b:%H:%M} {b:%Z}, average {avg:.1f} gCO2/kWh "
+print(f"best {HOURS} h: {a:%a %d %b %H:%M %Z}-{b:%H:%M %Z}, average {avg:.1f} gCO2/kWh "
       f"(slots {[s[2] for s in slots[i:i + n]]})")
-print("Source: Carbon Intensity API (api.carbonintensity.org.uk), CC BY 4.0; the average is calculated.")
+print("Source: Carbon Intensity API (api.carbonintensity.org.uk), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); the average is calculated.")
 ```
 
-Output (from the run on 2026-11-12, 23:34 UTC):
+Output (from the run on 2026-11-12, 23:55 UTC):
 
 ```text
 North West England (M1), 47 half hours from 00:00 UTC
-best 2 h: Fri 13 Nov 02:00-04:00 GMT, average 21.5 gCO2/kWh (slots [22, 21, 21, 22])
-Source: Carbon Intensity API (api.carbonintensity.org.uk), CC BY 4.0; the average is calculated.
+best 2 h: Fri 13 Nov 02:00 GMT-04:00 GMT, average 21.5 gCO2/kWh (slots [22, 21, 21, 22])
+Source: Carbon Intensity API (api.carbonintensity.org.uk), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); the average is calculated.
 ```
 
 ### 4. curl
@@ -346,7 +352,7 @@ full postcode (M1 1AE): HTTP 400 application/json
 
 - **Silent empty answers.** On `/regional/intensity/<from>/fw24h/postcode/<oc>`, an unknown or non-GB outcode (`BT1`, `ZZ99`, `M1 1AE`) is HTTP 200 with body `null`; a `from` beyond the forecast (`2027-06-01T00:00Z`) is HTTP 200 `{}`. Only a malformed date is HTTP 400.
 - **`from` picks the slot that contains it, with a boundary quirk.** `from=23:28Z` and `23:28` (no Z) gave 48 slots 23:00..23:00 next day; `from=23:30Z` (exact boundary) gave 49 slots 23:00..23:30; `from=23:31Z` gave 48 slots 23:30..23:30. A bare date `2026-11-12` gave 49 slots from 2026-11-11T23:30Z. Filter by slot times yourself (block 1) instead of trusting the count.
-- **The "current" slot lags.** At 23:29 UTC `/regional/postcode/M1` still returned 22:30-23:00; at 23:32 it returned 23:00-23:30. Read `from`/`to`, never assume it is now.
+- **The "current" slot lags.** At 23:29 UTC `/regional/postcode/M1` still returned 22:30-23:00; at 23:32 it returned 23:00-23:30, and at 23:54 still 23:00-23:30. Read `from`/`to`, never assume it is now.
 - **fw48h exists** (`/regional/intensity/<from>/fw48h/postcode/<oc>`, 96 slots). The docs say `/intensity/<from>/<to>` "is limited to 14 days", but on 2026-11-12 a 30-day national range (`2026-10-01T00:00Z/2026-10-31T00:00Z`) still returned HTTP 200 with 1441 slots: the cap is not enforced, so keep ranges to 14 days yourself and do not rely on it to bound a response.
 - **It is a forecast.** Regional values are forecasts for the whole region, not for the postcode or your supplier's tariff. The docs say the API "provides an indicative trend". Re-run before starting the appliance; the forecast updates.
 - **Rank by the number, not the label.** `index` is a 5-step label; adjacent windows often share it ('very low' all night here), so compare `forecast` in gCO2/kWh.

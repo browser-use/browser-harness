@@ -18,7 +18,7 @@ robots.txt (checked 2026-11-12, curl and the cloud browser): https://data.police
 
 ### 1. Most common crimes within a mile of Trafalgar Square, latest month (browser)
 
-`on_api_tab()` opens `/api/crime-last-updated` on data.police.uk once, so `fetch()` is same-origin. `get()` returns parsed JSON on 200, waits 10 s once on 429/5xx and otherwise raises, so an error never looks like "no crimes". The block refuses a latest month that is implausibly old or new, checks every record is from the month asked for and every category is a known one, then ranks crimes with ASB set aside.
+`on_api_tab()` opens `/api/crime-last-updated` on data.police.uk once, so `fetch()` is same-origin. `get()` returns parsed JSON on 200, waits 10 s once on 429/5xx and otherwise raises, so an error never looks like "no crimes". The block refuses a latest month that is implausibly old or new or not yet in `crimes-street-dates`, checks every record is from the month asked for and every category is a known one, then ranks crimes with ASB set aside.
 
 ```python
 import json, time
@@ -84,6 +84,9 @@ lag = (today.year - y) * 12 + today.month - m
 print(f"crime-last-updated: {last['date']} -> latest month {month} ({lag} months before {today:%Y-%m})")
 if lag < 1 or lag > 6:
     raise RuntimeError(f"latest month {month} is {lag} months from today: check the changelog before answering")
+newest = get("/crimes-street-dates")[0]["date"]  # newest first; lags crime-last-updated while an upload is in progress
+if newest != month:
+    raise RuntimeError(f"crime-last-updated says {month}, crimes-street-dates starts at {newest}: data mid-update, retry later")
 
 # 2. Which force covers the point (the 1-mile circle can cross force boundaries; Trafalgar Square is the Met).
 hood = get(f"/locate-neighbourhood?q={LAT},{LNG}")
@@ -113,17 +116,17 @@ for i, (cat, k) in enumerate(by_cat.most_common(TOP), 1):
 print(f"  (anti-social behaviour, not a crime: {asb:,})")
 
 streets = Counter(c["location"]["street"]["name"] for c in crimes if c["category"] != "anti-social-behaviour")
-print("\nbusiest snap points (approximate, anonymised locations):")
+print("\nbusiest location labels (approximate, anonymised; one label can cover several snap points):")
 for s, k in streets.most_common(5):
     print(f"  {k:4}  {s}")
 
 top3 = ", ".join(f"{names[c].lower()} ({k:,})" for c, k in by_cat.most_common(3))
 print(f"\nanswer: in {date(y, m, 1):%B %Y}, the latest month published, the most common street-level crimes within"
       f" a mile of {PLACE} were {top3}, out of {n:,} crimes.")
-print(f"  Source: data.police.uk (Police API), /api/crimes-street/all-crime, {force['name']} data. {ATTRIBUTION}")
+print(f"  Source: data.police.uk (Police API), /api/crimes-street/all-crime. {ATTRIBUTION}")  # the mile can cross force boundaries
 ```
 
-Output (from the run on 2026-11-12 23:31 UTC):
+Output (from the run on 2026-11-12 23:54 UTC):
 
 ```text
 crime-last-updated: 2026-09-01 -> latest month 2026-09 (2 months before 2026-11)
@@ -145,7 +148,7 @@ top 10 crime types (2026-09, 1 mile of Trafalgar Square):
   10. Vehicle crime                     64   1.9%   (vehicle-crime)
   (anti-social behaviour, not a crime: 396)
 
-busiest snap points (approximate, anonymised locations):
+busiest location labels (approximate, anonymised; one label can cover several snap points):
    308  On or near Nightclub
    188  On or near Theatre/concert Hall
    178  On or near Further/higher Educational Building
@@ -153,7 +156,7 @@ busiest snap points (approximate, anonymised locations):
     90  On or near Shopping Area
 
 answer: in September 2026, the latest month published, the most common street-level crimes within a mile of Trafalgar Square were other theft (823), theft from the person (662), violence and sexual offences (584), out of 3,353 crimes.
-  Source: data.police.uk (Police API), /api/crimes-street/all-crime, Metropolitan Police Service data. Contains public sector information licensed under the Open Government Licence v3.0.
+  Source: data.police.uk (Police API), /api/crimes-street/all-crime. Contains public sector information licensed under the Open Government Licence v3.0.
 ```
 
 ### 2. Docs, robots.txt and error shapes (browser)

@@ -18,7 +18,7 @@ robots.txt (checked 2026-11-12, curl and the cloud browser): https://api.fda.gov
 
 ### 1. This month's food recalls that mention peanuts, with firm, product and class (browser)
 
-api.fda.gov sends `content-security-policy: default-src 'none'`, so `fetch()` inside an api.fda.gov tab fails (`TypeError: Failed to fetch`, `connect-src` violation). `get()` therefore loads each API URL as a page in one tab and reads the status from the navigation entry. It returns parsed JSON on 200, `None` on 404 NOT_FOUND, waits 30 s once on 429/5xx and otherwise raises. The block checks a 60-day baseline first, reads every record of the month, and refuses to answer if the server's `peanut*` search and a local scan of every text field disagree. If this month has no match it shows last month, labelled.
+api.fda.gov sends `content-security-policy: default-src 'none'`, so `fetch()` inside an api.fda.gov tab fails (`TypeError: Failed to fetch`, `connect-src` violation). `get()` therefore loads each API URL as a page in one tab and reads the status from the navigation entry. It returns parsed JSON on 200, `None` on 404 NOT_FOUND, waits once (60 s on 429, 5 s on 5xx) and otherwise raises. The block checks a 60-day baseline first, reads every record of the month, and refuses to answer if the server's `peanut*` search and a local scan of every text field disagree. If this month has no match it shows last month, labelled.
 
 ```python
 import json, re, time, urllib.parse
@@ -34,7 +34,7 @@ PAUSE = 0.5  # no key: 240 requests/min and 1,000 requests/day per IP (open.fda.
 def get(**params):
     """Load food/enforcement.json?params as a page in the tab -> parsed JSON, or None for openFDA's
     404 {"error":{"code":"NOT_FOUND","message":"No matches found!"}}. A mistyped field name gives the same 404,
-    so callers prove the query shape with a non-empty baseline first. Waits 30 s once on 429/5xx, raises otherwise.
+    so callers prove the query shape with a non-empty baseline first. Waits once (60 s on 429, 5 s on 5xx), raises otherwise.
     In-page fetch() does not work here: api.fda.gov sends content-security-policy: default-src 'none'."""
     url = EP + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     for attempt in range(2):
@@ -52,7 +52,7 @@ def get(**params):
         if r["status"] == 404 and '"NOT_FOUND"' in r["text"]:
             return None
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            time.sleep(30)
+            time.sleep(60 if r["status"] == 429 else 5)  # the no-key limit is per minute
             continue
         raise RuntimeError(f"{url}: HTTP {r['status']} {' '.join(r['text'].split())[:200]!r}; stopping")
 
@@ -268,14 +268,18 @@ def get(**params):
         sys.exit(f"HTTP {e.code} {' '.join(body.split())[:200]}")
 
 def records(search):
-    out = []
-    while True:
+    out, total = [], None
+    while total is None or len(out) < total:
         d = get(search=search, limit=1000, skip=len(out))
         if d is None:
-            return out
+            break
+        total = d["meta"]["results"]["total"]
         out += d["results"]
-        if len(out) >= d["meta"]["results"]["total"] or not d["results"]:
-            return out
+        if not d["results"]:
+            break
+    if total is not None and len(out) != total:
+        sys.exit(f"{search}: got {len(out)} of {total} records")
+    return out
 
 def month_bounds(day):
     first = day.replace(day=1)
