@@ -244,7 +244,7 @@ skip=25001                          HTTP 400 {"code": "BAD_REQUEST", "message": 
 
 ### 3. Same answer with Python urllib (no browser)
 
-Python's default User-Agent got HTTP 200. Walks back from this month to the most recent month with a match.
+Python's default User-Agent got HTTP 200. Checks this month, then last month, and stops at the first one with a match.
 
 ```python
 import json, re, sys, time, urllib.error, urllib.parse, urllib.request
