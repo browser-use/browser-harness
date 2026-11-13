@@ -18,7 +18,7 @@ robots.txt (checked 2026-11-12, curl and the cloud browser): https://api.fda.gov
 
 ### 1. This month's food recalls that mention peanuts, with firm, product and class (browser)
 
-api.fda.gov sends `content-security-policy: default-src 'none'`, so `fetch()` inside an api.fda.gov tab fails (`TypeError: Failed to fetch`, `connect-src` violation). `get()` therefore loads each API URL as a page in one tab and reads the status from the navigation entry. It returns parsed JSON on 200, `None` on 404 NOT_FOUND, waits once (60 s on 429, 5 s on 5xx) and otherwise raises. The block checks a 60-day baseline first, reads every record of the month, and refuses to answer if the server's `peanut*` search and a local scan of every text field disagree. If this month has no match it shows last month, labelled.
+api.fda.gov sends `content-security-policy: default-src 'none'`, so `fetch()` inside an api.fda.gov tab fails (`TypeError: Failed to fetch`, `connect-src` violation). `get()` therefore loads each API URL as a page in one tab and reads the status from the navigation entry. It returns parsed JSON on 200, `None` on 404 NOT_FOUND, waits once (60 s on 429, 5 s on status 0 or 5xx) and otherwise raises. The block checks a 60-day baseline first, reads every record of the month, and refuses to answer if the server's `peanut*` search and a local scan of every text field disagree. If this month has no match it shows last month, labelled.
 
 ```python
 import json, re, time, urllib.parse
@@ -34,7 +34,7 @@ PAUSE = 0.5  # no key: 240 requests/min and 1,000 requests/day per IP (open.fda.
 def get(**params):
     """Load food/enforcement.json?params as a page in the tab -> parsed JSON, or None for openFDA's
     404 {"error":{"code":"NOT_FOUND","message":"No matches found!"}}. A mistyped field name gives the same 404,
-    so callers prove the query shape with a non-empty baseline first. Waits once (60 s on 429, 5 s on 5xx), raises otherwise.
+    so callers prove the query shape with a non-empty baseline first. Waits once (60 s on 429, 5 s on status 0 or 5xx), raises otherwise.
     In-page fetch() does not work here: api.fda.gov sends content-security-policy: default-src 'none'."""
     url = EP + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     for attempt in range(2):

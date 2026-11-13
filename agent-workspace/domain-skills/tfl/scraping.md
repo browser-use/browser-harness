@@ -154,11 +154,11 @@ nxt = trains[:3]
 print(f"\nanswer: {line['name']} line {'running normally' if normal else 'NOT running normally'} "
       f"({', '.join(s['statusSeverityDescription'] for s in statuses)}).")
 print("  next three at " + hits[0]["name"].replace(" Underground Station", "") + ": "
-      + "; ".join(f"{ts(p['expectedArrival']).astimezone(LONDON):%H:%M} {p['platformName'].split(' ')[0].lower()} to {p['towards'] or p['destinationName']}" for _, p in nxt) or "none predicted")
+      + ("; ".join(f"{ts(p['expectedArrival']).astimezone(LONDON):%H:%M} {p['platformName'].split(' ')[0].lower()} to {p['towards'] or p['destinationName']}" for _, p in nxt) or "none predicted"))
 print("  " + ATTRIBUTION)
 ```
 
-Output (from the run on 2026-11-12, 23:54 GMT):
+Output (from the run on 2026-11-13, 00:01 GMT):
 
 ```text
 station: Oxford Circus Underground Station -> 940GZZLUOXC
@@ -167,14 +167,14 @@ Victoria line: Good Service (severity 10)
 
 3 predictions, newest computed 50 s ago
 
-now 23:54:25 GMT
+now 00:01:40 GMT
 Southbound - Platform 5:
-  00:00   6 min  to Brixton  (Between Highbury & Islington and Kings Cross St. P, train 205)
-  00:04  10 min  to Brixton  (At Finsbury Park, train 273)
-  00:11  17 min  to Brixton  (At Blackhorse Road, train 206)
+  00:04   3 min  to Brixton  (Between Euston and Warren Street, train 273)
+  00:09   8 min  to Brixton  (Between Finsbury Park and Highbury & Islington, train 206)
+  00:14  13 min  to Brixton  (At Seven Sisters Platform 5, train 202)
 
 answer: Victoria line running normally (Good Service).
-  next three at Oxford Circus: 00:00 southbound to Brixton; 00:04 southbound to Brixton; 00:11 southbound to Brixton
+  next three at Oxford Circus: 00:04 southbound to Brixton; 00:09 southbound to Brixton; 00:14 southbound to Brixton
   Powered by TfL Open Data. Contains OS data © Crown copyright and database rights 2016 and Geomni UK Map data © and database rights [2019].
 ```
 
