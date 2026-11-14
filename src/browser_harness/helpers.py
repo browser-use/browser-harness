@@ -40,9 +40,25 @@ SOCK = ipc.sock_addr(NAME)
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 IPC_CONNECT_TIMEOUT_SECONDS = 5.0
 DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
+
+
+def _env_seconds(name, default):
+    try:
+        value = float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value if 0 < value < math.inf else default
+
+
+# Page.navigate answers only once the navigation commits, and evaluate waits on
+# the page's JS, so over a slow remote browser these need far more than an
+# ordinary round trip. BH_IPC_TIMEOUT (seconds) overrides this budget only;
+# every other call keeps the short default so a hung daemon still fails fast.
+SLOW_IPC_RESPONSE_TIMEOUT_SECONDS = _env_seconds("BH_IPC_TIMEOUT", 30.0)
+SLOW_CDP_METHODS = {"Page.navigate", "Page.reload", "Runtime.evaluate", "Runtime.callFunctionOn"}
 # Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
 # their IPC socket alive within the caller's existing 90-second process budget.
-SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
+SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = max(60.0, SLOW_IPC_RESPONSE_TIMEOUT_SECONDS)
 
 
 class _IPCResponseTimeout(TimeoutError):
@@ -69,8 +85,10 @@ def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
     return r
 
 
-def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
+def cdp(method, session_id=None, _response_timeout=None, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
+    if _response_timeout is None:
+        _response_timeout = SLOW_IPC_RESPONSE_TIMEOUT_SECONDS if method in SLOW_CDP_METHODS else DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS
     return _send(
         {"method": method, "params": params, "session_id": session_id},
         response_timeout=_response_timeout,

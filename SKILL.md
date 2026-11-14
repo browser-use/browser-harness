@@ -269,6 +269,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - Omnibox popups are not real work tabs.
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
+- Navigation and `js()` wait up to 30 s for the browser; other calls 5 s. On a very slow remote browser set `BH_IPC_TIMEOUT=<seconds>` to raise the 30 s.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
 
 ## Domain Skills
