@@ -233,6 +233,23 @@ def _safe_connection_label(url):
         return "<redacted-cdp-endpoint>"
 
 
+def _cdp_keys(url):
+    """Short hashes of a CDP endpoint (full, then bare host:port) so ping can report it without
+    leaking tokens or session paths. ws/http, case, trailing slash, default ports and
+    localhost/127.0.0.1/[::1]/0.0.0.0 match."""
+    import hashlib
+    try:
+        u = urlparse(url.strip())
+        host = (u.hostname or "").lower()
+        host = "127.0.0.1" if host in {"localhost", "::1", "0.0.0.0"} else host
+        scheme = {"http": "ws", "https": "wss"}.get(u.scheme.lower(), u.scheme.lower())
+        bare = f"{scheme}://{host}:{u.port or {'ws': 80, 'wss': 443}.get(scheme, '')}"
+        full = bare + u.path.rstrip("/") + (f"?{u.query}" if u.query else "")
+    except (AttributeError, TypeError, ValueError):
+        bare = full = str(url)
+    return tuple(hashlib.sha256(k.encode()).hexdigest()[:12] for k in (full, bare))
+
+
 async def _silent(coro):
     try:
         await coro
@@ -424,6 +441,7 @@ class _PatientCDPClient(CDPClient):
 class Daemon:
     def __init__(self):
         self.cdp = None
+        self.cdp_ws = None
         self.session = None
         self.target_id = None
         self.dedicated_target_id = None
@@ -634,7 +652,7 @@ class Daemon:
 
     async def start(self):
         self.stop = asyncio.Event()
-        url = get_ws_url()
+        url = self.cdp_ws = get_ws_url()
         log(f"connecting to {_safe_connection_label(url)}")
         self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
         if BROWSER_KIND == "local":
@@ -674,7 +692,11 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
+        # `cdp` (redacted label + hashes) lets ensure_daemon() refuse a caller that asks this name for another browser.
+        if meta == "ping":
+            urls = [u for u in (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL"), self.cdp_ws) if u]
+            cdp = {"label": _safe_connection_label(urls[0]) if urls else None, "keys": sorted({k for u in urls for k in _cdp_keys(u)})}
+            return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND, "cdp": cdp}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
