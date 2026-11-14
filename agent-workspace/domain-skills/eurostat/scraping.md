@@ -13,7 +13,7 @@ robots.txt (checked 2026-11-13, curl and the cloud browser): https://ec.europa.e
 - **Use `sinceTimePeriod`, not `lastTimePeriod=1`.** `lastTimePeriod=1` returns the dataset-wide latest month (2026-10, which only Ireland had) and **0 values** for DE, FR, ES and EU27_2020. Request a few months back and pick the latest month every country has.
 - **Silent misses are HTTP 200.** An unknown geo code (`XX`) is dropped from the answer; a bad dimension code (`s_adj=XX`) returns zero values. Check that every requested code came back.
 - **EU, EFTA and candidate codes only.** UK, US and JP are in `une_rt_m` but are non-commercial only under the copyright notice; the blocks never request them. Greece is `EL`.
-- **Big extracts: HTTP 413** `ASYNCHRONOUS_RESPONSE`. Docs: under 500,000 cells is synchronous, 500,000 to 5,000,000 is asynchronous, above that is an error; cached answers come back directly. The ranking query is 28 geos x 6 months = 168 cells.
+- **Big extracts: HTTP 413** `ASYNCHRONOUS_RESPONSE`. Docs: under 500,000 cells is synchronous, 500,000 to 5,000,000 is asynchronous, above that is an error; cached answers come back directly. A 413 means the extraction was queued: "API Statistics will not notify the user when the file is ready, the request must be made again to check its status." The ranking query is 28 geos x 6 months = 168 cells.
 - **Rate limit:** none published and no rate-limit headers (block 4). Fair-use guidance: "trigger 1 extraction request at a time", "in case of use of scripts, don't use parallelisation"; heavy use is "forced to be processed asynchronously". The ranking blocks make 1 (block 1) or 2 (block 3) API calls, 1 s apart.
 
 ## What works
@@ -63,7 +63,8 @@ POLL_JS = """(() => { const v = window.__es[%s]; if (v) delete window.__es[%s]; 
 def get(params, timeout=60):
     """GET une_rt_m?params from inside the tab -> parsed JSON-stat 2.0. Errors are {"error": [{"status", "id", "label"}]};
     a too-big extraction is HTTP 413 {"error": [{"id": 413, "label": "ASYNCHRONOUS_RESPONSE. ..."}]}; the docs show the
-    same label under "warning". All of these raise here: narrow the filters rather than retrying.
+    same label under "warning". All of these raise here. A 413 is not a final no: Eurostat queues the extraction and
+    the same request must be sent again later to fetch it. This helper does not do that, so narrow the filters instead.
     Waits 30 s once on 429/5xx or a network error, raises on anything else."""
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(url(params))))
@@ -435,7 +436,7 @@ Labels quoted from the API answer (`lang=EN`).
 - **Rank on one common month.** Countries publish with different lags. On 2026-11-13: 26 Member States ended at 2026-09, Ireland at 2026-10; outside the EU, Bosnia and Herzegovina ended at 2026-08 and Switzerland at 2026-06. Taking each country's own latest month would rank Ireland's October against everyone else's September.
 - **`lastTimePeriod=N` counts back from the dataset-wide latest month**, not per country. `lastTimePeriod=2` returned 2026-09 and 2026-10 with 4 values for 4 geos. `sinceTimePeriod`, `untilTimePeriod`, `time` and `lastTimePeriod` cannot be combined, except since with until (HTTP 400, id 400).
 - **HTTP 200 does not mean data.** Unknown geo codes are dropped (`geo=DE&geo=XX` returns only DE). `s_adj=XX` returns `size` 0 for `s_adj` and no values. `geo=ZZ` alone returns 0 geos. Unknown dimension names (`foo=1`) are HTTP 400 id 150; a misspelt dataset code is HTTP 404 id 100 `ERR_NOT_FOUND_4`.
-- **413 comes as `error`, the docs show `warning`.** An uncached 1.08M-cell request (`une_rt_m?freq=M&untilTimePeriod=2026-10`) returned HTTP 413 `{"error": [{"status": 413, "id": 413, "label": "ASYNCHRONOUS_RESPONSE. Your request will be treated asynchronously. Please try again later."}]}` in 0.55 s; the API guide shows `{"warning":{"status":413, ...}}`. The same cells without filters came back HTTP 200 (10 MB, 12 s), presumably cached. Filter `s_adj`, `age`, `sex`, `unit`, `geo` and time instead of downloading the dataset.
+- **413 comes as `error`, the docs show `warning`.** An uncached 1.08M-cell request (`une_rt_m?freq=M&untilTimePeriod=2026-10`) returned HTTP 413 `{"error": [{"status": 413, "id": 413, "label": "ASYNCHRONOUS_RESPONSE. Your request will be treated asynchronously. Please try again later."}]}` in 0.55 s; the API guide shows `{"warning":{"status":413, ...}}`. The same cells without filters came back HTTP 200 (10 MB, 12 s), presumably cached. The ranking blocks (1 and 3) stop on a 413 instead of sending the request again later (that flow is not tested), and block 2 only prints error bodies; filter `s_adj`, `age`, `sex`, `unit`, `geo` and time instead of downloading the dataset.
 - **Flags.** In the full dataset, 11,303 of 759,687 values carry a flag (`p` 5,832, `u` 3,318, `b` 1,307, `d` 846). For the SA / TOTAL / T / PC_ACT series over the last 24 months, only one Malta value carries `b`. Print the flag next to the number.
 - **Ties are common** at one decimal: September 2026 had three countries at 6.3 and three at 3.4. Block 1 gives tied countries the same rank.
 - **Country codes.** Eurostat uses `EL` for Greece. `EU27_2020` and `EA21` are aggregates, not countries; keep them out of the ranking.
