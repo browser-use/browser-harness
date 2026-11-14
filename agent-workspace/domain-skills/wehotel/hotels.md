@@ -249,10 +249,15 @@ hotels = js(r"""
     .slice(0, 30)
     .map(detailA => {
       const id = (detailA.href.match(/hotelId=([A-Z]+\d+)/i) || [])[1];
+      // "查看详情" is the link text, not part of the href, so an attribute
+      // selector matches detailA itself and the walk stops at its own parent.
+      // Climb until the container also holds the same-id hotel-name anchor.
+      const hasNameAnchor = (el) =>
+        Array.from(el.querySelectorAll(`a[href*='${id}']`))
+          .some(a => a !== detailA && (a.innerText || "").trim() && (a.innerText || "").trim() !== "查看详情");
       let card = detailA.parentElement;
-      while (card && !card.querySelector(`a[href*='${id}']:not(:where([href*='%E6%9F%A5%E7%9C%8B%E8%AF%A6%E6%83%85']))`)) {
+      while (card && !hasNameAnchor(card)) {
         card = card.parentElement;
-        if (!card) break;
       }
       if (!card) return null;
       const text = (card.innerText || "").replace(/\s+/g, " ");
