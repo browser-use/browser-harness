@@ -118,3 +118,5 @@ browser-harness telemetry disable
 ```
 
 State lives under `${XDG_CONFIG_HOME:-~/.config}/browser-harness` by default: auth, telemetry id, agent workspace, runtime sockets, logs, screenshots, and temp files. Override with `BH_HOME` or `BROWSER_HARNESS_HOME`.
+
+Long-running hosts: set `BH_IDLE_TIMEOUT=<seconds>` so idle daemons exit; a daemon spawned with `BH_OWNS_BROWSER=1` and `BU_CDP_WS` for a browser you launched defaults to 30 min and closes that browser. On a user's Chrome, each idle exit means another Allow popup on the next call.
