@@ -51,19 +51,29 @@ In Chrome:
 2. Tick "Allow remote debugging for this browser instance".
 3. Retry `page_info()`.
 
-If that reports `permission-blocked` on macOS, handle the per-connection Allow
-sheet without bringing Chrome to the foreground:
+If Chrome shows an "Allow remote debugging?" sheet, click **Allow** once.
+If Chrome reports `permission-blocked` on macOS, handle its per-connection
+Allow sheet without bringing the browser to the foreground:
 
 ```bash
 browser-harness mac-approve
 ```
 
-Continue browser work when the helper returns `ready`; otherwise follow its
-printed instruction. The first checkbox is intentionally a one-time manual
+Continue Chrome browser work when the helper returns `ready`; otherwise follow
+its printed instruction. The first checkbox is intentionally a one-time manual
 Chrome setup step; it is not exposed to the harness until CDP is available.
+Brave control requires an available CDP endpoint; the `chrome://inspect` setup
+and macOS `mac-approve` helper described here are Chrome-specific.
 
 The helper requires Accessibility permission for the app launching the CLI
-(for example Terminal, iTerm, Codex, or an IDE) in System Settings.
+(for example Terminal, iTerm, Codex, or an IDE) in System Settings > Privacy &
+Security > Accessibility.
+
+## Security
+
+Local CDP gives the harness access to the attached browser profile, including
+its cookies and logged-in sessions. Use a separate browser profile for agents
+that are not fully trusted.
 
 ## Cloud Browsers
 
