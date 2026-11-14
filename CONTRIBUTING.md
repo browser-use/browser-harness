@@ -14,6 +14,13 @@ print(page_info())
 PY
 ```
 
+Install the test dependency and run the unit suite with:
+
+```bash
+python -m pip install -e ".[test,mcp]"
+python -m pytest tests/unit
+```
+
 Agent-facing documentation should use `browser-harness`. The `./browser-harness`
 launcher is only for testing a local checkout.
 

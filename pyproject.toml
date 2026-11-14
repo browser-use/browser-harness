@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp==2.1.1"]
+test = ["pytest==8.4.1"]
 
 [project.scripts]
 browser-harness = "browser_harness.run:main"

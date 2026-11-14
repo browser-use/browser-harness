@@ -45,7 +45,7 @@ def test_cleanup_unattached_browser_launch_stops_posix_process_group(monkeypatch
     killed = []
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: False)
-    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)), raising=False)
 
     admin._cleanup_unattached_browser_launch((process, Path("/profile")))
 
@@ -55,7 +55,7 @@ def test_cleanup_unattached_browser_launch_stops_posix_process_group(monkeypatch
 def test_cleanup_unattached_browser_launch_keeps_cdp_browser(monkeypatch):
     process = FakeProcess()
     monkeypatch.setattr("browser_harness.daemon._devtools_port_live", lambda _profile: True)
-    monkeypatch.setattr(admin.os, "killpg", lambda _pid, _sig: pytest.fail("must keep the attached browser"))
+    monkeypatch.setattr(admin.os, "killpg", lambda _pid, _sig: pytest.fail("must keep the attached browser"), raising=False)
 
     admin._cleanup_unattached_browser_launch((process, Path("/profile")))
 
@@ -88,7 +88,7 @@ def test_explicit_chrome_path_retains_matching_profile_on_linux(monkeypatch, tmp
     monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: process)
     killed = []
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
-    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(admin.os, "killpg", lambda pid, sig: killed.append((pid, sig)), raising=False)
 
     launch = admin._launch_browser()
     assert launch == (process, profile)
@@ -112,7 +112,7 @@ def test_explicit_chrome_path_remains_unowned_without_platform_cleanup(monkeypat
     monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
     monkeypatch.setattr("platform.system", lambda: system)
     monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(admin.os, "killpg", lambda *_args: pytest.fail("must not terminate an unowned browser"))
+    monkeypatch.setattr(admin.os, "killpg", lambda *_args: pytest.fail("must not terminate an unowned browser"), raising=False)
 
     launch = admin._launch_browser()
     assert launch == (process, None)
