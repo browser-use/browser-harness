@@ -24,4 +24,4 @@ Multiple visible routing panels can contain Save buttons. Scope the action to th
 
 ## Voice and messaging status
 
-The purchase confirmation can report **A2P Registration in progress**, while the inventory banner reports an incomplete A2P registration. Number ownership and saved forwarding do not establish SMS approval. Check the provider's registration state before reporting SMS readiness. An actual inbound call is needed to verify the complete voice path.
+The purchase confirmation can report **A2P Registration in progress**, while the inventory banner reports an incomplete A2P registration. Report SMS readiness after verifying provider registration approval. An actual inbound call is needed to verify the complete voice path.
