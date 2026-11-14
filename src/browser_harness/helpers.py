@@ -50,6 +50,10 @@ class _IPCResponseTimeout(TimeoutError):
 
 
 def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
+    # A large request (a 10 MB upload as base64 is ~14 MB) needs seconds to reach
+    # a remote browser and be evaluated there: add 1 s per MiB to the budget.
+    if (mib := len(json.dumps(req)) >> 20):
+        response_timeout += mib
     c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
     try:
         c.settimeout(response_timeout)
