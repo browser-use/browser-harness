@@ -126,7 +126,13 @@ def _load_env_file(p):
 _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
-BU_API = "https://api.browser-use.com/api/v3"
+def _cloud_api_base():
+    """Browser Use cloud API root; override for the EU deployment."""
+    return (os.environ.get("BROWSER_USE_CLOUD_API_BASE")
+            or "https://api.browser-use.com/api/v3").rstrip("/")
+
+
+BU_API = _cloud_api_base()
 PYPI_JSON = "https://pypi.org/pypi/browser-harness/json"
 VERSION_CACHE = paths.config_dir() / "version-cache.json"
 VERSION_CACHE_TTL = 24 * 3600
