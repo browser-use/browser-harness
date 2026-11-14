@@ -48,6 +48,8 @@ def test_mac_approve_runs_osascript_only_after_checkbox_is_enabled(monkeypatch):
     assert calls[0][0] == (["osascript"],)
     assert "Allow remote debugging?" in calls[0][1]["input"]
     assert "AXPress" in calls[0][1]["input"]
+    assert "AXHeading" in calls[0][1]["input"]
+    assert "hasApprovalTitle" in calls[0][1]["input"]
     assert "activate" not in calls[0][1]["input"]
 
 
@@ -125,3 +127,13 @@ def test_mac_approve_is_unavailable_off_macos(monkeypatch):
         "unsupported",
         "mac-approve is only available on macOS",
     )
+
+
+def test_mac_approve_applescript_syntax_valid():
+    import subprocess
+    import shutil
+
+    if not shutil.which("osacompile"):
+        return
+    res = subprocess.run(["osacompile"], input=macos._APPLESCRIPT, text=True, capture_output=True)
+    assert res.returncode == 0
