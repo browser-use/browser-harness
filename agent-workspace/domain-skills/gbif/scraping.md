@@ -4,7 +4,7 @@ Field-tested against api.gbif.org on 2026-11-13 using a fresh Browser Use cloud 
 
 robots.txt (checked 2026-11-13, curl and the cloud browser): https://api.gbif.org/robots.txt has one rule for `User-agent: *`, `Disallow: /v1/image/unsafe`, plus an empty `Disallow:` for social preview bots (Discordbot, LinkedInBot, Pinterestbot, Slackbot, Snapchat, TelegramBot, Twitterbot, WhatsApp, facebookexternalhit). No named AI-agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*` and may fetch the `/v1/species/match`, `/v1/occurrence/search`, `/v1/dataset/`, `/v1/organization/` and `/v1/geocode/gadm/` paths used here. https://www.gbif.org/robots.txt (curl got a Cloudflare challenge, HTTP 403; the cloud browser got HTTP 200 on its second load) disallows `/occurrence/`, `/search`, `/taxon/search`, `/dataset/search` and similar for `*`, with `crawl-delay: 0.1`; this skill never loads www.gbif.org pages, and the API docs say the same: "The GBIF website at www.GBIF.org is not part of the public API. Scripted use of www.GBIF.org, including scraping, bulk downloading of webpages or web page resources may be blocked without warning." Terms: https://www.gbif.org/terms says "all open-access species occurrence datasets on GBIF.org carry standardized, machine-readable licences", one of CC0, CC BY or CC BY-NC ("CC BY-NC, under which data are made available for any use provided that attribution is appropriately given and provided the use is not for commercial purposes"). The Data user agreement (https://www.gbif.org/terms/data-user, "last updated: 15 September 2026"): "Users must comply with the terms and conditions included in the licence selected by each Data Publisher"; "Users must publicly acknowledge ... the Data Publishers whose biodiversity data they have used, where appropriate through use of a Digital Object Identifier (DOI)"; "the identifier of ownership of data must be retained with every data record shared onward for reuse"; "it is forbidden to use APIs to create denial of service, disruption in the service, and in general to interfere with the normal operations of GBIF and the Data Publishers." No AI/ML, scraping or automated-access clause for the API (the API docs invite use "in scripts, workflows or analyses"). The non-commercial limit attaches to CC BY-NC records, so every block filters on `license=CC0_1_0&license=CC_BY_4_0`; that drops 6,899 of the 11,916 US records. Naming: the citation guidelines name the site "GBIF.org" and the organisation "GBIF: The Global Biodiversity Information Facility"; this skill uses those names in plain text only and no GBIF logo. This skill is not affiliated with or endorsed by GBIF.
 
-**Attribution:** cite "GBIF.org" with the access date and the publishers whose records you use (block 1 prints the top 5 with dataset DOIs). The citation guidelines (https://www.gbif.org/citation-guidelines) say search-API results get no DOI: "It is up to the user to identify dataset publishers and properly acknowledge each of them when citing the data", and recommend a derived dataset for a citable DOI. CC BY records also need their own credit.
+**Attribution:** cite "GBIF.org" with the access date and the publishers whose records you use (block 1 prints the top 5 with dataset DOIs, and how many datasets remain to look up). The citation guidelines (https://www.gbif.org/citation-guidelines) say search-API results get no DOI: "It is up to the user to identify dataset publishers and properly acknowledge each of them when citing the data", and recommend a derived dataset for a citable DOI. CC BY records also need their own credit.
 
 ## Quick summary
 
@@ -103,7 +103,9 @@ taxon = m.get("acceptedUsageKey", m["usageKey"])
 print(f"{NAME!r} -> {m['scientificName']} ({m['rank']}, {m['status']}, {m['matchType']}, confidence {m['confidence']}), taxonKey {taxon}")
 
 # 2. Every US record, split by licence. The facet proves the licence values and shows what the filter drops.
-total, f = search(taxon, facets=["LICENSE"])
+total, f = search(taxon, facets=["LICENSE", "COUNTRY"])
+if f["COUNTRY"] != {COUNTRY: total}:  # a misspelt or ignored country filter would count the whole world
+    raise RuntimeError(f"country facet {f['COUNTRY']} is not {COUNTRY} only: stop")
 lic = f["LICENSE"]
 if total == 0 or sum(lic.values()) != total:
     raise RuntimeError(f"licence facet ({sum(lic.values())}) does not add up to the count ({total}): stop")
@@ -176,12 +178,16 @@ for key, c in sorted(ds.items(), key=lambda x: -x[1])[:5]:
     rec = ", ".join(f"{k} {v:,}" for k, v in fl["LICENSE"].items())
     print(f"  {c:>5,}  {d['title']} | {org['title']} | https://doi.org/{d['doi']}")
     print(f"         dataset licence {cc(d['license'])}; record licences of these {c:,}: {rec}")
+rest = sorted(ds.items(), key=lambda x: -x[1])[5:]
+if rest:  # the agreement asks you to acknowledge every publisher you use, not only the top 5
+    print(f"  + {len(rest)} more datasets ({sum(c for _, c in rest):,} records), not resolved here: their keys are in ds; "
+          "look each up at /v1/dataset/<key>, or cite one derived-dataset DOI (https://www.gbif.org/citation-guidelines)")
 
 print(f"\nSource: GBIF.org occurrence search API, accessed {now:%d %B %Y %H:%M} UTC; records published by {len(ds)} datasets (top 5 above) "
       "(CC0 1.0 or CC BY 4.0, cite each publisher; for a publication, cite a GBIF derived dataset DOI).")
 ```
 
-Output (from the run on 2026-11-13, 23:37 UTC):
+Output (from the run on 2026-11-14, 00:00 UTC):
 
 ```text
 'Puma concolor' -> Puma concolor (Linnaeus, 1771) (SPECIES, ACCEPTED, EXACT, confidence 99), taxonKey 2435099
@@ -249,8 +255,9 @@ Publishers: 82 datasets; top 5 by records
          dataset licence CC0 1.0; record licences of these 188: CC0_1_0 188
     167  MVZ Mammal Collection (Arctos) | Museum of Vertebrate Zoology | https://doi.org/10.15468/uwudf9
          dataset licence CC0 1.0; record licences of these 167: CC0_1_0 167
+  + 77 more datasets (1,366 records), not resolved here: their keys are in ds; look each up at /v1/dataset/<key>, or cite one derived-dataset DOI (https://www.gbif.org/citation-guidelines)
 
-Source: GBIF.org occurrence search API, accessed 13 November 2026 23:37 UTC; records published by 82 datasets (top 5 above) (CC0 1.0 or CC BY 4.0, cite each publisher; for a publication, cite a GBIF derived dataset DOI).
+Source: GBIF.org occurrence search API, accessed 14 November 2026 00:00 UTC; records published by 82 datasets (top 5 above) (CC0 1.0 or CC BY 4.0, cite each publisher; for a publication, cite a GBIF derived dataset DOI).
 ```
 
 ### 2. robots.txt, name matching and silent failures (browser)
@@ -374,7 +381,7 @@ import json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 API = "https://api.gbif.org/v1"
 # techdocs: apps should send a User-Agent with "a URL or email address" so GBIF can contact them; set yours here.
-UA = os.environ.get("GBIF_USER_AGENT", "gbif-skill-example/1.0")
+UA = os.environ.get("GBIF_USER_AGENT", "gbif-skill-example/1.0 (+https://github.com/browser-use/browser-harness)")
 OPEN = [("license", "CC0_1_0"), ("license", "CC_BY_4_0"), ("occurrenceStatus", "PRESENT")]
 
 def get(path, params=()):

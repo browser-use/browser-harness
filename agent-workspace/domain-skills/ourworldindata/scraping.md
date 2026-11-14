@@ -178,7 +178,7 @@ for q in ("For users who work with automated workflows",
     i = text.find(q)
     if i < 0:
         raise RuntimeError(f"FAQ changed, {q!r} not found: re-read {SITE}/faqs before relying on this skill")
-    print(f"\nfaq: {text[i:i + 260]}")
+    print(f"\nfaq: {text[i:i + 260].rstrip()}")
 
 # Same-origin probes, same tab. No retries: this block only inspects answers.
 goto_url(SITE + "/robots.txt")
@@ -220,12 +220,12 @@ r = raw("/grapher/co-emissions-per-capita.metadata.json?v=1")
 print(f"\nmetadata without useColumnShortNames: columns {list(json.loads(r['text'])['columns'])}")
 ```
 
-Output (from the run on 2026-11-13, 23:32 UTC):
+Output (from the run on 2026-11-14, 00:01 UTC):
 
 ```text
 robots.txt: 'Sitemap: https://ourworldindata.org/sitemap.xml'
 
-faq: For users who work with automated workflows, computational notebooks, or custom applications, we offer direct URLs to access data in CSV format and comprehensive metadata in JSON format. You can fetch the complete data or only the subset of the data currently 
+faq: For users who work with automated workflows, computational notebooks, or custom applications, we offer direct URLs to access data in CSV format and comprehensive metadata in JSON format. You can fetch the complete data or only the subset of the data currently
 
 faq: Most of the data on Our World in Data comes from third-party providers (such as the WHO, UN, and World Bank) and is subject to the license terms of those providers. You should always check their license before reusing or republishing the data. Our work would n
 
@@ -314,15 +314,16 @@ Source: Global Carbon Budget (2026); Population based on various sources (2024) 
 ```bash
 B=https://ourworldindata.org/grapher
 Q='v=1&csvType=filtered&useColumnShortNames=true&country=USA~CHN~IND&time=latest'
-curl -sS --fail -L "$B/co-emissions-per-capita.csv?$Q"; echo   # the CSV has no trailing newline
+R='--max-time 60 --retry 1 --retry-delay 30'  # like blocks 1 and 3: one retry after 30 s on 429/5xx (curl also retries a timeout)
+curl -sS --fail -L $R "$B/co-emissions-per-capita.csv?$Q"; echo   # the CSV has no trailing newline
 sleep 1
-curl -sS --fail -L "$B/co-emissions-per-capita.metadata.json?v=1&useColumnShortNames=true" | python3 -c '
+curl -sS --fail -L $R "$B/co-emissions-per-capita.metadata.json?v=1&useColumnShortNames=true" | python3 -c '
 import json, sys
 c = json.load(sys.stdin)["columns"]["emissions_total_per_capita"]
 print(c["unit"], "| updated", c["lastUpdated"], "| Source:", c["citationShort"])
 '
 sleep 1
-curl -sS -o /dev/null -w 'old slug: HTTP %{http_code} -> %{redirect_url}\n' "$B/co2-emissions-per-capita.csv?$Q"
+curl -sS --max-time 60 -o /dev/null -w 'old slug: HTTP %{http_code} -> %{redirect_url}\n' "$B/co2-emissions-per-capita.csv?$Q"
 ```
 
 Output (from the run on 2026-11-13, 23:33 UTC):
@@ -356,7 +357,7 @@ old slug: HTTP 301 -> https://ourworldindata.org/grapher/co-emissions-per-capita
 ## Gotchas
 
 - **Silent drops, not errors.** `country=USA~XYZ` returns only the USA row; `country=XYZ` returns a bare header `entity,year,emissions_total_per_capita` (no `code` column). Always compare the codes you got with the codes you asked for.
-- **`time=latest` is the chart's latest year, not each country's.** A country without a value in that year is dropped (Japan 2023 came back, the USSR, last value 1913, did not). For "each country's most recent value" ask `time=earliest..latest` and take the last row per code. `time=2099` silently returned 2025.
+- **`time=latest` is the chart's latest year, not each country's.** A country without a value in that year is dropped (Japan 2023 came back, the USSR, last value 1913, did not). For "each country's most recent value" ask `time=earliest..latest` and take the row with the highest `year` per code. `time=2099` silently returned 2025.
 - **Country names work too.** `country=United%20States~China` matched; a leading `~` (`~USA~CHN~IND`, as in the docs examples) gives the same rows. Codes are safer than names.
 - **Python's default User-Agent is blocked.** `Python-urllib/3.12` got HTTP 403 `error code: 1010` on uncached requests (both metadata files, CSVs with a new query) and HTTP 200 only on Cloudflare cache hits (`cf-cache-status: HIT`, for example the USA~CHN~IND CSV); `curl/8.5.0`, `python-requests/2.32.3` and a named script UA got HTTP 200. Name your client honestly; do not pretend to be a browser.
 - **Rows are sorted by entity name**, not in the order you asked.

@@ -93,17 +93,16 @@ def ceiling(clouds, vert_vis):
 
 def category(ceil_ft, vis_sm):
     """FAA AIM 7-1-7: LIFR ceiling < 500 ft and/or vis < 1 mi; IFR 500 to < 1,000 and/or 1 to < 3;
-    MVFR 1,000 to 3,000 and/or 3 to 5 inclusive; VFR ceiling > 3,000 and vis > 5."""
-    if vis_sm is None:
-        return "?"
+    MVFR 1,000 to 3,000 and/or 3 to 5 inclusive; VFR ceiling > 3,000 and vis > 5. The worse of the two wins.
+    ceil_ft None = no ceiling. vis_sm None = unknown: the ceiling alone gives "LIFR", "IFR or worse",
+    "MVFR or worse", or "?" (it cannot tell VFR)."""
     c = ceil_ft if ceil_ft is not None else 99999
-    if c < 500 or vis_sm < 1:
-        return "LIFR"
-    if c < 1000 or vis_sm < 3:
-        return "IFR"
-    if c <= 3000 or vis_sm <= 5:
-        return "MVFR"
-    return "VFR"
+    by_ceil = "LIFR" if c < 500 else "IFR" if c < 1000 else "MVFR" if c <= 3000 else "VFR"
+    if vis_sm is None:
+        return {"LIFR": "LIFR", "VFR": "?"}.get(by_ceil, by_ceil + " or worse")
+    by_vis = "LIFR" if vis_sm < 1 else "IFR" if vis_sm < 3 else "MVFR" if vis_sm <= 5 else "VFR"
+    order = ["LIFR", "IFR", "MVFR", "VFR"]
+    return min(by_ceil, by_vis, key=order.index)
 
 def utc(epoch):
     return datetime.fromtimestamp(epoch, timezone.utc)
@@ -147,14 +146,15 @@ for s in STATIONS:
         continue
     print(f"  {t['rawTAF']}")
     print(f"  issued {t['issueTime'][:16]}Z, valid {utc(t['validTimeFrom']):%d %H:%M}..{utc(t['validTimeTo']):%d %H:%M} UTC")
-    base = None
+    base = {}  # prevailing conditions: the base group, each FM, and each BECMG merged on top of what it changes
     for g in t["fcsts"]:
         kind = g.get("fcstChange") or "BASE"
-        if kind in ("BASE", "FM", "BECMG"):
-            base = g
-        clouds = g["clouds"] if g.get("clouds") or g.get("vertVis") is not None else (base or {}).get("clouds")
-        vv = g.get("vertVis") if g.get("clouds") or g.get("vertVis") is not None else (base or {}).get("vertVis")
-        vis = g.get("visib") if g.get("visib") not in (None, "") else (base or {}).get("visib")
+        sky = bool(g.get("clouds")) or g.get("vertVis") is not None  # the group restates the sky
+        clouds = g["clouds"] if sky else base.get("clouds")
+        vv = g.get("vertVis") if sky else base.get("vertVis")
+        vis = g.get("visib") if g.get("visib") not in (None, "") else base.get("visib")
+        if kind in ("BASE", "FM", "BECMG"):  # these set the prevailing conditions; TEMPO and PROB do not
+            base = {"clouds": clouds, "vertVis": vv, "visib": vis}
         a, b = utc(g["timeFrom"]), utc(g["timeTo"])
         flag = "  <- now" if a <= now < b else ""
         prob = f" PROB{g['probability']}" if g.get("probability") else ""
@@ -271,7 +271,7 @@ for path in ("/api/data/metar?ids=ZZZZ&format=json",          # unknown station
     if s == 200 and body.startswith("["):
         d = json.loads(body)
         body = f"{len(d)} item(s) {[x.get('reportTime', x.get('issueTime', ''))[:16] for x in d][:4]}"
-    print(f"{path}: HTTP {s} {ct or '-'} ACAO={acao} {body[:110]}")
+    print(f"{path}: HTTP {s} {ct or '-'} ACAO={acao} {body[:110]}".rstrip())
 
 # The same call from another site's page: no CORS header, so the browser blocks it.
 goto_url("https://example.com/")
@@ -293,9 +293,9 @@ data/api: Cross-origin resource sharing is not permitted at this time.
 data/api: Undocumented query parameter requests are restricted and will result in an error.
 data/api: Status code 204 is returned for valid requests with no data available (except GeoJSON).
 
-/api/data/metar?ids=ZZZZ&format=json: HTTP 204 - ACAO=None 
+/api/data/metar?ids=ZZZZ&format=json: HTTP 204 - ACAO=None
 /api/data/taf?ids=ZZZZ&format=json: HTTP 200 application/json; charset=utf-8 ACAO=None 0 item(s) []
-/api/data/metar?ids=JFK&format=json: HTTP 204 - ACAO=None 
+/api/data/metar?ids=JFK&format=json: HTTP 204 - ACAO=None
 /api/data/metar?ids=kjfk&format=json: HTTP 200 application/json; charset=utf-8 ACAO=None 1 item(s) ['2026-11-13T23:00']
 /api/data/metar?ids=KJFK&format=json&foo=1: HTTP 400 application/json; charset=utf-8 ACAO=None {"status":"error","error":"Unexpected query parameter provided"}
 /api/data/metar?ids=KJFK&format=jsn: HTTP 400 application/json; charset=utf-8 ACAO=None {"status":"error","error":"Invalid value for format"}
@@ -324,7 +324,7 @@ def get(path):
             with urllib.request.urlopen(urllib.request.Request(API + path, headers=UA), timeout=60) as r:
                 body = r.read()
                 time.sleep(1)  # max 100 requests per minute
-                return json.loads(body) if r.status == 200 and body else []
+                return [] if r.status == 204 else json.loads(body)  # an empty or cut 200 body fails loudly
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 504) and attempt == 0:
                 time.sleep(60)
@@ -364,15 +364,16 @@ below VFR now: KJFK. Source: Aviation Weather Center (aviationweather.gov). Not 
 ```bash
 B=https://aviationweather.gov/api/data
 UA='metar-taf-example/1.0'
-curl -sS --fail -A "$UA" "$B/metar?ids=KJFK,KSFO&format=json" | python3 -c '
+R='--max-time 60 --retry 1 --retry-delay 60'  # like blocks 1 and 3: one retry after 60 s on 429/5xx (curl also retries a timeout)
+curl -sS --fail $R -A "$UA" "$B/metar?ids=KJFK,KSFO&format=json" | python3 -c '
 import json, sys
 for m in json.load(sys.stdin):
     print(m["icaoId"], m["fltCat"], m["rawOb"])
 '
 sleep 1
-curl -sS --fail -A "$UA" "$B/taf?ids=KSFO"; echo     # format omitted = raw text
+curl -sS --fail $R -A "$UA" "$B/taf?ids=KSFO" | sed 's/ *$//'; echo     # format omitted = raw text (lines end in spaces; stripped)
 sleep 1
-curl -sS -o /dev/null -A "$UA" -w 'unknown station (ZZZZ): HTTP %{http_code}, %{size_download} bytes\n' "$B/metar?ids=ZZZZ&format=json"
+curl -sS --max-time 60 -o /dev/null -A "$UA" -w 'unknown station (ZZZZ): HTTP %{http_code}, %{size_download} bytes\n' "$B/metar?ids=ZZZZ&format=json"
 ```
 
 Output (from the run on 2026-11-13, 23:35 UTC):
@@ -380,10 +381,10 @@ Output (from the run on 2026-11-13, 23:35 UTC):
 ```text
 KJFK MVFR METAR KJFK 132251Z 36010KT 10SM -RA BKN019 OVC065 05/02 A2970 RMK AO2 RAB44 SLP057 P0000 T00500022 $
 KSFO VFR METAR KSFO 132256Z 28016KT 10SM FEW017 FEW045 SCT100 SCT150 16/11 A2961 RMK AO2 SLP026 T01560106
-TAF KSFO 132102Z 1321/1424 33015KT 4SM RA BR BKN024 OVC029 
-  FM140000 25015G20KT P6SM -SHRA OVC030 
-  FM140400 25008KT P6SM VCSH OVC030 
-  FM141000 20004KT P6SM SCT030 BKN050 
+TAF KSFO 132102Z 1321/1424 33015KT 4SM RA BR BKN024 OVC029
+  FM140000 25015G20KT P6SM -SHRA OVC030
+  FM140400 25008KT P6SM VCSH OVC030
+  FM141000 20004KT P6SM SCT030 BKN050
   FM142000 26006KT P6SM SCT030 BKN100
 
 unknown station (ZZZZ): HTTP 204, 0 bytes
@@ -412,7 +413,7 @@ Descriptions from the OpenAPI spec https://aviationweather.gov/data/schema/opena
 ## Gotchas
 
 - **The TAF can disagree with the METAR.** At 23:34 UTC KSFO observed VFR while its TAF group for 21:00-00:00 said MVFR (4 miles, rain and mist). "Right now" is the observation; the TAF is the forecast.
-- **TEMPO and PROB groups only list what changes.** The KJFK `TEMPO 1400/1404 BKN018` group has `visib: ""` and one cloud layer; block 1 takes the missing visibility from the prevailing group before computing its category.
+- **TEMPO, PROB and BECMG groups only list what changes.** The KJFK `TEMPO 1400/1404 BKN018` group has `visib: ""` and one cloud layer; block 1 takes the missing visibility from the prevailing group before computing its category. BECMG groups came back with the unchanged values already filled in (LIRF, LOWW and EGLL on 2026-11-14: `BECMG 1400/1402 03010KT` decoded with LIRF's `SCT030` and `6+`), and the API's `timeTo` for a BECMG group runs to the next change, not the end of the transition; block 1 still merges each BECMG group over the prevailing conditions in case a field is missing.
 - **A new TAF can arrive before it is valid.** "A routine forecast, TAF, is issued 20 to 40 minutes before the beginning of its valid period" (AC 00-45H 5.13.2.3). At 23:37 UTC `/taf` already returned only the KSFO TAF issued 23:35 and valid from 14th 00:00 UTC, so block 1 marked no group `<- now`. Answer "right now" from the METAR.
 - **`$` at the end of `rawOb`.** KJFK's METAR ended with `$`: "A maintenance indicator ($) is coded when an automated system detects that maintenance is needed on the system" (FAA AC 00-45H Change 2, 3.1.5.14.1, https://www.faa.gov/documentLibrary/media/Advisory_Circular/AC_00-45H_Chg_2.pdf). The report and its `fltCat` were still served.
 - **Report age.** "most METARs update once per hour" (Data API page); at 23:34 UTC the latest were 22:51 (KJFK) and 22:56 (KSFO). Print the age with every answer. `hours=3` returns history newest first (4 KJFK reports: 23:00, 22:26, 22:00, 21:00 report slots).
