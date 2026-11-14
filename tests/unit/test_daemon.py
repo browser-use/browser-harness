@@ -264,12 +264,12 @@ def test_set_session_does_not_disable_network_when_no_previous_session():
 
 
 def test_set_session_runs_disable_and_enables_in_parallel():
-    """The four Domain.enable calls (plus Network.disable on the old session)
-    must run concurrently via asyncio.gather, not sequentially. With the old
+    """The four Domain.enable calls and Target.setAutoAttach (plus Network.disable
+    on the old session) must run concurrently via asyncio.gather, not sequentially. With the old
     sequential code, helpers.switch_tab() would block in _send() for up to
     ~22s on a slow/remote daemon while the helper's IPC socket has a 5s
     read timeout, causing client-side socket timeouts. Verifying that all
-    five CDP calls reach send_raw before any returns proves parallelization."""
+    six CDP calls reach send_raw before any returns proves parallelization."""
     class _ConcurrencyProbeCDP:
         def __init__(self):
             self.calls = []
@@ -302,8 +302,8 @@ def test_set_session_runs_disable_and_enables_in_parallel():
         # in-flight. Cap iterations to avoid hanging if parallelization breaks.
         for _ in range(50):
             await asyncio.sleep(0)
-            # 5 = Network.disable on OLD + 4 enables on NEW.
-            if d.cdp.in_flight >= 5:
+            # 6 = Network.disable on OLD + 4 enables and setAutoAttach on NEW.
+            if d.cdp.in_flight >= 6:
                 break
         peak = d.cdp.max_concurrent
         d.cdp.release.set()
@@ -311,10 +311,10 @@ def test_set_session_runs_disable_and_enables_in_parallel():
         return peak, d.cdp.calls
 
     peak, calls = asyncio.run(run())
-    assert peak == 5, (
-        f"set_session must run disable + 4 enables concurrently via gather "
-        f"(observed peak in-flight = {peak}; expected 5 = 1 disable on OLD + "
-        f"4 enables on NEW). Sequential await would peak at 1."
+    assert peak == 6, (
+        f"set_session must run disable + 4 enables + setAutoAttach concurrently via gather "
+        f"(observed peak in-flight = {peak}; expected 6 = 1 disable on OLD + "
+        f"4 enables and setAutoAttach on NEW). Sequential await would peak at 1."
     )
     # Sanity: the right calls were made.
     methods = sorted({m for (m, _p, _s) in calls})
@@ -324,7 +324,7 @@ def test_set_session_runs_disable_and_enables_in_parallel():
 
 def test_set_session_first_attach_runs_four_enables_in_parallel():
     """When there's no previous session, the disable path is skipped — only
-    the four enables run, still in parallel."""
+    the four enables and setAutoAttach run, still in parallel."""
     class _ConcurrencyProbeCDP:
         def __init__(self):
             self.calls = []
@@ -355,7 +355,7 @@ def test_set_session_first_attach_runs_four_enables_in_parallel():
         }))
         for _ in range(50):
             await asyncio.sleep(0)
-            if d.cdp.in_flight >= 4:
+            if d.cdp.in_flight >= 5:
                 break
         peak = d.cdp.max_concurrent
         d.cdp.release.set()
@@ -363,8 +363,8 @@ def test_set_session_first_attach_runs_four_enables_in_parallel():
         return peak
 
     peak = asyncio.run(run())
-    assert peak == 4, (
-        f"first set_session must run 4 enables concurrently "
+    assert peak == 5, (
+        f"first set_session must run 4 enables and setAutoAttach concurrently "
         f"(observed peak = {peak}). No Network.disable should fire."
     )
 

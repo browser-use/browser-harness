@@ -539,7 +539,7 @@ class Daemon:
             pass
 
     async def _enable_default_domains(self, session_id):
-        """Enable Page/DOM/Runtime/Network on a CDP session.
+        """Enable Page/DOM/Runtime/Network on a CDP session and auto-attach its child targets.
 
         Used by both initial attach and set_session (called after switch_tab/
         new_tab). Without this, helpers that depend on Network.* events —
@@ -551,16 +551,25 @@ class Daemon:
         bounded by a single CDP round trip rather than four sequential ones —
         important on the set_session path, where the helper's IPC socket has
         a 5s read timeout.
+
+        Auto-attach makes Chrome report each out-of-process iframe of the tab
+        as Target.attachedToTarget on this session. The iframe's document
+        request starts on this session but finishes on the iframe's, so
+        wait_for_network_idle() uses these events to stop waiting for it. The
+        children are not paused and get no domains enabled.
         """
-        async def enable_one(d):
+        async def send(method, params=None):
             try:
                 await asyncio.wait_for(
-                    self.cdp.send_raw(f"{d}.enable", session_id=session_id),
+                    self.cdp.send_raw(method, params, session_id=session_id),
                     timeout=4,
                 )
             except Exception as e:
-                log(f"enable {d} on {session_id}: {e}")
-        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+                log(f"{method} on {session_id}: {e}")
+        await asyncio.gather(
+            *(send(f"{d}.enable") for d in ("Page", "DOM", "Runtime", "Network")),
+            send("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True}),
+        )
 
     def _record_session_replacement(self, stale_session, replacement_session):
         """Remember which recovered session still controls the same tab."""
