@@ -149,10 +149,11 @@ for s in STATIONS:
     base = {}  # prevailing conditions: the base group, each FM, and each BECMG merged on top of what it changes
     for g in t["fcsts"]:
         kind = g.get("fcstChange") or "BASE"
-        sky = bool(g.get("clouds")) or g.get("vertVis") is not None  # the group restates the sky
-        clouds = g["clouds"] if sky else base.get("clouds")
+        partial = kind in ("TEMPO", "PROB", "BECMG")  # these list only what changes; BASE and FM are complete forecasts
+        sky = bool(g.get("clouds")) or g.get("vertVis") is not None or not partial  # the group states the sky
+        clouds = g.get("clouds") if sky else base.get("clouds")
         vv = g.get("vertVis") if sky else base.get("vertVis")
-        vis = g.get("visib") if g.get("visib") not in (None, "") else base.get("visib")
+        vis = g.get("visib") if g.get("visib") not in (None, "") or not partial else base.get("visib")
         if kind in ("BASE", "FM", "BECMG"):  # these set the prevailing conditions; TEMPO and PROB do not
             base = {"clouds": clouds, "vertVis": vv, "visib": vis}
         a, b = utc(g["timeFrom"]), utc(g["timeTo"])
