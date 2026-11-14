@@ -11,13 +11,13 @@ robots.txt (checked 2026-11-14, curl and the cloud browser): https://www.bankofc
 - **When did it change:** `B114039` is the same target with one row per change, dated the day it took effect (`2026-10-29 2.50`, `2025-10-30 2.25`). "As of 2021, a change takes effect the day after its announcement" (the policy rate page), so the announcement date is one day earlier.
 - **Next decision date** is not in the API spec. The "Policy interest rate" page (https://www.bankofcanada.ca/core-functions/monetary-policy/key-interest-rate/) has the decisions table (`#target-table`) and "Schedule for 2026" / "Schedule for 2027" tables; block 1 reads them.
 - **FX timing:** "The daily average exchange rates are published once each business day by 16:30 ET" (daily exchange rates page). None on weekends or bank holidays (2026-11-11 was a "Bank holiday").
-- **Rate limit:** no number is published (the OpenAPI spec defines no 429). The terms forbid circumventing Valet request limits; the how-to guide says "Start slow", "If a request fails, wait before trying again" and, for exchange rates, "store the response instead of calling the API again". Blocks pace 1 s per call, serial, and wait 60 s once on 429/5xx.
+- **Rate limit:** no number is published (the OpenAPI spec defines no 429). The terms forbid circumventing Valet request limits; the how-to guide says "Start slow", "If a request fails, wait before trying again" and, for exchange rates, "store the response instead of calling the API again". Blocks pace 1 s per call, serial, and wait 60 s once on 429/500/502/503/504.
 
 ## What works
 
 ### 1. Policy rate, last change, next decision and USD/CAD (browser)
 
-`on_boc_tab()` opens the logged-out "Policy interest rate" page once; the Valet `fetch()` calls run from that tab (same origin; Valet also allows any origin, block 2). `get()` returns parsed JSON on 200, waits 60 s once on 429/5xx and otherwise raises, so an error never looks like "no data".
+`on_boc_tab()` opens the logged-out "Policy interest rate" page once; the Valet `fetch()` calls run from that tab (same origin; Valet also allows any origin, block 2). `get()` returns parsed JSON on 200, waits 60 s once on 429/500/502/503/504 and otherwise raises, so an error never looks like "no data".
 
 ```python
 import json, re, time
@@ -51,7 +51,7 @@ POLL_JS = """(() => { const v = window.__boc[%s]; if (v) delete window.__boc[%s]
 
 def get(path, timeout=60):
     """GET VALET+path from inside the tab -> parsed JSON. 400/404 bodies are {"message": ..., "docs": ...} and raise.
-    Waits 60 s once on 429/5xx or a network error (how-to: "If a request fails, wait before trying again")."""
+    Waits 60 s once on 429/500/502/503/504 or a network error (how-to: "If a request fails, wait before trying again")."""
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(VALET + path)))
         t0 = time.time()
@@ -105,9 +105,11 @@ page = js("""(() => {
 if not page["rows"] or not page["sched"]:
     raise RuntimeError(f"policy rate page layout changed (rows={page['rows']}, schedules={len(page['sched'])}): re-read {PAGE}")
 print("\npage: latest decisions " + "; ".join(f"{d} target {t}% change {c}" for d, t, c in page["rows"][:3]))
-moved = [r for r in page["rows"] if r[2].strip("-")]  # "---" = held; "+0.25" / "-0.25" = changed
+# "---" = held; "+0.25" / "-0.25" = changed. Take the latest change TO the current level, so a decision that is
+# announced but not yet in effect (B114039 still shows the old level) is not credited to the old level.
+moved = [r for r in page["rows"] if r[2].strip("-") and abs(float(r[1]) - level) < 1e-9]
 if not moved:
-    raise RuntimeError(f"no rate change in the page's {len(page['rows'])} listed decisions: read B114039 history instead")
+    raise RuntimeError(f"no change to {level:.2f}% in the page's {len(page['rows'])} listed decisions: read B114039 history instead")
 announce = date.fromisoformat(moved[0][0])
 if float(page["rows"][0][1]) != level:
     print(f"  NOTE: page target {page['rows'][0][1]} != B114039 {level:.2f}")
@@ -269,7 +271,8 @@ VALET = "https://www.bankofcanada.ca/valet"
 UA = {"User-Agent": "boc-rates-example/1.0", "Accept": "application/json"}
 
 def get(path):
-    """GET -> parsed JSON. Waits 60 s once on 429/5xx (how-to: "wait before trying again")."""
+    """GET -> parsed JSON. Waits 60 s once on HTTP 429/500/502/503/504 or a network error (how-to: "wait before
+    trying again")."""
     for attempt in range(2):
         try:
             with urllib.request.urlopen(urllib.request.Request(VALET + path, headers=UA), timeout=60) as r:
@@ -281,6 +284,11 @@ def get(path):
                 time.sleep(60)
                 continue
             sys.exit(f"{path}: HTTP {e.code} {e.read().decode()[:160]}")  # 400/404 {"message": "...", "docs": "..."}
+        except OSError as e:  # URLError (DNS, refused connection), timeouts, resets
+            if attempt == 0:
+                time.sleep(60)
+                continue
+            sys.exit(f"{path}: {e}")
     sys.exit(f"{path}: still failing after one retry")
 
 def latest(series):
@@ -313,7 +321,7 @@ Source: Bank of Canada, https://www.bankofcanada.ca/terms/ (indicative exchange 
 ```bash
 V=https://www.bankofcanada.ca/valet
 UA='boc-rates-example/1.0'
-R='--max-time 60 --retry 1 --retry-delay 60'  # one retry after 60 s on 429/5xx, like blocks 1 and 3
+R='--max-time 60 --retry 1 --retry-delay 60'  # one retry after 60 s on a timeout or HTTP 408/429/500/502/503/504
 curl -sS --fail $R -A "$UA" "$V/observations/V39079,B114039,FXUSDCAD/json?recent=1" | python3 -c '
 import json, sys
 for o in json.load(sys.stdin)["observations"]:
@@ -375,7 +383,7 @@ Also from the `/valet/series/V39079/json` route: `"metadata": {"frequency":"Busi
 
 - **The daily policy-rate series lags.** At 23:33 UTC on Saturday 2026-11-14 the newest `V39079` row was Thursday 2026-11-12, while `FXUSDCAD` already had Friday 2026-11-13. Report its value, not its date, as "the rate right now", and take the effective date from `B114039`. If a decision is new, `B114039` and `V39079` may briefly disagree; blocks 1 and 3 print a NOTE then.
 - **Effective date vs announcement date.** `B114039` says `2026-10-29`; the page's decisions table says `October 28, 2026` (`data-date="2026-10-28"`). Both are right: the change took effect the day after the announcement.
-- **"Held" decisions are rows too.** The page lists every fixed announcement date, with `---` when the rate did not move. Block 1 takes the latest row with a `+`/`-` change as the announcement of the current level.
+- **"Held" decisions are rows too.** The page lists every fixed announcement date, with `---` when the rate did not move. Block 1 takes the latest row with a `+`/`-` change whose target equals the current `B114039` level, so a decision announced but not yet in effect is not credited to the old level.
 - **Holidays differ by series.** 2026-11-11 is a "Bank holiday" on the daily exchange rates page and has no `FXUSDCAD` row, but `V39079` has a 2026-11-11 row (2.50). `recent=N` counts observations, not days.
 - **Default sort order changes.** `recent=` on one series returned newest first (with several series, rows come grouped by series: `V39079,FXUSDCAD` `recent=3` gave 11-12, 11-11, 11-10, then 11-13); `start_date=` returned oldest first (2024-01-02 first); CSV came oldest first. Sort by `d` yourself or pass `order_dir`.
 - **Several series, several dates.** `/observations/V39079,FXUSDCAD/json?recent=1` returns two observation objects, `2026-11-12` with only `V39079` and `2026-11-13` with only `FXUSDCAD`. Read each series' own latest row.

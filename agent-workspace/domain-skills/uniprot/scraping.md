@@ -13,13 +13,13 @@ robots.txt (checked 2026-11-14, curl and the cloud browser): https://rest.unipro
 - **`reviewed:true` is the filter that matters.** Human `gene:TP53` has 114 entries: 1 reviewed (Swiss-Prot) and 113 unreviewed (TrEMBL). Without `organism_id:9606` there are 34 reviewed TP53 entries (mouse P02340, rat P10361 ...). Free text `TP53` instead of `gene:TP53` finds 757 reviewed human entries, ranked TP53TG5 first.
 - **Silent failure:** a wrong taxon id (`organism_id:96060`) is HTTP 200 with 0 results. Wrong field names are loud: `gen:TP53` and `fields=funtion` are HTTP 400 with a reason, `size=501` is HTTP 400 "'size' must be less than or equal to 500".
 - **Paging** uses the `Link: <...>; rel="next"` header and an opaque cursor; https://www.uniprot.org/help/rest-api-headers says you "_need_ to read it from this response header". `x-total-results` gives the count. Blocks 1 and 3 follow it and check the total.
-- **Rate limit:** none published for search or entry calls. Of the help pages read here (api_queries, api_retrieve_entries, rest-api-headers, pagination), only api_queries mentions 429, for the stream endpoint ("In the case of the stream API having too many requests a `429` status will be returned"), which robots.txt disallows anyway. EMBL-EBI blocks load that "prevents ... providing services to others". Blocks pace 1 s per call, serial, and wait 60 s once on 429/5xx.
+- **Rate limit:** none published for search or entry calls. Of the help pages read here (api_queries, api_retrieve_entries, rest-api-headers, pagination), only api_queries mentions 429, for the stream endpoint ("In the case of the stream API having too many requests a `429` status will be returned"), which robots.txt disallows anyway. EMBL-EBI blocks load that "prevents ... providing services to others". Blocks pace 1 s per call, serial, and wait 60 s once on 429/500/502/503/504.
 
 ## What works
 
 ### 1. The reviewed human TP53 entry, cross-checked against the entry (browser)
 
-`on_rest_tab()` opens one logged-out rest.uniprot.org JSON page, so `fetch()` is same-origin and can read the `Link`, `x-total-results` and `x-uniprot-release` headers. `get()` returns parsed JSON and headers on HTTP 200, waits 60 s once on 429/5xx and otherwise raises. `search()` follows the `Link` header to the end and checks the count against `x-total-results`. The block keeps only hits whose primary gene name and taxon match, requires exactly one, then re-reads the entry and checks accession, sequence length, release and function text.
+`on_rest_tab()` opens one logged-out rest.uniprot.org JSON page, so `fetch()` is same-origin and can read the `Link`, `x-total-results` and `x-uniprot-release` headers. `get()` returns parsed JSON and headers on HTTP 200, waits 60 s once on 429/500/502/503/504 and otherwise raises. `search()` follows the `Link` header to the end and checks the count against `x-total-results`. The block keeps only hits whose primary gene name and taxon match, requires exactly one, then re-reads the entry and checks accession, sequence length, release and function text.
 
 ```python
 import json, re, textwrap, time, urllib.parse
@@ -56,7 +56,7 @@ START_JS = """(() => { window.__u = window.__u || {}; const id = String(Math.ran
 POLL_JS = """(() => { const v = window.__u[%s]; if (v) delete window.__u[%s]; return v; })()"""
 
 def get(url, timeout=60):
-    """GET url from inside the tab -> (parsed JSON, headers). Waits 60 s once on 429/5xx/network error
+    """GET url from inside the tab -> (parsed JSON, headers). Waits 60 s once on 429/500/502/503/504 or a network error
     (429 = too many requests), raises on anything else (400 = bad query or field name, with a message)."""
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(url)))
@@ -320,7 +320,8 @@ AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-U
           "Google-Extended", "PerplexityBot", "CCBot", "Bytespider"]
 
 def get(url):
-    """-> (parsed JSON, headers). One 60 s wait on 429/5xx; exits on anything else (400 carries a 'messages' list)."""
+    """-> (parsed JSON, headers). One 60 s wait on HTTP 429/500/502/503/504 or a network error; exits on anything
+    else (400 carries a 'messages' list)."""
     for attempt in range(2):
         time.sleep(1.0)  # no published rate limit; stay serial
         try:
@@ -331,6 +332,11 @@ def get(url):
                 time.sleep(60)
                 continue
             sys.exit(f"HTTP {e.code} {url}: {e.read().decode()[:200]}")
+        except OSError as e:  # URLError (DNS, refused connection), timeouts, resets
+            if attempt == 0:
+                time.sleep(60)
+                continue
+            sys.exit(f"{url}: {e}")
 
 def search(query, fields, size):
     """Yield every result page by page; the next page URL comes only from the Link header (cursor is opaque)."""

@@ -11,13 +11,13 @@ robots.txt (checked 2026-11-14, curl and the cloud browser): https://transport.o
 - **Daytime shape** (same query with `date=2026-11-16&time=08:00`, block 4): 08:02 IC 8 platform 31 -> 08:58 (56 min, direct); 08:06 IR 16 platform 15 -> 09:24 (direct); 08:08 IR 37 + IR 16 platform 16 -> 09:24 (1 transfer). `delay` is `null` that far ahead.
 - **`delay`:** minutes; `0` = on time per the real-time feed; `null` = no real-time prognosis for that stop (future trains, or a later leg). Docs: delays are "at most about a minute behind the source".
 - **"Next" is not always useful.** At night the third result was a 1-transfer trip with a 2-hour wait. Print `duration` and `transfers`, and use `page=1` or `time=` for more.
-- **Rate limit:** none fixed; the API is shared, so cache. Real-time data changes every 30 s (docs), so block 3 caches each URL for 30 s. `limit` is 1-16, `page` 0-10; beyond that, HTTP 400 `{"errors": [...]}`.
+- **Rate limit:** none fixed; the API is shared, so cache. Real-time data changes every 30 s (docs), so block 3 caches each URL for 30 s. `limit` is 1-16, `page` 0-10: `limit=17` and `page=11` are HTTP 400 `{"errors": [...]}`, but `limit=0` silently returned 4 connections.
 
 ## What works
 
 ### 1. Next three connections with platforms, delays and transfers (browser)
 
-`on_api_tab()` opens the API's home page once and runs `fetch()` from it (CORS is on, so any page would do; block 2 shows example.com). `get()` sends no custom headers, as the docs ask, returns parsed JSON on 200, waits 30 s once on 429/5xx and otherwise raises. Stations are resolved to ids with `/locations` first, so a loose name cannot silently pick another stop.
+`on_api_tab()` opens the API's home page once and runs `fetch()` from it (CORS is on, so any page would do; block 2 shows example.com). `get()` sends no custom headers, as the docs ask, returns parsed JSON on 200, waits 30 s once on 429/500/502/503/504 and otherwise raises. Stations are resolved to ids with `/locations` first, so a loose name cannot silently pick another stop.
 
 ```python
 import json, time
@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
-FROM, TO, N = "Zürich HB", "Bern", 3  # station names as the API spells them; block 2 shows "Zurich" also resolves
+FROM, TO, N = "Zürich HB", "Bern", 3  # exact station names as /locations spells them (block 2: "Zurich" is not one)
 
 SITE = "https://transport.opendata.ch"
 PAUSE = 1.0  # docs: "no fixed limit per client", but an app asking the same question every few seconds "will be throttled"
@@ -53,7 +53,7 @@ POLL_JS = """(() => { const v = window.__tch[%s]; if (v) delete window.__tch[%s]
 
 def get(path, params, timeout=60):
     """GET SITE+path?params from inside the tab -> parsed JSON. HTTP 400 is {"errors": [...]} and raises.
-    Waits 30 s once on 429/5xx or a network error, then raises."""
+    Waits 30 s once on 429/500/502/503/504 or a network error, then raises."""
     url = SITE + path + "?" + urlencode(params)
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(url)))
@@ -95,13 +95,13 @@ def platform_txt(stop):
     return f"pl {p}" if not new or new == p else f"pl {new} (changed from {p})"
 
 def station(name):
-    """Resolve a name to one station id with /locations; the first hit must match the name exactly."""
+    """Resolve a name to one station id with /locations; a hit must match the name exactly, else stop."""
     hits = get("/v1/locations", {"query": name, "type": "station"})["stations"]
-    if not hits:
-        raise RuntimeError(f"no station matches {name!r}: stop")
-    if hits[0]["name"] != name:
-        print(f"NOTE: {name!r} resolved to {hits[0]['name']!r} (id {hits[0]['id']}); other hits: {[h['name'] for h in hits[1:4]]}")
-    return hits[0]
+    exact = [h for h in hits if h["name"] == name]
+    if not exact:
+        raise RuntimeError(f"no station named exactly {name!r}; candidates {[(h['name'], h['id']) for h in hits[:5]]}: "
+                           "pick one and set FROM/TO to its name")
+    return exact[0]
 
 on_api_tab()
 now = datetime.now(timezone.utc)
@@ -298,7 +298,8 @@ TTL = 30  # docs: real-time data changes "every 30 seconds"; asking the same que
 _cache = {}
 
 def get(path, **params):
-    """GET -> parsed JSON, cached for TTL seconds per URL. Waits 30 s once on 429/5xx; HTTP 400 {"errors": [...]} exits."""
+    """GET -> parsed JSON, cached for TTL seconds per URL. Waits 30 s once on HTTP 429/500/502/503/504 or a network
+    error; HTTP 400 {"errors": [...]} exits."""
     url = f"{API}{path}?{urllib.parse.urlencode(params)}"
     hit = _cache.get(url)
     if hit and time.time() - hit[0] < TTL:
@@ -315,6 +316,11 @@ def get(path, **params):
                 time.sleep(30)
                 continue
             sys.exit(f"{path}: HTTP {e.code} {e.read().decode()[:160]}")
+        except OSError as e:  # URLError (DNS, refused connection), timeouts, resets
+            if attempt == 0:
+                time.sleep(30)
+                continue
+            sys.exit(f"{path}: {e}")
     sys.exit(f"{path}: still failing after one retry")
 
 def hm(s):
@@ -360,7 +366,7 @@ Source: Transport API (transport.opendata.ch), unofficial, by Opendata.ch. Timet
 ```bash
 B=https://transport.opendata.ch/v1
 UA='swiss-transport-example/1.0'
-R='--max-time 60 --retry 1 --retry-delay 30'  # one retry after 30 s on 429/5xx (curl also retries a timeout)
+R='--max-time 60 --retry 1 --retry-delay 30'  # one retry after 30 s on a timeout or HTTP 408/429/500/502/503/504
 # Next 3 from Zurich HB (8503000) to Bern (8507000); -G --data-urlencode handles the umlaut and spaces.
 curl -sS --fail $R -A "$UA" -G "$B/connections" --data-urlencode 'from=Zürich HB' --data-urlencode 'to=Bern' -d limit=3 | python3 -c '
 import json, sys

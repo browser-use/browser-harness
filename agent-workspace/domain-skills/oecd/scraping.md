@@ -20,7 +20,7 @@ robots.txt (checked 2026-11-14, curl, urllib and the cloud browser): https://sdm
 
 ### 1. Latest headline CLI for the US, Germany and Japan, with direction (browser)
 
-`on_api_tab()` opens one small `format=jsondata` answer on sdmx.oecd.org, so `fetch()` is same-origin. (A `csvfilewithlabels` URL is sent as `content-disposition: attachment`, so a tab would download it rather than show it; `fetch()` reads it fine.) `get()` returns the CSV text on HTTP 200, waits 30 s once on 429/5xx and otherwise raises. The block checks that every row is the monthly amplitude-adjusted OECD-harmonised CLI, that all three countries came back with 4 months each and that they end in the same month, then prints level, 1- and 3-month changes, direction, ordering and the citation.
+`on_api_tab()` opens one small `format=jsondata` answer on sdmx.oecd.org, so `fetch()` is same-origin. (A `csvfilewithlabels` URL is sent as `content-disposition: attachment`, so a tab would download it rather than show it; `fetch()` reads it fine.) `get()` returns the CSV text on HTTP 200, waits 30 s once on 429/500/502/503/504 and otherwise raises. The block checks that every row is the monthly amplitude-adjusted OECD-harmonised CLI, that all three countries came back with 4 months each and that they end in the same month, then prints level, 1- and 3-month changes, direction, ordering and the citation.
 
 ```python
 import csv, io, json, time, urllib.parse
@@ -65,7 +65,7 @@ POLL_JS = """(() => { const v = window.__oe[%s]; if (v) delete window.__oe[%s]; 
 
 def get(u, timeout=60):
     """Same-origin GET -> body text on HTTP 200. Errors are short text/plain bodies ("NoRecordsFound" is HTTP 404,
-    a wrong key length is HTTP 403). Waits 30 s once on 429/5xx or a network error, raises on anything else."""
+    a wrong key length is HTTP 403). Waits 30 s once on 429/500/502/503/504 or a network error, raises on anything else."""
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(u)))
         t0 = time.time()
