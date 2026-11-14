@@ -42,6 +42,28 @@ For normal agent work, do not activate Chrome. Screenshots and CDP input work
 on the attached background tab; activate only for a page that demonstrably
 pauses visibility-dependent rendering while hidden.
 
+## A selected Chrome tab reports `hidden` on Windows
+
+Check that the harness is attached to the selected tab and that the Chrome
+window is focused, uncovered, and not minimized. Read both values over CDP
+with `js()`, which calls `Runtime.evaluate` on the attached tab.
+
+```python
+print(js("({ visibility: document.visibilityState, focused: document.hasFocus() })"))
+```
+
+On Windows 11 with headed Chrome 156.0.8078.80 and browser-harness 0.1.13,
+the [reporter of #973](https://github.com/browser-use/browser-harness/issues/973)
+observed `hidden` with `focused: true` even in an uncovered window.
+
+For a diagnostic comparison, use a separate test profile with CDP enabled.
+Record a baseline, then relaunch Chrome with
+`--disable-features=CalculateNativeWinOcclusion` as the only launch flag change.
+Reattach and repeat the probe with the same page and window conditions. The
+reporter observed `visible` with the flag, even when a covering window took
+focus. Remove the flag after the comparison. Its effect may vary by Chrome
+version and launch environment, and the result alone does not establish the cause.
+
 ## Navigating
 
 Prefer navigating an existing tab over `new_tab()`. Harness-created tabs open in the background.
