@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, hashlib, json, os, re, secrets, socket, stat, subprocess, sys
 from pathlib import Path
 
 from . import paths
@@ -20,7 +20,41 @@ BH_RUNTIME_DIR = os.environ.get("BH_RUNTIME_DIR") or BH_TMP_DIR
 BH_RUNTIME_DIR_SHARED = os.environ.get("BH_RUNTIME_DIR_SHARED") == "1"
 BH_TMP_DIR_SHARED = os.environ.get("BH_TMP_DIR_SHARED") == "1"
 _TMP = paths.tmp_dir()
-_RUNTIME = paths.ensure_private_dir(Path(BH_RUNTIME_DIR).expanduser().resolve()) if BH_RUNTIME_DIR else paths.runtime_dir()
+# AF_UNIX sun_path: 104 bytes on macOS, 108 on Linux, NUL included. Budget for macOS.
+_SUN_PATH_MAX = 103
+# Room kept for the socket filename ("bu-" + a BU_NAME up to 24 chars + ".sock").
+_SOCK_NAME_BUDGET = len("bu-") + 24 + len(".sock")
+
+
+def _fallback_runtime_path(path):
+    """Short per-user dir under /tmp, stable for a given runtime path."""
+    digest = hashlib.sha256(str(path).encode()).hexdigest()[:12]
+    return Path("/tmp") / f"bh-{os.getuid()}-{digest}"
+
+
+def _socket_safe_runtime(path):
+    """Return `path`, or a short private /tmp dir when sockets under `path` would exceed sun_path.
+
+    A deep runtime dir (sandboxed $TMPDIR, scratch dirs, nested BH_HOME) otherwise makes
+    bind()/connect() fail with "AF_UNIX path too long" and the daemon dies at start.
+    """
+    if IS_WINDOWS or len(str(path).encode()) + 1 + _SOCK_NAME_BUDGET <= _SUN_PATH_MAX:
+        return paths.ensure_private_dir(path)
+    fb = _fallback_runtime_path(path)
+    try:
+        os.mkdir(fb, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(fb)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        raise RuntimeError(
+            f"runtime dir {path} is too long for a socket and the fallback {fb} is not a private "
+            f"directory owned by this user; set BH_RUNTIME_DIR to a short private dir"
+        )
+    return fb
+
+
+_RUNTIME = _socket_safe_runtime(Path(BH_RUNTIME_DIR).expanduser().resolve() if BH_RUNTIME_DIR else paths.runtime_dir())
 _TMP.mkdir(parents=True, exist_ok=True)
 _RUNTIME.mkdir(parents=True, exist_ok=True)
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
@@ -51,7 +85,14 @@ def _tmp_stem(name):  # "bu" when BH_TMP_DIR isolates us, else "bu-<NAME>"
 def log_path(name):   return _TMP / f"{_tmp_stem(name)}.log"
 def pid_path(name):   return _RUNTIME / f"{_runtime_stem(name)}.pid"
 def port_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.port"  # Windows-only: holds {"port","token"} JSON
-def _sock_path(name): return _RUNTIME / f"{_runtime_stem(name)}.sock"
+def _sock_path(name):
+    p = _RUNTIME / f"{_runtime_stem(name)}.sock"
+    if not IS_WINDOWS and len(str(p).encode()) > _SUN_PATH_MAX:
+        raise ValueError(
+            f"socket path {p} is {len(str(p).encode())} bytes; AF_UNIX allows 104 on macOS. "
+            f"Use a shorter BU_NAME or set BH_RUNTIME_DIR to a short dir"
+        )
+    return p
 
 
 def _read_port_file(name):
