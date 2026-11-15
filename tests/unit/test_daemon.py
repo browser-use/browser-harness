@@ -189,6 +189,73 @@ def test_set_session_falls_back_to_existing_target_id_when_not_provided():
     assert d.session == "session-AFTER"
 
 
+
+def _detached(d):
+    return [p["sessionId"] for (m, p, _s) in d.cdp.calls if m == "Target.detachFromTarget"]
+
+
+def test_set_session_detaches_the_replaced_session():
+    d = _fresh_daemon()
+    d.session = "session-old"
+
+    async def run():
+        await d.handle({"meta": "set_session", "session_id": "session-new", "target_id": "t"})
+        await asyncio.gather(*d._detach_tasks)
+
+    asyncio.run(run())
+
+    assert _detached(d) == ["session-old"]
+    assert d.session == "session-new"
+
+
+def test_set_session_to_the_same_session_does_not_detach_it():
+    d = _fresh_daemon()
+    d.session = "session-same"
+
+    async def run():
+        await d.handle({"meta": "set_session", "session_id": "session-same", "target_id": "t"})
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    assert _detached(d) == []
+
+
+def test_replaced_session_is_detached_after_its_running_request_finishes():
+    """A parallel snippet may still be running a command on the old session."""
+    class _SlowCDP(_FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.release = asyncio.Event()
+
+        async def send_raw(self, method, params=None, session_id=None):
+            self.calls.append((method, params, session_id))
+            if method == "Runtime.evaluate" and session_id == "session-old":
+                await self.release.wait()
+                return {"value": 1}
+            return {}
+
+    d = daemon.Daemon()
+    d.cdp = _SlowCDP()
+    d.session = "session-old"
+
+    async def run():
+        running = asyncio.create_task(d.handle({"method": "Runtime.evaluate", "params": {}}))
+        await asyncio.sleep(0)
+        await d.handle({"meta": "set_session", "session_id": "session-new", "target_id": "t"})
+        await asyncio.sleep(0)
+        assert _detached(d) == []
+
+        d.cdp.release.set()
+        assert await running == {"result": {"value": 1}}
+        await asyncio.gather(*d._detach_tasks)
+
+    asyncio.run(run())
+
+    assert _detached(d) == ["session-old"]
+    methods = [m for (m, _p, _s) in d.cdp.calls]
+    assert methods.index("Target.detachFromTarget") > methods.index("Runtime.evaluate")
+
 def test_enable_default_domains_swallows_errors_per_domain():
     """A single domain failing to enable must not prevent the others from
     being attempted — that would leave the daemon in a partially-configured

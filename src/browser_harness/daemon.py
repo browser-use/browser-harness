@@ -1,7 +1,7 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
 import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 
 from . import _ipc as ipc
@@ -435,6 +435,11 @@ class Daemon:
         self._recoveries_idle.set()
         self._shutting_down = False
         self._session_replacements = {}
+        # CDP requests in flight per session, so a replaced session is detached
+        # only after the requests still running on it have finished.
+        self._session_requests = Counter()
+        self._session_requests_changed = asyncio.Event()
+        self._detach_tasks = set()
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
@@ -610,6 +615,21 @@ class Daemon:
                 return False
         return self._recoveries_idle.is_set()
 
+    async def _detach_when_idle(self, session_id):
+        """Detach a replaced session once no request is running on it."""
+        while True:
+            self._session_requests_changed.clear()
+            if not self._session_requests[session_id]:
+                break
+            await self._session_requests_changed.wait()
+        try:
+            await asyncio.wait_for(
+                self.cdp.send_raw("Target.detachFromTarget", {"sessionId": session_id}),
+                timeout=2,
+            )
+        except Exception as e:
+            log(f"detach replaced session {session_id}: {e}")
+
     def _schedule_tab_marker(self, session_id):
         """Mark the controlled tab without extending the synchronous IPC path."""
         if not tab_marker_enabled():
@@ -732,6 +752,12 @@ class Daemon:
                 tasks.append(disable_old())
             tasks.append(self._enable_default_domains(new_session))
             await asyncio.gather(*tasks)
+            if old_session and old_session != new_session:
+                # Left attached, the old session keeps its emulation overrides
+                # on the tab and piles up on the connection until the daemon exits.
+                task = asyncio.create_task(self._detach_when_idle(old_session))
+                self._detach_tasks.add(task)
+                task.add_done_callback(self._detach_tasks.discard)
             # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
             # it doesn't add to the synchronous IPC budget.
             self._schedule_tab_marker(new_session)
@@ -766,7 +792,14 @@ class Daemon:
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            self._session_requests[sid] += 1
+            try:
+                return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            finally:
+                self._session_requests[sid] -= 1
+                if not self._session_requests[sid]:
+                    del self._session_requests[sid]
+                self._session_requests_changed.set()
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid:

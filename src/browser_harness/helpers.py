@@ -421,9 +421,30 @@ def switch_tab(target, activate=False):
     except Exception: pass
     if activate:
         activate_tab(target_id)
-    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    sid = _current_session_on(target_id)
+    if sid is None:
+        sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
+        _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
+    return sid
+
+
+def _current_session_on(target_id):
+    """The daemon's session when it is attached to target_id and still answers.
+
+    Attaching again would leave one more session on the tab for every call.
+    """
+    try:
+        status = _send({"meta": "connection_status"})
+    except Exception:
+        return None
+    sid = status.get("session_id")
+    if not sid or status.get("target_id") != target_id:
+        return None
+    try:
+        cdp("Runtime.evaluate", session_id=sid, expression="0")
+    except Exception:
+        return None
     return sid
 
 def new_tab(url="about:blank"):
