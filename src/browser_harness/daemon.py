@@ -37,6 +37,7 @@ PID = str(ipc.pid_path(NAME))
 BUF = 500
 CAPTCHA_LOST_S = 150  # the solver gives up within 120 s: a solve open longer has no finish coming
 CAPTCHA_FRESH_S = 60  # a finish older than this when solve_captcha() starts belongs to an earlier challenge
+CAPTCHA_OFF = "BU_CAPTCHA_SOLVER=off turned it off; handle the captcha yourself"
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -691,6 +692,8 @@ class Daemon:
                 del self.captcha_active[key]
                 self._captcha_finish(key, {"success": False, "lost": True, **where})
         if op == "enable":
+            if os.environ.get("BU_CAPTCHA_SOLVER") == "off":  # Browser(captcha_solver=False): never switch it back on
+                return {"error": CAPTCHA_OFF}
             for key, (ended, _) in list(self.captcha_finished.items()):
                 if now - ended > CAPTCHA_FRESH_S:  # an old auto-solve is no answer for a new challenge
                     del self.captcha_finished[key]

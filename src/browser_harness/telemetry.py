@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import paths
+from .naming import cli_name
 
 POSTHOG_KEY = "phc_rCPCLPtaXB3EuBdiH7JLKtU2Wj5iPnuwdsbw58CnjYXc"
 POSTHOG_HOST = "https://eu.i.posthog.com"
@@ -304,5 +305,5 @@ def run_telemetry_cli(argv: list[str]) -> int:
     if argv == ["enable"]:
         print(json.dumps(set_enabled(True), indent=2))
         return 0
-    print("usage: browser-harness telemetry [status|enable|disable]")
+    print(f"usage: {cli_name()} telemetry [status|enable|disable]")
     return 2

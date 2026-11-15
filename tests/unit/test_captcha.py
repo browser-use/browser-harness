@@ -214,3 +214,31 @@ def test_concurrent_callers_share_one_result(solver):
     solver.event(FINISHED, success=True)
     t1.join(3), t2.join(3)
     assert a["detail"] == b["detail"] == "solved"
+
+
+def test_off_switch_never_turns_the_solver_on(solver, monkeypatch):
+    """Browser(captcha_solver=False) in browser-use sets BU_CAPTCHA_SOLVER=off: solve_captcha() must keep it off."""
+    solver.cdp.enabled = False
+    monkeypatch.setenv("BU_CAPTCHA_SOLVER", "off")
+    r = helpers.solve_captcha(start_timeout=0.3)
+    assert (r["solved"], r["detail"]) == (
+        False, "solver unavailable: BU_CAPTCHA_SOLVER=off turned it off; handle the captcha yourself")
+    with pytest.raises(RuntimeError, match="BU_CAPTCHA_SOLVER=off"):  # the daemon refuses callers without the env
+        helpers._send({"meta": "captcha", "op": "enable", "caller": "c", "lease": 1})
+    assert solver.cdp.sets == [] and solver.cdp.enabled is False
+
+
+def test_captcha_note_is_the_public_note(solver):
+    solver.event(STARTED, vendor="cloudflare", url="https://a.test/")
+    assert helpers.captcha_note().startswith("[Captcha solver running (cloudflare) on https://a.test/")
+    solver.event(FINISHED, vendor="cloudflare", url="https://a.test/", success=False)
+    assert helpers.captcha_note() == "[Captcha solver finished: not solved, take over (cloudflare) on https://a.test/.]"
+    assert helpers.captcha_note() == ""
+
+
+def test_captcha_note_is_empty_without_a_daemon(monkeypatch):
+    def no_daemon(req, response_timeout=5.0):
+        raise FileNotFoundError("no daemon socket")
+
+    monkeypatch.setattr(helpers, "_send", no_daemon)
+    assert helpers.captcha_note() == ""

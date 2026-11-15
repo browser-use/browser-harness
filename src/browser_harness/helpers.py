@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from . import _ipc as ipc
 from . import paths
+from .naming import cli_name as _cli_name
 
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -492,6 +493,8 @@ def solve_captcha(start_timeout=20.0, timeout=75.0):
     began, since, caller = time.monotonic(), time.time(), os.urandom(8).hex()
     def out(solved, detail, **extra):
         return {"solved": solved, "detail": detail, "seconds": round(time.monotonic() - began, 1), **extra}
+    if os.environ.get("BU_CAPTCHA_SOLVER") == "off":  # the daemon refuses too, for callers without this env
+        return out(False, "solver unavailable: BU_CAPTCHA_SOLVER=off turned it off; handle the captcha yourself")
     try:  # up to three 2 s CDP calls
         _send({"meta": "captcha", "op": "enable", "caller": caller, "lease": timeout + 5}, response_timeout=10)
     except Exception as e:
@@ -499,7 +502,7 @@ def solve_captcha(start_timeout=20.0, timeout=75.0):
         if "wasn't found" in why or "-32601" in why:  # Chrome: no BrowserUse domain
             why = "this browser has no captcha solver (Browser Use Cloud browsers do)"
         elif why == "'method'":  # a daemon started before solve_captcha() existed
-            why = "the daemon predates solve_captcha(); run browser-harness --reload"
+            why = f"the daemon predates solve_captcha(); run {_cli_name()} --reload"
         return out(False, f"solver unavailable: {why[:300]}")
     try:
         while True:
@@ -521,6 +524,16 @@ def solve_captcha(start_timeout=20.0, timeout=75.0):
             _send({"meta": "captcha", "op": "release", "caller": caller})
         except Exception:
             pass
+
+
+def captcha_note():
+    """Captcha solver lines not shown yet: one per solve still running and one per solve finished since the last note
+    ('[Captcha solver ...]'). Append it to whatever you show the agent after a step. '' when there is nothing, no
+    daemon, or no solver (a local browser)."""
+    try:
+        return _send({"meta": "captcha", "op": "note"}, response_timeout=2).get("note") or ""
+    except Exception:  # no daemon, or one without the captcha op
+        return ""
 
 
 # --- utility ---

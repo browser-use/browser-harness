@@ -12,6 +12,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .naming import cli_name
+
 TEMPLATE = Path(__file__).with_name("video-template.html")
 SOURCE_MANIFEST = "video-source.json"
 COMPOSITION_PREFIX = "window.COMPOSITION ="
@@ -709,12 +711,12 @@ def init_recording(recording: Path, require_explicit: bool = False) -> int:
     output.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     write_source_manifest(recording)
     print(f"summary: {output}")
-    print(f"next: write {recording / 'edit-brief.json'}, then run browser-harness video review")
+    print(f"next: write {recording / 'edit-brief.json'}, then run {cli_name()} video review")
     return 0
 
 
 def run_cli(args: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="browser-harness video")
+    parser = argparse.ArgumentParser(prog=f"{cli_name()} video")
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="prepare a recording for editing")
     init.add_argument("recording", type=Path)
