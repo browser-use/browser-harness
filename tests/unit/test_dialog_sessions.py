@@ -226,6 +226,23 @@ def test_reattaching_tracks_dialog_across_sessions(monkeypatch, detach_old):
     asyncio.run(run())
 
 
+def test_detaching_current_session_keeps_dialog_observed_by_another_session(monkeypatch):
+    async def run():
+        async with connected_browser(monkeypatch) as browser:
+            dialog_a = await browser.open_dialog("a", "A")
+            attached = await asyncio.to_thread(helpers.cdp, "Target.attachToTarget", targetId="a", flatten=True)
+            new_session = attached["sessionId"]
+            await switch_to(new_session, "a")
+            await browser.event("Target.detachedFromTarget", {"sessionId": new_session, "targetId": "a"})
+            assert (await asyncio.to_thread(helpers.current_tab))["targetId"] == "a"
+            assert await asyncio.to_thread(helpers.page_info) == dialog_a
+            assert browser.evaluations == []
+            await browser.close_dialog("a")
+            assert await asyncio.to_thread(helpers._send, {"meta": "pending_dialog"}) == {"dialog": None}
+
+    asyncio.run(run())
+
+
 def test_destroying_target_removes_only_its_dialog_and_sessions(monkeypatch):
     async def run():
         async with connected_browser(monkeypatch) as browser:

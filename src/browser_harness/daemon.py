@@ -753,7 +753,7 @@ class Daemon:
             # it doesn't add to the synchronous IPC budget.
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
-        if meta == "pending_dialog": return {"dialog": self.dialogs.get(self._session_targets.get(self.session))}
+        if meta == "pending_dialog": return {"dialog": self.dialogs.get(self.target_id)}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
             # cancel/drain existing handlers. In particular, a CDP replay that

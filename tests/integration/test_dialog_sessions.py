@@ -17,8 +17,29 @@ from browser_harness import _ipc as ipc, daemon, helpers
 
 
 @pytest.mark.skipif(not os.environ.get("BH_TEST_CHROME"), reason="set BH_TEST_CHROME to run an isolated Chrome")
-def test_page_info_ignores_another_tabs_real_javascript_dialog(monkeypatch):
+@pytest.mark.parametrize("shutdown_failure", [None, "server", "cdp"])
+def test_page_info_ignores_another_tabs_real_javascript_dialog(monkeypatch, shutdown_failure):
+    chrome = None
+    cdp_stopped = False
+    original_serve, original_stop = daemon.serve, daemon.CDPClient.stop
+
+    async def serve(connection):
+        await original_serve(connection)
+        if shutdown_failure == "server":
+            raise RuntimeError("injected server shutdown failure")
+
+    async def stop(client):
+        nonlocal cdp_stopped
+        await original_stop(client)
+        cdp_stopped = True
+        if shutdown_failure == "cdp":
+            raise RuntimeError("injected cdp shutdown failure")
+
+    monkeypatch.setattr(daemon, "serve", serve)
+    monkeypatch.setattr(daemon.CDPClient, "stop", stop)
+
     async def run():
+        nonlocal chrome
         with tempfile.TemporaryDirectory(prefix="bh-dialog-") as directory:
             root = Path(directory)
             profile = root / "profile"
@@ -74,24 +95,40 @@ def test_page_info_ignores_another_tabs_real_javascript_dialog(monkeypatch):
                 assert returned_session != session_a
                 assert (await asyncio.to_thread(helpers.page_info))["dialog"]["message"] == "Dialog on A"
             finally:
-                if connection is not None and connection.cdp is not None:
-                    if session_a is not None:
-                        with contextlib.suppress(Exception):
-                            await asyncio.wait_for(connection.cdp.send_raw(
-                                "Page.handleJavaScriptDialog", {"accept": True}, session_id=session_a,
-                            ), 2)
-                    if evaluation is not None:
-                        with contextlib.suppress(Exception):
-                            await evaluation
-                    if server is not None:
-                        connection.stop.set()
-                        await server
-                    await connection.cdp.stop()
-                chrome.terminate()
                 try:
-                    chrome.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    chrome.kill()
-                    chrome.wait()
+                    if connection is not None and connection.cdp is not None:
+                        try:
+                            if session_a is not None:
+                                with contextlib.suppress(Exception):
+                                    await asyncio.wait_for(connection.cdp.send_raw(
+                                        "Page.handleJavaScriptDialog", {"accept": True}, session_id=session_a,
+                                    ), 2)
+                            if evaluation is not None:
+                                with contextlib.suppress(Exception):
+                                    await evaluation
+                            if server is not None:
+                                connection.stop.set()
+                                await server
+                        finally:
+                            await connection.cdp.stop()
+                finally:
+                    chrome.terminate()
+                    try:
+                        chrome.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        chrome.kill()
+                        chrome.wait()
 
-    asyncio.run(run())
+    try:
+        if shutdown_failure:
+            with pytest.raises(RuntimeError, match=f"injected {shutdown_failure} shutdown failure"):
+                asyncio.run(run())
+        else:
+            asyncio.run(run())
+        assert chrome.poll() is not None, "isolated Chrome must exit even when cleanup raises"
+        assert cdp_stopped
+    finally:
+        # Keep the regression test safe even when the cleanup under test fails.
+        if chrome is not None and chrome.poll() is None:
+            chrome.kill()
+            chrome.wait()
