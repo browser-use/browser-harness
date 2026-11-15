@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 
 import pytest
 
@@ -845,3 +846,32 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_captcha_solving_tracks_the_attached_tab_until_finished():
+    d = _fresh_daemon()
+    d.target_id = "page-1"
+    solving = lambda: asyncio.run(d.handle({"meta": "captcha_solving"}))["seconds"]
+    assert solving() is None
+    d._record_event("BrowserUse.captchaSolverStarted", {"targetId": "other-tab", "vendor": "recaptcha"})
+    assert solving() is None  # another tab's solve does not hold this one
+    d._record_event("BrowserUse.captchaSolverStarted", {"targetId": "page-1", "vendor": "recaptcha"})
+    assert solving() >= 0
+    d._record_event("BrowserUse.captchaSolverFinished", {"targetId": "page-1", "success": True})
+    assert solving() is None
+
+
+def test_captcha_solving_drops_a_solve_with_no_finish_after_the_solver_limit():
+    d = _fresh_daemon()
+    d.target_id = "page-1"
+    d.captcha_started["page-1"] = time.monotonic() - daemon.CAPTCHA_LOST_S - 1
+    assert asyncio.run(d.handle({"meta": "captcha_solving"}))["seconds"] is None
+
+
+def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab():
+    d = _fresh_daemon()
+    d.session = "s1"
+    asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "params": {"type": "mouseMoved", "x": 12, "y": 34}}))
+    asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "session_id": "iframe",
+                          "params": {"type": "mouseMoved", "x": 1, "y": 1}}))
+    assert asyncio.run(d.handle({"meta": "pointer"})) == {"pointer": (12, 34)}

@@ -186,8 +186,9 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 
 - Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree")["nodes"]` has every element's role, name, and `backendDOMNodeId` — filter in Python before printing (it is thousands of nodes). Coordinates: `q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
+- Never click, submit or focus with JS (`el.click()`, `form.submit()`, `focus()`) on real sites: those events are untrusted and Akamai 403s the request. Use `click_at_xy` (it moves the mouse there first) and `fill_input` (it clicks the field).
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
-- After navigation, call `wait_for_load()`.
+- After navigation, call `wait_for_load()`. On cloud browsers it also waits while the captcha solver is mid-solve (`wait_for_captcha_solver()`); `False` means still loading or still solving: do not act on the challenge page.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.

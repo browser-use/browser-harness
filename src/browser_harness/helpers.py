@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, time, urllib.request
+import base64, importlib.util, json, math, os, random, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -190,8 +190,32 @@ def click_at_xy(x, y, button="left", clicks=1):
         except Exception as e:
             print(f"[debug_click] overlay failed: {e}")
         _debug_click_counter += 1
+    move_mouse(x, y)
+    time.sleep(random.uniform(0.04, 0.12))
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
+    time.sleep(random.uniform(0.03, 0.09))
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
+
+def move_mouse(x, y):
+    """Move the pointer to (x, y) along a short curve of 10-20 real mouseMoved events from where it last was.
+
+    click_at_xy() calls this first: Akamai only validates a session (_abck ~0~) that saw pointer travel,
+    and a click that teleports onto its target does not count."""
+    try:
+        start = _send({"meta": "pointer"}).get("pointer")  # the daemon remembers it across CLI calls
+    except Exception:
+        start = None  # daemon predates pointer tracking
+    x0, y0 = start or (x + random.uniform(-150, 150), y + random.uniform(-100, 100))
+    bend = 20 + math.hypot(x - x0, y - y0) / 4
+    cx, cy = (x0 + x) / 2 + random.uniform(-bend, bend), (y0 + y) / 2 + random.uniform(-bend, bend)
+    steps = random.randint(10, 20)
+    for i in range(1, steps + 1):
+        t = i / steps
+        t = t * t * (3 - 2 * t)  # ease in and out
+        px = (1 - t) ** 2 * x0 + 2 * (1 - t) * t * cx + t * t * x
+        py = (1 - t) ** 2 * y0 + 2 * (1 - t) * t * cy + t * t * y
+        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=max(0, px), y=max(0, py))
+        time.sleep(random.uniform(0.005, 0.02))
 
 def type_text(text):
     cdp("Input.insertText", text=text)
@@ -209,8 +233,9 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
     """Fill a framework-managed input (React controlled, Vue v-model, Ember tracked).
 
     type_text() uses Input.insertText which bypasses framework event listeners and leaves
-    submit buttons disabled. This helper focuses the element, clears it, types via real
-    key events, then fires synthetic input+change events so the framework sees the update.
+    submit buttons disabled. This helper focuses the element with a real click (click_at_xy),
+    clears it, types via real key events, then fires synthetic input+change events so the
+    framework sees the update. JS focus() is only the fallback when the click did not focus it.
 
     Raises RuntimeError if the element is not found. Pass timeout>0 to wait for
     late-rendered elements (e.g. after a route change) before typing.
@@ -218,12 +243,16 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
     if timeout > 0:
         if not wait_for_element(selector, timeout=timeout):
             raise RuntimeError(f"fill_input: element not found: {selector!r}")
-    focused = js(
-        f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
-        f"if(!e)return false;e.focus();return true;}})()"
+    q = f"document.querySelector({json.dumps(selector)})"
+    box = js(
+        f"(()=>{{const e={q};if(!e)return null;e.scrollIntoView({{block:'center',behavior:'instant'}});"
+        f"const r=e.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2,r.width*r.height];}})()"
     )
-    if not focused:
+    if not box:
         raise RuntimeError(f"fill_input: element not found: {selector!r}")
+    if box[2]:
+        click_at_xy(box[0], box[1])  # trusted press: Akamai 403s a submit whose page never saw one
+    js(f"(()=>{{const e={q},a=document.activeElement;if(e&&a!==e&&!e.contains(a))e.focus();}})()")
     if clear_first:
         # Dispatch select-all directly — NOT via press_key, which always emits a
         # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
@@ -485,13 +514,33 @@ def iframe_target(url_substr):
 def wait(seconds=1.0):
     time.sleep(seconds)
 
-def wait_for_load(timeout=15.0):
-    """Poll document.readyState == 'complete' or timeout."""
+def _page_ready(timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if js("document.readyState") == "complete": return True
         time.sleep(0.3)
     return False
+
+def wait_for_load(timeout=15.0):
+    """Poll document.readyState == 'complete' or timeout. On a cloud browser whose captcha solver
+    is mid-solve on this tab, also wait for the solve (wait_for_captcha_solver) and poll again."""
+    if not _page_ready(timeout): return False
+    if wait_for_captcha_solver(timeout=0): return True  # nothing solving: one IPC call
+    return wait_for_captcha_solver() and _page_ready(timeout)
+
+def wait_for_captcha_solver(timeout=60.0):
+    """Wait while Browser Use Cloud's captcha solver is mid-solve on this tab (from its
+    BrowserUse.captchaSolverStarted event with no Finished yet). Don't click, type or navigate meanwhile.
+    True once no solve runs (at once on local Chrome), False if one still runs after timeout."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            solving = _send({"meta": "captcha_solving"}).get("seconds")
+        except RuntimeError:
+            return True  # daemon predates solver tracking: browser-harness --reload
+        if solving is None: return True
+        if time.time() >= deadline: return False
+        time.sleep(0.5)
 
 def wait_for_element(selector, timeout=10.0, visible=False):
     """Poll until querySelector(selector) exists in the DOM, or timeout.

@@ -133,7 +133,7 @@ def test_fill_input_focuses_types_and_fires_events():
 
     def fake_js(expr, **kwargs):
         js_calls.append(expr)
-        return True  # focus call must return True (element found)
+        return [10, 20, 100]  # element box: found, visible
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):
@@ -147,7 +147,7 @@ def test_fill_input_focuses_types_and_fires_events():
 
 def test_fill_input_raises_when_element_not_found():
     def fake_js(expr, **kwargs):
-        return False  # element not found
+        return None  # element not found
 
     with patch("browser_harness.helpers.js", side_effect=fake_js):
         with pytest.raises(RuntimeError, match="element not found"):
@@ -168,7 +168,7 @@ def _fill_input_cdp_calls(monkeypatch, user_agent, texts=("x",)):
         return {"userAgent": user_agent} if method == "Browser.getVersion" and user_agent is not None else {}
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
-         patch("browser_harness.helpers.js", return_value=True):  # element found
+         patch("browser_harness.helpers.js", return_value=[10, 20, 100]):  # element found
         for text in texts:
             helpers.fill_input("#inp", text, clear_first=True)
     return calls
@@ -227,7 +227,7 @@ def test_fill_input_no_clear_skips_ctrl_a():
         return {}
 
     def fake_js(expr, **kwargs):
-        return True  # element found
+        return [10, 20, 100]  # element found
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):
@@ -616,7 +616,7 @@ def test_fill_input_types_each_character_as_a_real_key():
         return {}
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
-         patch("browser_harness.helpers.js", side_effect=lambda *_a, **_k: True):
+         patch("browser_harness.helpers.js", side_effect=lambda *_a, **_k: [10, 20, 100]):
         helpers.fill_input("#inp", "Hi!", clear_first=False)
 
     typed = [(e["key"], e["code"], e["windowsVirtualKeyCode"], bool(e["modifiers"] & 8))
@@ -738,3 +738,104 @@ def test_js_keeps_base_exception_from_evaluation_when_detach_also_raises():
         KeyboardInterrupt, match="evaluation interrupted"
     ):
         helpers.js("7", target_id="iframe-target")
+
+
+# --- trusted pointer input ---
+
+def _mouse_calls(fn, pointer=(100, 100), js_value=None):
+    """Run fn with cdp/_send/js faked; returns (method, kwargs) for every cdp call."""
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {}
+
+    def fake_send(req, **_):
+        if isinstance(pointer, Exception):
+            raise pointer
+        return {"pointer": pointer}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.js", return_value=js_value), \
+         patch("browser_harness.helpers.time.sleep"):
+        fn()
+    return calls
+
+
+def _mouse(calls):
+    return [(kw["type"], kw.get("x"), kw.get("y")) for m, kw in calls if m == "Input.dispatchMouseEvent"]
+
+
+def test_click_at_xy_travels_from_the_last_pointer_before_pressing():
+    events = _mouse(_mouse_calls(lambda: helpers.click_at_xy(400, 300)))
+    moves = [e for e in events if e[0] == "mouseMoved"]
+    assert 10 <= len(moves) <= 20
+    assert [e[0] for e in events[-2:]] == ["mousePressed", "mouseReleased"]
+    assert events[:len(moves)] == moves  # every move comes before the press
+    assert moves[-1][1:] == (400, 300) and events[-1][1:] == (400, 300)
+    # The path starts near the remembered pointer, not on the target.
+    assert abs(moves[0][1] - 100) + abs(moves[0][2] - 100) < abs(moves[0][1] - 400) + abs(moves[0][2] - 300)
+
+
+def test_click_at_xy_still_moves_when_the_daemon_has_no_pointer():
+    for pointer in (None, RuntimeError("'method'")):  # fresh daemon, daemon from before this change
+        events = _mouse(_mouse_calls(lambda: helpers.click_at_xy(50, 60), pointer=pointer))
+        assert sum(e[0] == "mouseMoved" for e in events) >= 10
+        assert events[-1] == ("mouseReleased", 50, 60)
+
+
+def test_fill_input_clicks_the_field_before_typing():
+    calls = _mouse_calls(lambda: helpers.fill_input("#inp", "x", clear_first=False), js_value=[10, 20, 100])
+    methods = [m for m, kw in calls if m == "Input.dispatchKeyEvent" or kw.get("type") == "mousePressed"]
+    assert methods[0] == "Input.dispatchMouseEvent"
+    assert ("mousePressed", 10, 20) in _mouse(calls)
+
+
+def test_fill_input_skips_the_click_for_a_zero_size_field():
+    calls = _mouse_calls(lambda: helpers.fill_input("#inp", "x", clear_first=False), js_value=[10, 20, 0])
+    assert not _mouse(calls)
+
+
+# --- captcha solver wait ---
+
+def _solver(states, ready="complete"):
+    """Fake daemon answering captcha_solving with successive `seconds` values."""
+    seq = iter(states)
+    sends = []
+
+    def fake_send(req, **_):
+        sends.append(req)
+        v = next(seq)
+        if isinstance(v, Exception):
+            raise v
+        return {"seconds": v}
+
+    return sends, patch("browser_harness.helpers._send", side_effect=fake_send), \
+        patch("browser_harness.helpers.js", return_value=ready), patch("browser_harness.helpers.time.sleep")
+
+
+def test_wait_for_load_costs_one_ipc_call_when_nothing_is_solving():
+    sends, *patches = _solver([None])
+    with patches[0], patches[1], patches[2]:
+        assert helpers.wait_for_load() is True
+    assert sends == [{"meta": "captcha_solving"}]
+
+
+def test_wait_for_load_waits_for_an_in_flight_solve():
+    sends, *patches = _solver([3.0, 3.5, 4.0, None])
+    with patches[0], patches[1], patches[2]:
+        assert helpers.wait_for_load() is True
+    assert len(sends) == 4
+
+
+def test_wait_for_captcha_solver_returns_false_while_still_solving():
+    sends, *patches = _solver([5.0] * 10)
+    with patches[0], patches[1], patches[2]:
+        assert helpers.wait_for_captcha_solver(timeout=0) is False
+
+
+def test_wait_for_captcha_solver_passes_on_a_daemon_without_tracking():
+    sends, *patches = _solver([RuntimeError("'method'")])
+    with patches[0], patches[1], patches[2]:
+        assert helpers.wait_for_captcha_solver() is True

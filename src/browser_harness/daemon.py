@@ -35,6 +35,7 @@ SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
+CAPTCHA_LOST_S = 150  # the cloud captcha solver gives up within 120 s: a solve open longer has no finish coming
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -437,6 +438,8 @@ class Daemon:
         self._session_replacements = {}
         self.events = deque(maxlen=BUF)
         self.dialog = None
+        self.captcha_started = {}  # targetId -> monotonic start of a cloud captcha solve with no finish yet
+        self.pointer = None  # last (x, y) of Input.dispatchMouseEvent on the attached tab
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
@@ -631,6 +634,10 @@ class Daemon:
             self.dialog = None
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
+        elif method == "BrowserUse.captchaSolverStarted":
+            self.captcha_started[str((params or {}).get("targetId", ""))] = time.monotonic()
+        elif method == "BrowserUse.captchaSolverFinished":
+            self.captcha_started.pop(str((params or {}).get("targetId", "")), None)
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -737,6 +744,12 @@ class Daemon:
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
+        if meta == "pointer": return {"pointer": self.pointer}
+        if meta == "captcha_solving":  # seconds the attached tab's cloud captcha solve has run, or None
+            now = time.monotonic()
+            ages = [now - t for k, t in self.captcha_started.items()
+                    if k in ("", self.target_id) and now - t < CAPTCHA_LOST_S]
+            return {"seconds": max(ages) if ages else None}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
             # cancel/drain existing handlers. In particular, a CDP replay that
@@ -765,6 +778,8 @@ class Daemon:
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        if method == "Input.dispatchMouseEvent" and sid == self.session and "x" in params:
+            self.pointer = (params["x"], params.get("y", 0))
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
