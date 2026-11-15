@@ -30,7 +30,7 @@ PY
 - Parallel agents and sub-agents each prefix commands with their own `BH_OWNER=<name>`; the same owner means shared tabs.
 - `mark_tab(tab, "deliverable")` the tabs the person should keep (`"handoff"`: they should act in it now). Call `release_tabs()` only when the whole task is finished and no follow-up or approval is pending: it closes the unmarked tabs you opened and gives back the ones you took. Nothing closes by itself.
 - Everything runs in the background. Call `activate_tab(tab)` only when the user asks to see a tab: it brings Chrome to the front. For a focus-gated page, wrap the step in `cdp("Emulation.setFocusEmulationEnabled", enabled=True)` and disable it in `finally`; if that fails, report it instead of activating.
-- One daemon per browser. Omit `BU_NAME` for the local Chrome and never invent per-job names: each new local daemon makes Chrome ask to Allow again. `list_browsers()` shows the running ones; `use_browser(name)` switches for the rest of one call only, so use `BU_NAME=<name>` for later calls.
+- One daemon per browser. Omit `BU_NAME` for the local Chrome. A `BU_NAME` with no browser of its own is treated as `BH_OWNER` on the shared local daemon (own tabs, no extra Allow); `BH_NAMED_LOCAL_DAEMON=1` forces a separate connection, which makes Chrome ask to Allow again. `list_browsers()` shows the running ones; `use_browser(name)` switches for the rest of one call only, so use `BU_NAME=<name>` for later calls.
 - Titles of your tabs start with 🐴 plus your `name_session("...")` name; `BH_TAB_MARKER=0` leaves titles unchanged.
 
 ## Page Workflow
