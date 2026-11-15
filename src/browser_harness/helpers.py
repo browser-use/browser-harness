@@ -696,15 +696,38 @@ def upload_file(selector, path):
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
 
+_CREDENTIAL_HEADERS = {"authorization", "cookie", "proxy-authorization"}
+
+
+def _proxy_can_reach(url, headers):
+    """Whether http_get may send url via the fetch-use proxy: a public host and no
+    credentials. localhost, private IPs and intranet names (no dot, .local,
+    .internal, .localhost) are unreachable from the proxy, and an Authorization
+    or Cookie header should not leave this machine."""
+    if any(str(k).lower() in _CREDENTIAL_HEADERS for k in (headers or {})):
+        return False
+    host = (urlparse(url).hostname or "").rstrip(".").lower()
+    if not host or "." not in host or host.endswith((".local", ".localhost", ".internal")):
+        return False
+    import ipaddress
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
+
+
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.
 
-    When BROWSER_USE_API_KEY is set, routes through the fetch-use proxy (handles bot
-    detection, residential proxies, retries). Falls back to local urllib otherwise."""
-    if os.environ.get("BROWSER_USE_API_KEY"):
+    Returns str, or bytes when the body is not UTF-8 text (zip, pdf, image).
+    When BROWSER_USE_API_KEY is set, public URLs go through the fetch-use proxy
+    (handles bot detection, residential proxies, retries); localhost, private and
+    intranet hosts, and requests with Authorization/Cookie headers, stay local."""
+    if os.environ.get("BROWSER_USE_API_KEY") and _proxy_can_reach(url, headers):
         try:
             from fetch_use import fetch_sync
-            return fetch_sync(url, headers=headers, timeout_ms=int(timeout * 1000)).text
+            r = fetch_sync(url, headers=headers, timeout_ms=int(timeout * 1000))
+            return r.content if getattr(r, "is_binary", False) else r.text
         except ImportError:
             pass
     import gzip
@@ -713,7 +736,10 @@ def http_get(url, headers=None, timeout=20.0):
     with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
+    try:
         return data.decode()
+    except UnicodeDecodeError:
+        return data
 
 
 # Imported at the bottom so recorder's own `from . import helpers` sees a

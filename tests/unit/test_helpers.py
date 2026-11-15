@@ -164,6 +164,73 @@ def test_page_info_raises_clearly_when_html_never_arrives(monkeypatch):
             helpers.page_info()
 
 
+class _FakeHTTPResponse:
+    def __init__(self, body, gzip_encoded=False):
+        import gzip
+        self._body = gzip.compress(body) if gzip_encoded else body
+        self.headers = {"Content-Encoding": "gzip"} if gzip_encoded else {}
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_http_get_returns_bytes_for_a_binary_body(monkeypatch):
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+    zip_head = b"PK\x03\x04\x14\x00\x00\x00\x08\x00\xff\xfe"
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse(zip_head)):
+        assert helpers.http_get("https://example.com/a.zip") == zip_head
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse("héllo".encode(), gzip_encoded=True)):
+        assert helpers.http_get("https://example.com/") == "héllo"
+
+
+@pytest.mark.parametrize(
+    "url,headers,proxied",
+    [
+        ("https://example.com/", None, True),
+        ("http://localhost:8000/", None, False),
+        ("http://127.0.0.1:8000/", None, False),
+        ("http://[::1]/", None, False),
+        ("http://10.0.0.5/", None, False),
+        ("http://192.168.1.2/", None, False),
+        ("http://intranet/", None, False),
+        ("http://printer.local/", None, False),
+        ("http://app.localhost/", None, False),
+        ("http://svc.internal/", None, False),
+        ("https://8.8.8.8/", None, True),
+        ("https://api.example.com/", {"Authorization": "Bearer x"}, False),
+        ("https://example.com/", {"cookie": "a=b"}, False),
+        ("https://example.com/", {"Accept": "text/html"}, True),
+    ],
+)
+def test_http_get_uses_fetch_use_only_for_public_hosts_without_credentials(monkeypatch, url, headers, proxied):
+    import sys
+    import types
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "k")
+    fetched = []
+    fake = types.ModuleType("fetch_use")
+    fake.fetch_sync = lambda u, **kw: fetched.append(u) or types.SimpleNamespace(text="proxied", is_binary=False)
+    monkeypatch.setitem(sys.modules, "fetch_use", fake)
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse(b"local")):
+        assert helpers.http_get(url, headers=headers) == ("proxied" if proxied else "local")
+    assert fetched == ([url] if proxied else [])
+
+
+def test_http_get_via_fetch_use_returns_bytes_for_a_binary_body(monkeypatch):
+    import sys
+    import types
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "k")
+    fake = types.ModuleType("fetch_use")
+    fake.fetch_sync = lambda u, **kw: types.SimpleNamespace(text="", content=b"%PDF\xff", is_binary=True)
+    monkeypatch.setitem(sys.modules, "fetch_use", fake)
+    assert helpers.http_get("https://example.com/a.pdf") == b"%PDF\xff"
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():
