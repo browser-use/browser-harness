@@ -29,7 +29,7 @@ from .admin import (
     stop_remote_daemon,
     sync_local_profile,
 )
-from . import auth, recorder, telemetry
+from . import auth, helpers, recorder, scripts, telemetry
 from .helpers import *
 
 HELP = """Browser Harness
@@ -64,6 +64,11 @@ Commands:
   browser-harness video init <recording>      prepare a recording for editing
   browser-harness video review <recording>    compile and review the video
   browser-harness video export <recording> --reviewed   export a verified MP4
+  browser-harness scripts save <name> --from-last [--param k=v]
+                                    save the last successful script for replay
+  browser-harness scripts run <name> [--param k=v]
+                                    replay a saved script; `drifted:` + exit 1 on failure
+  browser-harness scripts list [--host HOST]   list saved scripts
   browser-harness telemetry status    show anonymous telemetry opt-out state
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
@@ -130,7 +135,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "skill", "mac-approve", "recordings", "telemetry", "video"}:
+    if first in {"auth", "skill", "mac-approve", "recordings", "scripts", "telemetry", "video"}:
         return first
     return "usage"
 
@@ -374,10 +379,16 @@ def _run(args):
     if args and args[0] == "--debug-clicks":
         os.environ["BH_DEBUG_CLICKS"] = "1"
         args = args[1:]
-    if not args and not sys.stdin.isatty():
+    saved = None
+    if args and args[0] == "scripts":
+        if args[1:2] != ["run"]:
+            sys.exit(scripts.run_cli(args[1:]))
+        saved, code, params = scripts.prepare_run(args[2:])
+    elif not args and not sys.stdin.isatty():
         code = sys.stdin.read()
         if not code.strip():
             sys.exit(USAGE)
+        params = scripts.env_params()
     else:
         sys.exit(USAGE)
     print_update_banner()
@@ -406,7 +417,15 @@ def _run(args):
             print(f"browser-harness: {e}", file=sys.stderr)
             sys.exit(1)
     _install_helper_trace()
-    exec(code, globals())
+    globals()["PARAMS"] = params
+    if saved is None:
+        exec(code, globals())
+        scripts.journal(code)
+        return
+    # Replays run unattended, often on loaded machines: don't fail on a slow daemon reply.
+    helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = max(helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, scripts.REPLAY_IPC_TIMEOUT_SECONDS)
+    helpers.SAVED_SCRIPT_HINTS = False
+    sys.exit(scripts.replay(saved, code, globals()))
 
 
 if __name__ == "__main__":
