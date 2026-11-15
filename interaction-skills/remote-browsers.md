@@ -48,3 +48,5 @@ A failed Cloud health check preserves the existing browser. Retry after it
 recovers; explicitly stop it when finished. Billing continues until stop or timeout.
 
 Cloud profile cookie sync reference: https://github.com/browser-use/browser-harness/blob/main/interaction-skills/profile-sync.md.
+
+Cloud browsers ignore viewport and device emulation (`Emulation.setDeviceMetricsOverride`, touch, window bounds) unless started with `start_remote_daemon(name, allowResizing=True)`.
