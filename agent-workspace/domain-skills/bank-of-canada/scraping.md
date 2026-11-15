@@ -22,7 +22,7 @@ robots.txt (checked 2026-11-14, curl and the cloud browser): https://www.bankofc
 ```python
 import json, re, time
 from datetime import date, datetime, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SITE = "https://www.bankofcanada.ca"
 VALET = SITE + "/valet"
@@ -80,11 +80,18 @@ def observations(series, n):
         raise RuntimeError(f"{series}: no observations: stop")
     return sorted(rows, reverse=True), d["seriesDetail"][series]
 
+def ottawa_date(t):
+    """t as a Bank of Canada (Ottawa, Eastern Time) calendar day. The schedule, the decisions table and Valet rows
+    use these days: compared with the UTC date, from 00:00 UTC until midnight ET a decision dated "tomorrow" in
+    Ottawa looks past."""
+    try:
+        return t.astimezone(ZoneInfo("America/Toronto")).date()
+    except ZoneInfoNotFoundError:
+        raise RuntimeError("no time zone data for America/Toronto (e.g. Windows): pip install tzdata, then re-run") from None
+
 on_boc_tab()
 now = datetime.now(timezone.utc)
-# The schedule, the decisions table and Valet rows are Bank of Canada (Ottawa) calendar days: compare in Eastern
-# Time, not UTC, or from 00:00 UTC until midnight ET a decision dated "tomorrow" in Ottawa looks past.
-today = now.astimezone(ZoneInfo("America/Toronto")).date()
+today = ottawa_date(now)
 print(f"now {now:%Y-%m-%d %H:%M} UTC = {today} {today:%A} in Ottawa (ET)")
 
 # 1. Policy rate. V39079 = "Target for the overnight rate (business daily)": one row per business day.
@@ -272,7 +279,7 @@ from https://example.com: HTTP 200 ACAO=None [{'d': '2026-11-13', 'FXUSDCAD': {'
 ```python
 import json, sys, time, urllib.error, urllib.request
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 VALET = "https://www.bankofcanada.ca/valet"
 UA = {"User-Agent": "boc-rates-example/1.0", "Accept": "application/json"}
@@ -309,7 +316,11 @@ since, level = latest("B114039")     # same target, one row per change (effectiv
 fx_day, usdcad = latest("FXUSDCAD")  # USD/CAD daily average, CAD per USD
 if level != rate:
     print(f"NOTE: last change says {level}%, daily series says {rate}% (a new decision may not be in V39079 yet)")
-age = (datetime.now(ZoneInfo("America/Toronto")).date() - date.fromisoformat(fx_day)).days  # Valet dates are Ottawa (ET) days
+try:
+    ottawa_today = datetime.now(ZoneInfo("America/Toronto")).date()  # Valet dates are Ottawa (ET) days
+except ZoneInfoNotFoundError:
+    sys.exit("no time zone data for America/Toronto (e.g. Windows): pip install tzdata, then re-run")
+age = (ottawa_today - date.fromisoformat(fx_day)).days
 print(f"policy rate {rate}% (daily value {rate_day}, at this level since {since})")
 print(f"USD/CAD {usdcad} on {fx_day} ({age} day(s) old)")
 print("Source: Bank of Canada, https://www.bankofcanada.ca/terms/ (indicative exchange rate, not for trading).")
@@ -391,7 +402,7 @@ Also from the `/valet/series/V39079/json` route: `"metadata": {"frequency":"Busi
 - **The daily policy-rate series lags.** At 23:33 UTC on Saturday 2026-11-14 the newest `V39079` row was Thursday 2026-11-12, while `FXUSDCAD` already had Friday 2026-11-13. Report its value, not its date, as "the rate right now", and take the effective date from `B114039`. If a decision is new, `B114039` and `V39079` may briefly disagree; blocks 1 and 3 print a NOTE then.
 - **Effective date vs announcement date.** `B114039` says `2026-10-29`; the page's decisions table says `October 28, 2026` (`data-date="2026-10-28"`). Both are right: the change took effect the day after the announcement.
 - **"Held" decisions are rows too.** The page lists every fixed announcement date, with `---` when the rate did not move. Block 1 takes the latest row with a `+`/`-` change whose target equals the current `B114039` level, so a decision announced but not yet in effect is not credited to the old level.
-- **Dates are Ottawa days.** The schedule, the decisions table and Valet `d` values are Eastern Time calendar days; blocks 1 and 3 compare them with `datetime.now(ZoneInfo("America/Toronto")).date()`, not the UTC date, which runs a day ahead from 00:00 UTC until midnight ET. `zoneinfo` reads the system time zone database; the Python docs recommend the `tzdata` package where none is available, notably on Windows (`pip install tzdata`).
+- **Dates are Ottawa days.** The schedule, the decisions table and Valet `d` values are Eastern Time calendar days; blocks 1 and 3 compare them with `datetime.now(ZoneInfo("America/Toronto")).date()`, not the UTC date, which runs a day ahead from 00:00 UTC until midnight ET. `zoneinfo` reads the system time zone database; the Python docs recommend the `tzdata` package where none is available, notably on Windows. Without either, blocks 1 and 3 stop with "pip install tzdata" instead of guessing the offset.
 - **Holidays differ by series.** 2026-11-11 is a "Bank holiday" on the daily exchange rates page and has no `FXUSDCAD` row, but `V39079` has a 2026-11-11 row (2.50). `recent=N` counts observations, not days.
 - **Default sort order changes.** `recent=` on one series returned newest first (with several series, rows come grouped by series: `V39079,FXUSDCAD` `recent=3` gave 11-12, 11-11, 11-10, then 11-13); `start_date=` returned oldest first (2024-01-02 first); CSV came oldest first. Sort by `d` yourself or pass `order_dir`.
 - **Several series, several dates.** `/observations/V39079,FXUSDCAD/json?recent=1` returns two observation objects, `2026-11-12` with only `V39079` and `2026-11-13` with only `FXUSDCAD`. Read each series' own latest row.
