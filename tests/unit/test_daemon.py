@@ -845,3 +845,60 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+
+def test_local_handshake_retries_an_immediate_403_then_connects(monkeypatch):
+    """Cold launch: Chrome's DevTools server is up before its first window, so the
+    first connection is denied at once (no dialog). The daemon retries instead of
+    reporting permission-blocked."""
+    import asyncio
+    attempts = []
+
+    class Client:
+        def __init__(self, url):
+            self.url = url
+        async def start(self):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise RuntimeError("server rejected WebSocket connection: HTTP 403")
+
+    slept = []
+    async def fake_sleep(s):
+        slept.append(s)
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
+    monkeypatch.setattr(daemon, "_PatientCDPClient", Client)
+    monkeypatch.setattr(daemon.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(daemon, "log", lambda *a, **k: None)
+    d = daemon.Daemon()
+    d.cdp = Client("ws://x")
+    asyncio.run(d._start_cdp_retrying_early_denials("ws://x"))
+    assert len(attempts) == 3 and slept == [daemon.EARLY_DENIAL_DELAY] * 2
+
+
+def test_local_handshake_does_not_retry_a_slow_403_or_a_timeout(monkeypatch):
+    import asyncio
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
+    monkeypatch.setattr(daemon, "log", lambda *a, **k: None)
+    monkeypatch.setattr(daemon, "EARLY_DENIAL_WINDOW", -1.0)  # every 403 counts as slow (a person clicked Cancel)
+    attempts = []
+
+    class Client:
+        def __init__(self, url): pass
+        async def start(self):
+            attempts.append(1)
+            raise RuntimeError("server rejected WebSocket connection: HTTP 403")
+    d = daemon.Daemon(); d.cdp = Client("ws://x")
+    with pytest.raises(RuntimeError):
+        asyncio.run(d._start_cdp_retrying_early_denials("ws://x"))
+    assert attempts == [1]
+
+    monkeypatch.setattr(daemon, "EARLY_DENIAL_WINDOW", 1.5)
+    class Timeout(Client):
+        async def start(self):
+            attempts.append(2)
+            raise RuntimeError("timed out during opening handshake")
+    d = daemon.Daemon(); d.cdp = Timeout("ws://x")
+    with pytest.raises(RuntimeError):
+        asyncio.run(d._start_cdp_retrying_early_denials("ws://x"))
+    assert attempts == [1, 2]

@@ -121,6 +121,11 @@ BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") 
 # connection and another prompt. Chrome/process death and explicit cancellation
 # still terminate the pending connection.
 LOCAL_HANDSHAKE_TIMEOUT = None
+# A 403 within this many seconds of connecting means Chrome had no window to show
+# the Allow dialog in (cold launch), not that a person clicked Cancel.
+EARLY_DENIAL_WINDOW = 1.5
+EARLY_DENIAL_RETRIES = 5
+EARLY_DENIAL_DELAY = 2.0
 # How long get_ws_url() keeps waiting for DevToolsActivePort before giving up
 NO_TOGGLE_GRACE = 3
 TOGGLE_BOOT_GRACE = 12
@@ -632,6 +637,28 @@ class Daemon:
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
 
+    async def _start_cdp_retrying_early_denials(self, url):
+        """Open the CDP WebSocket; on local Chrome, retry a 403 that arrives at once.
+
+        Chrome's approval dialog needs a browser window (DevToolsConnectionDialog
+        denies immediately when GetLastActiveBrowser() is null). Right after a
+        cold launch the DevTools server is up before the first window exists, so
+        the first connection is refused with HTTP 403 and no dialog was shown.
+        Seen on Chrome 157: launch, connect at +4 s, 403, no sheet. A 403 that
+        takes longer is a person clicking Cancel and is not retried."""
+        for attempt in range(EARLY_DENIAL_RETRIES + 1):
+            t0 = time.monotonic()
+            try:
+                await self.cdp.start()
+                return
+            except Exception as e:
+                quick = time.monotonic() - t0 < EARLY_DENIAL_WINDOW
+                if not (BROWSER_KIND == "local" and "403" in str(e) and quick and attempt < EARLY_DENIAL_RETRIES):
+                    raise
+                log(f"handshake-denied-early: Chrome refused before it could show the Allow dialog (no window yet); retry {attempt + 1}/{EARLY_DENIAL_RETRIES} in {EARLY_DENIAL_DELAY:g}s")
+                self.cdp = _PatientCDPClient(url)
+                await asyncio.sleep(EARLY_DENIAL_DELAY)
+
     async def start(self):
         self.stop = asyncio.Event()
         url = get_ws_url()
@@ -641,7 +668,7 @@ class Daemon:
             # Allow while this handshake is still parked on the popup
             log("handshake-wait: if Chrome shows an 'Allow remote debugging?' popup, click Allow")
         try:
-            await self.cdp.start()
+            await self._start_cdp_retrying_early_denials(url)
         except Exception as e:
             if os.environ.get("BU_CDP_WS"):
                 raise RuntimeError(
