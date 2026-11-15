@@ -36,6 +36,7 @@ LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
 BUF = 500
 CAPTCHA_LOST_S = 150  # the cloud captcha solver gives up within 120 s: a solve open longer has no finish coming
+CAPTCHA_GRACE_S = 2.5  # the cloud solver starts up to ~1.7 s after the load event (measured): wait that long for it
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -439,6 +440,7 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.captcha_started = {}  # targetId -> monotonic start of a cloud captcha solve with no finish yet
+        self.loaded_at = 0.0  # monotonic time of the attached tab's last load event
         self.pointer = None  # last (x, y) of Input.dispatchMouseEvent on the attached tab
         self.stop = None  # asyncio.Event, set inside start()
 
@@ -634,6 +636,8 @@ class Daemon:
             self.dialog = None
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
+            if method == "Page.loadEventFired" and session_id == self.session:
+                self.loaded_at = time.monotonic()
         elif method == "BrowserUse.captchaSolverStarted":
             self.captcha_started[str((params or {}).get("targetId", ""))] = time.monotonic()
         elif method == "BrowserUse.captchaSolverFinished":
@@ -745,11 +749,12 @@ class Daemon:
             return {"session_id": new_session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "pointer": return {"pointer": self.pointer}
-        if meta == "captcha_solving":  # seconds the attached tab's cloud captcha solve has run, or None
-            now = time.monotonic()
+        if meta == "captcha_solving":  # seconds the attached tab's cloud captcha solve has run (or None),
+            now = time.monotonic()      # and how much longer one may still start after the last load
             ages = [now - t for k, t in self.captcha_started.items()
                     if k in ("", self.target_id) and now - t < CAPTCHA_LOST_S]
-            return {"seconds": max(ages) if ages else None}
+            grace = max(0.0, CAPTCHA_GRACE_S - (now - self.loaded_at)) if BROWSER_KIND == "cloud" else 0.0
+            return {"seconds": max(ages) if ages else None, "grace": grace}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
             # cancel/drain existing handlers. In particular, a CDP replay that

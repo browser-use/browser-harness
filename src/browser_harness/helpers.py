@@ -528,19 +528,29 @@ def wait_for_load(timeout=15.0):
     if wait_for_captcha_solver(timeout=0): return True  # nothing solving: one IPC call
     return wait_for_captcha_solver() and _page_ready(timeout)
 
+# Captcha widgets and challenge scripts the cloud solver handles (reCAPTCHA, hCaptcha, DataDome,
+# AWS WAF, Cloudflare, Arkose, PerimeterX). Only pages with one wait for a solve that has not started yet.
+_CAPTCHA_MARKERS = "!!document.querySelector('[src*=captcha],[src*=\"challenges.cloudflare.com\"],[src*=arkoselabs],#px-captcha')"
+
 def wait_for_captcha_solver(timeout=60.0):
-    """Wait while Browser Use Cloud's captcha solver is mid-solve on this tab (from its
-    BrowserUse.captchaSolverStarted event with no Finished yet). Don't click, type or navigate meanwhile.
+    """Wait while Browser Use Cloud's captcha solver is mid-solve on this tab (its
+    BrowserUse.captchaSolverStarted event has no Finished yet), or may still start one: on a page
+    with a captcha it starts up to ~2 s after the load. Don't click, type or navigate meanwhile.
     True once no solve runs (at once on local Chrome), False if one still runs after timeout."""
-    deadline = time.time() + timeout
+    deadline, marked = time.time() + timeout, None
     while True:
         try:
-            solving = _send({"meta": "captcha_solving"}).get("seconds")
+            state = _send({"meta": "captcha_solving"})
         except RuntimeError:
             return True  # daemon predates solver tracking: browser-harness --reload
-        if solving is None: return True
+        if state.get("seconds") is None:
+            if not state.get("grace"): return True
+            if marked is None:
+                try: marked = bool(js(_CAPTCHA_MARKERS))
+                except RuntimeError: marked = True  # page mid-navigation: assume it may have one
+            if not marked: return True
         if time.time() >= deadline: return False
-        time.sleep(0.5)
+        time.sleep(0.25)
 
 def wait_for_element(selector, timeout=10.0, visible=False):
     """Poll until querySelector(selector) exists in the DOM, or timeout.

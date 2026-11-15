@@ -809,7 +809,7 @@ def _solver(states, ready="complete"):
         v = next(seq)
         if isinstance(v, Exception):
             raise v
-        return {"seconds": v}
+        return v if isinstance(v, dict) else {"seconds": v, "grace": 0.0}
 
     return sends, patch("browser_harness.helpers._send", side_effect=fake_send), \
         patch("browser_harness.helpers.js", return_value=ready), patch("browser_harness.helpers.time.sleep")
@@ -827,6 +827,23 @@ def test_wait_for_load_waits_for_an_in_flight_solve():
     with patches[0], patches[1], patches[2]:
         assert helpers.wait_for_load() is True
     assert len(sends) == 4
+
+
+def test_wait_for_load_waits_out_the_start_grace_on_a_captcha_page():
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}, {"seconds": None, "grace": 1.0},
+                               {"seconds": 0.1, "grace": 0.5}, {"seconds": None, "grace": 0.0}])
+    js_answers = lambda expr, **_: True if expr == helpers._CAPTCHA_MARKERS else "complete"
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), patches[2]:
+        assert helpers.wait_for_load() is True
+    assert len(sends) == 4
+
+
+def test_wait_for_load_skips_the_start_grace_on_a_page_without_a_captcha():
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}])
+    js_answers = lambda expr, **_: False if expr == helpers._CAPTCHA_MARKERS else "complete"
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), patches[2]:
+        assert helpers.wait_for_load() is True
+    assert len(sends) == 1
 
 
 def test_wait_for_captcha_solver_returns_false_while_still_solving():

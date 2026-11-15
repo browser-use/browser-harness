@@ -868,6 +868,18 @@ def test_captcha_solving_drops_a_solve_with_no_finish_after_the_solver_limit():
     assert asyncio.run(d.handle({"meta": "captcha_solving"}))["seconds"] is None
 
 
+@pytest.mark.parametrize("kind,grace", [("cloud", True), ("local", False)])
+def test_captcha_solving_reports_a_start_grace_after_load_on_cloud_browsers(monkeypatch, kind, grace):
+    monkeypatch.setattr(daemon, "BROWSER_KIND", kind)
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+    d = _fresh_daemon()
+    d.session = "s1"
+    d._record_event("Page.loadEventFired", {}, "s1")
+    assert (asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] > 0) is grace
+    d.loaded_at -= daemon.CAPTCHA_GRACE_S
+    assert asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] == 0
+
+
 def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab():
     d = _fresh_daemon()
     d.session = "s1"
