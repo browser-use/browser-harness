@@ -121,6 +121,49 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
+def _page_info_fakes(values, dialogs=()):
+    """cdp returns each of values in turn as Runtime.evaluate's value; _send each of dialogs as the pending dialog."""
+    values, dialogs = list(values), list(dialogs)
+    evaluated = []
+
+    def fake_send(req):
+        return {"dialog": dialogs.pop(0) if dialogs else None}
+
+    def fake_cdp(method, **kwargs):
+        evaluated.append(kwargs["expression"])
+        return {"result": {"type": "string", "value": values.pop(0)}}
+
+    return fake_send, fake_cdp, evaluated
+
+
+def test_page_info_waits_for_new_documents_html_element():
+    """new_tab(url); page_info(): the document has committed but has no <html> yet (null), then has one."""
+    info = '{"url":"https://example.com/","title":"","w":800,"h":600,"sx":0,"sy":0,"pw":800,"ph":1200}'
+    fake_send, fake_cdp, evaluated = _page_info_fakes([None, None, info])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.time.sleep"):
+        assert helpers.page_info()["ph"] == 1200
+    assert len(evaluated) == 3
+
+
+def test_page_info_returns_a_dialog_opened_while_it_waits():
+    fake_send, fake_cdp, _ = _page_info_fakes([None], dialogs=[None, {"type": "alert", "message": "hi"}])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.time.sleep"):
+        assert helpers.page_info() == {"dialog": {"type": "alert", "message": "hi"}}
+
+
+def test_page_info_raises_clearly_when_html_never_arrives(monkeypatch):
+    monkeypatch.setattr(helpers, "PAGE_INFO_ROOT_WAIT_S", 0)
+    fake_send, fake_cdp, _ = _page_info_fakes([None])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        with pytest.raises(RuntimeError, match="no <html> element.*call page_info\\(\\) again"):
+            helpers.page_info()
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():

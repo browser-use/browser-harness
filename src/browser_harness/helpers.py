@@ -157,17 +157,33 @@ def goto_url(url):
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
 
+# new_tab(url)/goto_url(url) return once the new document commits, before its
+# first bytes are parsed: it has no <html> element yet. page_info() waits this
+# long for one (a slow server's body), then raises; calling it again retries.
+PAGE_INFO_ROOT_WAIT_S = 5.0
+_PAGE_INFO_JS = "(()=>{const d=document.documentElement;return d&&JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:d.scrollWidth,ph:d.scrollHeight})})()"
+
 def page_info():
     """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
 
     If a native dialog (alert/confirm/prompt/beforeunload) is open, returns
     {dialog: {type, message, ...}} instead — the page's JS thread is frozen
-    until the dialog is handled (see interaction-skills/dialogs.md)."""
-    dialog = _send({"meta": "pending_dialog"}).get("dialog")
-    if dialog:
-        return {"dialog": dialog}
-    expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
-    return json.loads(_runtime_evaluate(expression))
+    until the dialog is handled (see interaction-skills/dialogs.md).
+    Right after new_tab(url)/goto_url(url) it waits for the new document's
+    <html> element (up to PAGE_INFO_ROOT_WAIT_S)."""
+    deadline = time.monotonic() + PAGE_INFO_ROOT_WAIT_S
+    while True:
+        # Each try checks for a dialog first: a page that alert()s as it loads
+        # returns {dialog} instead of waiting on an evaluate the dialog blocks.
+        dialog = _send({"meta": "pending_dialog"}).get("dialog")
+        if dialog:
+            return {"dialog": dialog}
+        raw = _runtime_evaluate(_PAGE_INFO_JS)
+        if raw:
+            return json.loads(raw)
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"page_info(): the page has no <html> element after {PAGE_INFO_ROOT_WAIT_S:g}s (still loading); call page_info() again")
+        time.sleep(0.05)
 
 # --- input ---
 _debug_click_counter = 0
