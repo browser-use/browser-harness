@@ -53,7 +53,7 @@ def test_origin_relaunch_uses_origin_not_regular_brave(monkeypatch, origin_profi
     calls = []
     monkeypatch.setattr("subprocess.run", lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0))
     assert admin._launch_browser() == (None, origin_profile)
-    assert calls == [["open", "-a", "Brave Origin"]]
+    assert calls == [["open", "-g", "-a", "Brave Origin"]]
 
 
 @pytest.mark.parametrize("profile,app", [

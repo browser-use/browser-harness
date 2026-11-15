@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 
 from browser_harness import admin
 
@@ -1448,3 +1449,49 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+def test_launch_browser_opens_chrome_in_the_background_on_macos(monkeypatch, tmp_path):
+    profile = tmp_path / "Google" / "Chrome"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Local State").write_text('{"devtools": {"remote_debugging": {"user-enabled": true}}}')
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    calls = []
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0))
+
+    assert admin._launch_browser() == (None, profile)
+    assert calls[0][:3] == ["open", "-g", "-a"]
+
+
+def test_launch_browser_preenables_the_inspect_toggle_for_a_closed_browser(monkeypatch, tmp_path):
+    profile = tmp_path / "Google" / "Chrome"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Local State").write_text('{"profile": {"last_used": "Default"}}')
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.delenv("BH_PRESET_INSPECT_TOGGLE", raising=False)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [])
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: SimpleNamespace(returncode=0))
+
+    assert admin._launch_browser() == (None, profile)
+    state = json.loads((profile / "Local State").read_text())
+    assert state["devtools"]["remote_debugging"]["user-enabled"] is True
+    assert state["profile"]["last_used"] == "Default"
+
+
+def test_preenable_respects_opt_out_and_existing_toggle(monkeypatch, tmp_path):
+    profile = tmp_path / "Chrome"
+    profile.mkdir()
+    (profile / "Local State").write_text('{}')
+    monkeypatch.setenv("BH_PRESET_INSPECT_TOGGLE", "0")
+    assert admin._preenable_remote_debugging(profile) is False
+    assert json.loads((profile / "Local State").read_text()) == {}
+    monkeypatch.delenv("BH_PRESET_INSPECT_TOGGLE")
+    assert admin._preenable_remote_debugging(profile) is True
+    assert admin._preenable_remote_debugging(profile) is False
