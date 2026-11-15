@@ -436,7 +436,8 @@ class Daemon:
         self._shutting_down = False
         self._session_replacements = {}
         self.events = deque(maxlen=BUF)
-        self.dialog = None
+        self.dialogs = {}
+        self._session_targets = {}
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
@@ -476,6 +477,7 @@ class Daemon:
             ))["sessionId"]
             self._record_session_replacement(replaces_session, self.session)
             self.target_id = tid
+            self._session_targets[self.session] = tid
             log(f"attached {tid} ({page.get('url','')[:80]}) session={self.session}")
             if enable_domains:
                 await self._enable_default_domains(self.session)
@@ -509,6 +511,7 @@ class Daemon:
         ))["sessionId"]
         self._record_session_replacement(replaces_session, self.session)
         self.target_id = pages[0]["targetId"]
+        self._session_targets[self.session] = self.target_id
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         if take_over:
             try:
@@ -625,10 +628,22 @@ class Daemon:
 
     def _record_event(self, method, params, session_id=None):
         self.events.append({"method": method, "params": params, "session_id": session_id})
-        if method == "Page.javascriptDialogOpening":
-            self.dialog = params
+        target = self._session_targets.get(session_id)
+        if method == "Page.javascriptDialogOpening" and target:
+            # switch_tab creates a fresh session, but Chrome does not replay
+            # an already-open dialog when Page.enable runs on that session.
+            self.dialogs[target] = params
         elif method == "Page.javascriptDialogClosed":
-            self.dialog = None
+            self.dialogs.pop(target, None)
+        elif method == "Target.detachedFromTarget":
+            target = self._session_targets.pop(params.get("sessionId"), None)
+            # Another session may still observe this tab's dialog closing.
+            if target not in self._session_targets.values():
+                self.dialogs.pop(target, None)
+        elif method == "Target.targetDestroyed":
+            target = params.get("targetId")
+            self.dialogs.pop(target, None)
+            self._session_targets = {sid: tid for sid, tid in self._session_targets.items() if tid != target}
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
 
@@ -712,6 +727,8 @@ class Daemon:
                 self.session = req.get("session_id")
                 self.target_id = req.get("target_id") or self.target_id
                 new_session = self.session
+                if new_session:
+                    self._session_targets[new_session] = self.target_id
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
             # consumer-side filter in wait_for_network_idle is the actual
@@ -736,7 +753,7 @@ class Daemon:
             # it doesn't add to the synchronous IPC budget.
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
-        if meta == "pending_dialog": return {"dialog": self.dialog}
+        if meta == "pending_dialog": return {"dialog": self.dialogs.get(self._session_targets.get(self.session))}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
             # cancel/drain existing handlers. In particular, a CDP replay that
