@@ -47,7 +47,7 @@ def test_helper_success_remains_a_normal_tool_result(monkeypatch):
 NOTE = "[Captcha solver running (cloudflare) on https://a.test/ for 3 s. Wait with solve_captcha(); do not reload, navigate or switch tabs.]"
 
 
-def test_every_result_ends_with_the_captcha_note(monkeypatch):
+def test_every_result_has_the_captcha_note_as_its_own_block(monkeypatch):
     monkeypatch.setattr(mcp_server, "ensure_daemon", lambda: None)
     monkeypatch.setattr(mcp_server, "captcha_note", lambda: NOTE)
     monkeypatch.setattr(mcp_server, "page_info", lambda: {"url": "https://a.test/"})
@@ -55,7 +55,7 @@ def test_every_result_ends_with_the_captcha_note(monkeypatch):
     result = _call_tool("browser_page_info")
 
     assert result.is_error is False
-    assert result.content[0].text == '{"url": "https://a.test/"}\n' + NOTE
+    assert [c.text for c in result.content] == ['{"url": "https://a.test/"}', NOTE]  # the JSON block still parses
 
 
 def test_a_failed_tool_still_shows_the_captcha_note(monkeypatch):

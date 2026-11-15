@@ -9,8 +9,9 @@ Run:
 The server starts on stdio and exposes one MCP tool per browser-harness
 helper. Each tool ensures the daemon is running, calls the existing helper,
 and returns JSON text. Helper failures use MCP's tool-error channel.
-On a Browser Use Cloud browser, every result ends with the captcha solver's
-'[Captcha solver ...]' lines while a solve runs and once when one finishes.
+On a Browser Use Cloud browser, every result carries the captcha solver's
+'[Captcha solver ...]' lines (a second text block) while a solve runs and once
+when one finishes.
 """
 import functools
 import json
@@ -122,13 +123,20 @@ def _with_captcha_note(text: str) -> str:
     return f"{text}\n{note}" if note else text
 
 
+def _json_then_captcha_note(text: str) -> str | list[str]:
+    """The JSON alone, or the JSON and the captcha note as a second text block, so a client that parses the first
+    block as JSON still can."""
+    note = captcha_note()
+    return [text, note] if note else text
+
+
 def _tool(fn):
     """Wrap a helper so it is exposed as an MCP tool and returns JSON text.
 
     Ensures the daemon is up, runs the helper, and converts operational failures
     (including daemon startup failures) into MCP tool errors. The captcha note
-    (solves running, finishes not shown yet) follows the JSON on its own lines,
-    so the agent waits instead of reloading. Tool name and description are taken
+    (solves running, finishes not shown yet) is a second text block after the
+    JSON (or ends the error text), so the agent waits instead of reloading. Tool name and description are taken
     from the wrapped function so the schema matches the parameter annotations.
     """
 
@@ -138,7 +146,7 @@ def _tool(fn):
             ensure_daemon()
             with _stderr_stdout():
                 result = fn(*args, **kwargs)
-            return _with_captcha_note(_dump(result))
+            return _json_then_captcha_note(_dump(result))
         except Exception as exc:  # noqa: BLE001 -- browser failures must reach the MCP client.
             raise ToolError(_with_captcha_note(str(exc))) from exc
 
