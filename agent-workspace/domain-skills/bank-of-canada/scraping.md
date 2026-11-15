@@ -22,6 +22,7 @@ robots.txt (checked 2026-11-14, curl and the cloud browser): https://www.bankofc
 ```python
 import json, re, time
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 SITE = "https://www.bankofcanada.ca"
 VALET = SITE + "/valet"
@@ -80,8 +81,11 @@ def observations(series, n):
     return sorted(rows, reverse=True), d["seriesDetail"][series]
 
 on_boc_tab()
-today = datetime.now(timezone.utc).date()
-print(f"now {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC ({today:%A})")
+now = datetime.now(timezone.utc)
+# The schedule, the decisions table and Valet rows are Bank of Canada (Ottawa) calendar days: compare in Eastern
+# Time, not UTC, or from 00:00 UTC until midnight ET a decision dated "tomorrow" in Ottawa looks past.
+today = now.astimezone(ZoneInfo("America/Toronto")).date()
+print(f"now {now:%Y-%m-%d %H:%M} UTC = {today} {today:%A} in Ottawa (ET)")
 
 # 1. Policy rate. V39079 = "Target for the overnight rate (business daily)": one row per business day.
 #    B114039 = the same target, one row per change, dated the day it took effect.
@@ -117,8 +121,10 @@ upcoming = []
 for year, days in page["sched"]:
     for s in days:
         upcoming.append(datetime.strptime(f"{s} {year}", "%B %d %Y").date())
-nxt = min((d for d in upcoming if d > today), default=None)
-print(f"page: {len(upcoming)} scheduled announcement dates; next after today: {nxt}")
+# A decision dated today (ET) stays "next" until the decisions table lists it.
+listed = {r[0] for r in page["rows"]}
+nxt = min((d for d in upcoming if d > today or (d == today and d.isoformat() not in listed)), default=None)
+print(f"page: {len(upcoming)} scheduled announcement dates; next not yet announced: {nxt}")
 
 # 3. USD/CAD daily average rate.
 fx, fxmeta = observations("FXUSDCAD", 5)
@@ -140,16 +146,16 @@ print("  Source: Bank of Canada (Valet API and bankofcanada.ca), https://www.ban
       "Indicative rate, not a trading rate. Unchanged values; the inverse and age are our calculation.")
 ```
 
-Output (from the run on 2026-11-14, 23:33 UTC):
+Output (re-run on 2026-11-15, 00:37 UTC, after the Eastern Time fix; past midnight UTC but still 2026-11-14 in Ottawa. Every line below the first matches the first run, 2026-11-14 23:33 UTC):
 
 ```text
-now 2026-11-14 23:33 UTC (Saturday)
+now 2026-11-15 00:37 UTC = 2026-11-14 Saturday in Ottawa (ET)
 
 V39079 Target for the overnight rate (business daily) (Percent): 2026-11-12 2.50, 2026-11-11 2.50, 2026-11-10 2.50, 2026-11-09 2.50, 2026-11-06 2.50
 B114039 last changes: 2026-10-29 2.50, 2025-10-30 2.25
 
 page: latest decisions 2026-10-28 target 2.50% change +0.25; 2026-09-02 target 2.25% change ---; 2026-07-15 target 2.25% change ---
-page: 16 scheduled announcement dates; next after today: 2026-12-09
+page: 16 scheduled announcement dates; next not yet announced: 2026-12-09
 
 FXUSDCAD USD/CAD (Canadian dollars per US dollar, Business daily): 2026-11-13 1.4257, 2026-11-12 1.4255, 2026-11-10 1.4181, 2026-11-09 1.4123, 2026-11-06 1.4113
 FXCADUSD (the Bank's own inverse): 2026-11-13 0.7014; 1/1.4257 = 0.7014
@@ -265,7 +271,8 @@ from https://example.com: HTTP 200 ACAO=None [{'d': '2026-11-13', 'FXUSDCAD': {'
 
 ```python
 import json, sys, time, urllib.error, urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 VALET = "https://www.bankofcanada.ca/valet"
 UA = {"User-Agent": "boc-rates-example/1.0", "Accept": "application/json"}
@@ -302,7 +309,7 @@ since, level = latest("B114039")     # same target, one row per change (effectiv
 fx_day, usdcad = latest("FXUSDCAD")  # USD/CAD daily average, CAD per USD
 if level != rate:
     print(f"NOTE: last change says {level}%, daily series says {rate}% (a new decision may not be in V39079 yet)")
-age = (datetime.now(timezone.utc).date() - date.fromisoformat(fx_day)).days
+age = (datetime.now(ZoneInfo("America/Toronto")).date() - date.fromisoformat(fx_day)).days  # Valet dates are Ottawa (ET) days
 print(f"policy rate {rate}% (daily value {rate_day}, at this level since {since})")
 print(f"USD/CAD {usdcad} on {fx_day} ({age} day(s) old)")
 print("Source: Bank of Canada, https://www.bankofcanada.ca/terms/ (indicative exchange rate, not for trading).")
