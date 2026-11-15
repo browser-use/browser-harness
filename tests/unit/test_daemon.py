@@ -301,8 +301,9 @@ def test_a_tab_switch_during_recovery_waits_to_detach_the_replacement():
 
     async def run():
         running = asyncio.create_task(d.handle({"method": "Runtime.evaluate", "params": {}}))
-        while not any(s == "session-replacement" for (_m, _p, s) in d.cdp.calls):
-            await asyncio.sleep(0)
+        async with asyncio.timeout(5):
+            while not any(s == "session-replacement" for (_m, _p, s) in d.cdp.calls):
+                await asyncio.sleep(0)
         await d.handle({"meta": "set_session", "session_id": "session-other", "target_id": "t2"})
         await asyncio.sleep(0)
         assert _detached(d) == []
