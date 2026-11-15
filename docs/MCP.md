@@ -42,11 +42,18 @@ tools with a `browser_` prefix:
 - `browser_cdp`
 - `browser_upload_file`
 - `browser_http_get`
+- `browser_solve_captcha`
 - `browser_start_recording`
 - `browser_stop_recording`
 
 Every tool returns JSON text. On error the response is `{"error": "..."}` and the
 server process keeps running.
+
+On a Browser Use Cloud browser, a result can have a second text block (or, on
+error, end) with `[Captcha solver ...]` lines: a solve is running (wait with
+`browser_solve_captcha`; do not reload or navigate) or one just finished.
+`BU_CAPTCHA_SOLVER=off` stops `browser_solve_captcha` from switching the solver
+on; it does not switch off a solver the browser already has on.
 
 ## Example flow
 

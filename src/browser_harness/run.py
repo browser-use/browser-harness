@@ -31,7 +31,8 @@ from .admin import (
 )
 from . import auth, recorder, telemetry
 from .helpers import *
-from .helpers import _send
+from .helpers import captcha_note as _captcha_note  # private name: not traced as a step of the agent's script
+from .naming import cli_name as _cli_name, named as _named
 
 HELP = """Browser Harness
 
@@ -111,10 +112,7 @@ def _cloud_auth_configured():
 
 def _print_captcha_note():
     """Captcha solves running, and finishes not yet shown, so the agent waits instead of reloading."""
-    try:
-        note = _send({"meta": "captcha", "op": "note"}, response_timeout=2).get("note")
-    except Exception:  # no daemon, or one without the captcha op
-        return
+    note = _captcha_note()
     if note:
         print(note)
 
@@ -248,8 +246,11 @@ def _telemetry_browser(task):
         return None
 
 
-def main():
+def main(prog=None):
+    """The CLI. prog: the command name a wrapping CLI prints in help, usage and hints (sets BH_CLI_NAME)."""
     global _helper_call_count
+    if prog:
+        os.environ["BH_CLI_NAME"] = prog  # env, so subcommands and the daemon it spawns say the same name
     args = sys.argv[1:]
     if args and args[0] == "telemetry":
         sys.exit(telemetry.run_telemetry_cli(args[1:]))
@@ -314,7 +315,7 @@ def main():
 
 def _run(args):
     if args and args[0] in {"-h", "--help"}:
-        print(HELP)
+        print(_named(HELP))
         return
     if args and args[0] == "--version":
         print(_version() or "unknown")
@@ -329,7 +330,7 @@ def _run(args):
                 and "--json" in rest and len(rest) == len(set(rest)):
             sys.exit(run_doctor_json(require_existing_daemon="--require-existing-daemon" in rest))
         if rest:
-            print("usage: browser-harness doctor [--fix-snap|--json [--require-existing-daemon]]", file=sys.stderr)
+            print(f"usage: {_cli_name()} doctor [--fix-snap|--json [--require-existing-daemon]]", file=sys.stderr)
             sys.exit(2)
         sys.exit(run_doctor())
     if args and args[0] == "auth":
@@ -340,7 +341,7 @@ def _run(args):
         sys.exit(macos.run_cli(args[1:]))
     if args and args[0] == "skill":
         if len(args) != 1:
-            print("usage: browser-harness skill", file=sys.stderr)
+            print(f"usage: {_cli_name()} skill", file=sys.stderr)
             sys.exit(2)
         _print_skill()
         return
@@ -359,7 +360,7 @@ def _run(args):
             print(f"auto-recording preference {'enabled' if enabled else 'disabled'}")
             return
         if rest:
-            print("usage: browser-harness recordings [--latest|enable|disable]", file=sys.stderr)
+            print(f"usage: {_cli_name()} recordings [--latest|enable|disable]", file=sys.stderr)
             sys.exit(2)
         enabled, source = recorder.auto_recording_setting()
         print(f"auto-recording: {'on' if enabled else 'off'} ({source})")
@@ -375,7 +376,7 @@ def _run(args):
     if args and args[0] == "--update":
         rest = args[1:]
         if not set(rest).issubset({"-y", "--yes"}):
-            print("usage: browser-harness --update [-y|--yes]", file=sys.stderr)
+            print(f"usage: {_cli_name()} --update [-y|--yes]", file=sys.stderr)
             sys.exit(2)
         sys.exit(run_update(yes=bool(rest)))
     if args and args[0] == "--reload":
@@ -388,9 +389,9 @@ def _run(args):
     if not args and not sys.stdin.isatty():
         code = sys.stdin.read()
         if not code.strip():
-            sys.exit(USAGE)
+            sys.exit(_named(USAGE))
     else:
-        sys.exit(USAGE)
+        sys.exit(_named(USAGE))
     print_update_banner()
     # Auto-bootstrap a cloud browser is opt-in via BU_AUTOSPAWN — BROWSER_USE_API_KEY alone
     # is not enough, since the key is commonly set for unrelated reasons (profile sync,
@@ -414,7 +415,7 @@ def _run(args):
                 ensure_daemon()
         except RuntimeError as e:
             # Setup/permission errors are instructions for calling agent
-            print(f"browser-harness: {e}", file=sys.stderr)
+            print(f"{_cli_name()}: {e}", file=sys.stderr)
             sys.exit(1)
     _install_helper_trace()
     try:

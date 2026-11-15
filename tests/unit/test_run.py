@@ -307,9 +307,36 @@ def test_script_output_ends_with_the_captcha_note():
     with patch.object(sys, "argv", ["browser-harness"]), \
          patch("browser_harness.run.ensure_daemon"), \
          patch("browser_harness.run.print_update_banner"), \
-         patch("browser_harness.run._send", return_value={"note": note}) as send, \
+         patch("browser_harness.run._captcha_note", return_value=note) as captcha_note, \
          patch("sys.stdin", StringIO("print('hi')")), \
          patch("sys.stdout", stdout):
         run.main()
-    send.assert_called_once_with({"meta": "captcha", "op": "note"}, response_timeout=2)
+    captcha_note.assert_called_once_with()
     assert stdout.getvalue() == f"hi\n{note}\n"
+    assert "_captcha_note" not in {s["helper"] for s in run._helper_trace}  # not a step of the agent's script
+
+
+def test_prog_names_the_wrapping_cli(monkeypatch):
+    monkeypatch.setenv("BH_CLI_NAME", "")  # restored after the test: main(prog=...) sets it
+    monkeypatch.setenv("BH_TELEMETRY", "0")
+    stdout, stderr = StringIO(), StringIO()
+    with patch.object(sys, "argv", ["browser-use", "--help"]), patch("sys.stdout", stdout):
+        run.main(prog="browser-use")
+    assert "browser-use --doctor" in stdout.getvalue() and "browser-harness" not in stdout.getvalue()
+    with patch.object(sys, "argv", ["browser-use", "skill", "x"]), patch("sys.stderr", stderr), \
+         pytest.raises(SystemExit):
+        run.main(prog="browser-use")
+    assert stderr.getvalue() == "usage: browser-use skill\n"
+    with patch.object(sys, "argv", ["browser-use", "doctor", "--fix-snap"]), patch("sys.stdout", stdout), \
+         pytest.raises(SystemExit):
+        run.main(prog="browser-use")
+    assert "browser-use doctor --fix-snap" in stdout.getvalue()
+
+
+def test_without_prog_the_name_is_browser_harness(monkeypatch):
+    monkeypatch.setenv("BH_CLI_NAME", "")  # restored after the test: main(prog=...) sets it
+    monkeypatch.setenv("BH_TELEMETRY", "0")
+    stdout = StringIO()
+    with patch.object(sys, "argv", ["browser-harness", "--help"]), patch("sys.stdout", stdout):
+        run.main()
+    assert stdout.getvalue() == run.HELP + "\n"

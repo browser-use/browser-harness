@@ -9,6 +9,9 @@ Run:
 The server starts on stdio and exposes one MCP tool per browser-harness
 helper. Each tool ensures the daemon is running, calls the existing helper,
 and returns JSON text. Helper failures use MCP's tool-error channel.
+On a Browser Use Cloud browser, every result carries the captcha solver's
+'[Captcha solver ...]' lines (a second text block) while a solve runs and once
+when one finishes.
 """
 import functools
 import json
@@ -27,6 +30,7 @@ from PIL import Image
 
 from browser_harness.admin import ensure_daemon
 from browser_harness.helpers import (
+    captcha_note,
     capture_screenshot,
     cdp,
     click_at_xy,
@@ -42,6 +46,7 @@ from browser_harness.helpers import (
     page_info,
     press_key,
     scroll,
+    solve_captcha,
     start_recording,
     stop_recording,
     switch_tab,
@@ -113,13 +118,26 @@ def _stderr_stdout():
         sys.stdout = saved
 
 
+def _with_captcha_note(text: str) -> str:
+    note = captcha_note()
+    return f"{text}\n{note}" if note else text
+
+
+def _json_then_captcha_note(text: str) -> str | list[str]:
+    """The JSON alone, or the JSON and the captcha note as a second text block, so a client that parses the first
+    block as JSON still can."""
+    note = captcha_note()
+    return [text, note] if note else text
+
+
 def _tool(fn):
     """Wrap a helper so it is exposed as an MCP tool and returns JSON text.
 
     Ensures the daemon is up, runs the helper, and converts operational failures
-    (including daemon startup failures) into MCP tool errors. Tool name and
-    description are taken from the wrapped function so the schema matches the
-    parameter annotations.
+    (including daemon startup failures) into MCP tool errors. The captcha note
+    (solves running, finishes not shown yet) is a second text block after the
+    JSON (or ends the error text), so the agent waits instead of reloading. Tool name and description are taken
+    from the wrapped function so the schema matches the parameter annotations.
     """
 
     @functools.wraps(fn)
@@ -128,9 +146,9 @@ def _tool(fn):
             ensure_daemon()
             with _stderr_stdout():
                 result = fn(*args, **kwargs)
-            return _dump(result)
+            return _json_then_captcha_note(_dump(result))
         except Exception as exc:  # noqa: BLE001 -- browser failures must reach the MCP client.
-            raise ToolError(str(exc)) from exc
+            raise ToolError(_with_captcha_note(str(exc))) from exc
 
     return SERVER.tool(name=fn.__name__, description=fn.__doc__ or "")(wrapper)
 
@@ -277,6 +295,15 @@ def browser_http_get(url: str, timeout: float = 20.0, headers: dict | None = Non
     """HTTP GET `url` (browser-less). Returns the response body. Optional
     `headers` dict for authentication or custom request headers."""
     return {"text": http_get(url, headers=headers, timeout=timeout)}
+
+
+@_tool
+def browser_solve_captcha(start_timeout: float = 20.0, timeout: float = 75.0):
+    """Captcha or challenge on screen: wait for Browser Use Cloud's automatic solver on the current tab.
+    Do not reload, navigate or switch tabs meanwhile. Returns {solved, detail, seconds} (+ vendor, url).
+    detail 'still solving': call again. 'solved': re-check the page, another challenge can follow.
+    'solver unavailable': a local browser (no solver), so handle the captcha yourself."""
+    return solve_captcha(start_timeout=start_timeout, timeout=timeout)
 
 
 @_tool

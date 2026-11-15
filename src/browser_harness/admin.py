@@ -12,6 +12,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .naming import cli_name
 
 
 def _process_start_time(pid):
@@ -501,7 +502,7 @@ def _snap_linux_headless_doc_url():
 def run_doctor_fix_snap():
     """Print steps to replace Snap Chromium with a native Chrome for CDP. Always exit 0."""
     doc = _snap_linux_headless_doc_url()
-    print("browser-harness doctor --fix-snap")
+    print(f"{cli_name()} doctor --fix-snap")
     print()
     print("Snap-packaged Chromium cannot expose DevTools the way browser-harness needs.")
     print(f"Full background: {doc}")
@@ -517,7 +518,7 @@ def run_doctor_fix_snap():
     print()
     print("3. Launch Chrome from that path (Way 2) or open Chrome normally (Way 1),")
     print("   enable remote debugging per install.md, then verify:")
-    print("   browser-harness --doctor")
+    print(f"   {cli_name()} --doctor")
     print()
     return 0
 
@@ -1425,7 +1426,7 @@ def run_doctor():
         mark = "ok  " if ok else "FAIL"
         print(f"  [{mark}] {label}{(' — ' + detail) if detail else ''}")
 
-    print("browser-harness doctor")
+    print(f"{cli_name()} doctor")
     print(f"  platform          {platform.system()} {platform.release()}")
     print(f"  python            {sys.version.split()[0]}")
     print(f"  version           {cur_display} ({mode})")
@@ -1451,7 +1452,7 @@ def run_doctor():
             print(f"        {conn['name']} — active page: {title} — {url}")
         else:
             print(f"        {conn['name']} — active page: (no real page)")
-    row("Browser Use cloud auth", cloud_auth, auth_state.get("source") or auth_state.get("reason") or "optional: browser-harness auth login")
+    row("Browser Use cloud auth", cloud_auth, auth_state.get("source") or auth_state.get("reason") or f"optional: {cli_name()} auth login")
     # Core health = chrome + daemon. Cloud auth is optional.
     return 0 if (chrome and daemon) else 1
 
