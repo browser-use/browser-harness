@@ -119,3 +119,24 @@ def test_goto_url_lists_saved_scripts_for_host(ws, monkeypatch):
     (ws / "scripts" / "example.com" / "top.py").write_text("")
     with patch("browser_harness.helpers.cdp", return_value={"frameId": "f"}):
         assert helpers.goto_url("https://www.example.com/x") == {"frameId": "f", "saved_scripts": ["top"]}
+
+
+def test_save_rewrites_only_whole_literals_and_keeps_valid_python(ws, tmp_path):
+    src = tmp_path / "s.py"
+    src.write_text(
+        'lang = "python"\n'
+        'sel = \'a[href*="python"]\'\n'
+        'url = f"https://github.com/trending/{lang}?since=daily"\n'
+    )
+    assert cli("scripts", "save", "trend", "--file", str(src), "--param", "lang=python")[0] == 0
+    saved = (ws / "scripts" / "github.com" / "trend.py").read_text()
+    compile(saved, "trend.py", "exec")
+    assert "lang = PARAMS['lang']\nsel = 'a[href*=\"python\"]'\n" in saved
+    assert "# url: https://github.com/trending/\n" in saved
+
+
+def test_typed_secret_with_trailing_comment_is_redacted(ws, tmp_path):
+    src = tmp_path / "login.py"
+    src.write_text('goto_url("https://app.example.com/")\nfill_input("#pw", "hunter2")  # password\n')
+    assert cli("scripts", "save", "login", "--file", str(src))[0] == 0
+    assert "hunter2" not in (ws / "scripts" / "app.example.com" / "login.py").read_text()

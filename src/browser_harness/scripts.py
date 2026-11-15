@@ -15,7 +15,7 @@ A saved script is the agent's own stdin script with a comment header:
 verified_at; an exception prints `drifted: <error>` and exits 1 so the agent
 fixes that file instead of redoing the task from zero.
 """
-import json, os, re, sys, time, traceback
+import ast, json, os, re, sys, time, traceback
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,11 +26,11 @@ REPLAY_IPC_TIMEOUT_SECONDS = 30.0
 MARKER = "# browser-harness saved script"
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 _HOST_RE = re.compile(r"\A[a-z0-9-]+(\.[a-z0-9-]+)*\Z")
-_HEADER_RE = re.compile(r"\A# ([a-z_]+): (.*)\Z")
+_HEADER_RE = re.compile(r"\A# ([a-z_]+):(?: (.*))?\Z")
 _URL_RE = re.compile(r"""https?://[^\s'"{}]+""")
-# Typed text on a line that smells like a credential gets swapped for a param.
-_SECRET_LINE_RE = re.compile(r"\b(type_text|fill_input)\(.*(pass|secret|token|otp|api_?key)", re.I)
-_LAST_LITERAL_RE = re.compile(r"""(?<!\w)("[^"\\\n]*"|'[^'\\\n]*')(\s*\)\s*)$""")
+# Text typed by a call whose source lines smell like a credential gets swapped for a param.
+_TYPING_CALLS = {"type_text", "fill_input"}
+_SECRET_RE = re.compile(r"pass|secret|token|otp|api_?key", re.I)
 
 USAGE = """usage:
   browser-harness scripts save <name> [--from-last | --file PATH] [--host HOST] [--param k=v ...]
@@ -76,7 +76,7 @@ def read_header(text):
         return {}, text
     meta, i = {}, 1
     while i < len(lines) and (m := _HEADER_RE.match(lines[i].rstrip("\n"))):
-        meta[m[1]] = m[2]
+        meta[m[1]] = m[2] or ""
         i += 1
     if i < len(lines) and not lines[i].strip():
         i += 1
@@ -121,21 +121,45 @@ def _parse(args, flags):
 
 def _redact(code, params):
     """Turn literal param values into PARAMS[...] and typed secrets into required params."""
-    notes = []
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        raise SystemExit(f"browser-harness: script does not compile: {e}")
+    lines = re.findall(r"[^\n]*\n|[^\n]+", code)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    def span(n):  # ast columns are UTF-8 byte offsets
+        at = lambda ln, col: starts[ln - 1] + len(lines[ln - 1].encode()[:col].decode())
+        return at(n.lineno, n.col_offset), at(n.end_lineno, n.end_col_offset)
+
+    # Whole string literals only: never rewrite text inside another string or an f-string.
+    in_fstring = {id(c) for j in ast.walk(tree) if isinstance(j, ast.JoinedStr) for c in ast.walk(j)}
+    strings = [n for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in in_fstring]
+    edits, notes = {}, []
     for k, v in params.items():
-        pat = re.compile(r"""(?<!\w)(["'])""" + re.escape(v) + r"\1")
-        code, n = pat.subn(lambda _m, k=k: f"PARAMS[{k!r}]", code)
-        if not n:
+        if v is None:  # a required secret from an earlier save
+            continue
+        hits = [n for n in strings if n.value == v]
+        edits.update({span(n): f"PARAMS[{k!r}]" for n in hits})
+        if not hits:
             notes.append(f"param {k}: literal {v!r} not found; read PARAMS[{k!r}] in the script")
-    lines, secrets = code.splitlines(keepends=True), 0
-    for i, line in enumerate(lines):
-        if _SECRET_LINE_RE.search(line) and (m := _LAST_LITERAL_RE.search(line.rstrip("\n"))):
-            secrets += 1
-            key = f"secret_{secrets}"
+    calls = sorted(
+        (n for n in ast.walk(tree) if isinstance(n, ast.Call)
+         and getattr(n.func, "id", getattr(n.func, "attr", None)) in _TYPING_CALLS),
+        key=lambda n: (n.lineno, n.col_offset),
+    )
+    for call in calls:
+        text = call.args[-1] if call.args else next((kw.value for kw in call.keywords if kw.arg == "text"), None)
+        source = "".join(lines[call.lineno - 1 : call.end_lineno])  # includes a trailing comment
+        if text in strings and _SECRET_RE.search(source):
+            key = next(f"secret_{i}" for i in range(1, len(params) + 2) if f"secret_{i}" not in params)
             params[key] = None
-            lines[i] = line[: m.start(1)] + f"PARAMS[{key!r}]" + line[m.end(1):]
-            notes.append(f"redacted typed secret on line {i + 1}; pass --param {key}=... when running")
-    code = "".join(lines)
+            edits[span(text)] = f"PARAMS[{key!r}]"
+            notes.append(f"redacted typed secret on line {call.lineno}; pass --param {key}=... when running")
+    for (a, b), new in sorted(edits.items(), reverse=True):
+        code = code[:a] + new + code[b:]
     scrubbed = _URL_RE.sub(lambda m: _scrub_url(m[0]), code)
     if scrubbed != code:
         notes.append("redacted credential query params in URLs")
