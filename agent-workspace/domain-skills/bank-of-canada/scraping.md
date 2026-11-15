@@ -146,7 +146,7 @@ print("  Source: Bank of Canada (Valet API and bankofcanada.ca), https://www.ban
       "Indicative rate, not a trading rate. Unchanged values; the inverse and age are our calculation.")
 ```
 
-Output (re-run on 2026-11-15, 00:37 UTC, after the Eastern Time fix; past midnight UTC but still 2026-11-14 in Ottawa. Every line below the first matches the first run, 2026-11-14 23:33 UTC):
+Output (re-run on 2026-11-15, 00:37 UTC, after the Eastern Time fix; past midnight UTC but still 2026-11-14 in Ottawa. The values on every line below the first match the first run, 2026-11-14 23:33 UTC; only the `page:` line's label changed, from `next after today` to `next not yet announced`):
 
 ```text
 now 2026-11-15 00:37 UTC = 2026-11-14 Saturday in Ottawa (ET)
