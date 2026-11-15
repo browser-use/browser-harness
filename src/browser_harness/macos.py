@@ -50,9 +50,12 @@ tell application "System Events"
                 try
                     repeat with s in sheets of w
                         set isTargetSheet to false
-                        if (name of s as text) is "Allow remote debugging?" then
-                            set isTargetSheet to true
-                        else
+                        try
+                            if (name of s as text) is "Allow remote debugging?" then
+                                set isTargetSheet to true
+                            end if
+                        end try
+                        if not isTargetSheet then
                             set isTargetSheet to my hasApprovalTitle(s)
                         end if
                         if isTargetSheet then

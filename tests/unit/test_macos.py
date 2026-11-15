@@ -1,5 +1,9 @@
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from browser_harness import macos
 
@@ -129,11 +133,53 @@ def test_mac_approve_is_unavailable_off_macos(monkeypatch):
     )
 
 
-def test_mac_approve_applescript_syntax_valid():
-    import subprocess
-    import shutil
+def test_mac_approve_guards_sheet_name_before_heading_fallback():
+    matching = macos._APPLESCRIPT.split("set isTargetSheet to false", 1)[1]
+    name_check, fallback = matching.split("if not isTargetSheet then", 1)
 
-    if not shutil.which("osacompile"):
-        return
-    res = subprocess.run(["osacompile"], input=macos._APPLESCRIPT, text=True, capture_output=True)
-    assert res.returncode == 0
+    assert name_check.strip().startswith("try")
+    assert name_check.strip().endswith("end try")
+    assert "name of s as text" in name_check
+    assert fallback.strip().startswith("set isTargetSheet to my hasApprovalTitle(s)")
+
+
+@pytest.mark.skipif(not shutil.which("osascript"), reason="requires macOS osascript")
+@pytest.mark.parametrize(
+    ("sheet_name", "heading_matches", "expected"),
+    [
+        ('"Allow remote debugging?"', "false", "true"),
+        ('"Other sheet"', "true", "true"),
+        ("missing value", "true", "true"),
+        ("missing value", "false", "false"),
+        ('"Other sheet"', "false", "false"),
+    ],
+)
+def test_mac_approve_sheet_matching(sheet_name, heading_matches, expected):
+    matching = macos._APPLESCRIPT.split("set isTargetSheet to false", 1)[1]
+    matching = "set isTargetSheet to false" + matching.split("if isTargetSheet then", 1)[0]
+    script = f'''on hasApprovalTitle(nodeRef)
+    return {heading_matches}
+end hasApprovalTitle
+set s to {{name: {sheet_name}}}
+{matching}
+return isTargetSheet
+'''
+
+    result = subprocess.run(
+        ["osascript"], input=script, text=True, capture_output=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
+@pytest.mark.skipif(not shutil.which("osacompile"), reason="requires macOS osacompile")
+def test_mac_approve_applescript_syntax_valid(tmp_path):
+    res = subprocess.run(
+        ["osacompile", "-o", str(tmp_path / "approve.scpt")],
+        input=macos._APPLESCRIPT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr
