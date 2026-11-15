@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+import asyncio, contextlib, json, os, platform, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import Counter, deque
 from pathlib import Path
@@ -615,6 +615,18 @@ class Daemon:
                 return False
         return self._recoveries_idle.is_set()
 
+    @contextlib.contextmanager
+    def _using_session(self, session_id):
+        """Count a request running on session_id, so a replaced session is detached only once idle."""
+        self._session_requests[session_id] += 1
+        try:
+            yield
+        finally:
+            self._session_requests[session_id] -= 1
+            if not self._session_requests[session_id]:
+                del self._session_requests[session_id]
+            self._session_requests_changed.set()
+
     async def _detach_when_idle(self, session_id):
         """Detach a replaced session once no request is running on it."""
         while True:
@@ -622,6 +634,9 @@ class Daemon:
             if not self._session_requests[session_id]:
                 break
             await self._session_requests_changed.wait()
+        # A later set_session may have made it current again.
+        if session_id == self.session:
+            return
         try:
             await asyncio.wait_for(
                 self.cdp.send_raw("Target.detachFromTarget", {"sessionId": session_id}),
@@ -792,14 +807,8 @@ class Daemon:
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
         try:
-            self._session_requests[sid] += 1
-            try:
+            with self._using_session(sid):
                 return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
-            finally:
-                self._session_requests[sid] -= 1
-                if not self._session_requests[sid]:
-                    del self._session_requests[sid]
-                self._session_requests_changed.set()
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid:
@@ -810,6 +819,9 @@ class Daemon:
                 recovery_task = self._begin_recovery()
                 if recovery_task is None:
                     return {"error": "daemon is shutting down"}
+                # Counted from inside the lock, so a tab switch right after it
+                # cannot detach the replacement while it is still in use here.
+                replacement_use = contextlib.ExitStack()
                 try:
                     recovered_here = False
                     async with self._session_state_lock:
@@ -824,19 +836,23 @@ class Daemon:
                                 return {"error": msg}
                             replacement_session = self._session_replacements.get(sid)
                             recovered_here = replacement_session is not None
-                    if recovered_here:
-                        await self._enable_default_domains(replacement_session)
-                    # Retry only on a session known to replace this exact stale
-                    # session. self.session may instead have changed because the
-                    # user deliberately switched tabs while this request waited.
-                    if replacement_session:
-                        try:
-                            return {"result": await self.cdp.send_raw(
-                                method, params, session_id=replacement_session
-                            )}
-                        except Exception as retry_error:
-                            return {"error": str(retry_error)}
+                        if replacement_session:
+                            replacement_use.enter_context(self._using_session(replacement_session))
+                    with replacement_use:
+                        if recovered_here:
+                            await self._enable_default_domains(replacement_session)
+                        # Retry only on a session known to replace this exact stale
+                        # session. self.session may instead have changed because the
+                        # user deliberately switched tabs while this request waited.
+                        if replacement_session:
+                            try:
+                                return {"result": await self.cdp.send_raw(
+                                    method, params, session_id=replacement_session
+                                )}
+                            except Exception as retry_error:
+                                return {"error": str(retry_error)}
                 finally:
+                    replacement_use.close()
                     self._finish_recovery(recovery_task)
             return {"error": msg}
 

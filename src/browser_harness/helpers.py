@@ -424,7 +424,9 @@ def switch_tab(target, activate=False):
     sid = _current_session_on(target_id)
     if sid is None:
         sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-        _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
+    # Sent for a reused session too: another switch may have moved the daemon
+    # since the check, and re-setting the current session detaches nothing.
+    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
     _mark_tab()
     return sid
 

@@ -493,7 +493,8 @@ def test_switch_tab_reuses_the_live_session_on_the_same_target(monkeypatch):
 
     assert helpers.switch_tab("target-1") == "session-1"
     assert not any(method == "Target.attachToTarget" for method, _ in calls)
-    assert not any(method == "ipc" and req.get("meta") == "set_session" for method, req in calls)
+    # Re-pointing the daemon covers a switch elsewhere between the check and the probe.
+    assert ("ipc", {"meta": "set_session", "session_id": "session-1", "target_id": "target-1"}) in calls
 
 
 @pytest.mark.parametrize(
