@@ -646,6 +646,23 @@ def ensure_daemon(wait=None, name=None, env=None):
                     "permission-blocked: the pending Chrome connection ended before approval; "
                     "browser-harness did not retry or create another connection."
                 )
+            if launched_browser is None and _chrome_not_running(msg):
+                # Cold start (#786): with no browser running the daemon exits on
+                # its first liveness check, so the chrome-not-running rescue
+                # below (which needs a live daemon) never ran and three doomed
+                # respawns ended in "didn't come up". Launch the browser here.
+                if _pid_number(ipc.pid_path(name or NAME)) not in (None, pending_pid):
+                    continue  # a concurrent caller published a successor
+                launched_browser = _launch_browser()
+                if launched_browser is None:
+                    raise RuntimeError(
+                        "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+                    )
+                print("browser-harness: Chrome isn't running — launching it in the background. If Chrome shows an \"Allow remote debugging?\" popup, click Allow or run `browser-harness mac-approve`.", file=sys.stderr)
+                from .daemon import supported_browser_running
+                boot_deadline = time.time() + 15
+                while time.time() < boot_deadline and not supported_browser_running():
+                    time.sleep(0.3)
             continue
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup

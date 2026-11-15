@@ -1495,3 +1495,35 @@ def test_preenable_respects_opt_out_and_existing_toggle(monkeypatch, tmp_path):
     monkeypatch.delenv("BH_PRESET_INSPECT_TOGGLE")
     assert admin._preenable_remote_debugging(profile) is True
     assert admin._preenable_remote_debugging(profile) is False
+
+
+def test_cold_start_launches_browser_when_the_daemon_exits_before_connecting(monkeypatch, tmp_path):
+    """#786: no browser running -> daemon dies at once -> ensure_daemon must launch one and retry."""
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin, "_daemon_wait_windows", lambda wait, local: (2.0, None))
+    monkeypatch.setattr(admin, "_parked_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_publish_pid", lambda path, pid: None)
+    monkeypatch.setattr(admin, "_pid_number", lambda path: None)
+    monkeypatch.setattr(admin, "_pending_pid_record", lambda path: None)
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "fatal: chrome-not-running: no supported Chromium-family browser is running")
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / "log")
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: tmp_path / "pid")
+    monkeypatch.setattr(admin.ipc, "spawn_kwargs", lambda: {})
+    monkeypatch.setattr("browser_harness.daemon.supported_browser_running", lambda: True)
+
+    class Lock:
+        fd = 1
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(admin, "_spawn_lock", lambda name, timeout: Lock())
+
+    launches = []
+    monkeypatch.setattr(admin, "_launch_browser", lambda: launches.append(1) or (None, tmp_path))
+    dead = FakeProcess(pid=4242, returncode=1)
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: dead)
+
+    with pytest.raises(RuntimeError):
+        admin.ensure_daemon(name="default")
+    assert launches == [1], "the browser must be launched exactly once after the daemon dies on a cold start"
