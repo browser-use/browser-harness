@@ -28,6 +28,7 @@ PY
 - First navigation for a task is `new_tab(url)`, not `goto_url(url)`. The daemon
   preserves the attached tab across separate CLI invocations, so do not call
   `new_tab()` again in every script.
+- After a lost attachment, use `reconnect_tab(saved_target_id, expected_url=..., owned_marker=...)` for fail-closed task-tab recovery; see `interaction-skills/tabs.md`. The marker is a caller-assigned unique tab-title convention, not access control.
 - Keep one working tab per task/site. Before opening another, inspect
   `current_tab()` and `list_tabs()` and use `switch_tab()` to reuse a matching
   tab. Do not leave duplicate tabs on the same URL or close tabs you did not
