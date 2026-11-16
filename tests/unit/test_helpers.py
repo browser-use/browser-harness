@@ -49,6 +49,23 @@ def test_send_keeps_connect_timeout_short_and_sets_response_budget():
     assert socket.timeouts == [60.0]
 
 
+def test_send_gives_large_requests_one_second_per_mib():
+    """A 10 MB cloud upload timed out at the fixed 5 s budget while its 14 MB
+    request was still crossing to the remote browser."""
+    class FakeSocket:
+        def __init__(self): self.timeouts = []
+        def settimeout(self, value): self.timeouts.append(value)
+        def close(self): pass
+
+    socket = FakeSocket()
+    with patch("browser_harness.helpers.ipc.connect", return_value=(socket, None)), \
+         patch("browser_harness.helpers.ipc.request", return_value={}):
+        helpers._send({"method": "Runtime.evaluate", "params": {"expression": "x" * (14 << 20)}})
+        helpers._send({"meta": "ping"})
+
+    assert socket.timeouts == [helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS + 14, helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS]
+
+
 def test_screenshot_uses_long_response_timeout_without_forwarding_it_to_cdp(fake_png, tmp_path):
     with patch(
         "browser_harness.helpers._send",

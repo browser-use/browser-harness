@@ -264,39 +264,143 @@ def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatc
     assert admin._daemon_endpoint_names() == ["default", "remote_1"]
 
 
-def test_daemon_endpoint_names_with_bh_runtime_dir_returns_local_name_when_sock_exists(tmp_path, monkeypatch):
+def test_daemon_endpoint_names_with_bh_runtime_dir_discovers_named_sockets(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
-    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
-    monkeypatch.setattr(admin, "NAME", "session-xyz")
-    (tmp_path / "bu.sock").touch()
-
-    assert admin._daemon_endpoint_names() == ["session-xyz"]
-
-
-def test_daemon_endpoint_names_with_bh_runtime_dir_returns_empty_when_sock_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
-    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
-    monkeypatch.setattr(admin, "NAME", "session-xyz")
-
-    assert admin._daemon_endpoint_names() == []
-
-
-def test_daemon_endpoint_names_with_shared_bh_runtime_dir_discovers_named_sockets(tmp_path, monkeypatch):
-    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", True)
     monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
     (tmp_path / "bu-default.sock").touch()
     (tmp_path / "bu-work.sock").touch()
-    (tmp_path / "bu-invalid.name.sock").touch()
-    (tmp_path / "bu.sock").touch()  # stale isolated-runtime endpoint
+    (tmp_path / "bu.sock").touch()  # pre-0.1.14 isolated-runtime endpoint
 
     assert admin._daemon_endpoint_names() == ["default", "work"]
 
+
+# --- a name bound to a remote browser never falls back to local Chrome ------
+
+
+def _remote_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env=None: not (env or {}).get("BU_CDP_WS"))
+    spawned = []
+
+    def spawn(*args, **kwargs):
+        spawned.append(kwargs.get("env", {}).get("BU_CDP_WS"))
+        raise RuntimeError("spawn stub")
+
+    monkeypatch.setattr(admin.subprocess, "Popen", spawn)
+    return spawned
+
+
+def test_stale_cloud_daemon_fails_closed_instead_of_spawning_local_chrome(tmp_path, monkeypatch):
+    """A cloud timeout left the daemon alive but stale. ensure_daemon stopped it
+    and then started a local-Chrome daemon under the same name."""
+    spawned = _remote_name(tmp_path, monkeypatch)
+    admin.ipc.write_remote_marker("work", "cloud", "b-1")
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda *a, **k: (_ for _ in ()).throw(OSError("stale")))
+    monkeypatch.setattr(admin.time, "sleep", lambda s: None)
+    monkeypatch.setattr(admin, "daemon_browser_kind", lambda name=None: "cloud")
+    stopped = []
+    monkeypatch.setattr(admin, "stop_remote_daemon", lambda name: (stopped.append(name), admin.ipc.clear_remote_marker(name)))
+
+    for _ in range(2):  # the retry must fail closed too
+        with pytest.raises(RuntimeError, match=r"remote-browser-ended.*cloud b-1.*start_remote_daemon\('work'\)"):
+            admin.ensure_daemon(name="work")
+        monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+
+    assert stopped == ["work"]
+    assert spawned == []
+
+
+def test_stale_cdp_daemon_fails_closed_in_local_mode(tmp_path, monkeypatch):
+    spawned = _remote_name(tmp_path, monkeypatch)
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda *a, **k: (_ for _ in ()).throw(OSError("stale")))
+    monkeypatch.setattr(admin.time, "sleep", lambda s: None)
+    monkeypatch.setattr(admin, "daemon_browser_kind", lambda name=None: "cdp")
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None, **k: admin.ipc.clear_remote_marker(name))
+
+    with pytest.raises(RuntimeError, match="remote-browser-ended"):
+        admin.ensure_daemon(name="work")
+    assert spawned == []
+
+
+def test_exited_remote_daemon_fails_closed_in_local_mode(tmp_path, monkeypatch):
+    spawned = _remote_name(tmp_path, monkeypatch)
+    admin.ipc.write_remote_marker("work", "cloud", "b-1")
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+
+    with pytest.raises(RuntimeError, match="BU_NAME=work browser-harness --reload"):
+        admin.ensure_daemon(name="work")
+    assert spawned == []
+
+
+def test_remote_marker_does_not_block_an_explicit_remote_spawn(tmp_path, monkeypatch):
+    spawned = _remote_name(tmp_path, monkeypatch)
+    admin.ipc.write_remote_marker("work", "cdp")
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+
+    with pytest.raises(RuntimeError, match="spawn stub"):
+        admin.ensure_daemon(name="work", env={"BU_CDP_WS": "ws://127.0.0.1:1/x"})
+    assert spawned == ["ws://127.0.0.1:1/x"]
+
+
+def test_restart_daemon_frees_a_remote_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=1.0: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
+    admin.ipc.write_remote_marker("work", "cloud", "b-1")
+
+    admin.restart_daemon("work")
+
+    assert admin.ipc.read_remote_marker("work") is None
+
+
+def test_stop_remote_daemon_stops_the_browser_of_a_killed_daemon(tmp_path, monkeypatch):
+    """A SIGKILLed daemon left its cloud browser billing; its id was only in the log."""
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=1.0: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
+    admin.ipc.write_remote_marker("work", "cloud", "b-1")
+    stopped = []
+    monkeypatch.setattr(admin, "_stop_cloud_browser", lambda browser_id, strict=False: stopped.append((browser_id, strict)))
+
+    admin.stop_remote_daemon("work")
+
+    assert stopped == [("b-1", True)]
+    assert admin.ipc.read_remote_marker("work") is None
+
+
+def test_start_remote_daemon_stops_the_browser_a_killed_daemon_left_under_that_name(tmp_path, monkeypatch):
+    """The new browser's marker overwrote the killed daemon's one; its browser billed until the cloud timeout."""
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    admin.ipc.write_remote_marker("work", "cloud", "b-old")
+    calls = []
+
+    def stop(browser_id, strict=False):
+        calls.append(("stop", browser_id, strict))
+        if len(calls) == 1:
+            raise RuntimeError("cloud API down")
+
+    def fake_browser_use(path, method, body=None):
+        calls.append((path, method))
+        return {"id": "b-new", "cdpUrl": "http://127.0.0.1:9333"}
+
+    monkeypatch.setattr(admin, "_stop_cloud_browser", stop)
+    monkeypatch.setattr(admin, "_browser_use", fake_browser_use)
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda url: "ws://example.test/devtools/browser/1")
+    monkeypatch.setattr(admin, "ensure_daemon", lambda **kwargs: None)
+    monkeypatch.setattr(admin, "_show_live_url", lambda url: None)
+
+    with pytest.raises(RuntimeError, match="cloud API down"):
+        admin.start_remote_daemon("work")
+    assert calls == [("stop", "b-old", True)]
+    assert admin.ipc.read_remote_marker("work") == {"kind": "cloud", "browser_id": "b-old"}
+
+    admin.start_remote_daemon("work")
+    assert calls[1:] == [("stop", "b-old", True), ("/browsers", "POST")]
+    assert admin.ipc.read_remote_marker("work") is None
 
 def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
     monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default", "stale", "remote"])
