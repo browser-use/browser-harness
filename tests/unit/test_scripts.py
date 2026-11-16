@@ -140,3 +140,63 @@ def test_typed_secret_with_trailing_comment_is_redacted(ws, tmp_path):
     src.write_text('goto_url("https://app.example.com/")\nfill_input("#pw", "hunter2")  # password\n')
     assert cli("scripts", "save", "login", "--file", str(src))[0] == 0
     assert "hunter2" not in (ws / "scripts" / "app.example.com" / "login.py").read_text()
+
+
+def _expect_line(path):
+    return next((l for l in path.read_text().splitlines() if l.startswith("# expect: ")), None)
+
+
+def test_first_replay_records_output_shape_and_empty_value_drifts(ws, tmp_path):
+    # Mirrors the experiment's silent wrong answer: a replay printed top_comment: null
+    # for a story whose earlier replays had a comment, and exited 0.
+    src = tmp_path / "s.py"
+    src.write_text(
+        'import json\nurl = "https://news.ycombinator.com/"\n'
+        'c = None if PARAMS["broken"] == "1" else "first!"\n'
+        'print(json.dumps({"page": 1, "titles": ["a", "b"], "top_comment": c}))\n'
+    )
+    cli("scripts", "save", "hn", "--file", str(src), "--param", "broken=0")
+    path = ws / "scripts" / "news.ycombinator.com" / "hn.py"
+    assert _expect_line(path) is None
+    assert cli("scripts", "run", "hn")[0] == 0
+    assert _expect_line(path) is not None
+    assert cli("scripts", "run", "hn")[0] == 0  # same shape still passes
+
+    stamped = path.read_text()
+    code, out, err = cli("scripts", "run", "hn", "--param", "broken=1")
+    assert code == 1
+    assert '"top_comment": null' in out  # output still reaches the caller
+    assert "drifted: output changed: output.top_comment is null, was str" in err
+    assert "# expect:" in err and "hn" in err.splitlines()[-1]
+    assert path.read_text() == stamped  # a drifted replay does not re-stamp
+
+
+def test_output_check_flags_missing_keys_type_changes_and_empty_lists(ws, tmp_path):
+    from browser_harness import scripts
+
+    good = {"q": "x", "repos": [{"repo": "a/b", "stars": 3}], "n": 1}
+    exp = scripts.shape(good)
+    assert scripts.check_output(exp, {**good, "extra": True, "repos": good["repos"] * 3}) == []
+    assert scripts.check_output(exp, {"q": "x", "n": 1}) == ["output.repos is missing"]
+    assert scripts.check_output(exp, {**good, "repos": []}) == ["output.repos is empty"]
+    assert scripts.check_output(exp, {**good, "n": "1"}) == ["output.n is str, was num"]
+    assert scripts.check_output(exp, {**good, "repos": [{"repo": "", "stars": 3}]}) == ["output.repos[0].repo is empty"]
+    # A value that was already null when recorded holds nothing to account.
+    assert scripts.check_output(scripts.shape({"c": None}), {"c": "now set"}) == []
+
+
+def test_no_json_output_skips_the_check_and_edited_expect_is_respected(ws, tmp_path):
+    src = tmp_path / "s.py"
+    src.write_text('url = "https://example.com/"\nprint("plain text")\n')
+    cli("scripts", "save", "plain", "--file", str(src))
+    path = ws / "scripts" / "example.com" / "plain.py"
+    assert cli("scripts", "run", "plain")[0] == 0
+    assert _expect_line(path) is None  # nothing to record
+
+    path.write_text(path.read_text().replace("# verified_at:", '# expect: {"t":"obj","keys":{}}\n# verified_at:'))
+    code, _, err = cli("scripts", "run", "plain")
+    assert code == 1 and "no JSON output" in err
+
+    path.write_text(path.read_text().replace('# expect: {"t":"obj","keys":{}}\n', "# expect: oops\n"))
+    code, _, err = cli("scripts", "list")
+    assert code != 0 and "bad '# expect:' header line" in err

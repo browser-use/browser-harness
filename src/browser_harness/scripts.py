@@ -14,8 +14,14 @@ A saved script is the agent's own stdin script with a comment header:
 `scripts run` executes it like stdin code with PARAMS injected. Exit 0 stamps
 verified_at; an exception prints `drifted: <error>` and exits 1 so the agent
 fixes that file instead of redoing the task from zero.
+
+Output check: the first verified replay that prints JSON records its shape in an
+`# expect:` header line (keys, types, and which values were non-empty). Later
+replays fail as drifted when a key goes missing, a type changes, or a value that
+was non-empty comes back null/empty, so a broken page cannot pass as a quiet
+`null`. If the new output is valid, edit or delete the `# expect:` line.
 """
-import ast, json, os, re, sys, time, traceback
+import ast, io, json, os, re, sys, time, traceback
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -23,6 +29,8 @@ from . import paths
 from .recorder import _scrub_url
 
 REPLAY_IPC_TIMEOUT_SECONDS = 30.0
+EXPECT_DEPTH = 4  # nesting levels recorded in `# expect:`
+_CAPTURE_LIMIT = 8 << 20  # stdout bytes kept for the output check
 MARKER = "# browser-harness saved script"
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 _HOST_RE = re.compile(r"\A[a-z0-9-]+(\.[a-z0-9-]+)*\Z")
@@ -80,7 +88,11 @@ def read_header(text):
         i += 1
     if i < len(lines) and not lines[i].strip():
         i += 1
-    meta["params"] = json.loads(meta.get("params") or "{}")
+    for key, default in (("params", "{}"), ("expect", "null")):
+        try:
+            meta[key] = json.loads(meta.get(key) or default)
+        except ValueError:
+            raise SystemExit(f"browser-harness: bad '# {key}:' header line; it must be JSON")
     return meta, "".join(lines[i:])
 
 
@@ -217,8 +229,83 @@ def prepare_run(args):
     return path, code, params
 
 
+class _Tee(io.TextIOBase):
+    """Pass stdout through and keep a bounded copy for the output check."""
+
+    def __init__(self, out):
+        self.out, self.buf, self.size = out, [], 0
+
+    def write(self, text):
+        if self.size < _CAPTURE_LIMIT:
+            self.buf.append(text)
+            self.size += len(text)
+        return self.out.write(text)
+
+    def flush(self):
+        self.out.flush()
+
+
+def json_output(text):
+    """The JSON object or array a script printed: all of stdout, else its last JSON line."""
+    text = text.strip()
+    for chunk in [text, *reversed(text.splitlines())]:
+        chunk = chunk.strip()
+        if chunk[:1] in ("{", "["):
+            try:
+                value = json.loads(chunk)
+            except ValueError:
+                continue
+            if isinstance(value, (dict, list)):
+                return value
+    return None
+
+
+def _empty(v):
+    return v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, (list, dict)) and not v)
+
+
+def shape(v, depth=0):
+    """Compact record of a JSON value: type, whether it was non-empty, and nested keys/items."""
+    t = ("null" if v is None else "bool" if isinstance(v, bool) else "num" if isinstance(v, (int, float))
+         else "str" if isinstance(v, str) else "list" if isinstance(v, list) else "obj")
+    s = {"t": t}
+    if t in ("str", "list", "obj") and not _empty(v):
+        s["full"] = 1
+    if depth < EXPECT_DEPTH:
+        if t == "obj":
+            s["keys"] = {k: shape(x, depth + 1) for k, x in v.items()}
+        elif t == "list" and v:
+            s["item"] = shape(v[0], depth + 1)
+    return s
+
+
+def check_output(expect, v, path="output"):
+    """Problems where v breaks the recorded shape. New keys and longer/shorter lists are fine."""
+    t = expect.get("t")
+    if t == "null":  # it was empty when recorded; nothing to hold it to
+        return []
+    if v is None:
+        return [f"{path} is null, was {t}"]
+    if shape(v, EXPECT_DEPTH)["t"] != t:
+        return [f"{path} is {shape(v, EXPECT_DEPTH)['t']}, was {t}"]
+    if expect.get("full") and _empty(v):
+        return [f"{path} is empty"]
+    problems = []
+    if t == "obj":
+        for k, sub in expect.get("keys", {}).items():
+            problems += [f"{path}.{k} is missing"] if k not in v else check_output(sub, v[k], f"{path}.{k}")
+    elif t == "list" and "item" in expect:
+        for i, x in enumerate(v[:200]):
+            problems += check_output(expect["item"], x, f"{path}[{i}]")
+            if len(problems) >= 5:
+                break
+    return problems
+
+
 def replay(path, code, g):
     """exec a saved script; 0 stamps verified_at, any failure prints `drifted:`."""
+    tee, real = _Tee(sys.stdout), sys.stdout
+    sys.stdout = tee
     try:
         exec(compile(code, str(path), "exec"), g)
     except SystemExit as e:
@@ -227,20 +314,35 @@ def replay(path, code, g):
     except Exception as e:
         traceback.print_exc()
         return _drifted(path, f"{type(e).__name__}: {e}")
-    stamp(path)
+    finally:
+        sys.stdout = real
+    expect = read_header(code)[0].get("expect")
+    out = json_output("".join(tee.buf))
+    if expect is not None:
+        problems = check_output(expect, out) if out is not None else ["no JSON output, the script used to print JSON"]
+        if problems:
+            return _drifted(path, "output changed: " + "; ".join(problems[:5]),
+                            "if this output is valid, edit or delete the '# expect:' line in the file")
+    stamp(path, shape(out) if expect is None and out is not None else None)
     return 0
 
 
-def _drifted(path, error):
+def _drifted(path, error, hint=""):
     print(f"drifted: {error}", file=sys.stderr)
+    if hint:
+        print(hint, file=sys.stderr)
     print(f"fix {path} and rerun: browser-harness scripts run {path.parent.name}/{path.stem}", file=sys.stderr)
     return 1
 
 
-def stamp(path):
+def stamp(path, expect=None):
+    """Mark the script verified now; on its first JSON-printing replay also record `# expect:`."""
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    line = f"# verified_at: {now}"
+    if expect is not None:
+        line += "\n# expect: " + json.dumps(expect, separators=(",", ":"), ensure_ascii=False)
     text = path.read_text(encoding="utf-8")
-    path.write_text(re.sub(r"(?m)^# verified_at: .*$", f"# verified_at: {now}", text, count=1), encoding="utf-8")
+    path.write_text(re.sub(r"(?m)^# verified_at: .*$", lambda m: line, text, count=1), encoding="utf-8")
 
 
 def list_scripts(args):
@@ -251,7 +353,8 @@ def list_scripts(args):
     rows = sorted(scripts_dir().glob(f"{host or '*'}/*.py")) if not host or _HOST_RE.match(host) else []
     for p in rows:
         meta, _ = read_header(p.read_text(encoding="utf-8"))
-        print(f"{p.parent.name}/{p.stem}  params={json.dumps(meta.get('params', {}))}  verified_at={meta.get('verified_at', '?')}")
+        check = "on" if meta.get("expect") is not None else "after first run"
+        print(f"{p.parent.name}/{p.stem}  params={json.dumps(meta.get('params', {}))}  verified_at={meta.get('verified_at', '?')}  output_check={check}")
     if not rows:
         print("no saved scripts")
     return 0
