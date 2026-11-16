@@ -229,6 +229,8 @@ def test_http_get_via_fetch_use_returns_bytes_for_a_binary_body(monkeypatch):
     fake.fetch_sync = lambda u, **kw: types.SimpleNamespace(text="", content=b"%PDF\xff", is_binary=True)
     monkeypatch.setitem(sys.modules, "fetch_use", fake)
     assert helpers.http_get("https://example.com/a.pdf") == b"%PDF\xff"
+    fake.fetch_sync = lambda u, **kw: types.SimpleNamespace(text="", content="héllo".encode(), is_binary=True)
+    assert helpers.http_get("https://example.com/a.txt") == "héllo"  # UTF-8 flagged binary: str, as the local path
 
 
 # --- fill_input ---

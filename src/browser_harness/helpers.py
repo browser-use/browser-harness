@@ -727,9 +727,16 @@ def http_get(url, headers=None, timeout=20.0):
         try:
             from fetch_use import fetch_sync
             r = fetch_sync(url, headers=headers, timeout_ms=int(timeout * 1000))
-            return r.content if getattr(r, "is_binary", False) else r.text
+            if not getattr(r, "is_binary", False):
+                return r.text
+            data = r.content  # fetch-use's is_binary can flag UTF-8 text too: same str/bytes rule as below
         except ImportError:
             pass
+        else:
+            try:
+                return data.decode()
+            except UnicodeDecodeError:
+                return data
     import gzip
     h = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
     if headers: h.update(headers)
