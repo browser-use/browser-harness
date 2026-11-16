@@ -15,6 +15,13 @@ Applies to `appsignal.com`.
 - Personal operator API tokens are separate from Push keys and can be shorter than
   generic redaction thresholds. Never emit authenticated page bodies, key sections,
   or credential-bearing URLs. Extract secrets in memory and emit only safe metadata.
+- The profile at `/users/edit` displays the personal token under `Your personal API
+  token is:`. Its rotation link targets `/users/roll_authentication_token` with
+  `data-method="put"` and may have no confirmation prompt. Treat clicking it as
+  the rotation itself: verify every credential-store target first, then capture
+  the replacement in memory and read-verify each saved copy. A failed verification
+  request is not evidence that rotation failed; compare the profile and saved
+  copies before retrying. Avoid screenshots of the profile.
 - An app's Notifications settings can redirect to organization-wide notifiers.
   Existing notifiers do not automatically include a new app when Enable for new
   apps is disabled. Edit the intended notifier and select only the new app's
