@@ -301,7 +301,7 @@ Missing: ..."
 
 - If `goto_url` or `browser-harness scripts list --host <host>` shows a saved script for this site and task, run it: `browser-harness scripts run <name> --param k=v`. If it prints `drifted: ...`, fix that file and rerun it.
 - After a repeatable task works, save it: `browser-harness scripts save <name> --from-last --param k=v` (saves your last successful script; read params as `PARAMS["k"]`, end with an `assert`, print the result as JSON).
-- The first replay records the JSON output shape in the file's `# expect:` line; a later replay whose output loses a value (null, empty, missing key) is `drifted:`. If that output is actually correct, loosen or delete the `# expect:` line instead of loosening the script.
+- The first replay records the JSON output shape in the file's `# expect:` line; a later replay whose output loses a value (null, empty, missing key) is `drifted:`. If that output is actually correct (e.g. a story with no comments), rerun with `--accept` instead of loosening the script's own checks.
 
 ## Domain Skills
 

@@ -66,7 +66,7 @@ Commands:
   browser-harness video export <recording> --reviewed   export a verified MP4
   browser-harness scripts save <name> --from-last [--param k=v]
                                     save the last successful script for replay
-  browser-harness scripts run <name> [--param k=v]
+  browser-harness scripts run <name> [--param k=v] [--accept]
                                     replay a saved script; `drifted:` + exit 1 on failure
   browser-harness scripts list [--host HOST]   list saved scripts
   browser-harness telemetry status    show anonymous telemetry opt-out state

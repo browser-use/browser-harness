@@ -19,7 +19,8 @@ Output check: the first verified replay that prints JSON records its shape in an
 `# expect:` header line (keys, types, and which values were non-empty). Later
 replays fail as drifted when a key goes missing, a type changes, or a value that
 was non-empty comes back null/empty, so a broken page cannot pass as a quiet
-`null`. If the new output is valid, edit or delete the `# expect:` line.
+`null`. If the new output is valid, rerun with `--accept`: it keeps the new
+output and relaxes the expectation to what both runs share.
 """
 import ast, io, json, os, re, sys, time, traceback
 from pathlib import Path
@@ -31,6 +32,7 @@ from .recorder import _scrub_url
 REPLAY_IPC_TIMEOUT_SECONDS = 30.0
 EXPECT_DEPTH = 4  # nesting levels recorded in `# expect:`
 _CAPTURE_LIMIT = 8 << 20  # stdout bytes kept for the output check
+ACCEPT_OUTPUT = False  # set by `scripts run --accept`
 MARKER = "# browser-harness saved script"
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 _HOST_RE = re.compile(r"\A[a-z0-9-]+(\.[a-z0-9-]+)*\Z")
@@ -42,7 +44,7 @@ _SECRET_RE = re.compile(r"pass|secret|token|otp|api_?key", re.I)
 
 USAGE = """usage:
   browser-harness scripts save <name> [--from-last | --file PATH] [--host HOST] [--param k=v ...]
-  browser-harness scripts run <name|host/name> [--param k=v ...]
+  browser-harness scripts run <name|host/name> [--param k=v ...] [--accept]
   browser-harness scripts list [--host HOST]"""
 
 
@@ -216,9 +218,11 @@ def resolve(ref):
 
 def prepare_run(args):
     """(path, code, params) for `scripts run`, or SystemExit on bad input."""
-    pos, _, params = _parse(args, {})
+    global ACCEPT_OUTPUT
+    pos, opts, params = _parse(args, {"--accept": bool})
     if len(pos) != 1:
         raise SystemExit(USAGE)
+    ACCEPT_OUTPUT = "--accept" in opts
     path = resolve(pos[0])
     code = path.read_text(encoding="utf-8")
     params = {**read_header(code)[0].get("params", {}), **env_params(), **params}
@@ -302,6 +306,24 @@ def check_output(expect, v, path="output"):
     return problems
 
 
+def merge_shapes(old, new):
+    """What two accepted outputs share: a value stays required only if both had it non-empty."""
+    if old.get("t") == "null":
+        return new
+    if new.get("t") == "null" or new.get("t") != old.get("t"):
+        return {"t": "null"}  # empty or retyped now: accept anything there
+    out = {"t": old["t"]}
+    if old.get("full") and new.get("full"):
+        out["full"] = 1
+    if "keys" in old and "keys" in new:
+        out["keys"] = {k: merge_shapes(v, new["keys"][k]) for k, v in old["keys"].items() if k in new["keys"]}
+    if "item" in old and "item" in new:
+        out["item"] = merge_shapes(old["item"], new["item"])
+    elif "item" in old and old.get("t") == "list":
+        out["item"] = old["item"]
+    return out
+
+
 def replay(path, code, g):
     """exec a saved script; 0 stamps verified_at, any failure prints `drifted:`."""
     tee, real = _Tee(sys.stdout), sys.stdout
@@ -318,12 +340,16 @@ def replay(path, code, g):
         sys.stdout = real
     expect = read_header(code)[0].get("expect")
     out = json_output("".join(tee.buf))
+    record = shape(out) if expect is None and out is not None else None
     if expect is not None:
         problems = check_output(expect, out) if out is not None else ["no JSON output, the script used to print JSON"]
-        if problems:
+        if problems and not ACCEPT_OUTPUT:
             return _drifted(path, "output changed: " + "; ".join(problems[:5]),
-                            "if this output is valid, edit or delete the '# expect:' line in the file")
-    stamp(path, shape(out) if expect is None and out is not None else None)
+                            "if this output is correct, accept it: browser-harness scripts run ... --accept")
+        if problems:
+            record = merge_shapes(expect, shape(out)) if out is not None else "drop"
+            print("accepted: output check now allows: " + "; ".join(problems[:5]), file=sys.stderr)
+    stamp(path, record)
     return 0
 
 
@@ -336,12 +362,14 @@ def _drifted(path, error, hint=""):
 
 
 def stamp(path, expect=None):
-    """Mark the script verified now; on its first JSON-printing replay also record `# expect:`."""
+    """Mark the script verified now; write or replace `# expect:` when given ("drop" removes it)."""
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     line = f"# verified_at: {now}"
-    if expect is not None:
-        line += "\n# expect: " + json.dumps(expect, separators=(",", ":"), ensure_ascii=False)
     text = path.read_text(encoding="utf-8")
+    if expect is not None:
+        text = re.sub(r"(?m)^# expect: .*\n", "", text, count=1)
+        if expect != "drop":
+            line += "\n# expect: " + json.dumps(expect, separators=(",", ":"), ensure_ascii=False)
     path.write_text(re.sub(r"(?m)^# verified_at: .*$", lambda m: line, text, count=1), encoding="utf-8")
 
 

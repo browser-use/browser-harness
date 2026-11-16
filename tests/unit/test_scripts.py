@@ -167,8 +167,17 @@ def test_first_replay_records_output_shape_and_empty_value_drifts(ws, tmp_path):
     assert code == 1
     assert '"top_comment": null' in out  # output still reaches the caller
     assert "drifted: output changed: output.top_comment is null, was str" in err
-    assert "# expect:" in err and "hn" in err.splitlines()[-1]
+    assert "--accept" in err and "hn" in err.splitlines()[-1]
     assert path.read_text() == stamped  # a drifted replay does not re-stamp
+
+    # A legitimately empty value (story with no comments): --accept relaxes only that field.
+    code, _, err = cli("scripts", "run", "hn", "--param", "broken=1", "--accept")
+    assert code == 0 and "accepted: output check now allows: output.top_comment is null" in err
+    assert cli("scripts", "run", "hn", "--param", "broken=1")[0] == 0
+    assert cli("scripts", "run", "hn")[0] == 0
+    path.write_text(path.read_text().replace('print(json.dumps({"page": 1, "titles": ["a", "b"]', 'print(json.dumps({"page": 1, "titles": []'))
+    code, _, err = cli("scripts", "run", "hn")
+    assert code == 1 and "output.titles is empty" in err  # the rest of the shape is still enforced
 
 
 def test_output_check_flags_missing_keys_type_changes_and_empty_lists(ws, tmp_path):
@@ -200,3 +209,13 @@ def test_no_json_output_skips_the_check_and_edited_expect_is_respected(ws, tmp_p
     path.write_text(path.read_text().replace('# expect: {"t":"obj","keys":{}}\n', "# expect: oops\n"))
     code, _, err = cli("scripts", "list")
     assert code != 0 and "bad '# expect:' header line" in err
+
+
+def test_merge_shapes_keeps_only_what_both_outputs_share():
+    from browser_harness import scripts
+
+    old = scripts.shape({"a": "x", "b": [1], "c": "y"})
+    merged = scripts.merge_shapes(old, scripts.shape({"a": "", "b": [2, 3]}))
+    assert scripts.check_output(merged, {"a": "", "b": [9]}) == []
+    assert scripts.check_output(merged, {"a": "z", "b": []}) == ["output.b is empty"]
+    assert "c" not in merged["keys"]
