@@ -432,7 +432,8 @@ def _callback_server(callback: PendingCallback) -> HTTPServer:
                 callback.error = _one(qs, "error")
                 callback.error_description = _one(qs, "error_description")
             callback.complete = True
-            body = _callback_page("Sign-in didn't finish. Check your terminal." if callback.error else "You're signed in. You can close this tab.")
+            signed_in = callback.code and not callback.error
+            body = _callback_page("You're signed in. You can close this tab." if signed_in else "Sign-in didn't finish. Check your terminal.")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
