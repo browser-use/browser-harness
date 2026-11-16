@@ -97,6 +97,7 @@ Use the output:
 - `chrome running` FAIL: ask the user to open Chrome, or use isolated/cloud browser.
 - `daemon alive` FAIL: Chrome remote debugging permission is missing, Chrome is closed, or the CDP endpoint is not reachable.
 - update available: run `browser-harness --update -y` when you decide to upgrade.
+- `browser-use` CLI says `remote-debugging-setup: no browser here has remote debugging on, and there is no display`: upgrade browser-use to 1.0.3 or newer (`uv tool install browser-use@latest`, or `pip install -U browser-use`). From 1.0.3 the CLI starts its own Chromium on a machine with no display or no debuggable Chrome.
 
 For a machine-readable health check, an orchestrator can set `BU_NAME` to an
 already-provisioned daemon and run:
