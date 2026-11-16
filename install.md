@@ -47,8 +47,9 @@ run `browser-harness recordings disable`. Preserve an existing `(config)` or
 
 If Chrome is closed, skip this: the harness ticks the checkbox below in Chrome's
 Local State and launches Chrome in the background (`open -g`). Only the one
-"Allow remote debugging?" dialog remains, once per Chrome run; `mac-approve`
-clicks it without bringing Chrome forward. Set `BH_PRESET_INSPECT_TOGGLE=0`
+"Allow remote debugging?" dialog remains, once per Chrome run. Chrome itself
+brings its window forward for that dialog; `mac-approve` clicks it and adds no
+focus change of its own. Set `BH_PRESET_INSPECT_TOGGLE=0`
 to keep the harness from editing Local State.
 
 If Chrome is already running, in Chrome:

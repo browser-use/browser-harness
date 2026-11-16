@@ -129,8 +129,10 @@ OWNS_BROWSER = BROWSER_KIND == "cdp" and os.environ.get("BH_OWNS_BROWSER", "").s
 # still terminate the pending connection.
 LOCAL_HANDSHAKE_TIMEOUT = None
 # A 403 within this many seconds of connecting means Chrome had no window to show
-# the Allow dialog in (cold launch), not that a person clicked Cancel.
-EARLY_DENIAL_WINDOW = 1.5
+# the Allow dialog in (cold launch), not that a person clicked Cancel. /json is 404
+# in approval mode, so timing is the only signal; a wrong guess costs at most
+# EARLY_DENIAL_RETRIES extra dialogs.
+EARLY_DENIAL_WINDOW = 3.0
 EARLY_DENIAL_RETRIES = 5
 EARLY_DENIAL_DELAY = 2.0
 # How long get_ws_url() keeps waiting for DevToolsActivePort before giving up
@@ -818,6 +820,9 @@ class Daemon:
                 log(f"handshake-denied-early: Chrome refused before it could show the Allow dialog (no window yet); retry {attempt + 1}/{EARLY_DENIAL_RETRIES} in {EARLY_DENIAL_DELAY:g}s")
                 self.cdp = _PatientCDPClient(url)
                 await asyncio.sleep(EARLY_DENIAL_DELAY)
+                # ensure_daemon() reads the log tail: keep "handshake-wait" as the
+                # last line so the parked-daemon detection and mac-approve hint hold.
+                log("handshake-wait: if Chrome shows an 'Allow remote debugging?' popup, click Allow")
 
     async def start(self):
         self.stop = asyncio.Event()

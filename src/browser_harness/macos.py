@@ -6,7 +6,7 @@ import platform
 import subprocess
 from pathlib import Path
 
-from .admin import daemon_browser_ready
+from .admin import _BROWSER_LAUNCH, _DEFAULT_LAUNCH, daemon_browser_ready
 from .daemon import remote_debugging_toggle_profiles
 
 _APPLESCRIPT = r'''using terms from application "System Events"
@@ -77,20 +77,15 @@ return resultText
 '''
 
 
-# Chromium-family apps that show the same "Allow remote debugging?" sheet.
-_BROWSER_PROCESSES = (
-    "Google Chrome",
-    "Google Chrome Canary",
-    "Google Chrome Beta",
-    "Google Chrome Dev",
-    "Google Chrome for Testing",
-    "Chromium",
-    "Brave Browser",
-    "Brave Browser Beta",
-    "Brave Browser Nightly",
-    "Microsoft Edge",
-    "Helium",
-)
+# Chromium-family apps that show the same "Allow remote debugging?" sheet: every
+# app the launcher knows (admin._BROWSER_LAUNCH) plus channels without a profile
+# entry of their own.
+_BROWSER_PROCESSES = tuple(dict.fromkeys(
+    [_DEFAULT_LAUNCH[0], *(spec[1] for spec in _BROWSER_LAUNCH)]
+    + ["Google Chrome Beta", "Google Chrome Dev", "Google Chrome for Testing", "Chromium",
+       "Brave Browser Beta", "Brave Browser Nightly", "Microsoft Edge Beta", "Microsoft Edge Dev",
+       "Microsoft Edge Canary", "Helium"]
+))
 _APPLESCRIPT = _APPLESCRIPT.replace(
     "__BROWSERS__", ", ".join(f'"{name}"' for name in _BROWSER_PROCESSES)
 )

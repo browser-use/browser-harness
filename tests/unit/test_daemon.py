@@ -999,10 +999,13 @@ def test_local_handshake_retries_an_immediate_403_then_connects(monkeypatch):
     monkeypatch.setattr(daemon, "_PatientCDPClient", Client)
     monkeypatch.setattr(daemon.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(daemon, "log", lambda *a, **k: None)
+    logged = []
+    monkeypatch.setattr(daemon, "log", lambda m: logged.append(m))
     d = daemon.Daemon()
     d.cdp = Client("ws://x")
     asyncio.run(d._start_cdp_retrying_early_denials("ws://x"))
     assert len(attempts) == 3 and slept == [daemon.EARLY_DENIAL_DELAY] * 2
+    assert logged[-1].startswith("handshake-wait"), "ensure_daemon keys off the log tail"
 
 
 def test_local_handshake_does_not_retry_a_slow_403_or_a_timeout(monkeypatch):

@@ -1597,8 +1597,14 @@ def test_preenable_respects_opt_out_and_existing_toggle(monkeypatch, tmp_path):
     assert admin._preenable_remote_debugging(profile) is False
     assert json.loads((profile / "Local State").read_text()) == {}
     monkeypatch.delenv("BH_PRESET_INSPECT_TOGGLE")
+    (profile / "Local State").chmod(0o600)
     assert admin._preenable_remote_debugging(profile) is True
+    assert (profile / "Local State").stat().st_mode & 0o777 == 0o600
     assert admin._preenable_remote_debugging(profile) is False
+    # an explicit false is the person's choice: left alone
+    (profile / "Local State").write_text('{"devtools": {"remote_debugging": {"user-enabled": false}}}')
+    assert admin._preenable_remote_debugging(profile) is False
+    assert json.loads((profile / "Local State").read_text())["devtools"]["remote_debugging"]["user-enabled"] is False
 
 
 def test_cold_start_launches_browser_when_the_daemon_exits_before_connecting(monkeypatch, tmp_path):
