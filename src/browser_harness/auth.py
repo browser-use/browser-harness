@@ -394,6 +394,27 @@ def _exchange_authorization_code(code: str, redirect_uri: str, verifier: str) ->
     })
 
 
+_LOGO_SVG = (
+    '<svg width="40" height="40" viewBox="0 0 100 100" fill="currentColor" aria-hidden="true"><path d="M97.8916 39.0448C82.6177 33.1997 95.2199 10.8169 74.212 11.3849C48.5413 12.0793 8.31528 52.4518 12.4236 78.6851C14.4652 91.6755 24.6096 86.2218 29.3732 88.1154C32.5364 89.3652 36.2792 95.0083 40.3245 95.9047C22.4293 106.193 -0.556809 96.397 0.0102912 74.3423C0.829435 41.86 47.7474 -5.25386 81.1937 0.477571C99.8702 3.68414 102.189 23.5422 97.8916 39.0448Z"/><path d="M24.8115 57.7541L39.6068 71.7166C49.0332 80.1875 74.061 94.9706 85.403 84.9469C98.774 73.1306 70.495 32.3162 57.4769 25.802L68.9069 20.6639C86.7138 33.6796 113.783 75.9836 91.7294 94.4025C77.5014 106.282 54.5655 96.2204 41.0811 87.3707C30.8103 80.6294 15.9647 70.9591 24.8115 57.7415V57.7541Z"/><path d="M40.3373 4.75723C35.5485 4.88347 31.8055 11.1199 28.2895 12.2182C25.1642 13.1903 20.8414 10.5266 16.1408 14.0487C11.0495 17.8613 12.7891 36.0655 3.02233 40.5976C-2.98893 22.9362 0.75354 1.8789 22.4672 0.0736228C24.1433 -0.0652445 42.7822 1.17195 40.3373 4.74463V4.75723Z"/><path d="M76.1025 57.754C84.1175 71.0348 69.5871 86.2092 57.489 74.1025L76.1025 57.754Z"/></svg>'
+)
+
+
+def _callback_page(message: str) -> bytes:
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Browser Use</title><style>"
+        ":root{color-scheme:light dark}"
+        "body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;"
+        "font:500 17px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;background:#fff;color:#111}"
+        "@media (prefers-color-scheme:dark){body{background:#0a0a0a;color:#f5f5f5}}"
+        "</style></head><body>"
+        f"{_LOGO_SVG}<p style='margin:0'>{message}</p>"
+        "<script>setTimeout(function(){window.close()},1500)</script>"
+        "</body></html>"
+    ).encode()
+
+
 def _callback_server(callback: PendingCallback) -> HTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - stdlib handler API
@@ -411,7 +432,7 @@ def _callback_server(callback: PendingCallback) -> HTTPServer:
                 callback.error = _one(qs, "error")
                 callback.error_description = _one(qs, "error_description")
             callback.complete = True
-            body = b"<html><body><h1>Browser Use Cloud login complete</h1><p>You can close this tab.</p></body></html>"
+            body = _callback_page("Sign-in didn't finish. Check your terminal." if callback.error else "You're signed in. You can close this tab.")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
