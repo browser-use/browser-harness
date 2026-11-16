@@ -698,6 +698,23 @@ def ensure_daemon(wait=None, name=None, env=None):
                     "permission-blocked: the pending Chrome connection ended before approval; "
                     "browser-harness did not retry or create another connection."
                 )
+            if launched_browser is None and _chrome_not_running(msg):
+                # Cold start (#786): with no browser running the daemon exits on
+                # its first liveness check, so the chrome-not-running rescue
+                # below (which needs a live daemon) never ran and three doomed
+                # respawns ended in "didn't come up". Launch the browser here.
+                if _pid_number(ipc.pid_path(name or NAME)) not in (None, pending_pid):
+                    continue  # a concurrent caller published a successor
+                launched_browser = _launch_browser()
+                if launched_browser is None:
+                    raise RuntimeError(
+                        "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+                    )
+                print("browser-harness: Chrome isn't running — launching it in the background. If Chrome shows an \"Allow remote debugging?\" popup, click Allow or run `browser-harness mac-approve`.", file=sys.stderr)
+                from .daemon import supported_browser_running
+                boot_deadline = time.time() + 15
+                while time.time() < boot_deadline and not supported_browser_running():
+                    time.sleep(0.3)
             continue
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup
@@ -1337,6 +1354,50 @@ def _profile_directory_args(base):
     return [f"--profile-directory={last}"]
 
 
+def _preenable_remote_debugging(base):
+    """Tick chrome://inspect's "Allow remote debugging for this browser instance"
+    in Local State while the browser is closed.
+
+    Chrome stores that checkbox as the application-wide pref
+    ``devtools.remote_debugging.user-enabled`` and starts its approval-mode
+    DevTools server on launch whenever the pref is true (chrome/browser/devtools/
+    remote_debugging_server.cc). Setting it before the relaunch removes the
+    "open chrome://inspect and tick the box" step; the per-connection Allow
+    dialog still appears, so the user keeps exactly one approval per Chrome run.
+    Only called from the relaunch path: a running Chrome rewrites Local State on
+    exit and would discard the edit. ``BH_PRESET_INSPECT_TOGGLE=0`` disables it.
+    Returns True when the file was changed."""
+    if os.environ.get("BH_PRESET_INSPECT_TOGGLE", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    local_state = Path(base) / "Local State"
+    try:
+        state = json.loads(local_state.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    devtools = state.setdefault("devtools", {})
+    if not isinstance(devtools, dict):
+        return False
+    remote = devtools.setdefault("remote_debugging", {})
+    if not isinstance(remote, dict):
+        return False
+    if remote.get("user-enabled") is True:
+        return False
+    remote["user-enabled"] = True
+    tmp = local_state.with_name(local_state.name + ".bh-tmp")
+    try:
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, local_state)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def _launch_browser():
     """Prefers the browser whose profile already has perm box checked.
 
@@ -1373,15 +1434,20 @@ def _launch_browser():
                 continue
 
     base = enabled[0] if enabled else next((b for b in PROFILES if (b / "Local State").exists()), None)
+    if base is not None and not enabled:
+        _preenable_remote_debugging(base)
     mac_app, posix_cmds, win_target = _browser_launch_spec(base) if base else _DEFAULT_LAUNCH
     profile_args = _profile_directory_args(base)
     try:
         if system == "Darwin":
-            cmd = ["open", "-a", mac_app] + (["--args"] + profile_args if profile_args else [])
+            # `-g`: launch in the background. Chrome's own "Allow remote debugging?"
+            # dialog activates its window once the daemon connects; the launch
+            # itself must not steal focus a second time.
+            cmd = ["open", "-g", "-a", mac_app] + (["--args"] + profile_args if profile_args else [])
             r = subprocess.run(cmd, timeout=10, check=False, capture_output=True)
             if r.returncode != 0 and mac_app != "Google Chrome":
                 # Different app → its profile dir may not match; launch plain
-                r = subprocess.run(["open", "-a", "Google Chrome"], timeout=10, check=False, capture_output=True)
+                r = subprocess.run(["open", "-g", "-a", "Google Chrome"], timeout=10, check=False, capture_output=True)
             return (None, base) if r.returncode == 0 else None
         if system == "Windows":
             # `start <name>` resolves browsers via App Paths without knowing the install dir

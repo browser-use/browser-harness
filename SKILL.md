@@ -272,7 +272,8 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 
 ## Gotchas
 
-- `chrome://inspect/#remote-debugging` must be enabled for local Chrome control.
+- `chrome://inspect/#remote-debugging` must be enabled for local Chrome control. When the harness has to relaunch a closed Chrome it ticks that box itself (Local State) and launches in the background, so setup needs no click there.
+- Chrome shows one "Allow remote debugging?" dialog per browser-level connection and that dialog brings Chrome to the front by design (Chromium `DevToolsConnectionDialog` calls `Activate()`). The floor is one Allow per Chrome run. Every extra daemon connection (a named local daemon, a daemon restart, `--reload`) is one more dialog and one more focus steal, and a dialog whose connection died stays on screen until dismissed.
 - On macOS, if local Chrome shows an "Allow remote debugging?" popup, call `mac-approve` once with the same `BU_NAME` while the original browser command waits. Do not poll or rerun the browser command; remote and cloud browsers do not use this helper.
 - Omnibox popups are not real work tabs.
 - CDP target order is not Chrome's visible tab-strip order.

@@ -1,4 +1,6 @@
 from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 
 from browser_harness import macos
@@ -16,13 +18,14 @@ def _enable_chrome_toggle(monkeypatch):
 
 def _no_ready_daemon(monkeypatch):
     monkeypatch.setattr(macos, "daemon_browser_ready", lambda: False)
+    monkeypatch.setattr(macos, "_accessibility_trusted", lambda: True)
 
 
 def test_mac_approve_requires_the_persistent_chrome_checkbox(monkeypatch):
     monkeypatch.setattr(macos.platform, "system", lambda: "Darwin")
     _no_ready_daemon(monkeypatch)
     monkeypatch.setattr(macos, "_google_chrome_root", lambda: Path("/tmp/Google Chrome"))
-    monkeypatch.setattr(macos, "remote_debugging_toggle_profiles", lambda: [Path("/tmp/Edge")])
+    monkeypatch.setattr(macos, "remote_debugging_toggle_profiles", lambda: [])
 
     status, detail = macos.approve_remote_debugging()
 
@@ -81,6 +84,7 @@ def test_mac_approve_returns_ready_without_running_osascript(monkeypatch):
 
 def test_mac_approve_detects_user_accepting_while_it_checks(monkeypatch):
     monkeypatch.setattr(macos.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(macos, "_accessibility_trusted", lambda: True)
     _enable_chrome_toggle(monkeypatch)
     readiness = iter([False, True])
     monkeypatch.setattr(macos, "daemon_browser_ready", lambda: next(readiness))
@@ -125,3 +129,48 @@ def test_mac_approve_is_unavailable_off_macos(monkeypatch):
         "unsupported",
         "mac-approve is only available on macOS",
     )
+
+
+def test_mac_approve_reports_missing_accessibility_without_running_osascript(monkeypatch):
+    monkeypatch.setattr(macos.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(macos, "daemon_browser_ready", lambda: False)
+    _enable_chrome_toggle(monkeypatch)
+    monkeypatch.setattr(macos, "_accessibility_trusted", lambda: False)
+    monkeypatch.setattr(macos.subprocess, "run", lambda *a, **k: pytest.fail("osascript must not run"))
+
+    status, detail = macos.approve_remote_debugging()
+
+    assert status == "accessibility-required"
+    assert "Accessibility" in detail
+
+
+def test_mac_approve_accepts_any_chromium_family_toggle(monkeypatch):
+    monkeypatch.setattr(macos.platform, "system", lambda: "Darwin")
+    _no_ready_daemon(monkeypatch)
+    monkeypatch.setattr(macos, "_google_chrome_root", lambda: Path("/tmp/Google Chrome"))
+    monkeypatch.setattr(macos, "remote_debugging_toggle_profiles", lambda: [Path("/tmp/BraveSoftware/Brave-Browser")])
+    calls = []
+    monkeypatch.setattr(
+        macos.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or SimpleNamespace(returncode=0, stdout="ready\n", stderr=""),
+    )
+
+    assert macos.approve_remote_debugging() == ("ready", None)
+    script = calls[0][1]["input"]
+    assert '"Brave Browser"' in script
+    assert '"Microsoft Edge"' in script
+    assert "AXHeading" in script
+    assert "activate" not in script
+
+
+def test_mac_approve_script_compiles(tmp_path):
+    import shutil, subprocess
+    if not shutil.which("osacompile"):
+        pytest.skip("requires macOS osacompile")
+    res = subprocess.run(
+        ["osacompile", "-o", str(tmp_path / "approve.scpt")],
+        input=macos._APPLESCRIPT, text=True, capture_output=True, check=False,
+    )
+    assert res.returncode == 0, res.stderr
