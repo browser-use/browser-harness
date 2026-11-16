@@ -160,6 +160,7 @@ def test_mac_approve_accepts_any_chromium_family_toggle(monkeypatch):
     assert macos.approve_remote_debugging() == ("ready", None)
     script = calls[0][1]["input"]
     assert '"Brave Browser"' in script
+    assert '"Brave Origin"' in script and '"Arc"' in script  # from admin._BROWSER_LAUNCH
     assert '"Microsoft Edge"' in script
     assert "AXHeading" in script
     assert "activate" not in script

@@ -522,6 +522,28 @@ def run_doctor_fix_snap():
     return 0
 
 
+def _approve_command(name=None):
+    daemon_name = name or NAME
+    return "browser-harness mac-approve" if daemon_name == "default" else f"BU_NAME={daemon_name} browser-harness mac-approve"
+
+
+def _launch_and_wait_for_browser(name=None):
+    """Launch the browser in the background and wait up to 15 s for it to exist."""
+    import sys
+    launched = _launch_browser()
+    if launched is None:
+        raise RuntimeError(
+            "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+        )
+    hint = f"click Allow or run `{_approve_command(name)}`" if sys.platform == "darwin" else "click Allow"
+    print(f'browser-harness: Chrome isn\'t running — launching it in the background. If Chrome shows an "Allow remote debugging?" popup, {hint}.', file=sys.stderr)
+    from .daemon import supported_browser_running
+    boot_deadline = time.time() + 15
+    while time.time() < boot_deadline and not supported_browser_running():
+        time.sleep(0.3)
+    return launched
+
+
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
     Chrome, and missing Allow on chrome://inspect."""
@@ -653,16 +675,7 @@ def ensure_daemon(wait=None, name=None, env=None):
                 # respawns ended in "didn't come up". Launch the browser here.
                 if _pid_number(ipc.pid_path(name or NAME)) not in (None, pending_pid):
                     continue  # a concurrent caller published a successor
-                launched_browser = _launch_browser()
-                if launched_browser is None:
-                    raise RuntimeError(
-                        "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
-                    )
-                print("browser-harness: Chrome isn't running — launching it in the background. If Chrome shows an \"Allow remote debugging?\" popup, click Allow or run `browser-harness mac-approve`.", file=sys.stderr)
-                from .daemon import supported_browser_running
-                boot_deadline = time.time() + 15
-                while time.time() < boot_deadline and not supported_browser_running():
-                    time.sleep(0.3)
+                launched_browser = _launch_and_wait_for_browser(name)
             continue
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup
@@ -684,16 +697,7 @@ def ensure_daemon(wait=None, name=None, env=None):
         if local and launched_browser is None and _chrome_not_running(msg):
             # Chrome is closed — launch the browser and retry
             restart_daemon(name)
-            launched_browser = _launch_browser()
-            if launched_browser is None:
-                raise RuntimeError(
-                    "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
-                )
-            print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
-            from .daemon import supported_browser_running
-            boot_deadline = time.time() + 15
-            while time.time() < boot_deadline and not supported_browser_running():
-                time.sleep(0.3)
+            launched_browser = _launch_and_wait_for_browser(name)
             continue
         if local and not opened_inspect and _needs_chrome_remote_debugging_prompt(msg):
             opened_inspect = True
@@ -1299,14 +1303,16 @@ def _preenable_remote_debugging(base):
     "open chrome://inspect and tick the box" step; the per-connection Allow
     dialog still appears, so the user keeps exactly one approval per Chrome run.
     Only called from the relaunch path: a running Chrome rewrites Local State on
-    exit and would discard the edit. ``BH_PRESET_INSPECT_TOGGLE=0`` disables it.
-    Returns True when the file was changed."""
+    exit and would discard the edit. Only a never-set pref is filled in: an
+    explicit false means the person unticked the box. The file keeps its mode.
+    ``BH_PRESET_INSPECT_TOGGLE=0`` disables it. Returns True when it changed."""
     if os.environ.get("BH_PRESET_INSPECT_TOGGLE", "1").strip().lower() in {"0", "false", "no", "off"}:
         return False
     local_state = Path(base) / "Local State"
     try:
-        state = json.loads(local_state.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, ValueError):
+        state = json.loads(local_state.read_text(encoding="utf-8"))
+        mode = local_state.stat().st_mode & 0o777
+    except (OSError, ValueError, UnicodeDecodeError):
         return False
     if not isinstance(state, dict):
         return False
@@ -1316,12 +1322,17 @@ def _preenable_remote_debugging(base):
     remote = devtools.setdefault("remote_debugging", {})
     if not isinstance(remote, dict):
         return False
-    if remote.get("user-enabled") is True:
+    if "user-enabled" in remote:
+        # True: nothing to do. False: the person unticked the box on purpose;
+        # that is their call, the harness only fills in a never-set pref.
         return False
     remote["user-enabled"] = True
     tmp = local_state.with_name(local_state.name + ".bh-tmp")
     try:
-        tmp.write_text(json.dumps(state), encoding="utf-8")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(state))
+        os.chmod(tmp, mode)
         os.replace(tmp, local_state)
     except OSError:
         try:
@@ -1381,6 +1392,10 @@ def _launch_browser():
             r = subprocess.run(cmd, timeout=10, check=False, capture_output=True)
             if r.returncode != 0 and mac_app != "Google Chrome":
                 # Different app → its profile dir may not match; launch plain
+                # Chrome, and pre-tick its own profile, not the one chosen above.
+                chrome_root = Path.home() / "Library/Application Support/Google/Chrome"
+                if chrome_root not in enabled:
+                    _preenable_remote_debugging(chrome_root)
                 r = subprocess.run(["open", "-g", "-a", "Google Chrome"], timeout=10, check=False, capture_output=True)
             return (None, base) if r.returncode == 0 else None
         if system == "Windows":
