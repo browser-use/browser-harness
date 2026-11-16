@@ -136,8 +136,10 @@ print(f"  enumerated {b['enumeration_date']}, record last updated {b['last_updat
 # 2. Every organizational NPI under the name in the state (one request; 200 is the per-request maximum).
 d = get(organization_name=ORG, state=STATE, enumeration_type="NPI-2", limit=200)
 rows = d["results"]
-if d["result_count"] != len(rows) or len(rows) == 200:
-    raise RuntimeError(f"{len(rows)} records: 200 is the per-request cap, so this list is partial; "
+if d["result_count"] != len(rows):
+    raise RuntimeError(f"result_count {d['result_count']} but {len(rows)} records in the answer: stop")
+if len(rows) == 200:
+    raise RuntimeError("200 records: that is the per-request cap, so this list is partial; "
                        "complete lists come from the NPPES DDS file, not more API queries")
 if len({x["number"] for x in rows}) != len(rows):
     raise RuntimeError("duplicate NPIs in one answer: stop")
