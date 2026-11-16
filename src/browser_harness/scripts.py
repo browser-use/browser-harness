@@ -158,7 +158,7 @@ def _redact(code, params):
         hits = [n for n in strings if n.value == v]
         edits.update({span(n): f"PARAMS[{k!r}]" for n in hits})
         if not hits:
-            notes.append(f"param {k}: literal {v!r} not found; read PARAMS[{k!r}] in the script")
+            notes.append(f"param {k}: its value is not a whole string literal in the script; read PARAMS[{k!r}] there")
     calls = sorted(
         (n for n in ast.walk(tree) if isinstance(n, ast.Call)
          and getattr(n.func, "id", getattr(n.func, "attr", None)) in _TYPING_CALLS),
