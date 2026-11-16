@@ -13,6 +13,7 @@
 - `http_get()` returns `bytes` for binary bodies (zip, pdf, image) and `str` for text, on both the local and the fetch-use path. Localhost, private and intranet hosts, and requests with `Authorization`/`Cookie` headers, never go through the fetch-use proxy.
 - `new_tab(url)` prints `new_tab: <targetId> <url>`, so a script that only opens a tab no longer looks like it did nothing.
 - Navigation and `js()` wait up to 30 s for the browser instead of 5 s. `BH_IPC_TIMEOUT=<seconds>` raises that on very slow remote browsers. Other calls keep 5 s, so a dead daemon still fails fast.
+- `wait_for_network_idle()` no longer runs to its 10 s cap on pages with an ad, captcha or chat iframe or a Web Worker: it stops waiting for requests that finish on another target.
 
 ### Daemon
 - IPC requests up to 32 MiB (a 10 MB upload as base64), with a clear error above that instead of a broken pipe.

@@ -1189,7 +1189,7 @@ def test_enable_default_domains_runs_four_enables_in_parallel():
         d.cdp.release.set()
         await task
         return d.cdp.peak
-    assert asyncio.run(go()) == 4
+    assert asyncio.run(go()) == 5  # 4 enables + Target.setAutoAttach
 
 
 def test_enable_default_domains_swallows_errors_per_domain():
@@ -1198,7 +1198,7 @@ def test_enable_default_domains_swallows_errors_per_domain():
 
     asyncio.run(d._enable_default_domains("s"))
 
-    assert [m for m, _p, _s in d.cdp.calls] == ["Page.enable", "DOM.enable", "Runtime.enable", "Network.enable"]
+    assert [m for m, _p, _s in d.cdp.calls] == ["Page.enable", "DOM.enable", "Runtime.enable", "Network.enable", "Target.setAutoAttach"]
 
 
 def test_close_inspect_tabs_only_when_the_harness_opened_one(monkeypatch, tmp_path):

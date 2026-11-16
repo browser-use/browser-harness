@@ -786,13 +786,19 @@ class Daemon:
         """Enable Page/DOM/Runtime/Network on a CDP session, in parallel, each bounded.
 
         Each fresh session starts with all domains disabled; without Network,
-        wait_for_network_idle() silently sees no events."""
-        async def enable_one(d):
+        wait_for_network_idle() silently sees no events. Auto-attach makes Chrome
+        report each out-of-process iframe of the tab as Target.attachedToTarget on
+        this session, so wait_for_network_idle() can stop waiting for requests that
+        finish on the iframe's target. The children are not paused and get no domains enabled."""
+        async def send(method, params=None):
             try:
-                await asyncio.wait_for(self.cdp.send_raw(f"{d}.enable", session_id=session_id), timeout=4)
+                await asyncio.wait_for(self.cdp.send_raw(method, params, session_id=session_id), timeout=4)
             except Exception as e:
-                log(f"enable {d} on {session_id}: {e}")
-        await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
+                log(f"{method} on {session_id}: {e}")
+        await asyncio.gather(
+            *(send(f"{d}.enable") for d in ("Page", "DOM", "Runtime", "Network")),
+            send("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True}),
+        )
 
     def _record_event(self, method, params, session_id=None):
         try:  # an error here would end the websocket reader and with it the daemon
