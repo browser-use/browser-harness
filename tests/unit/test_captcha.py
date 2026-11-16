@@ -18,6 +18,8 @@ class _SolverCDP:
         self.d, self.enabled, self.available, self.sets = d, enabled, available, []
 
     async def send_raw(self, method, params=None, session_id=None):
+        if method == "Target.attachToTarget":
+            return {"sessionId": "S1"}
         if not self.available:
             raise RuntimeError(f"{{'code': -32601, 'message': \"'{method}' wasn't found\"}}")
         if not method.startswith("BrowserUse."):
@@ -37,7 +39,8 @@ def solver(monkeypatch):
     threading.Thread(target=loop.run_forever, daemon=True).start()
     d = daemon.Daemon()
     d.cdp = _SolverCDP(d)
-    d.target_id = "T1"  # the attached tab
+    d.owner("default")
+    d._own("default", "T1")  # the owner's current tab
 
     def send(req, response_timeout=5.0):
         r = asyncio.run_coroutine_threadsafe(d.handle(req), loop).result(response_timeout)

@@ -10,6 +10,40 @@ for _stream in (sys.stdout, sys.stderr):
         try: _stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception: pass
 
+from . import _ipc
+
+
+def _alias_named_local_daemon_to_owner():
+    """`BU_NAME=<x>` on the local Chrome, with no daemon of that name, means owner x
+    on the shared daemon instead of a second browser connection.
+
+    Agents invent per-job names (`gmail1375`) to isolate work. On the local Chrome
+    a second daemon isolates nothing more than an owner does, and each one costs
+    another "Allow remote debugging?" dialog that brings Chrome to the front (3
+    named daemons = 3 dialogs, measured). Remote and CDP daemons keep their names:
+    a live daemon of that name, BU_CDP_URL/BU_CDP_WS, BH_REQUIRE_EXISTING_DAEMON=1
+    or BH_NAMED_LOCAL_DAEMON=1 leaves BU_NAME alone. Runs before the modules that
+    read BU_NAME at import."""
+    name = os.environ.get("BU_NAME")
+    if not name or name == "default":
+        return False
+    if (os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS")
+            or os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
+            or os.environ.get("BH_NAMED_LOCAL_DAEMON") == "1"):
+        return False
+    try:
+        if _ipc.ping(name, timeout=0.5):
+            return False
+    except Exception:
+        return False
+    os.environ.setdefault("BH_OWNER", name)
+    os.environ["BU_NAME"] = "default"
+    print(f"browser-harness: BU_NAME={name} has no browser of its own; using the shared local Chrome as owner {name!r} (no extra Allow prompt). Set BH_NAMED_LOCAL_DAEMON=1 for a separate connection.", file=sys.stderr)
+    return True
+
+
+_alias_named_local_daemon_to_owner()
+
 from .admin import (
     _version,
     NAME,
@@ -33,6 +67,7 @@ from . import auth, recorder, telemetry
 from .helpers import *
 from .helpers import captcha_note as _captcha_note  # private name: not traced as a step of the agent's script
 from .naming import cli_name as _cli_name, named as _named
+from .helpers import _warn_shared_owner
 
 HELP = """Browser Harness
 
@@ -40,7 +75,7 @@ Read SKILL.md for the default workflow and examples.
 
 Typical usage:
   browser-harness <<'PY'
-  ensure_real_tab()
+  new_tab("https://example.com")
   print(page_info())
   PY
 
@@ -417,6 +452,7 @@ def _run(args):
             # Setup/permission errors are instructions for calling agent
             print(f"{_cli_name()}: {e}", file=sys.stderr)
             sys.exit(1)
+    _warn_shared_owner()
     _install_helper_trace()
     try:
         exec(code, globals())

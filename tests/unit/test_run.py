@@ -1,3 +1,4 @@
+import os
 import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
@@ -340,3 +341,34 @@ def test_without_prog_the_name_is_browser_harness(monkeypatch):
     with patch.object(sys, "argv", ["browser-harness", "--help"]), patch("sys.stdout", stdout):
         run.main()
     assert stdout.getvalue() == run.HELP + "\n"
+
+
+
+def test_named_local_daemon_becomes_an_owner_when_no_such_daemon_exists(monkeypatch, capsys):
+    from browser_harness import run as run_mod
+    monkeypatch.setenv("BU_NAME", "gmail1375")
+    for k in ("BH_OWNER", "BU_CDP_URL", "BU_CDP_WS", "BH_REQUIRE_EXISTING_DAEMON", "BH_NAMED_LOCAL_DAEMON"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(run_mod._ipc, "ping", lambda name, timeout=1.0: False)
+
+    assert run_mod._alias_named_local_daemon_to_owner() is True
+    assert os.environ["BU_NAME"] == "default"
+    assert os.environ["BH_OWNER"] == "gmail1375"
+    assert "no extra Allow prompt" in capsys.readouterr().err
+
+
+def test_named_daemon_keeps_its_name_when_it_is_alive_or_remote(monkeypatch):
+    from browser_harness import run as run_mod
+    monkeypatch.setenv("BU_NAME", "r7k2")
+    monkeypatch.delenv("BH_OWNER", raising=False)
+    monkeypatch.setattr(run_mod._ipc, "ping", lambda name, timeout=1.0: True)
+    assert run_mod._alias_named_local_daemon_to_owner() is False
+    assert os.environ["BU_NAME"] == "r7k2" and "BH_OWNER" not in os.environ
+
+    monkeypatch.setattr(run_mod._ipc, "ping", lambda name, timeout=1.0: False)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
+    assert run_mod._alias_named_local_daemon_to_owner() is False
+    monkeypatch.delenv("BU_CDP_URL")
+    monkeypatch.setenv("BH_NAMED_LOCAL_DAEMON", "1")
+    assert run_mod._alias_named_local_daemon_to_owner() is False
+    assert os.environ["BU_NAME"] == "r7k2"
