@@ -4,7 +4,7 @@ Field-tested against rxnav.nlm.nih.gov on 2026-11-15 (US Pacific; the logged run
 
 robots.txt (checked 2026-11-15, curl, the cloud browser and `urllib.robotparser`): https://rxnav.nlm.nih.gov/robots.txt answers HTTP 404 `Not found`, so the API host has no rules and no named AI-agent groups; under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources", and Python's parser treats it as allow-all for GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider (block 3 checks all 11 agents). The docs host https://lhncbc.nlm.nih.gov/robots.txt has one group, `User-agent: *`, disallowing only file patterns (`/*.txt$`, `/*.sort$`, `/*.jout$`, `/*.out$`, `/*.xml$`, `/*.data$`); 0 named AI groups; the HTML doc pages linked here are allowed. Terms: https://lhncbc.nlm.nih.gov/RxNav/TermsofService.html says "RxNav and the RxNorm API provide non-proprietary content from RxNorm, developed by the National Library of Medicine" and "With one exception, no license is needed to use these APIs." The exception is SNOMED CT content in RxClass and the RxClass API ("subject to the SNOMED CT Affiliate license provisions"); this skill never calls RxClass. "The APIs (RxNorm, RxTerms, Prescribable RxNorm, and RxClass) may be used free-of-charge." "We invite you to develop computer and mobile applications using National Library of Medicine (NLM) resources, including our APIs". No AI/ML, scraping, automated-access or non-commercial clause. The same page: "DISCLAIMER: It is not the intention of NLM to provide specific medical advice ... NLM urges you to consult with a qualified physician for advice about medications." Naming: the terms say "Developers may not use the NLM name and/or logo in conjunction with their applications", so this skill names the source only as "RxNorm API (rxnav.nlm.nih.gov)" in plain text plus the statement NLM requests, uses no NLM, NIH or HHS logo or branding, and is not affiliated with or endorsed by NLM.
 
-**Required statement:** the terms "request that any application that makes use of NLM data include the following statement": "This product uses publicly available data from the U.S. National Library of Medicine (NLM), National Institutes of Health, Department of Health and Human Services; NLM is not responsible for the product and does not endorse or recommend this or any other product." Block 1 prints it with a source line (RxNorm data set version, the call, the access time) and a not-medical-advice line.
+**Required statement:** the terms "request that any application that makes use of NLM data include the following statement": "This product uses publicly available data from the U.S. National Library of Medicine (NLM), National Institutes of Health, Department of Health and Human Services; NLM is not responsible for the product and does not endorse or recommend this or any other product." Blocks 1 and 3 print it; block 1 adds a source line (RxNorm data set version, the call, the access time) and a not-medical-advice line.
 
 ## Quick summary
 
@@ -118,7 +118,7 @@ for tty in TTYS.split("+"):
         raise RuntimeError(f"related.json left out tty {tty}: the response shape changed, stop")
 dfs = sorted((c["name"] for c in g["DF"]), key=len, reverse=True)       # longest first: "Extended Release Oral Tablet"
 comps = sorted((c["name"] for c in g["SCDC"]), key=len, reverse=True)  # "atorvastatin 10 MG", "metformin hydrochloride 500 MG"
-STRENGTH = r"[\d.]+ [A-Z]+(?:/[A-Z]+)?"                                  # 10 MG, 4 MG/ML, 0.05 MG/MG
+STRENGTH = r"[\d.]+ \S+"                                                 # 10 MG, 4 MG/ML, 100 UNT/ML, 20 MEQ: unit = one token
 
 def parse_scd(name, strict=True):
     """SCD name = [prefix ]<component>[ / <component> ...] <dose form>. The prefix is a release time or pack volume
@@ -143,7 +143,10 @@ for c in g["SCD"]:
         combos.setdefault((" / ".join(ings), df), []).append(c["rxcui"])
         continue
     used.add(comp)
-    strength = re.search(STRENGTH + "$", comp)[0]
+    m = re.search(STRENGTH + "$", comp)
+    if m is None:
+        raise RuntimeError(f"SCDC {comp!r} does not end in '<number> <unit>': stop")
+    strength = m[0]
     single.setdefault(df, []).append((strength + (f" ({prefix})" if prefix else ""), c["rxcui"]))
 
 # Brands: a brand name (BN) is single-ingredient if its branded drugs (SBD, "... [Lipitor]") have no " / ".
@@ -432,6 +435,9 @@ n1 = calls
 for name in ["atorvastatin", "Lipitor", "atorvastatin calcium"]:
     to_ingredient(name)
 print(f"\nnetwork calls {n1}, then {calls - n1} more for 3 repeated names (cache hits so far: {hits}, cache {CACHE_DIR})")
+print("This product uses publicly available data from the U.S. National Library of Medicine (NLM), National Institutes "
+      "of Health, Department of Health and Human Services; NLM is not responsible for the product and does not endorse "
+      "or recommend this or any other product.")
 ```
 
 Output (from the run on 2026-11-16, 04:39 UTC):
@@ -453,6 +459,7 @@ RxNorm data set 02-Nov-2026
   'xyzzy'                  no match
 
 network calls 23, then 0 more for 3 repeated names (cache hits so far: 13, cache ~/.cache/rxnorm-skill)
+This product uses publicly available data from the U.S. National Library of Medicine (NLM), National Institutes of Health, Department of Health and Human Services; NLM is not responsible for the product and does not endorse or recommend this or any other product.
 ```
 
 ### 4. curl, headers and mistakes

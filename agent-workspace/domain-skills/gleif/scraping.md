@@ -94,7 +94,7 @@ def get_all(path, params=None, size=200):
 
 def norm(s):
     """Compare names the way a person would: case, accents and spacing ignored, punctuation kept."""
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))  # drop accents only
     return " ".join(s.casefold().split())
 
 def row(r):
@@ -319,13 +319,18 @@ unknown LEI (last char changed)         HTTP 404 Resource lei-records with id HW
 Python's default `urllib` User-Agent also got HTTP 200; this block sends a descriptive one.
 
 ```python
-import json, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
+import json, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request, urllib.robotparser
 
 API = "https://api.gleif.org/api/v1"
 UA = "gleif-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"
 AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-User", "anthropic-ai",
           "Google-Extended", "PerplexityBot", "CCBot", "Bytespider"]
 NAME, COUNTRY = "Apple Inc.", "US"
+
+def norm(s):
+    """Same comparison as block 1: case, accents and spacing ignored; punctuation and non-Latin letters kept."""
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    return " ".join(s.casefold().split())
 
 def get(path, params=None, ok404=False):
     """-> parsed JSON (None for a 404 'Related resource not found' when ok404). One 60 s wait on 429/500/502/503/504
@@ -376,7 +381,7 @@ if not all(rp.can_fetch(a, "https://api.gleif.org" + p) for a in AGENTS for p in
 
 # The answer: exact legal-name match, status, top of group, direct children.
 d = get("/lei-records", {"filter[entity.legalName]": NAME, "filter[entity.legalAddress.country]": COUNTRY, "page[size]": 200})
-exact = [r for r in d["data"] if " ".join(r["attributes"]["entity"]["legalName"]["name"].casefold().split()) == NAME.casefold()]
+exact = [r for r in d["data"] if norm(r["attributes"]["entity"]["legalName"]["name"]) == norm(NAME)]
 if d["meta"]["pagination"]["total"] > 200 or len(exact) != 1:
     sys.exit(f"{d['meta']['pagination']['total']} matches, {len(exact)} exact: page through or narrow the search")
 lei = exact[0]["id"]

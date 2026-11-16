@@ -13,7 +13,7 @@ robots.txt (checked 2026-11-15, curl, the cloud browser and `urllib.robotparser`
 - **No scraping.** `GET https://npiregistry.cms.hhs.gov/api/?version=2.1&number=1134262819` returns the record as JSON. `&organization_name=massachusetts general hospital&state=MA&enumeration_type=NPI-2&limit=200` lists an organization's NPIs. No key. `version=2.1` is required: without it, or with 1.0 or 2.0, the answer is HTTP 200 `{"Errors":[{"description":"Unsupported Version",...}]}`.
 - **Answer (run 2026-11-16, 04:54 UTC):** NPI **1134262819** is **MASSACHUSETTS GENERAL HOSPITAL**, organization (Type 2), status A (active), primary taxonomy **282N00000X General Acute Care Hospital**, **state licence 99562 (MA)**, practice address **55 FRUIT ST, YAWKEY CENTER-8TH FLOOR, BOSTON, MA 02114-2621**, enumerated 2007-02-14, last updated 2020-08-22. The legal name has **35 organizational NPIs in MA** (34 with that exact legal name plus THE GENERAL HOSPITAL CORPORATION, which lists it as an other name); **18** of them have primary taxonomy General Acute Care Hospital, 13 with a licence number listed.
 - **Mistakes are HTTP 200.** A missing version, `state` alone, `enumeration_type` alone and a 9-digit number each return an `Errors` list; check for it on every answer. A well-formed but unknown number, including a typo with a wrong check digit (1134262818), is `{"result_count":0,"results":[]}`. Blocks 1 and 3 test the NPI check digit (Luhn, CMS's published method) before calling.
-- **`result_count` is the size of this answer, not a total.** 200 means "200 or more". `limit` above 200 is silently cut to 200, `limit=0` gives the default 10. Result order changed between two identical `skip=1000` requests, so paging with `skip` can repeat or miss records: narrow the query instead (city, postal code, taxonomy, name).
+- **`result_count` is the size of this answer, not a total.** 200 means "200 or more". `limit` above 200 is silently cut to 200, `limit=0` gives the default 10. Result order changed between two identical `skip=1000` requests, so paging with `skip` can repeat or miss records. Treat a 200-record answer as partial; for one provider query by NPI number, and for complete lists use the DDS file ("Bulk NPI Registry queries must use the DDS file").
 - **Rate limit:** an hourly limit since 6/25/2024, value not published; bulk use "must use the DDS file". All blocks pace 2 s per call, serial, and wait 60 s once on 429/5xx.
 
 ## What works
@@ -137,7 +137,8 @@ print(f"  enumerated {b['enumeration_date']}, record last updated {b['last_updat
 d = get(organization_name=ORG, state=STATE, enumeration_type="NPI-2", limit=200)
 rows = d["results"]
 if d["result_count"] != len(rows) or len(rows) == 200:
-    raise RuntimeError(f"{len(rows)} records: 200 means there may be more; narrow the query (city=, taxonomy_description=)")
+    raise RuntimeError(f"{len(rows)} records: 200 is the per-request cap, so this list is partial; "
+                       "complete lists come from the NPPES DDS file, not more API queries")
 if len({x["number"] for x in rows}) != len(rows):
     raise RuntimeError("duplicate NPIs in one answer: stop")
 exact = [x for x in rows if x["basic"]["organization_name"].upper() == ORG.upper()]
@@ -375,7 +376,7 @@ for npi in ("1134262819", "1134262818"):
 # result_count is the size of this answer, not a total: 200 means "at least 200".
 d = api(taxonomy_description="general acute care hospital", city="boston", state="MA", limit=200)
 print(f"\nGeneral Acute Care Hospital taxonomy in Boston MA: result_count {d['result_count']}, "
-      f"{len(d['results'])} records in the answer -> {'capped, narrow the query' if len(d['results']) == 200 else 'complete'}")
+      f"{len(d['results'])} records in the answer -> {'capped: partial, complete lists need the DDS file' if len(d['results']) == 200 else 'complete'}")
 ```
 
 Output (from the run on 2026-11-16, 04:56 UTC):
@@ -392,7 +393,7 @@ robots.txt HTTP 200 text/html, 406 bytes, <app-root> in body: True, directive li
 
 1134262818: check digit WRONG (a typo; the API would just return 0 results)
 
-General Acute Care Hospital taxonomy in Boston MA: result_count 200, 200 records in the answer -> capped, narrow the query
+General Acute Care Hospital taxonomy in Boston MA: result_count 200, 200 records in the answer -> capped: partial, complete lists need the DDS file
 ```
 
 ### 4. curl, headers and mistakes
@@ -452,7 +453,7 @@ result_count 35
 - **One organization, many NPIs.** Massachusetts General Hospital has 35 organizational NPIs in MA, 18 with the General Acute Care Hospital taxonomy at several addresses, each with its own licence number or none. The Registry does not say which one a payer or claim uses; verify the specific NPI you were given.
 - **Name search is whole-name or trailing wildcard.** `organization_name=massachusetts general` returned 0; `massachusetts gen*` with `state=MA` returned 50 organizational records; `m*` is error 03. The API page: "All types of Organization Names (LBN, DBA, Former LBN, Other Name) associated with an NPI are examined", so results can carry a different legal name (THE GENERAL HOSPITAL CORPORATION). Case does not matter (`MASSACHUSETTS GENERAL HOSPITAL` and `state=ma` gave the same 35).
 - **`taxonomy_description` does not search inside the description.** Observed, not documented: `hospital` in Boston (NPI-2) matched 13 organizations, every one with a Hospitalist taxonomy and none with a hospital primary taxonomy; `cardiology` matched only "Pharmacist, Cardiology" (6), while `cardiovascular disease` hit the 200 cap. It matches any of a provider's taxonomies, not only the primary one. Use the wording of the taxonomy (`general acute care hospital`, `cardiovascular disease`).
-- **Do not page through big result sets.** `limit` is cut to 200 without an error, `result_count` shows only what came back, and two identical `skip=1000` requests returned records in a different order (block 2). Narrow the query. For more than a few lookups, CMS says to use the downloadable file.
+- **Do not page through big result sets.** `limit` is cut to 200 without an error, `result_count` shows only what came back, and two identical `skip=1000` requests returned records in a different order (block 2). Report a 200-record answer as partial. For lists or more than a few lookups, CMS says to use the downloadable file.
 - **Licence numbers are self-reported and state-specific.** Values under one organization name include `9704` and `042697983`, and one MGH Type 2 record (1710268362, primary taxonomy Nurse Practitioner, Adult Health) lists `RN2258297`. Treat it as the number the provider gave NPPES, check it with the state board that issued it, and quote the CMS notice.
 - **Tab marker.** The harness sets the tab title to a horse emoji; the blocks check `location.origin` and the JSON, not the title.
 

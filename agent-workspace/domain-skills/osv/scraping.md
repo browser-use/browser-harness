@@ -92,8 +92,11 @@ def norm(eco, name):
     return re.sub(r"[-_.]+", "-", name.lower()) if eco == "PyPI" else name  # PyPI names are case/punctuation-insensitive
 
 def vkey(v):
-    """Rough numeric sort key (4.17.21 > 4.17.19). Good enough to pick a candidate; the re-query below is the check."""
-    return tuple(int(x) for x in re.findall(r"\d+", v))
+    """Numeric sort key for plain dotted versions (4.17.21 > 4.17.19); the re-query below is the final check.
+    Pre-releases and other suffixes (3.1.6rc1, 1.0.0-beta) order differently per ecosystem: stop instead of guessing."""
+    if not re.fullmatch(r"\d+(\.\d+)*", v):
+        raise RuntimeError(f"version {v!r} is not plain dotted numbers: compare it with the ecosystem's own rules")
+    return tuple(int(x) for x in v.split("."))
 
 def fixes_for(v, eco, name, version):
     """Fixed versions above the pin from the affected[] entries for exactly this package (a record often also lists
@@ -233,7 +236,7 @@ API = "https://api.osv.dev"
 START_JS = """(() => { window.__o = window.__o || {}; const id = String(Math.random()).slice(2); window.__o[id] = null;
   const [method, body] = %s; fetch(%s, {method, credentials: 'omit',
       ...(body === null ? {} : {headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})})
-    .then(async r => { const t = await r.text(); window.__o[id] = {status: r.status, bytes: t.length, text: t.slice(0, 400000)}; })
+    .then(async r => { const t = await r.text(); window.__o[id] = {status: r.status, bytes: new TextEncoder().encode(t).length, text: t.slice(0, 400000)}; })
     .catch(e => { window.__o[id] = {status: 0, bytes: 0, text: String(e)}; });
   return id; })()"""
 POLL_JS = """(() => { const v = window.__o[%s]; if (v) delete window.__o[%s]; return v; })()"""
@@ -347,6 +350,7 @@ Python's `urllib` speaks HTTP/1.1, so it is fine for `querybatch` (IDs only) and
 
 ```python
 import json, re, sys, time, urllib.error, urllib.request, urllib.robotparser
+from datetime import datetime, timezone
 
 API = "https://api.osv.dev"
 UA = "osv-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"
@@ -390,6 +394,7 @@ for p in ("/v1/query", "/v1/querybatch", "/v1/vulns/GHSA-cpwx-vrp4-4pq7"):
     if not ok:
         sys.exit("robots.txt now disallows a path this skill uses: stop")
 
+now = datetime.now(timezone.utc)
 # 1 querybatch call for every pin -> record ids; then one GET per distinct id for aliases, severity and fixes.
 pins = [p for p in PINS if p[0].split(":")[0] not in SKIP_ECOSYSTEMS]
 for p in PINS:
@@ -405,7 +410,8 @@ print(f"\nquerybatch: {len(pins)} pins -> {sum(len(r.get('vulns', [])) for r in 
 recs = {i: call(f"/v1/vulns/{i}") for i in ids}
 
 def vkey(v):
-    return tuple(int(x) for x in re.findall(r"\d+", v))  # rough numeric order, enough to sort fixes
+    """Plain dotted versions only; anything else (3.1.6rc1, 1.0.0-beta) is listed apart, never ordered."""
+    return tuple(int(x) for x in v.split(".")) if re.fullmatch(r"\d+(\.\d+)*", v) else None
 
 def merge(ids_):
     """Alias groups: records that list each other (GHSA-x / PYSEC-y / GO-z for one CVE) count once."""
@@ -440,12 +446,16 @@ for (eco, name, version), r in zip(pins, res):
     used |= {p for i in mine for p in SOURCES if i.startswith(p)}
     print(f"{eco:<9} {name} {version}: {len(mine)} records, {len(grp)} distinct, severity {sev or '-'}")
     if mine:
-        print(f"          {', '.join(cves) or 'no CVE alias'}; fixed versions above the pin: {sorted((f for f in fixed if vkey(f) > vkey(version)), key=vkey)}")
+        odd = sorted(f for f in fixed if vkey(f) is None or vkey(version) is None)
+        above = sorted((f for f in fixed if f not in odd and vkey(f) > vkey(version)), key=vkey)
+        print(f"          {', '.join(cves) or 'no CVE alias'}; fixed versions above the pin: {above}"
+              + (f"; not ordered (pre-release or suffix): {odd}" if odd else ""))
+        print(f"          records: {', '.join(mine)}")
 
-print("\nrecords credited to: " + "; ".join(SOURCES[p] for p in SOURCES if p in used))
+print(f"\nrecords via OSV.dev API, accessed {now:%d %B %Y %H:%M} UTC, credited to: " + "; ".join(SOURCES[p] for p in SOURCES if p in used))
 ```
 
-Output (from the run on 2026-11-16, 04:56 UTC):
+Output (from the run on 2026-11-16, 05:19 UTC):
 
 ```text
 robots /v1/query                        allowed for all 11 agents (allow_all=True)
@@ -457,19 +467,25 @@ querybatch: 7 pins -> 37 record ids, 37 distinct; fetching each
 
 PyPI      jinja2 2.11.2: 10 records, 5 distinct, severity {'MODERATE': 5}
           CVE-2020-28493, CVE-2024-22195, CVE-2024-34064, CVE-2024-56326, CVE-2025-27516; fixed versions above the pin: ['2.11.3', '3.1.3', '3.1.4', '3.1.5', '3.1.6']
+          records: GHSA-cpwx-vrp4-4pq7, GHSA-g3rq-g295-4j3m, GHSA-h5c8-rqwp-cp95, GHSA-h75v-3vvj-5mfj, GHSA-q2x7-8rv6-6q7h, PYSEC-2021-66, PYSEC-2026-1471, PYSEC-2026-1473, PYSEC-2026-1474, PYSEC-2026-1475
 PyPI      requests 2.19.0: 10 records, 5 distinct, severity {'HIGH': 1, 'MODERATE': 4}
           CVE-2018-18074, CVE-2023-32681, CVE-2024-35195, CVE-2024-47081, CVE-2026-25645; fixed versions above the pin: ['2.20.0', '2.31.0', '2.32.0', '2.32.4', '2.33.0']
+          records: GHSA-9hjg-9r4m-mvj7, GHSA-9wx4-h78v-vm56, GHSA-gc5v-m9x4-r6x2, GHSA-j8r2-6x86-q33q, GHSA-x84v-xcm2-53pg, PYSEC-2018-28, PYSEC-2023-74, PYSEC-2026-1872, PYSEC-2026-1873, PYSEC-2026-2275
 PyPI      flask 3.1.2: 2 records, 1 distinct, severity {'LOW': 1}
           CVE-2026-27205; fixed versions above the pin: ['3.1.3']
+          records: GHSA-68rp-wp8r-4726, PYSEC-2026-2151
 PyPI      jinja2 3.1.6: 0 records, 0 distinct, severity -
 npm       lodash 4.17.15: 5 records, 5 distinct, severity {'MODERATE': 2, 'HIGH': 3}
           CVE-2020-28500, CVE-2020-8203, CVE-2021-23337, CVE-2025-13465, CVE-2026-4800; fixed versions above the pin: ['4.17.19', '4.17.21', '4.17.23', '4.18.0']
+          records: GHSA-29mw-wpgm-hmr9, GHSA-35jh-r3h4-6jhm, GHSA-p6mc-m468-83gw, GHSA-r5fr-rjxr-66jc, GHSA-xxjr-mmjv-4gpg
 Go        golang.org/x/text 0.3.0: 8 records, 5 distinct, severity {'MODERATE': 1, 'HIGH': 2, 'no label': 2}
           CVE-2020-14040, CVE-2021-38561, CVE-2022-32149, CVE-2026-56851, CVE-2026-56852; fixed versions above the pin: ['0.3.3', '0.3.7', '0.3.8', '0.39.0', '0.41.0']
+          records: GHSA-5rcv-m4m3-hfh7, GHSA-69ch-w2m2-3vjp, GHSA-ppp9-7jff-5vj2, GO-2020-0015, GO-2021-0113, GO-2022-1059, GO-2026-5970, GO-2026-6629
 crates.io smallvec 1.6.0: 2 records, 1 distinct, severity {'CRITICAL': 1}
           CVE-2021-25900; fixed versions above the pin: ['1.6.1']
+          records: GHSA-43w2-9j62-hq99, RUSTSEC-2021-0003
 
-records credited to: GitHub Advisory Database (CC-BY 4.0); PyPI Advisory Database (CC-BY 4.0); Go Vulnerability Database (CC-BY 4.0); Rust Advisory Database (CC0 1.0)
+records via OSV.dev API, accessed 16 November 2026 05:19 UTC, credited to: GitHub Advisory Database (CC-BY 4.0); PyPI Advisory Database (CC-BY 4.0); Go Vulnerability Database (CC-BY 4.0); Rust Advisory Database (CC0 1.0)
 ```
 
 ### 4. curl
