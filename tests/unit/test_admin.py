@@ -163,6 +163,21 @@ def test_update_banner_remains_enabled_by_default(monkeypatch):
     assert called == [True]
 
 
+def test_health_probes_carry_the_callers_owner(monkeypatch):
+    """An ownerless probe landed on owner "default" and kept it active forever."""
+    seen = []
+    monkeypatch.setenv("BH_OWNER", "agent-7")
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name=None: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (FakeSocket(), None))
+    monkeypatch.setattr(admin.ipc, "request", lambda _s, _t, req: seen.append(req) or {"result": {}, "page": None})
+
+    admin.ensure_daemon(name="rig")
+    admin.require_existing_daemon("rig")
+    admin.daemon_browser_ready("rig")
+
+    assert seen and all(req["owner"] == "agent-7" for req in seen)
+
+
 def test_local_chrome_mode_is_false_when_env_provides_remote_cdp():
     assert not admin._is_local_chrome_mode({"BU_CDP_WS": "ws://example.test/devtools/browser/1"})
 
@@ -183,6 +198,119 @@ def test_require_existing_daemon_probes_cdp(monkeypatch):
 
     assert b'"method": "Target.getTargets"' in sock.sent
     assert sock.closed is True
+
+
+@pytest.mark.parametrize(("have", "mismatch"), [("127.0.0.1:9333", False), ("127.0.0.1:9222", True), ("local", True), (None, False)])
+def test_daemon_must_drive_the_browser_the_env_points_at(monkeypatch, have, mismatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
+    monkeypatch.setattr(admin, "_ping", lambda _name=None: {"pong": True, **({"endpoint": have} if have else {})})
+
+    if mismatch:
+        with pytest.raises(RuntimeError, match=f"browser-mismatch: daemon 'rig' drives {have}, but .* points at 127.0.0.1:9333"):
+            admin._check_same_browser("rig")
+    else:
+        admin._check_same_browser("rig")
+
+
+@pytest.mark.parametrize(("ping", "outcome"), [
+    ({"pong": True, "protocol": admin.ipc.PROTOCOL, "active": 3}, "kept"),
+    ({}, "kept"),  # no answer is no reason to drop a healthy connection
+    ({"pong": True, "browser_kind": "local"}, "restarted"),  # protocol 1 local daemon, nobody else on it
+    ({"pong": True, "protocol": 1, "active": 2, "browser_kind": "local"}, "other agents are using it"),
+    ({"pong": True, "protocol": 1, "active": 0, "browser_kind": "cloud"}, "its Cloud browser would stop"),
+    # restarted from this shell, a CDP daemon would come back on the person's local Chrome
+    ({"pong": True, "protocol": 1, "active": 0, "browser_kind": "cdp"}, "only its starter knows which browser it drives"),
+    ({"pong": True, "protocol": 1, "active": 0}, "only its starter knows which browser it drives"),
+    # an older client never stops a newer daemon; two installs would flap it, one Allow each time
+    ({"pong": True, "protocol": admin.ipc.PROTOCOL + 1, "active": 0, "browser_kind": "local"}, "it is newer than this client"),
+])
+def test_only_an_idle_daemon_on_another_protocol_restarts(monkeypatch, ping, outcome):
+    restarted = []
+    monkeypatch.setattr(admin, "_ping", lambda _name=None: ping)
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarted.append(name))
+
+    if outcome in ("kept", "restarted"):
+        assert admin._restart_if_outdated("rig") is (outcome == "restarted")
+        assert restarted == (["rig"] if outcome == "restarted" else [])
+    else:
+        with pytest.raises(RuntimeError, match=f"daemon-outdated: .*not restarted because {outcome}") as e:
+            admin._restart_if_outdated("rig")
+        assert restarted == []
+        assert ("Update browser-harness" in str(e.value)) is (outcome == "it is newer than this client")
+
+
+def test_a_required_daemon_on_another_protocol_is_never_restarted(monkeypatch):
+    monkeypatch.setattr(admin, "_ping", lambda _name=None: {"pong": True, "protocol": 1, "active": 0})
+    monkeypatch.setattr(admin, "restart_daemon", lambda *a: pytest.fail("restarted a provisioned daemon"))
+
+    with pytest.raises(RuntimeError, match="daemon-outdated: .*because it must stay as provisioned"):
+        admin._restart_if_outdated("rig", may_restart=False)
+
+
+def test_cdp_daemons_spawn_under_the_lock_and_join_a_starting_one(tmp_path, monkeypatch):
+    """Ten agents starting together on BU_CDP_URL share one daemon."""
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9555")
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda _name: tmp_path / "bu-rig.pid")
+    monkeypatch.setattr(admin.ipc, "log_path", lambda _name: tmp_path / "bu-rig.log")
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name=None: 4321)
+    alive = iter([False, False, True])
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: next(alive))
+    monkeypatch.setattr(admin, "_pending_pid_record", lambda _path: 4321)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("spawned a second daemon"))
+
+    admin.ensure_daemon(name="rig")
+
+
+def test_browser_check_is_skipped_without_an_explicit_endpoint(monkeypatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setattr(admin, "_ping", lambda _name=None: pytest.fail("no ping needed"))
+
+    admin._check_same_browser("remote")
+
+
+def test_endpoint_label_never_carries_credentials_or_paths():
+    assert admin.ipc.endpoint_label({"BU_CDP_WS": "wss://user:secret@cloud.example:443/devtools/browser/x?token=t"}) == "cloud.example:443"
+    assert admin.ipc.endpoint_label({}) == "local"
+    assert admin.ipc.endpoint_label({"BU_CDP_URL": "http://localhost:9222"}) == admin.ipc.endpoint_label({"BU_CDP_WS": "ws://127.0.0.1:9222/devtools/browser/x"})
+
+
+@pytest.mark.parametrize("kind", ["cloud", None])
+@pytest.mark.parametrize("failure", ["timeout", "error"])
+def test_cloud_health_failure_preserves_browser_and_recovers_on_retry(monkeypatch, kind, failure):
+    sockets = []
+    healthy = False
+
+    def connect(_name, timeout):
+        sock = FakeSocket()
+        sockets.append(sock)
+        return sock, None
+
+    def request(_sock, _token, _request):
+        if healthy:
+            return {"result": {"targetInfos": []}}
+        if failure == "timeout":
+            raise TimeoutError("CDP temporarily stalled")
+        return {"error": "CDP temporarily stalled"}
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: True)
+    monkeypatch.setattr(admin, "daemon_browser_kind", lambda _name: kind)
+    monkeypatch.setattr(admin.ipc, "connect", connect)
+    monkeypatch.setattr(admin.ipc, "request", request)
+    monkeypatch.setattr(admin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(admin, "stop_remote_daemon", lambda *_args: pytest.fail("health check destroyed the browser"))
+    monkeypatch.setattr(admin, "restart_daemon", lambda *_args: pytest.fail("health check replaced the daemon"))
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("health check started a replacement"))
+
+    with pytest.raises(RuntimeError, match="unhealthy.*preserved"):
+        admin.ensure_daemon(name="scoped")
+    assert len(sockets) == 2
+    assert all(sock.closed for sock in sockets)
+    healthy = True
+    admin.ensure_daemon(name="scoped")
+    assert len(sockets) == 4  # health probe + protocol ping
+    assert all(sock.closed for sock in sockets)
 
 
 def test_strict_remote_stop_propagates_daemon_error(monkeypatch):
@@ -292,23 +420,24 @@ def _remote_name(tmp_path, monkeypatch):
 
 
 def test_stale_cloud_daemon_fails_closed_instead_of_spawning_local_chrome(tmp_path, monkeypatch):
-    """A cloud timeout left the daemon alive but stale. ensure_daemon stopped it
-    and then started a local-Chrome daemon under the same name."""
+    """A cloud timeout left the daemon alive but stale. ensure_daemon used to stop it
+    and then start a local-Chrome daemon under the same name. Now the browser is
+    preserved while the daemon lives, and the name stays bound once it is gone."""
     spawned = _remote_name(tmp_path, monkeypatch)
     admin.ipc.write_remote_marker("work", "cloud", "b-1")
     monkeypatch.setattr(admin, "daemon_alive", lambda name=None: True)
     monkeypatch.setattr(admin.ipc, "connect", lambda *a, **k: (_ for _ in ()).throw(OSError("stale")))
     monkeypatch.setattr(admin.time, "sleep", lambda s: None)
     monkeypatch.setattr(admin, "daemon_browser_kind", lambda name=None: "cloud")
-    stopped = []
-    monkeypatch.setattr(admin, "stop_remote_daemon", lambda name: (stopped.append(name), admin.ipc.clear_remote_marker(name)))
+    monkeypatch.setattr(admin, "stop_remote_daemon", lambda name: pytest.fail("health check destroyed the browser"))
 
+    with pytest.raises(RuntimeError, match="unhealthy.*preserved"):
+        admin.ensure_daemon(name="work")
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
     for _ in range(2):  # the retry must fail closed too
         with pytest.raises(RuntimeError, match=r"remote-browser-ended.*cloud b-1.*start_remote_daemon\('work'\)"):
             admin.ensure_daemon(name="work")
-        monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
 
-    assert stopped == ["work"]
     assert spawned == []
 
 
@@ -1047,6 +1176,20 @@ def test_repo_dir_ignores_dotfiles_repo_above_a_tool_install(tmp_path, monkeypat
     )
 
     assert admin._repo_dir() is None
+
+
+def test_run_update_leaves_the_running_daemon_alone(tmp_path, monkeypatch):
+    """Restarting the daemon would make Chrome ask to Allow again."""
+    _fake_install(monkeypatch, tmp_path / "site-packages" / "browser_harness")
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda *a, **k: "0.2.0")
+    monkeypatch.setattr(admin, "_cache_read", lambda: {})
+    monkeypatch.setattr(admin, "_cache_write", lambda data: None)
+    monkeypatch.setattr(admin, "daemon_alive", lambda *a, **k: True)
+    monkeypatch.setattr(admin, "restart_daemon", lambda *a, **k: pytest.fail("update restarted the daemon"))
+    monkeypatch.setattr(subprocess, "run", lambda command, *a, **k: subprocess.CompletedProcess(command, 0, "", ""))
+
+    assert admin.run_update(yes=True) == 0
 
 
 def test_run_update_of_installed_wheel_never_pulls_an_enclosing_repo(tmp_path, monkeypatch):
