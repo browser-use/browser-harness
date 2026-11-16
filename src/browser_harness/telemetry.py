@@ -42,6 +42,24 @@ FORBIDDEN_KEYS = (
 )
 
 
+# Set by set_sink(): an embedding CLI (browser-use) that sends harness events
+# through its own telemetry instead of the detached PostHog sender below.
+_sink: dict = {}
+
+
+def set_sink(send=None, *, enabled=None, install_id=None, status=None) -> None:
+    """Route telemetry through an embedding CLI. Every argument is optional;
+    set_sink() with none of them restores the default PostHog sender.
+
+    send(payload): called instead of the detached sender, with the full event
+      payload, while a piped script's error (if any) is still sys.exc_info().
+    enabled(): an extra gate, ANDed with the harness opt-outs.
+    install_id(create): the distinct_id events go out under (and status shows).
+    status(out): post-processes status() before it is returned or printed."""
+    _sink.clear()
+    _sink.update({k: v for k, v in {"send": send, "enabled": enabled, "install_id": install_id, "status": status}.items() if v is not None})
+
+
 def _config_dir() -> Path:
     return paths.config_dir()
 
@@ -89,6 +107,8 @@ def _valid_install_id(raw) -> bool:
 
 
 def _install_id(config: dict | None = None, *, create: bool = True) -> str | None:
+    if "install_id" in _sink:
+        return _sink["install_id"](create)
     config = config if config is not None else _load_config()
     raw = config.get("install_id")
     if _valid_install_id(raw):
@@ -101,22 +121,23 @@ def _install_id(config: dict | None = None, *, create: bool = True) -> str | Non
 
 
 def is_enabled() -> bool:
-    if _env_disabled():
+    if _env_disabled() or bool(_load_config().get("disabled")):
         return False
-    return not bool(_load_config().get("disabled"))
+    return "enabled" not in _sink or bool(_sink["enabled"]())
 
 
 def status() -> dict:
     config = _load_config()
     env_disabled = _env_disabled()
     enabled = not env_disabled and not bool(config.get("disabled"))
-    return {
+    out = {
         "enabled": enabled,
         "disabled_by_env": env_disabled,
         "disabled_by_config": bool(config.get("disabled")),
         "install_id": _install_id(config, create=enabled),
         "config_path": str(_config_path()),
     }
+    return _sink["status"](out) if "status" in _sink else out
 
 
 def set_enabled(enabled: bool) -> dict:
@@ -188,7 +209,11 @@ except Exception:
 
 
 def _send_detached(payload: dict) -> None:
-    """Hand the event to a detached helper process so the CLI never blocks."""
+    """Hand the event to a detached helper process so the CLI never blocks
+    (or to the set_sink() send, when an embedding CLI registered one)."""
+    if "send" in _sink:
+        _sink["send"](payload)
+        return
     host = os.environ.get("BH_POSTHOG_HOST", POSTHOG_HOST).rstrip("/")
     job = {
         "url": f"{host}/i/v0/e/",

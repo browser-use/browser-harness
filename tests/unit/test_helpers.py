@@ -121,6 +121,118 @@ def test_page_info_raises_clear_error_on_js_exception():
             helpers.page_info()
 
 
+def _page_info_fakes(values, dialogs=()):
+    """cdp returns each of values in turn as Runtime.evaluate's value; _send each of dialogs as the pending dialog."""
+    values, dialogs = list(values), list(dialogs)
+    evaluated = []
+
+    def fake_send(req):
+        return {"dialog": dialogs.pop(0) if dialogs else None}
+
+    def fake_cdp(method, **kwargs):
+        evaluated.append(kwargs["expression"])
+        return {"result": {"type": "string", "value": values.pop(0)}}
+
+    return fake_send, fake_cdp, evaluated
+
+
+def test_page_info_waits_for_new_documents_html_element():
+    """new_tab(url); page_info(): the document has committed but has no <html> yet (null), then has one."""
+    info = '{"url":"https://example.com/","title":"","w":800,"h":600,"sx":0,"sy":0,"pw":800,"ph":1200}'
+    fake_send, fake_cdp, evaluated = _page_info_fakes([None, None, info])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.time.sleep"):
+        assert helpers.page_info()["ph"] == 1200
+    assert len(evaluated) == 3
+
+
+def test_page_info_returns_a_dialog_opened_while_it_waits():
+    fake_send, fake_cdp, _ = _page_info_fakes([None], dialogs=[None, {"type": "alert", "message": "hi"}])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.time.sleep"):
+        assert helpers.page_info() == {"dialog": {"type": "alert", "message": "hi"}}
+
+
+def test_page_info_raises_clearly_when_html_never_arrives(monkeypatch):
+    monkeypatch.setattr(helpers, "PAGE_INFO_ROOT_WAIT_S", 0)
+    fake_send, fake_cdp, _ = _page_info_fakes([None])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        with pytest.raises(RuntimeError, match="no <html> element.*call page_info\\(\\) again"):
+            helpers.page_info()
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body, gzip_encoded=False):
+        import gzip
+        self._body = gzip.compress(body) if gzip_encoded else body
+        self.headers = {"Content-Encoding": "gzip"} if gzip_encoded else {}
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_http_get_returns_bytes_for_a_binary_body(monkeypatch):
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+    zip_head = b"PK\x03\x04\x14\x00\x00\x00\x08\x00\xff\xfe"
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse(zip_head)):
+        assert helpers.http_get("https://example.com/a.zip") == zip_head
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse("héllo".encode(), gzip_encoded=True)):
+        assert helpers.http_get("https://example.com/") == "héllo"
+
+
+@pytest.mark.parametrize(
+    "url,headers,proxied",
+    [
+        ("https://example.com/", None, True),
+        ("http://localhost:8000/", None, False),
+        ("http://127.0.0.1:8000/", None, False),
+        ("http://[::1]/", None, False),
+        ("http://10.0.0.5/", None, False),
+        ("http://192.168.1.2/", None, False),
+        ("http://intranet/", None, False),
+        ("http://printer.local/", None, False),
+        ("http://app.localhost/", None, False),
+        ("http://svc.internal/", None, False),
+        ("https://8.8.8.8/", None, True),
+        ("https://api.example.com/", {"Authorization": "Bearer x"}, False),
+        ("https://example.com/", {"cookie": "a=b"}, False),
+        ("https://example.com/", {"Accept": "text/html"}, True),
+    ],
+)
+def test_http_get_uses_fetch_use_only_for_public_hosts_without_credentials(monkeypatch, url, headers, proxied):
+    import sys
+    import types
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "k")
+    fetched = []
+    fake = types.ModuleType("fetch_use")
+    fake.fetch_sync = lambda u, **kw: fetched.append(u) or types.SimpleNamespace(text="proxied", is_binary=False)
+    monkeypatch.setitem(sys.modules, "fetch_use", fake)
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse(b"local")):
+        assert helpers.http_get(url, headers=headers) == ("proxied" if proxied else "local")
+    assert fetched == ([url] if proxied else [])
+
+
+def test_http_get_via_fetch_use_returns_bytes_for_a_binary_body(monkeypatch):
+    import sys
+    import types
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "k")
+    fake = types.ModuleType("fetch_use")
+    fake.fetch_sync = lambda u, **kw: types.SimpleNamespace(text="", content=b"%PDF\xff", is_binary=True)
+    monkeypatch.setitem(sys.modules, "fetch_use", fake)
+    assert helpers.http_get("https://example.com/a.pdf") == b"%PDF\xff"
+    fake.fetch_sync = lambda u, **kw: types.SimpleNamespace(text="", content="héllo".encode(), is_binary=True)
+    assert helpers.http_get("https://example.com/a.txt") == "héllo"  # UTF-8 flagged binary: str, as the local path
+
+
 # --- fill_input ---
 
 def test_fill_input_focuses_types_and_fires_events():

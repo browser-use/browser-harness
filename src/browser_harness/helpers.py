@@ -157,17 +157,33 @@ def goto_url(url):
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
 
+# new_tab(url)/goto_url(url) return once the new document commits, before its
+# first bytes are parsed: it has no <html> element yet. page_info() waits this
+# long for one (a slow server's body), then raises; calling it again retries.
+PAGE_INFO_ROOT_WAIT_S = 5.0
+_PAGE_INFO_JS = "(()=>{const d=document.documentElement;return d&&JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:d.scrollWidth,ph:d.scrollHeight})})()"
+
 def page_info():
     """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
 
     If a native dialog (alert/confirm/prompt/beforeunload) is open, returns
     {dialog: {type, message, ...}} instead — the page's JS thread is frozen
-    until the dialog is handled (see interaction-skills/dialogs.md)."""
-    dialog = _send({"meta": "pending_dialog"}).get("dialog")
-    if dialog:
-        return {"dialog": dialog}
-    expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
-    return json.loads(_runtime_evaluate(expression))
+    until the dialog is handled (see interaction-skills/dialogs.md).
+    Right after new_tab(url)/goto_url(url) it waits for the new document's
+    <html> element (up to PAGE_INFO_ROOT_WAIT_S)."""
+    deadline = time.monotonic() + PAGE_INFO_ROOT_WAIT_S
+    while True:
+        # Each try checks for a dialog first: a page that alert()s as it loads
+        # returns {dialog} instead of waiting on an evaluate the dialog blocks.
+        dialog = _send({"meta": "pending_dialog"}).get("dialog")
+        if dialog:
+            return {"dialog": dialog}
+        raw = _runtime_evaluate(_PAGE_INFO_JS)
+        if raw:
+            return json.loads(raw)
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"page_info(): the page has no <html> element after {PAGE_INFO_ROOT_WAIT_S:g}s (still loading); call page_info() again")
+        time.sleep(0.05)
 
 # --- input ---
 _debug_click_counter = 0
@@ -680,24 +696,57 @@ def upload_file(selector, path):
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
 
+_CREDENTIAL_HEADERS = {"authorization", "cookie", "proxy-authorization"}
+
+
+def _proxy_can_reach(url, headers):
+    """Whether http_get may send url via the fetch-use proxy: a public host and no
+    credentials. localhost, private IPs and intranet names (no dot, .local,
+    .internal, .localhost) are unreachable from the proxy, and an Authorization
+    or Cookie header should not leave this machine."""
+    if any(str(k).lower() in _CREDENTIAL_HEADERS for k in (headers or {})):
+        return False
+    host = (urlparse(url).hostname or "").rstrip(".").lower()
+    if not host or "." not in host or host.endswith((".local", ".localhost", ".internal")):
+        return False
+    import ipaddress
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
+
+
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.
 
-    When BROWSER_USE_API_KEY is set, routes through the fetch-use proxy (handles bot
-    detection, residential proxies, retries). Falls back to local urllib otherwise."""
-    if os.environ.get("BROWSER_USE_API_KEY"):
+    Returns str, or bytes when the body is not UTF-8 text (zip, pdf, image).
+    When BROWSER_USE_API_KEY is set, public URLs go through the fetch-use proxy
+    (handles bot detection, residential proxies, retries); localhost, private and
+    intranet hosts, and requests with Authorization/Cookie headers, stay local."""
+    if os.environ.get("BROWSER_USE_API_KEY") and _proxy_can_reach(url, headers):
         try:
             from fetch_use import fetch_sync
-            return fetch_sync(url, headers=headers, timeout_ms=int(timeout * 1000)).text
+            r = fetch_sync(url, headers=headers, timeout_ms=int(timeout * 1000))
+            if not getattr(r, "is_binary", False):
+                return r.text
+            data = r.content  # fetch-use's is_binary can flag UTF-8 text too: same str/bytes rule as below
         except ImportError:
             pass
+        else:
+            try:
+                return data.decode()
+            except UnicodeDecodeError:
+                return data
     import gzip
     h = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
     if headers: h.update(headers)
     with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
+    try:
         return data.decode()
+    except UnicodeDecodeError:
+        return data
 
 
 # Imported at the bottom so recorder's own `from . import helpers` sees a
