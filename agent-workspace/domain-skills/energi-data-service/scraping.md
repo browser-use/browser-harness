@@ -1,6 +1,6 @@
 # Energi Data Service (Energinet) - Find the Cheapest Hours to Run an Appliance Tomorrow From Denmark's Day-Ahead Electricity Prices, DK1 and DK2 (API, no key)
 
-Field-tested against api.energidataservice.dk on 2026-11-16 (US Pacific afternoon; 2026-11-16 23:48 to 2026-11-17 00:08 UTC, which is 00:48-01:08 on 17 November in Denmark) using a fresh Browser Use cloud browser (logged out) plus Python `urllib` and `curl` from a Linux machine. 15 browser page loads (an API metadata page, both robots files, the terms page and the API guide) and 25 in-page `fetch()` calls, 23 curl calls (2 of them robots.txt) and 5 urllib calls (4 of them robots.txt) to the Energi Data Service hosts, all serial. Every call was HTTP 200 except the deliberate HTTP 400 and 404 probes, the HTTP 404 robots files and 13 HTTP 429 answers from the DayAheadPrices rate limit (1 call per minute from one IP, see below); each retry after the wait the message named got HTTP 200 or the probe's expected error. No challenge, no key, no login.
+Field-tested against api.energidataservice.dk on 2026-11-16 (US Pacific afternoon; 2026-11-16 23:48 to 2026-11-17 00:08 UTC, which is 00:48-01:08 on 17 November in Denmark; blocks 1 and 3 re-run at 01:39-01:40 UTC after a review fix, same windows and prices) using a fresh Browser Use cloud browser (logged out) plus Python `urllib` and `curl` from a Linux machine. 15 browser page loads (an API metadata page, both robots files, the terms page and the API guide) and 25 in-page `fetch()` calls, 23 curl calls (2 of them robots.txt) and 5 urllib calls (4 of them robots.txt) to the Energi Data Service hosts, all serial. Every call was HTTP 200 except the deliberate HTTP 400 and 404 probes, the HTTP 404 robots files and 13 HTTP 429 answers from the DayAheadPrices rate limit (1 call per minute from one IP, see below); each retry after the wait the message named got HTTP 200 or the probe's expected error. No challenge, no key, no login.
 
 robots.txt (checked 2026-11-16, curl, the cloud browser and `urllib.robotparser`): https://api.energidataservice.dk/robots.txt answers HTTP 404 `{ "statusCode": 404, "message": "Resource not found" }` and https://www.energidataservice.dk/robots.txt answers HTTP 404 with an empty body, so neither host has rules or named AI-agent groups. Under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources", and Python's parser treats it as allow-all for GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider (block 3 checks all 11 agents on `/dataset/DayAheadPrices` and `/meta/dataset/DayAheadPrices`). Terms: https://www.energidataservice.dk/terms-and-conditions says "Data published on Energi Data Service is subject to the conditions of Creative Commons CC-BY 4.0. Users may copy, change and distribute data freely, even for commercial purposes." and "Users must give appropriate credit and indicate if data has been changed. This must not be done in a way which suggests that Energinet endorses the use of data." It also says "Energinet stores the used IP address for 3 months from each API call", for "statistical analyses on the usage of the API solution". The API guide (https://www.energidataservice.dk/guides/api-guides) says the API "enables users free of charge to download data for further processing", applies rate limits per dataset, answers `HTTP 429 - "Rate limit is exceeded. Try again in X seconds"` over the limit, warns that "IP addresses may be blocked if behavior is observed that places unnecessary strain on the platform", and says "It is not meant as the source for all units for vendor applications. In this situation the vendor must download data and then be the source of all possible units for the application." No AI/ML, scraping, automated-access or non-commercial clause. Naming: "Energi Data Service (Energinet)" as plain text with the credit line below; no Energinet logo. This skill is not affiliated with or endorsed by Energinet.
 
@@ -110,6 +110,9 @@ time.sleep(1)
 flt = json.dumps({"PriceArea": AREAS}, separators=(",", ":"))
 q = f"/dataset/DayAheadPrices?start={today}&end={today + timedelta(days=2)}&filter={flt}&sort=TimeUTC&limit=0"
 d = get(q)
+now = datetime.now(timezone.utc)  # get() may have waited up to 2 min on a 429
+if now.astimezone(DK).date() != today:
+    raise RuntimeError("Danish midnight passed while waiting for the API: run the block again")
 recs = d["records"]
 if d["total"] != len(recs):
     raise RuntimeError(f"total {d['total']} but {len(recs)} records returned: stop")
@@ -421,6 +424,9 @@ for run in (1, 2):
         p, day, rest = prices(today, now), today, True
     if p is None:
         sys.exit("neither today nor tomorrow is complete in the API: stop")
+    now = datetime.now(timezone.utc)  # prices() may have waited up to 2 min on a 429
+    if now.astimezone(DK).date() != today:
+        sys.exit("Danish midnight passed while waiting for the API: run again")
     print(f"\nrun {run}, {now:%H:%M:%S} UTC ({now.astimezone(DK):%H:%M} Danish time): "
           + (f"tomorrow ({tomorrow}) not published yet, rest of {today}" if rest else f"tomorrow, {tomorrow}"))
     for a in AREAS:
