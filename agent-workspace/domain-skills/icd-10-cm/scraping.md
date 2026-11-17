@@ -1,6 +1,6 @@
 # ICD-10-CM via the NLM Clinical Table Search Service (clinicaltables.nlm.nih.gov) - Find the Diagnosis Code for a Condition in Plain Words or Look Up a Code's Name (REST API, no key)
 
-Field-tested against clinicaltables.nlm.nih.gov on 2026-11-16 (the logged runs were 23:30-23:35 UTC; blocks 1 and 3 re-run on 2026-11-17, 00:39-00:43 UTC, after review fixes) using a fresh Browser Use cloud browser (logged out) plus Python `urllib` and `curl` from a Linux machine. 5 browser page loads (an API JSON page, robots.txt, the home page, the FAQ) and 40 in-page `fetch()` calls (block 1 was also run for E11, I21.0, high blood pressure, S72.001A, hypertension, diabtes and s72.001a), 73 curl calls (1 of them robots.txt) and 13 urllib calls (2 of them robots.txt), all serial at 0.25 s or more spacing: every call was HTTP 200 except the deliberate HTTP 400 probes and the HTTP 404 of robots.txt. No 429, no 503, no challenge, no key, no login.
+Field-tested against clinicaltables.nlm.nih.gov on 2026-11-16 (the logged runs were 23:30-23:35 UTC; blocks 1 and 3 re-run on 2026-11-17, 00:39-00:43 UTC and 01:39-01:40 UTC, after review fixes) using a fresh Browser Use cloud browser (logged out) plus Python `urllib` and `curl` from a Linux machine. 5 browser page loads (an API JSON page, robots.txt, the home page, the FAQ) and 40 in-page `fetch()` calls (block 1 was also run for E11, I21.0, high blood pressure, S72.001A, hypertension, diabtes and s72.001a), 73 curl calls (1 of them robots.txt) and 13 urllib calls (2 of them robots.txt), all serial at 0.25 s or more spacing: every call was HTTP 200 except the deliberate HTTP 400 probes and the HTTP 404 of robots.txt. No 429, no 503, no challenge, no key, no login.
 
 robots.txt (checked 2026-11-16, curl, the cloud browser and `urllib.robotparser`): https://clinicaltables.nlm.nih.gov/robots.txt answers HTTP 404 with an HTML page `Cannot GET /robots.txt`, so the host has no rules and no named AI-agent groups; under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources", and Python's parser treats it as allow-all for GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider (block 3 checks all 11 agents). Terms: the FAQ https://clinicaltables.nlm.nih.gov/faq.html says the Clinical Table Search Service (CTSS) "is open to the general public and free of charge", "Registration is not required to use this service" and "THIS SERVICE IS PROVIDED "AS IS"". It adds that "some datasets, such as LOINC, have their own terms of use" listed in the home page "Details" column; the ICD-10-CM row says only "From CDC" and "Data version: 2027; 74,879 records", and the Medical conditions row "From the NLM PHR & Regenstrief Institute" with "Data version: 2026-10-01; 2,418 records", with no extra terms for either. No AI/ML, scraping, automated-access or non-commercial clause. Naming: the FAQ says "neither the names of the National Library of Medicine (NLM), the Lister Hill National Center for Biomedical Communications (LHNCBC), the National Institutes of Health (NIH), nor the names of any of the software contributors may be used to endorse or promote products derived from this service without specific prior written permission", so this skill names the source only as "ICD-10-CM via the NLM Clinical Table Search Service" in plain text, uses no NLM, NIH or HHS logo or branding, and is not affiliated with or endorsed by NLM, LHNCBC, NIH or CDC.
 
@@ -13,7 +13,7 @@ robots.txt (checked 2026-11-16, curl, the cloud browser and `urllib.robotparser`
 - **The code table only knows official wording.** "heart attack", "high blood pressure" and "sprained ankle" all return `[0, [], null, []]`. The same service's Medical conditions table (`/api/conditions/v3/search`) has lay synonyms and suggested codes: "heart attack" -> I21.9 "Acute myocardial infarction, unspecified" and I21.4 (NSTEMI); "high blood pressure" -> I10 "Essential (primary) hypertension". Block 1 uses it only after a 0 and confirms every suggested code in the ICD-10-CM table.
 - **Search is ANDed prefix matching, not a phrase.** Every word must start a word in the code or name, in any order: "type 2 diabetes" also hits "Type 1 ... Stage 2", "with" also hits "without", and "hypertension" misses I11.9 "Hypertensive heart disease without heart failure". Block 1 splits phrase matches from loose ones.
 - **Silent failure:** lay words, typos (`diabtes`), a code without its dot (`E119`) and words sent with the default `sf=code` are all HTTP 200 with total 0. Category headers (E11, I21.0) are not codes in the table; `terms=E11` lists the 87 codes under it. Of the mistakes tried, only a missing `terms`, `count` over 500 or `offset + count` over 7,500 is an HTTP 400 `Bad request: See main page for documentation.` (HTML, not JSON).
-- **Rate limit:** the FAQ says "The advised maximum request rate is 25 requests per second. This is a soft limit", asks for a heads-up via the NLM Support Center above 50 requests/second regularly or 50,000 calls per day, says to check "X-RateLimit-Limit", "Retry-After" and that "The service may respond with status code 503 if the system is overwhelmed regardless of your request rate". All blocks pace 0.25 s per call, serial; blocks 1 and 3 wait `Retry-After` (seconds or an HTTP date; default 60 s, at most 120 s) once on 429/5xx; block 3 caches answers on disk for 12 h, matching the server's `Cache-Control: public, max-age=43200`.
+- **Rate limit:** the FAQ says "The advised maximum request rate is 25 requests per second. This is a soft limit", asks for a heads-up via the NLM Support Center above 50 requests/second regularly or 50,000 calls per day, says to check "X-RateLimit-Limit", "Retry-After" and that "The service may respond with status code 503 if the system is overwhelmed regardless of your request rate". All blocks pace 0.25 s per call, serial; blocks 1 and 3 wait `Retry-After` (seconds or an HTTP date; default 60 s) once on 429/5xx and stop instead when it asks for more than 120 s; block 3 caches answers on disk for 12 h, matching the server's `Cache-Control: public, max-age=43200`.
 
 ## What works
 
@@ -57,7 +57,8 @@ START_JS = """(() => { window.__u = window.__u || {}; const id = String(Math.ran
 POLL_JS = """(() => { const v = window.__u[%s]; if (v) delete window.__u[%s]; return v; })()"""
 
 def retry_after(v):
-    """Retry-After in seconds: a number or an HTTP date (both are valid); 60 when absent or unreadable; 1 to 120."""
+    """Retry-After in seconds: a number or an HTTP date (both are valid); 60 when absent or unreadable; at least 1.
+    Over 120 s it stops rather than retry before the server asked."""
     try:
         s = float(v)
     except (TypeError, ValueError):
@@ -65,7 +66,9 @@ def retry_after(v):
             s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError):
             s = 60
-    return min(max(s, 1), 120)
+    if s > 120:
+        raise RuntimeError(f"server asks to wait {s:.0f} s (over 120 s): stopping")
+    return max(s, 1)
 
 def fetch(url):
     """One in-page GET -> {status, headers, text}."""
@@ -80,7 +83,7 @@ def fetch(url):
 
 def get(path, **params):
     """GET path?params from inside the tab -> parsed JSON array. On 429/500/502/503/504 or a network error waits
-    Retry-After (default 60 s, at most 120 s) once; raises on anything else (400 = "Bad request", plain text)."""
+    Retry-After (default 60 s; stops if over 120 s) once; raises on anything else (400 = "Bad request", plain text)."""
     url = SITE + path + "?" + urllib.parse.urlencode(params)
     for attempt in range(2):
         r = fetch(url)
@@ -364,7 +367,8 @@ TTL = 12 * 3600  # the server sends Cache-Control: public, max-age=43200 (12 h)
 calls = hits = 0
 
 def retry_after(v):
-    """Retry-After in seconds: a number or an HTTP date (both are valid); 60 when absent or unreadable; 1 to 120."""
+    """Retry-After in seconds: a number or an HTTP date (both are valid); 60 when absent or unreadable; at least 1.
+    Over 120 s it stops rather than retry before the server asked."""
     try:
         s = float(v)
     except (TypeError, ValueError):
@@ -372,11 +376,13 @@ def retry_after(v):
             s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError):
             s = 60
-    return min(max(s, 1), 120)
+    if s > 120:
+        sys.exit(f"server asks to wait {s:.0f} s (over 120 s): stopping")
+    return max(s, 1)
 
 def get(path, **params):
     """GET -> parsed [total, codes, extra, rows], from the disk cache when younger than TTL. Once waits Retry-After
-    (default 60 s, at most 120 s) on 429/500/502/503/504 or a network error; exits on anything else."""
+    (default 60 s; stops if over 120 s) on 429/500/502/503/504 or a network error; exits on anything else."""
     global calls, hits
     url = SITE + path + "?" + urllib.parse.urlencode(params)
     f = os.path.join(CACHE, hashlib.sha256(url.encode()).hexdigest() + ".json")
