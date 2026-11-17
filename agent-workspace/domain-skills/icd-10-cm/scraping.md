@@ -118,8 +118,14 @@ def partial(total, rows):
     return f" (PARTIAL: only the first {len(rows):,} of {total:,} matches can be paged)" if total > len(rows) else ""
 
 def data_version():
-    """(source, data version, records) of the ICD-10-CM row in the home page table, read from its HTML."""
-    r = fetch(SITE + "/")
+    """(source, data version, records) of the ICD-10-CM row in the home page table, read from its HTML.
+    Same retry policy as get(): one Retry-After wait on 429/500/502/503/504 or a network error."""
+    for attempt in range(2):
+        r = fetch(SITE + "/")
+        if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
+            time.sleep(retry_after(r["headers"].get("retry-after")))
+            continue
+        break
     m = re.search(r'db=icd10cm".*?From <a[^>]*>([^<]+)</a>\s*<div class="data_versions">Data version: ([^;<]+); '
                   r'([\d,]+) records', r["text"], re.S)
     if r["status"] != 200 or not m:
@@ -417,13 +423,26 @@ def search(terms):
     return total, rows
 
 def data_version():
-    """(data version, records) of the ICD-10-CM row on the home page (one uncached call)."""
+    """(data version, records) of the ICD-10-CM row on the home page (uncached), with get()'s retry policy."""
     global calls
-    time.sleep(0.25)
-    calls += 1
     req = urllib.request.Request(SITE + "/", headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        html = r.read().decode()
+    for attempt in range(2):
+        time.sleep(0.25)
+        calls += 1
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                html = r.read().decode()
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt == 0:
+                time.sleep(retry_after(e.headers.get("Retry-After")))
+                continue
+            sys.exit(f"HTTP {e.code} {SITE}/: home page unavailable")
+        except OSError as e:  # URLError, timeouts, resets
+            if attempt == 0:
+                time.sleep(60)
+                continue
+            sys.exit(f"{SITE}/: {e}")
     m = re.search(r'db=icd10cm".*?<div class="data_versions">Data version: ([^;<]+); ([\d,]+) records', html, re.S)
     if not m:
         sys.exit("home page has no ICD-10-CM data version row: check it by hand")
