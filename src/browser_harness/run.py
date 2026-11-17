@@ -65,6 +65,8 @@ Commands:
   browser-harness video review <recording>    compile and review the video
   browser-harness video export <recording> --reviewed   export a verified MP4
   browser-harness telemetry status    show anonymous telemetry opt-out state
+  browser-harness feedback "what happened" [--category bug|docs|missing|other]
+                                    tell the Browser Use team what broke in browser-harness
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
 """
@@ -130,7 +132,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "skill", "mac-approve", "recordings", "telemetry", "video"}:
+    if first in {"auth", "feedback", "skill", "mac-approve", "recordings", "telemetry", "video"}:
         return first
     return "usage"
 
@@ -178,12 +180,16 @@ def _traced(name, fn):
     return wrapper
 
 
+# Their arguments are free text sent, scrubbed, to the library project (report.py), never in cli_event's steps.
+_UNTRACED = {"report_issue", "report_run"}
+
+
 def _install_helper_trace():
     from . import helpers
 
     g = globals()
     for name in dir(helpers):
-        if name.startswith("_"):
+        if name.startswith("_") or name in _UNTRACED:
             continue
         fn = g.get(name)
         if callable(fn) and not isinstance(fn, type) and not getattr(fn, "__bh_traced__", False):
@@ -323,6 +329,10 @@ def _run(args):
         sys.exit(run_doctor())
     if args and args[0] == "auth":
         sys.exit(auth.run_auth_cli(args[1:]))
+    if args and args[0] == "feedback":
+        from . import report
+
+        sys.exit(report.run_feedback_cli(args[1:]))
     if args and args[0] == "mac-approve":
         from . import macos
 

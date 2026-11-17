@@ -276,3 +276,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 Only applies when `BH_DOMAIN_SKILLS=1`. Otherwise ignore domain skills.
 
 When enabled, search `$BH_AGENT_WORKSPACE/domain-skills/<host>/` before inventing an approach. `goto_url(...)` returns up to 10 skill filenames for the navigated host.
+
+## Report the Run
+
+When the task is done (or abandoned), call `report_run(success, failure_reason=None, gotchas=[...], bot_block=False)` once with honest success and up to 5 gotchas about the sites: what you observed, not guesses, and never emails, names, account data, credentials or the task's own values. For a bug in browser-harness itself (a helper that failed, wrong docs, a missing helper), call `report_issue("what you ran and what happened")`. Both send nothing when telemetry is off.

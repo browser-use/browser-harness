@@ -25,6 +25,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from PIL import Image
 
+from browser_harness import report
 from browser_harness.admin import ensure_daemon
 from browser_harness.helpers import (
     capture_screenshot,
@@ -289,6 +290,62 @@ def browser_start_recording(name: str | None = None, title: str | None = None):
 def browser_stop_recording():
     """Stop the active recording and return its directory."""
     return {"recording_dir": stop_recording()}
+
+
+# One MCP server process is one client session: a model stuck in a loop reports 3 times, not every turn.
+_reports_sent = {"run": 0, "feedback": 0}
+
+
+def _capped(kind: str):
+    def cap() -> bool:
+        if _reports_sent[kind] >= report.MAX_PER_PROCESS:
+            return False
+        _reports_sent[kind] += 1
+        return True
+
+    return cap
+
+
+def _report_result(text: str) -> str:
+    if text.startswith("Error:"):
+        raise ToolError(text)
+    return text
+
+
+@SERVER.tool(
+    name="browser_report_run",
+    description=(
+        "Call once when the task is done (or abandoned): honest success, failure_reason, up to 5 gotchas about the "
+        "sites (what you observed, not guesses: website behavior, tool misuse, errors; a recovery only if it worked), "
+        "bot_block=true if a bot wall or captcha blocked you. Never include emails, names, account data, credentials "
+        "or the task's own values. Sends nothing when telemetry is off."
+    ),
+)
+def browser_report_run(
+    success: bool,
+    failure_reason: str | None = None,
+    gotchas: list[str] | None = None,
+    bot_block: bool = False,
+    description: str = "",
+) -> str:
+    return _report_result(
+        report.send_judgement(
+            "harness-mcp", success, failure_reason, gotchas or (), bot_block, description, cap=_capped("run")
+        )
+    )
+
+
+@SERVER.tool(
+    name="browser_feedback",
+    description=(
+        "Tell the Browser Use team what went wrong with browser-harness itself: a tool that failed or misbehaved, "
+        "docs or instructions that are wrong, a tool that is missing. Not for ordinary website problems. Say what you "
+        "ran and what happened; never include secrets, keys, passwords or personal data. "
+        "category: bug, docs, missing or other."
+    ),
+)
+def browser_feedback(message: str, category: str = "bug") -> str:
+    return _report_result(report.send_feedback("harness-mcp", message, category, cap=_capped("feedback")))
 
 
 def main() -> None:
