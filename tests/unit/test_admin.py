@@ -1518,6 +1518,7 @@ def test_ensure_daemon_rotates_each_failed_spawn(tmp_path, monkeypatch):
 
     log_file = tmp_path / "daemon.log"
     monkeypatch.setattr(admin.ipc, "log_path", lambda name: log_file)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
     monkeypatch.setattr(admin.ipc, "spawn_kwargs", lambda: {})
     monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
     monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env: True)
@@ -1546,3 +1547,38 @@ def test_ensure_daemon_rotates_each_failed_spawn(tmp_path, monkeypatch):
     assert log_file.read_text() == "crash 3\n"
     assert (tmp_path / "daemon.log.1").read_text() == "crash 2\n"
     assert (tmp_path / "daemon.log.2").read_text() == "crash 1\n"
+
+
+def test_remote_spawn_keeps_log_of_starting_daemon(tmp_path, monkeypatch):
+    log_file = tmp_path / "daemon.log"
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: log_file)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
+    monkeypatch.setattr(admin.ipc, "spawn_kwargs", lambda: {})
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env: False)
+    monkeypatch.setattr(admin, "_publish_pid", lambda *args: None)
+    # Another caller's daemon is still starting and writing to the log.
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: 1234)
+    log_file.write_text("sibling startup\n")
+    lock_held = []
+
+    class Failed:
+        pid = 4321
+        def poll(self): return 1
+
+    def spawn(*args, **kwargs):
+        lock = admin._spawn_lock(None, timeout=0)
+        with lock:
+            lock_held.append(lock.fd is None)
+        kwargs["stderr"].write(b"crash\n")
+        kwargs["stderr"].flush()
+        return Failed()
+
+    monkeypatch.setattr(admin.subprocess, "Popen", spawn)
+    with pytest.raises(RuntimeError):
+        admin.ensure_daemon(wait=0.1)
+
+    # Spawning happened under the spawn lock, and the live log was not rotated.
+    assert lock_held == [True]
+    assert log_file.read_text().startswith("sibling startup\n")
+    assert not (tmp_path / "daemon.log.1").exists()
