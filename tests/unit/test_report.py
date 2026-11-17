@@ -64,6 +64,7 @@ def test_report_run_sends_library_judgement_to_the_library_project(sent):
         "hosts": [],
         "cost_usd": None,
         "texts_withheld": False,
+        "is_internal": False,
         "schema_version": 1,
     }
 
@@ -91,6 +92,28 @@ def test_texts_are_scrubbed_and_capped(sent, monkeypatch):
     ]
 
 
+def test_tunnel_and_preview_hosts_go_as_their_provider(sent):
+    report.report_run(
+        True,
+        gotchas=[
+            "https://Calm-Fox.trycloudflare.com:443/admin opened",
+            "https://myproj-git-feature-acme.vercel.app/login is a preview",
+            "https://Shop.Example.com/cart and https://myapp.vercel.app stay",
+        ],
+    )
+    assert _only(sent)["properties"]["gotchas"] == [
+        "https://*.trycloudflare.com/admin opened",
+        "https://*.vercel.app/login is a preview",
+        "https://shop.example.com/cart and https://myapp.vercel.app stay",
+    ]
+
+
+def test_internal_runs_are_marked(sent, monkeypatch):
+    monkeypatch.setenv("BROWSER_USE_TELEMETRY_INTERNAL", "1")
+    report.report_run(True)
+    assert _only(sent)["properties"]["is_internal"] is True
+
+
 def test_a_single_gotcha_string_is_one_gotcha(sent):
     report.report_run(True, gotchas="slow search box")
     assert _only(sent)["properties"]["gotchas"] == ["slow search box"]
@@ -102,7 +125,16 @@ def test_success_must_be_a_bool(sent):
 
 
 @pytest.mark.parametrize(
-    "env", [{"BH_TELEMETRY": "0"}, {"BROWSER_HARNESS_TELEMETRY": "off"}, {"ANONYMIZED_TELEMETRY": "false"}]
+    "env",
+    [
+        {"BH_TELEMETRY": "0"},
+        {"BROWSER_HARNESS_TELEMETRY": "off"},
+        {"ANONYMIZED_TELEMETRY": "false"},
+        # browser-use reads these as off too: only 1, t... or y... keeps usage stats on
+        {"ANONYMIZED_TELEMETRY": "False "},
+        {"ANONYMIZED_TELEMETRY": "n"},
+        {"ANONYMIZED_TELEMETRY": ""},
+    ],
 )
 def test_model_reports_send_nothing_with_telemetry_off(sent, monkeypatch, env):
     for name, value in env.items():
@@ -118,8 +150,9 @@ def test_telemetry_disable_config_also_stops_model_reports(sent):
     assert sent == []
 
 
-def test_offline_sends_nothing_at_all(sent, monkeypatch):
-    monkeypatch.setenv("BROWSER_USE_OFFLINE", "1")
+@pytest.mark.parametrize("value", ["1", "true", "Yes", "y", "on"])
+def test_offline_sends_nothing_at_all(sent, monkeypatch, value):
+    monkeypatch.setenv("BROWSER_USE_OFFLINE", value)
     assert report.report_run(True) == report.OFFLINE
     assert report.report_issue("x") == report.OFFLINE
     with patch.object(sys, "stdin", io.StringIO("")):

@@ -72,10 +72,50 @@ HOME = re.compile(r"(?i)((?:(?<=file://)|(?<![\w./-]))(?:/Users/|/home/)|(?<!\w)
 ENV_SECRET = re.compile(r"(?i)(?:key|token|secret|password|passwd|credentials?)$")
 
 
+HOSTNAME = re.compile(r"(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?")
+HOST_SCHEMES = ("http://", "https://", "ws://", "wss://")
+# Hostnames that alone open something private (a tunnel to the developer's machine, a cloud IDE's port, a Lambda function
+# URL, a preview deploy): sent as '*.' + their provider, as stats.capability_host. A production myapp.vercel.app is kept.
+CAPABILITY_SUFFIXES = (
+    "trycloudflare.com",
+    "ngrok-free.app",
+    "ngrok-free.dev",
+    "ngrok.io",
+    "ngrok.app",
+    "ngrok.dev",
+    "loca.lt",
+    "devtunnels.ms",
+    "app.github.dev",
+    "github.dev",
+    "gitpod.io",
+    "repl.co",
+    "replit.dev",
+    "csb.app",
+)
+PREVIEW_HOSTS = {"vercel.app": re.compile(r".+-(?:git-|[a-z0-9]{9}-).+"), "netlify.app": re.compile(r".+--.+")}
+LAMBDA_URL = re.compile(r".+\.lambda-url\.([a-z0-9-]+)\.on\.aws")
+
+
+def capability_host(hostname: str) -> str:
+    """A hostname as sent: a tunnel, cloud IDE, Lambda function URL or preview deploy as '*.' + its provider's domain."""
+    for suffix in CAPABILITY_SUFFIXES:
+        if hostname.endswith("." + suffix):
+            return "*." + suffix
+    if m := LAMBDA_URL.fullmatch(hostname):
+        return f"*.lambda-url.{m[1]}.on.aws"
+    label, _, rest = hostname.partition(".")
+    if (preview := PREVIEW_HOSTS.get(rest)) and preview.fullmatch(label):
+        return "*." + rest
+    return hostname
+
+
 def _url(m: re.Match) -> str:
-    """A URL without its user:password@ (as <credential>@), port, query and fragment; its path's tokens as <token>."""
+    """A URL without its user:password@ (as <credential>@), port, query and fragment; an http(s)/ws(s) hostname
+    lowercased, a tunnel or preview deploy as its provider (capability_host); its path's tokens as <token>."""
     authority, sep, path = m[3].partition("/")
     authority = re.sub(r":\d+$", "", authority)
+    if m[1].lower() in HOST_SCHEMES and HOSTNAME.fullmatch(authority.lower().rstrip(".")):
+        authority = capability_host(authority.lower().rstrip("."))
     segments, granted = path.split("/"), False
     for i, segment in enumerate(segments):
         if not segment or "<" in segment:
@@ -118,14 +158,25 @@ def scrub(text, limit: int) -> str:
 
 
 def _on(name: str) -> bool:
-    return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+    """As browser-use's config reads BROWSER_USE_OFFLINE/ZDR: 1, t..., y... (and on)."""
+    value = (os.environ.get(name) or "").strip().lower()
+    return value[:1] in ("t", "y", "1") or value == "on"
+
+
+def _stats_on() -> bool:
+    """browser-harness telemetry on, and ANONYMIZED_TELEMETRY on as browser-use reads it (set: on only for 1, t..., y...;
+    browser-harness alone keeps 'false ', 'n' or '' on)."""
+    raw = os.environ.get("ANONYMIZED_TELEMETRY")
+    if raw is not None and raw.strip().lower()[:1] not in ("t", "y", "1"):
+        return False
+    return telemetry.is_enabled()
 
 
 def _blocked(consent: bool) -> str | None:
     """Why nothing may be sent, or None."""
     if _on("BROWSER_USE_OFFLINE"):
         return OFFLINE
-    if not consent and not telemetry.is_enabled():
+    if not consent and not _stats_on():
         return OFF
     return None
 
@@ -165,7 +216,7 @@ def _send(event: str, properties: dict) -> None:
     payload = {
         "api_key": LIBRARY_POSTHOG_KEY,
         "event": event,
-        "distinct_id": telemetry._install_id() if telemetry.is_enabled() else _PROCESS_ID,
+        "distinct_id": telemetry._install_id() if _stats_on() else _PROCESS_ID,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "properties": {
             **properties,
@@ -201,6 +252,7 @@ def judgement_properties(surface, success, failure_reason=None, gotchas=(), bot_
         "hosts": [],  # the daemon keeps no visited-host list
         "cost_usd": None,
         "texts_withheld": withheld,
+        "is_internal": _on("BROWSER_USE_TELEMETRY_INTERNAL"),  # as browser-use's LibraryJudgementEvent
         "schema_version": 1,
     }
 
