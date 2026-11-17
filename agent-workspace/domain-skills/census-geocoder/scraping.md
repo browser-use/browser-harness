@@ -10,7 +10,7 @@ robots.txt (checked 2026-11-16, curl, the cloud browser and `urllib.robotparser`
 
 ## Quick summary
 
-- **No scraping.** `GET https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress?address=1600+Pennsylvania+Ave+NW%2C+Washington%2C+DC+20500&benchmark=Public_AR_Current&vintage=Current_Current&format=json` returns the matched address, `x`/`y` and every geography layer for it. `/geocoder/geographies/coordinates?x=<lon>&y=<lat>&...` gives the layers for a point; `/geocoder/locations/onelineaddress?...` gives only the match and coordinates (no `vintage`). `/geocoder/geographies/addressbatch` takes a CSV of up to 10,000 addresses. JSON (CSV for batch), no key.
+- **No scraping.** `GET https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress?address=1600+Pennsylvania+Ave+NW%2C+Washington%2C+DC+20500&benchmark=Public_AR_Current&vintage=Current_Current&format=json` returns the matched address, `x`/`y` and the default geography layers for it (10 for `Current_Current`; add `layers=all` for 18). `/geocoder/geographies/coordinates?x=<lon>&y=<lat>&...` gives the layers for a point; `/geocoder/locations/onelineaddress?...` gives only the match and coordinates (no `vintage`). `/geocoder/geographies/addressbatch` takes a CSV of up to 10,000 addresses. JSON (CSV for batch), no key.
 - **Answer, 1600 Pennsylvania Ave NW, Washington, DC 20500 (run 2026-11-16 23:58 UTC):** matched `1600 PENNSYLVANIA AVE NW, WASHINGTON, DC, 20500`, **x -77.035189, y 38.898703**; county **11001** District of Columbia; census tract **11001980000** (Census Tract 9800); congressional district **1198** "Delegate District (at Large)" in the layer `120th Congressional Districts`; 2020 block **110019800001034**. 20 W 34th St, New York, NY 10001 -> ZIP corrected to 10118, county 36061 New York County, tract **36061007600**, district **3612** (NY-12).
 - **Never take `addressMatches[0]` blindly.** "1600 Pennsylvania Ave, Washington, DC" (no NW) returns **2** matches with **SE first** (ZIP 20003, 5.0 km from the NW match by the returned coordinates). "1 Calle Fortaleza, San Juan, PR 00901" returns 4 matches for `1 CALLE E` in 4 other ZIPs. Blocks 1 and 3 refuse more than one candidate.
 - **A single match can still be the wrong street.** "200 N Spring St, Los Angeles, CA 90012" (Los Angeles City Hall) came back as one `Non_Exact` match on **200 S SPRING ST**. Typos ("Pensylvania") and a wrong ZIP (90210) are silently corrected. The blocks print the matched address and flag a changed direction, street spelling or ZIP.
@@ -499,7 +499,7 @@ G=https://geocoding.geo.census.gov/geocoder
 P='benchmark=Public_AR_Current&vintage=Current_Current&format=json'
 # address -> matched address, x/y, county, tract, congressional district (benchmark AND vintage are required)
 curl -sS --fail -G "$G/geographies/onelineaddress?$P" --data-urlencode "address=1600 Pennsylvania Ave NW, Washington, DC 20500" \
-  | python3 -c 'import json,sys; m=json.load(sys.stdin)["result"]["addressMatches"]; print(len(m), "match"); g=m[0]["geographies"]; print(m[0]["matchedAddress"], m[0]["coordinates"]); [print(" ", k, g[k][0]["GEOID"], g[k][0]["NAME"]) for k in g if k in ("Counties","Census Tracts") or k.endswith("Congressional Districts")]'
+  | python3 -c 'import json,sys; m=json.load(sys.stdin)["result"]["addressMatches"]; print(len(m), "match"); len(m) == 1 or sys.exit("need exactly 1 match, add the direction or ZIP"); g=m[0]["geographies"]; print(m[0]["matchedAddress"], m[0]["coordinates"]); [print(" ", k, g[k][0]["GEOID"], g[k][0]["NAME"]) for k in g if k in ("Counties","Census Tracts") or k.endswith("Congressional Districts")]'
 sleep 1
 # point -> geographies (x = longitude first)
 curl -sS --fail "$G/geographies/coordinates?x=-73.985241&y=40.748656&$P" \
@@ -525,9 +525,10 @@ sleep 1
 curl -sS -o /dev/null -w 'no format: HTTP %{http_code} %{content_type}\n' -G "$G/locations/onelineaddress?benchmark=4" --data-urlencode "address=1600 Pennsylvania Ave NW, Washington, DC 20500"
 sleep 1
 curl -sS -o /dev/null -w 'robots.txt: HTTP %{http_code}\n' https://geocoding.geo.census.gov/robots.txt
+echo "Source: U.S. Census Bureau Geocoder, benchmark Public_AR_Current, vintage Current_Current. This product uses the Census Bureau Data API but is not endorsed or certified by the Census Bureau."
 ```
 
-Output (from the run on 2026-11-17, 00:00 UTC):
+Output (from the run on 2026-11-17, 00:39 UTC):
 
 ```text
 1 match
@@ -548,6 +549,7 @@ Vary: Origin
 {"errors":["Vintage must be specified"],"status":"400"} <- HTTP 400
 no format: HTTP 200 text/html;charset=UTF-8
 robots.txt: HTTP 404
+Source: U.S. Census Bureau Geocoder, benchmark Public_AR_Current, vintage Current_Current. This product uses the Census Bureau Data API but is not endorsed or certified by the Census Bureau.
 ```
 
 ## Fields (geographies JSON)

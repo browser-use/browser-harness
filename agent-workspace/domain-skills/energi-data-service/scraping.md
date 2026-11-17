@@ -55,8 +55,8 @@ POLL_JS = """(() => { const v = window.__e[%s]; if (v) delete window.__e[%s]; re
 
 def get(path, timeout=60):
     """GET SITE+path in the tab -> parsed JSON. DayAheadPrices allows 1 call per minute per IP (header totalcalls: 1),
-    so on HTTP 429 it waits the "Try again in X seconds" the API names (+2 s), once; one 60 s wait on 5xx or a network
-    error; raises on anything else (400 "Invalid json in filter", 404 "dataset not found ...", plain text)."""
+    so on HTTP 429 it waits the "Try again in X seconds" the API names (+2 s), once, and stops if that is over 120 s;
+    one 60 s wait on 5xx or a network error; raises on anything else (400 "Invalid json in filter", 404 "dataset not found ...", plain text)."""
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(SITE + path)))
         t0 = time.time()
@@ -69,6 +69,8 @@ def get(path, timeout=60):
         if attempt == 0 and r["status"] == 429:
             msg = json.loads(r["text"]).get("message", "")  # "Rate limit is exceeded. Try again in 32 seconds."
             wait = int(msg.split("Try again in ")[1].split()[0]) if "Try again in " in msg else 60
+            if wait > 120:
+                raise RuntimeError(f"{path}: HTTP 429 asks to wait {wait}s (over 120 s): stopping")
             time.sleep(wait + 2)
             continue
         if attempt == 0 and r["status"] in (0, 500, 502, 503, 504):
@@ -115,8 +117,12 @@ if d["total"] != len(recs):
 print(f"Now {now:%Y-%m-%d %H:%M} UTC = {now.astimezone(DK):%Y-%m-%d %H:%M} Danish time; "
       f"dataset lastDataUpdate {meta['lastDataUpdate']}, dataTo {meta['dataTo']}")
 target, ahead_only = tomorrow, False
-counts = {(a, dd): sum(1 for x in recs if x["PriceArea"] == a and x["TimeDK"][:10] == str(dd))
+# distinct UTC slots, so a duplicated row cannot hide a missing one
+counts = {(a, dd): len({x["TimeUTC"] for x in recs if x["PriceArea"] == a and x["TimeDK"][:10] == str(dd)})
           for a in AREAS for dd in (today, tomorrow)}
+dupes = len(recs) - len({(x["PriceArea"], x["TimeUTC"]) for x in recs})
+if dupes:
+    raise RuntimeError(f"{dupes} duplicated (PriceArea, TimeUTC) rows in the answer: stop")
 if any(counts[(a, tomorrow)] != slots_in_day(tomorrow) for a in AREAS):
     print(f"Tomorrow ({tomorrow}) is NOT published yet: {[counts[(a, tomorrow)] for a in AREAS]} of "
           f"{slots_in_day(tomorrow)} slots per area. The dataset note says to poll about every 5 minutes "
@@ -138,7 +144,7 @@ for a in AREAS:
         print(f"  {a}: no {k} consecutive slots left on {target} ({len(rows)} slots considered): wait for tomorrow's prices")
         continue
     eur, dkk, first, last = best
-    end = datetime.fromisoformat(last["TimeDK"]) + SLOT
+    end = (datetime.fromisoformat(last["TimeUTC"]).replace(tzinfo=timezone.utc) + SLOT).astimezone(DK)  # DST-safe
     lo = min(rows, key=lambda x: x["DayAheadPriceEUR"])
     hi = max(rows, key=lambda x: x["DayAheadPriceEUR"])
     print(f"  {a}: start {first['TimeDK'][11:16]}, end {end:%H:%M} Danish time; mean {eur:.2f} EUR/MWh = "
@@ -186,7 +192,7 @@ POLL_JS = """(() => { const v = window.__e[%s]; if (v) delete window.__e[%s]; re
 
 def raw(path):
     """One in-page GET -> status, content type, quota headers, body. On HTTP 429 it waits the seconds the message
-    names (+2) and asks once more, and reports that it did."""
+    names (+2, at most 120 s) and asks once more, and reports that it did."""
     note = ""
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(SITE + path)))
@@ -198,6 +204,8 @@ def raw(path):
         time.sleep(PAUSE)
         if r["status"] == 429 and attempt == 0:
             wait = int(json.loads(r["text"])["message"].split("Try again in ")[1].split()[0])
+            if wait > 120:
+                raise RuntimeError(f"{path}: HTTP 429 asks to wait {wait}s (over 120 s): stopping")
             note = f"[429 'Try again in {wait} seconds', waited] "
             time.sleep(wait + 2)
             continue
@@ -318,7 +326,7 @@ calls = 0
 
 def get(path):
     """GET API+path -> parsed JSON. DayAheadPrices answers 1 call per minute per IP; on 429 waits the seconds the
-    message names (+2), once. Exits on anything else (400/404 are plain text)."""
+    message names (+2), once, unless that is over 120 s. Exits on anything else (400/404 are plain text)."""
     global calls
     for attempt in range(2):
         calls += 1
@@ -329,7 +337,10 @@ def get(path):
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
             if e.code == 429 and attempt == 0 and "Try again in " in body:
-                time.sleep(int(body.split("Try again in ")[1].split()[0]) + 2)
+                wait = int(body.split("Try again in ")[1].split()[0])
+                if wait > 120:
+                    sys.exit(f"HTTP 429 {path}: asks to wait {wait}s (over 120 s): stopping")
+                time.sleep(wait + 2)
                 continue
             sys.exit(f"HTTP {e.code} {path}: {body[:200]}")
         except OSError as e:
@@ -367,7 +378,8 @@ def prices(day, now):
         by.setdefault(x["TimeDK"][:10], {}).setdefault(x["PriceArea"], []).append(x)
     for dd, areas in by.items():
         n = slots_in_day(datetime.fromisoformat(dd).date())
-        if sorted(areas) == sorted(AREAS) and all(len(v) == n for v in areas.values()):
+        # complete = every area has n rows on n distinct UTC slots (a duplicate cannot hide a missing slot)
+        if sorted(areas) == sorted(AREAS) and all(len(v) == n == len({x["TimeUTC"] for x in v}) for v in areas.values()):
             json.dump(areas, open(os.path.join(CACHE, f"{dd}.json"), "w"))
     return load(day)
 
@@ -380,7 +392,8 @@ def cheapest(rows, k):
             continue
         eur = sum(x["DayAheadPriceEUR"] for x in w) / k
         if best is None or eur < best[0]:
-            best = (eur, w[0]["TimeDK"][11:16], (datetime.fromisoformat(w[-1]["TimeDK"]) + SLOT).strftime("%H:%M"))
+            t0, t1 = (datetime.fromisoformat(x["TimeUTC"]).replace(tzinfo=timezone.utc) for x in (w[0], w[-1]))
+            best = (eur, t0.astimezone(DK).strftime("%H:%M"), (t1 + SLOT).astimezone(DK).strftime("%H:%M"))  # DST-safe
     return best
 
 # robots.txt: both hosts answer 404. RobotFileParser.read() treats a 4xx other than 401/403 as "allow all"

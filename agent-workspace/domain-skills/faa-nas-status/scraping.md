@@ -19,7 +19,7 @@ robots.txt (checked 2026-11-16, curl and the cloud browser): https://nasstatus.f
 
 ### 1. Is there a ground stop, ground delay or closure at this airport right now? (browser)
 
-`on_nas_tab()` opens the logged-out List View once, so `fetch()` of the feed is same-origin. `get_feed()` waits 60 s once on 429/5xx or a network error and otherwise raises unless it gets `application/xml` with the `AIRPORT_STATUS_INFORMATION` root. `parse()` walks every `Delay_type` block, because the same type can appear twice. `closure()` reads the year and the exact window from the NOTAM's `yymmddhhmm-yymmddhhmm` range, not from `Start`/`Reopen`.
+`on_nas_tab()` opens the logged-out List View once, so `fetch()` of the feed is same-origin. `get_feed()` retries once (after 60 s on 429, 10 s on 5xx or a network error) and otherwise raises unless it gets `application/xml` with the `AIRPORT_STATUS_INFORMATION` root. `parse()` walks every `Delay_type` block, because the same type can appear twice. `closure()` reads the year and the exact window from the NOTAM's `yymmddhhmm-yymmddhhmm` range, not from `Start`/`Reopen`.
 
 ```python
 import json, re, time
@@ -55,7 +55,7 @@ START_JS = """(() => { window.__o = window.__o || {}; const id = String(Math.ran
 POLL_JS = """(() => { const v = window.__o[%s]; if (v) delete window.__o[%s]; return v; })()"""
 
 def get_feed(timeout=60):
-    """The XML feed as text. Waits 60 s once on 429/5xx or a network error; raises on anything else."""
+    """The XML feed as text. Retries once: after 60 s on 429, after 10 s on 5xx or a network error; raises on anything else."""
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(FEED)))
         t0 = time.time()
@@ -64,7 +64,7 @@ def get_feed(timeout=60):
                 raise RuntimeError(f"no answer from the feed after {timeout}s")
             time.sleep(0.3)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            time.sleep(60)
+            time.sleep(60 if r["status"] == 429 else 10)
             continue
         if r["status"] != 200 or "xml" not in (r["type"] or "") or "<AIRPORT_STATUS_INFORMATION>" not in r["text"]:
             raise RuntimeError(f"feed: HTTP {r['status']} {r['type']} {r['text'][:200]!r}; stopping")
@@ -101,7 +101,8 @@ def hm(n):
     return f"{n // 60} h {n % 60} min" if n >= 60 else f"{n} min"
 
 def local_end_utc(text, upd):
-    """'3:30 pm PST' -> UTC datetime on the feed's day (next day if that is already past); None if the zone is unknown."""
+    """'3:30 pm PST' -> UTC datetime on the feed's local day, or the next day if that is more than 1 h past (an end time
+    a few minutes past is a ground stop about to be lifted or extended, not tomorrow's); None if the zone is unknown."""
     m = re.fullmatch(r"(\d{1,2}):(\d{2})\s*([ap]m)\s+([A-Z]{2,4})", text.strip(), re.I)
     if not m or m[4].upper() not in TZ:
         return None
@@ -242,6 +243,8 @@ for _ in range(20):  # the table is filled by script after load
     if "Active Airport Events" in (js("document.body.innerText") or "") and js("document.querySelectorAll('table tr').length") > 1:
         break
     time.sleep(1)
+else:
+    raise RuntimeError("List View table not filled after 20 s (slow or failed load, or no active events): check the page by hand")
 xml_links = js("[...document.querySelectorAll('a')].filter(a => /xml/i.test(a.innerText)).map(a => [a.innerText.trim(), a.href])")
 print(f"footer XML link(s): {xml_links}")
 rows = js("""[...document.querySelectorAll('table tr')].map(tr => [...tr.cells].map(c => c.innerText.trim()))
@@ -330,7 +333,8 @@ AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-U
           "Google-Extended", "PerplexityBot", "CCBot", "Bytespider"]
 
 def get(url):
-    """GET -> (status, content-type, text). One 60 s wait on 429/5xx or a network error; exits on anything else."""
+    """GET -> (status, content-type, text). One retry: after 60 s on 429, after 10 s on 5xx or a network error;
+    exits on anything else."""
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     for attempt in range(2):
         try:
@@ -338,12 +342,12 @@ def get(url):
                 return r.status, r.headers.get("Content-Type", ""), r.read().decode()
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 504) and attempt == 0:
-                time.sleep(60)
+                time.sleep(60 if e.code == 429 else 10)
                 continue
             sys.exit(f"HTTP {e.code} {url}: {e.read()[:200]!r}")
         except OSError as e:  # URLError, timeouts, resets
             if attempt == 0:
-                time.sleep(60)
+                time.sleep(10)
                 continue
             sys.exit(f"{url}: {e}")
 

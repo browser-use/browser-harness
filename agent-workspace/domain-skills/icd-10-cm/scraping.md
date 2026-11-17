@@ -1,6 +1,6 @@
 # ICD-10-CM via the NLM Clinical Table Search Service (clinicaltables.nlm.nih.gov) - Find the Diagnosis Code for a Condition in Plain Words or Look Up a Code's Name (REST API, no key)
 
-Field-tested against clinicaltables.nlm.nih.gov on 2026-11-16 (the logged runs were 23:30-23:35 UTC) using a fresh Browser Use cloud browser (logged out) plus Python `urllib` and `curl` from a Linux machine. 5 browser page loads (an API JSON page, robots.txt, the home page, the FAQ) and 40 in-page `fetch()` calls (block 1 was also run for E11, I21.0, high blood pressure, S72.001A, hypertension, diabtes and s72.001a), 73 curl calls (1 of them robots.txt) and 13 urllib calls (2 of them robots.txt), all serial at 0.25 s or more spacing: every call was HTTP 200 except the deliberate HTTP 400 probes and the HTTP 404 of robots.txt. No 429, no 503, no challenge, no key, no login.
+Field-tested against clinicaltables.nlm.nih.gov on 2026-11-16 (the logged runs were 23:30-23:35 UTC; blocks 1 and 3 re-run on 2026-11-17, 00:39-00:43 UTC, after review fixes) using a fresh Browser Use cloud browser (logged out) plus Python `urllib` and `curl` from a Linux machine. 5 browser page loads (an API JSON page, robots.txt, the home page, the FAQ) and 40 in-page `fetch()` calls (block 1 was also run for E11, I21.0, high blood pressure, S72.001A, hypertension, diabtes and s72.001a), 73 curl calls (1 of them robots.txt) and 13 urllib calls (2 of them robots.txt), all serial at 0.25 s or more spacing: every call was HTTP 200 except the deliberate HTTP 400 probes and the HTTP 404 of robots.txt. No 429, no 503, no challenge, no key, no login.
 
 robots.txt (checked 2026-11-16, curl, the cloud browser and `urllib.robotparser`): https://clinicaltables.nlm.nih.gov/robots.txt answers HTTP 404 with an HTML page `Cannot GET /robots.txt`, so the host has no rules and no named AI-agent groups; under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources", and Python's parser treats it as allow-all for GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider (block 3 checks all 11 agents). Terms: the FAQ https://clinicaltables.nlm.nih.gov/faq.html says the Clinical Table Search Service (CTSS) "is open to the general public and free of charge", "Registration is not required to use this service" and "THIS SERVICE IS PROVIDED "AS IS"". It adds that "some datasets, such as LOINC, have their own terms of use" listed in the home page "Details" column; the ICD-10-CM row says only "From CDC" and "Data version: 2027; 74,879 records", and the Medical conditions row "From the NLM PHR & Regenstrief Institute" with "Data version: 2026-10-01; 2,418 records", with no extra terms for either. No AI/ML, scraping, automated-access or non-commercial clause. Naming: the FAQ says "neither the names of the National Library of Medicine (NLM), the Lister Hill National Center for Biomedical Communications (LHNCBC), the National Institutes of Health (NIH), nor the names of any of the software contributors may be used to endorse or promote products derived from this service without specific prior written permission", so this skill names the source only as "ICD-10-CM via the NLM Clinical Table Search Service" in plain text, uses no NLM, NIH or HHS logo or branding, and is not affiliated with or endorsed by NLM, LHNCBC, NIH or CDC.
 
@@ -13,17 +13,18 @@ robots.txt (checked 2026-11-16, curl, the cloud browser and `urllib.robotparser`
 - **The code table only knows official wording.** "heart attack", "high blood pressure" and "sprained ankle" all return `[0, [], null, []]`. The same service's Medical conditions table (`/api/conditions/v3/search`) has lay synonyms and suggested codes: "heart attack" -> I21.9 "Acute myocardial infarction, unspecified" and I21.4 (NSTEMI); "high blood pressure" -> I10 "Essential (primary) hypertension". Block 1 uses it only after a 0 and confirms every suggested code in the ICD-10-CM table.
 - **Search is ANDed prefix matching, not a phrase.** Every word must start a word in the code or name, in any order: "type 2 diabetes" also hits "Type 1 ... Stage 2", "with" also hits "without", and "hypertension" misses I11.9 "Hypertensive heart disease without heart failure". Block 1 splits phrase matches from loose ones.
 - **Silent failure:** lay words, typos (`diabtes`), a code without its dot (`E119`) and words sent with the default `sf=code` are all HTTP 200 with total 0. Category headers (E11, I21.0) are not codes in the table; `terms=E11` lists the 87 codes under it. Of the mistakes tried, only a missing `terms`, `count` over 500 or `offset + count` over 7,500 is an HTTP 400 `Bad request: See main page for documentation.` (HTML, not JSON).
-- **Rate limit:** the FAQ says "The advised maximum request rate is 25 requests per second. This is a soft limit", asks for a heads-up via the NLM Support Center above 50 requests/second regularly or 50,000 calls per day, says to check "X-RateLimit-Limit", "Retry-After" and that "The service may respond with status code 503 if the system is overwhelmed regardless of your request rate". All blocks pace 0.25 s per call, serial; blocks 1 and 3 wait `Retry-After` (default 60 s) once on 429/5xx; block 3 caches answers on disk for 12 h, matching the server's `Cache-Control: public, max-age=43200`.
+- **Rate limit:** the FAQ says "The advised maximum request rate is 25 requests per second. This is a soft limit", asks for a heads-up via the NLM Support Center above 50 requests/second regularly or 50,000 calls per day, says to check "X-RateLimit-Limit", "Retry-After" and that "The service may respond with status code 503 if the system is overwhelmed regardless of your request rate". All blocks pace 0.25 s per call, serial; blocks 1 and 3 wait `Retry-After` (seconds or an HTTP date; default 60 s, at most 120 s) once on 429/5xx; block 3 caches answers on disk for 12 h, matching the server's `Cache-Control: public, max-age=43200`.
 
 ## What works
 
 ### 1. Plain words or a code -> ICD-10-CM codes and names (browser)
 
-`on_ctss_tab()` opens one logged-out clinicaltables.nlm.nih.gov API JSON page, so `fetch()` is same-origin. `get()` returns the parsed `[total, codes, extra, rows]` array on HTTP 200, waits once on 429/500/502/503/504 and otherwise raises. A query shaped like a code is looked up exactly (`q=code:...`), and a non-code like E11 lists the codes under it. Words go to the code table with `sf=code,name`, paged 500 at a time; rows that do not contain the words as a phrase are printed apart. Only when the code table returns 0 does it ask the conditions table for lay synonyms, then confirms each suggested code. 7 `fetch()` calls in all for the 3 queries.
+`on_ctss_tab()` opens one logged-out clinicaltables.nlm.nih.gov API JSON page, so `fetch()` is same-origin. `get()` returns the parsed `[total, codes, extra, rows]` array on HTTP 200, waits once on 429/500/502/503/504 and otherwise raises. A query shaped like a code is looked up exactly (`q=code:...`), and a non-code like E11 lists the codes under it. Words go to the code table with `sf=code,name`, paged 500 at a time; rows that do not contain the words as a phrase are printed apart. Only when the code table returns 0 does it ask the conditions table for lay synonyms, then confirms each suggested code. It first reads the ICD-10-CM data version from the home page HTML and prints it with the answer. 8 `fetch()` calls in all for the 3 queries.
 
 ```python
 import json, re, time, urllib.parse
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 QUERIES = ["type 2 diabetes", "E11.9", "heart attack"]  # plain words or a code. Never patient data (FAQ: no PHI/PII)
 
@@ -55,21 +56,36 @@ START_JS = """(() => { window.__u = window.__u || {}; const id = String(Math.ran
   return id; })()"""
 POLL_JS = """(() => { const v = window.__u[%s]; if (v) delete window.__u[%s]; return v; })()"""
 
+def retry_after(v):
+    """Retry-After in seconds: a number or an HTTP date (both are valid); 60 when absent or unreadable; 1 to 120."""
+    try:
+        s = float(v)
+    except (TypeError, ValueError):
+        try:
+            s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            s = 60
+    return min(max(s, 1), 120)
+
+def fetch(url):
+    """One in-page GET -> {status, headers, text}."""
+    rid = json.dumps(js(START_JS % json.dumps(url)))
+    t0 = time.time()
+    while (r := js(POLL_JS % (rid, rid))) is None:
+        if time.time() - t0 > 60:
+            raise RuntimeError(f"{url}: no answer after 60s")
+        time.sleep(0.2)
+    time.sleep(PAUSE)
+    return r
+
 def get(path, **params):
     """GET path?params from inside the tab -> parsed JSON array. On 429/500/502/503/504 or a network error waits
     Retry-After (default 60 s, at most 120 s) once; raises on anything else (400 = "Bad request", plain text)."""
     url = SITE + path + "?" + urllib.parse.urlencode(params)
     for attempt in range(2):
-        rid = json.dumps(js(START_JS % json.dumps(url)))
-        t0 = time.time()
-        while (r := js(POLL_JS % (rid, rid))) is None:
-            if time.time() - t0 > 60:
-                raise RuntimeError(f"{url}: no answer after 60s")
-            time.sleep(0.2)
-        time.sleep(PAUSE)
+        r = fetch(url)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            ra = r["headers"].get("retry-after", "60")
-            time.sleep(min(int(ra) if ra.isdigit() else 60, 120))
+            time.sleep(retry_after(r["headers"].get("retry-after")))
             continue
         if r["status"] != 200 or "json" not in r["headers"].get("content-type", ""):
             raise RuntimeError(f"{url}: HTTP {r['status']} {' '.join(r['text'].split())[:200]!r}; stopping")
@@ -79,7 +95,8 @@ def get(path, **params):
         return d
 
 def icd_search(terms, sf="code,name", q=None):
-    """All matches as [(code, name)], paged 500 at a time (the server refuses offset + count > 7,500)."""
+    """(server total, [(code, name)]), paged 500 at a time. The server refuses offset + count > 7,500, so when
+    total > 7,500 only the first 7,500 rows come back: callers must report that as partial."""
     rows, total = [], None
     while total is None or len(rows) < min(total, 7500):
         p = dict(sf=sf, df="code,name", terms=terms, count=500, offset=len(rows))
@@ -97,13 +114,27 @@ def exact_code(code):
     _, rows = icd_search(code, sf="code", q=f"code:{code}")
     return dict(rows).get(code)
 
+def partial(total, rows):
+    return f" (PARTIAL: only the first {len(rows):,} of {total:,} matches can be paged)" if total > len(rows) else ""
+
+def data_version():
+    """(source, data version, records) of the ICD-10-CM row in the home page table, read from its HTML."""
+    r = fetch(SITE + "/")
+    m = re.search(r'db=icd10cm".*?From <a[^>]*>([^<]+)</a>\s*<div class="data_versions">Data version: ([^;<]+); '
+                  r'([\d,]+) records', r["text"], re.S)
+    if r["status"] != 200 or not m:
+        raise RuntimeError(f"home page HTTP {r['status']}: no ICD-10-CM data version row; check it by hand")
+    return m[1].strip(), m[2].strip(), int(m[3].replace(",", ""))
+
 def phrase(text):
     return r"\b" + r"\s+".join(map(re.escape, text.split())) + r"\b"
 
 on_ctss_tab()
 now = datetime.now(timezone.utc)
+src, version, records = data_version()
 size = get(ICD, sf="code,name", terms="", maxList=1)[0]
-print(f"ICD-10-CM via the NLM Clinical Table Search Service ({size:,} codes in the table), queried {now:%Y-%m-%d %H:%M} UTC")
+print(f"ICD-10-CM data version {version} (from {src}, {records:,} records on the home page; {size:,} codes in the table) "
+      f"via the NLM Clinical Table Search Service, queried {now:%Y-%m-%d %H:%M} UTC")
 
 for text in QUERIES:
     t = " ".join(text.split())
@@ -117,7 +148,7 @@ for text in QUERIES:
         total, rows = icd_search(code, sf="code")
         kids = [r for r in rows if r[0].startswith(code)]
         print(f"  {code} is not a code in this table" + (f"; {len(kids)} codes start with it (a category or header):"
-                                                         if kids else " and no code starts with it"))
+                                                         if kids else " and no code starts with it") + partial(total, rows))
         for c, n in kids[:8]:
             print(f"    {c:<9} {n}")
         continue
@@ -128,7 +159,7 @@ for text in QUERIES:
         cats = {}
         for c, _ in hit:
             cats[c[:3]] = cats.get(c[:3], 0) + 1
-        print(f"  {total} codes match all words (partial, any order); {len(hit)} contain the phrase {t!r}")
+        print(f"  {total} codes match all words (partial, any order); {len(hit)} contain the phrase {t!r}" + partial(total, rows))
         print("  by category: " + ", ".join(f"{k} {v}" for k, v in sorted(cats.items(), key=lambda kv: -kv[1])))
         print("  first 8 phrase matches in server order:")
         for c, n in hit[:8]:
@@ -152,14 +183,14 @@ for text in QUERIES:
                      "NOT FOUND in the ICD-10-CM table: do not use")
             print(f"    {s['code']:<9} {state}")
 
-print(f"\nSource: ICD-10-CM via the NLM Clinical Table Search Service, {SITE}{ICD}?sf=code,name&terms=..., "
+print(f"\nSource: ICD-10-CM (data version {version}) via the NLM Clinical Table Search Service, {SITE}{ICD}?sf=code,name&terms=..., "
       f"accessed {now:%d %B %Y %H:%M} UTC. Search aid only, not coding or medical advice.")
 ```
 
-Output (from the run on 2026-11-16, 23:32 UTC):
+Output (from the run on 2026-11-17, 00:42 UTC):
 
 ```text
-ICD-10-CM via the NLM Clinical Table Search Service (74,879 codes in the table), queried 2026-11-16 23:32 UTC
+ICD-10-CM data version 2027 (from CDC, 74,879 records on the home page; 74,879 codes in the table) via the NLM Clinical Table Search Service, queried 2026-11-17 00:42 UTC
 
 === 'type 2 diabetes'
   94 codes match all words (partial, any order); 93 contain the phrase 'type 2 diabetes'
@@ -185,10 +216,10 @@ ICD-10-CM via the NLM Clinical Table Search Service (74,879 codes in the table),
   condition 'Non-Q-wave infarct' (lay: 'Non-Q-wave heart attack') suggests:
     I21.4     confirmed in ICD-10-CM: 'Non-ST elevation (NSTEMI) myocardial infarction'
 
-Source: ICD-10-CM via the NLM Clinical Table Search Service, https://clinicaltables.nlm.nih.gov/api/icd10cm/v3/search?sf=code,name&terms=..., accessed 16 November 2026 23:32 UTC. Search aid only, not coding or medical advice.
+Source: ICD-10-CM (data version 2027) via the NLM Clinical Table Search Service, https://clinicaltables.nlm.nih.gov/api/icd10cm/v3/search?sf=code,name&terms=..., accessed 17 November 2026 00:42 UTC. Search aid only, not coding or medical advice.
 ```
 
-The same block with `QUERIES = ["E11", "I21.0", "high blood pressure", "S72.001A", "hypertension", "diabtes", "s72.001a"]` (same run, 17 `fetch()` calls) printed: E11 "is not a code in this table; 87 codes start with it" (E11.00, E11.01, ...); I21.0 the same with 3 codes (I21.01, I21.02, I21.09); "high blood pressure" 0 in the code table, then 5 conditions all suggesting I10 "Essential (primary) hypertension" except "Hypertension with pregnancy" -> O13.9; S72.001A and lower-case s72.001a both "Fracture of unspecified part of neck of right femur, initial encounter for closed fracture"; "hypertension" 80 codes in 15 categories (I87 20, O10 18, I27 7, ...); "diabtes" "no condition matched either".
+The same block with `QUERIES = ["E11", "I21.0", "high blood pressure", "S72.001A", "hypertension", "diabtes", "s72.001a"]` (same run, 18 `fetch()` calls) printed: E11 "is not a code in this table; 87 codes start with it" (E11.00, E11.01, ...); I21.0 the same with 3 codes (I21.01, I21.02, I21.09); "high blood pressure" 0 in the code table, then 5 conditions all suggesting I10 "Essential (primary) hypertension" except "Hypertension with pregnancy" -> O13.9; S72.001A and lower-case s72.001a both "Fracture of unspecified part of neck of right femur, initial encounter for closed fracture"; "hypertension" 80 codes in 15 categories (I87 20, O10 18, I27 7, ...); "diabtes" "no condition matched either".
 
 ### 2. robots.txt, the terms page and query mistakes (browser)
 
@@ -313,6 +344,8 @@ Python's default `urllib` User-Agent was not tried for API calls; this block sen
 
 ```python
 import hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 SITE = "https://clinicaltables.nlm.nih.gov"
 ICD = "/api/icd10cm/v3/search"
@@ -323,6 +356,17 @@ CACHE_DIR = "~/.cache/icd-10-cm-skill"
 CACHE = os.path.expanduser(CACHE_DIR)
 TTL = 12 * 3600  # the server sends Cache-Control: public, max-age=43200 (12 h)
 calls = hits = 0
+
+def retry_after(v):
+    """Retry-After in seconds: a number or an HTTP date (both are valid); 60 when absent or unreadable; 1 to 120."""
+    try:
+        s = float(v)
+    except (TypeError, ValueError):
+        try:
+            s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            s = 60
+    return min(max(s, 1), 120)
 
 def get(path, **params):
     """GET -> parsed [total, codes, extra, rows], from the disk cache when younger than TTL. Once waits Retry-After
@@ -346,8 +390,7 @@ def get(path, **params):
             break
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 504) and attempt == 0:
-                ra = e.headers.get("Retry-After", "60")
-                time.sleep(min(int(ra) if ra.isdigit() else 60, 120))
+                time.sleep(retry_after(e.headers.get("Retry-After")))
                 continue
             sys.exit(f"HTTP {e.code} {url}: {e.read().decode()[:200]}")
         except OSError as e:  # URLError (DNS, refused connection), timeouts, resets
@@ -362,7 +405,8 @@ def get(path, **params):
     return d
 
 def search(terms):
-    """All codes whose code or name matches every word -> (total, [(code, name)]), 500 per page, max 7,500."""
+    """All codes whose code or name matches every word -> (total, [(code, name)]), 500 per page. Only the first
+    7,500 can be paged, so len(rows) < total means a partial answer."""
     rows, total = [], None
     while total is None or len(rows) < min(total, 7500):
         d = get(ICD, sf="code,name", df="code,name", terms=terms, count=500, offset=len(rows))
@@ -371,6 +415,19 @@ def search(terms):
             break
         rows += [tuple(x) for x in d[3]]
     return total, rows
+
+def data_version():
+    """(data version, records) of the ICD-10-CM row on the home page (one uncached call)."""
+    global calls
+    time.sleep(0.25)
+    calls += 1
+    req = urllib.request.Request(SITE + "/", headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        html = r.read().decode()
+    m = re.search(r'db=icd10cm".*?<div class="data_versions">Data version: ([^;<]+); ([\d,]+) records', html, re.S)
+    if not m:
+        sys.exit("home page has no ICD-10-CM data version row: check it by hand")
+    return m[1].strip(), m[2]
 
 def name_of(code):
     d = get(ICD, sf="code", df="code,name", terms=code, q=f"code:{code}")
@@ -391,14 +448,16 @@ for p in [ICD + "?sf=code,name&terms=x", "/api/conditions/v3/search?terms=x"]:
     if not ok:
         sys.exit("robots.txt now disallows a path this skill uses: stop")
 
-print(f"\ntable size: {get(ICD, sf='code,name', terms='', maxList=1)[0]:,} codes")
+version, records = data_version()
+print(f"\nICD-10-CM data version {version} ({records} records on the home page); "
+      f"table size: {get(ICD, sf='code,name', terms='', maxList=1)[0]:,} codes")
 for words in ["type 2 diabetes", "asthma", "migraine with aura", "covid", "sprained ankle"]:
     total, rows = search(words)
     pat = r"\b" + r"\s+".join(map(re.escape, words.split())) + r"\b"
     hit = [r for r in rows if re.search(pat, r[1], re.I)]
     cats = sorted({c[:3] for c, _ in hit})
     print(f"  {words!r:<20} {total:>4} matches, {len(hit):>4} with the phrase, categories {cats[:6]}"
-          + (" ..." if len(cats) > 6 else ""))
+          + (" ..." if len(cats) > 6 else "") + (f" (PARTIAL: first {len(rows):,} of {total:,})" if total > len(rows) else ""))
 for code in ["E11.9", "J45.909", "U07.1", "E11", "e119"]:
     print(f"  {code!r:<9} -> {name_of(code)!r}")
 
@@ -406,17 +465,17 @@ n1 = calls
 search("type 2 diabetes")
 name_of("E11.9")
 print(f"\nnetwork calls {n1}, then {calls - n1} more for 2 repeated lookups (cache hits so far: {hits}, cache {CACHE_DIR})")
-print("Source: ICD-10-CM via the NLM Clinical Table Search Service. Search aid only, not coding or medical advice.")
+print(f"Source: ICD-10-CM (data version {version}) via the NLM Clinical Table Search Service. Search aid only, not coding or medical advice.")
 ```
 
-Output (from the run on 2026-11-16, 23:33 UTC):
+Output (from the run on 2026-11-17, 00:39 UTC):
 
 ```text
 robots.txt: HTTP 404
 robots /api/icd10cm/v3/search?sf=code,name&terms=x allowed for all 11 agents
 robots /api/conditions/v3/search?terms=x          allowed for all 11 agents
 
-table size: 74,879 codes
+ICD-10-CM data version 2027 (74,879 records on the home page); table size: 74,879 codes
   'type 2 diabetes'      94 matches,   93 with the phrase, categories ['E11', 'O24']
   'asthma'               19 matches,   19 with the phrase, categories ['J45', 'J82', 'Z82']
   'migraine with aura'   24 matches,    8 with the phrase, categories ['G43']
@@ -428,8 +487,8 @@ table size: 74,879 codes
   'E11'     -> None
   'e119'    -> None
 
-network calls 11, then 0 more for 2 repeated lookups (cache hits so far: 2, cache ~/.cache/icd-10-cm-skill)
-Source: ICD-10-CM via the NLM Clinical Table Search Service. Search aid only, not coding or medical advice.
+network calls 12, then 0 more for 2 repeated lookups (cache hits so far: 2, cache ~/.cache/icd-10-cm-skill)
+Source: ICD-10-CM (data version 2027) via the NLM Clinical Table Search Service. Search aid only, not coding or medical advice.
 ```
 
 ### 4. curl, headers and mistakes
@@ -489,14 +548,14 @@ Bad request:  See main page for documentation. <- HTTP 400
 
 ## Gotchas
 
-- **Quote the data version.** The home page lists ICD-10-CM as "From CDC", "Data version: 2027; 74,879 records" (block 2 reads it live; an empty `terms=` gives the same 74,879). Store the version with every answer.
+- **Quote the data version.** The home page lists ICD-10-CM as "From CDC", "Data version: 2027; 74,879 records" (blocks 1 and 3 read it from the home page HTML and print it, block 2 from the rendered page; an empty `terms=` gives the same 74,879). Store the version with every answer.
 - **Positional array.** Read `d[0]` (total), `d[1]` (codes), `d[3]` (`[code, name]` rows). `d[2]` is `null` without `ef`. The blocks check the shape and stop if it changes.
 - **Prefix words, ANDed, any order.** "type 2" alone returned 111 codes including "Neurofibromatosis, type 2" and "Von Willebrand disease, type 2A". "migraine with aura" returned 24 codes, 6 of which never contain the word "with" (G43.009 "Migraine without aura, not intractable, without status migrainosus"). Word forms do not match: none of the 80 "hypertension" codes starts with "Hypertensive", so I11.9 "Hypertensive heart disease without heart failure" is missed; "hypertensive" has 35 codes. Filter the rows yourself (block 1 checks the phrase) and try both word forms.
 - **The table holds the codes, not the category headers.** E11 and I21.0 are not records (`q=code:E11` -> 0); `terms=E11` with `sf=code` is a prefix search that lists the 87 E11.xx codes. A code like S72.001 lists 16 codes with 7th characters (S72.001A, S72.001B, ...).
 - **Codes need their dot.** `E119` -> 0, `E11.9` -> 1. Case does not matter (`e11.9` works).
 - **Server order is not a recommendation.** For "type 2 diabetes" E11.65 came first and E11.9 second; for "hypertension" I10 was 8th. Neither the order nor the first hit says which code fits a case.
 - **Lay words need the conditions table.** It is a hand-edited list of 2,418 conditions with "suggested ICD-10-CM codes" (its doc page). It covers common conditions ("heart attack", "high blood pressure") but not everything: "broken hip" and "diabtes" returned 0. Treat its codes as suggestions and confirm them in the ICD-10-CM table, as block 1 does.
-- **Totals.** The API doc says the total "is limited to 10,000"; `terms=a` reported 30,751 here, so do not rely on either. Only the first 7,500 matches of one query can be paged.
+- **Totals.** The API doc says the total "is limited to 10,000"; `terms=a` reported 30,751 here, so do not rely on either. Only the first 7,500 matches of one query can be paged; blocks 1 and 3 print "PARTIAL" when the total is larger.
 - **The `Date` header can be days old.** A request on 2026-11-16 got `Date: Fri, 06 Nov 2026 09:19:07 GMT` and another `Sun, 15 Nov 2026 20:29:37 GMT`, both with `ctss-info: h=06`; an answer with `h=05` carried the current date. Record your own clock for "accessed".
 - **Not coding or medical advice.** The service is a search aid for code names. Which code fits a patient depends on the record and the official coding rules; ask a certified coder or clinician.
 - **Tab marker.** The harness sets the tab title to a horse emoji; the blocks check `location.origin` and the JSON, not the title.
@@ -504,5 +563,5 @@ Bad request:  See main page for documentation. <- HTTP 400
 ## What does not work
 
 - **Plain-language or misspelled searches in the code table.** No synonyms, no fuzzy matching: "heart attack", "high blood pressure", "sprained ankle" and "diabtes" all return 0. Use clinical words or the conditions table.
-- **More than 7,500 matches for one query, or more than 500 per page**: HTTP 400. Narrow the words instead.
+- **Paging past 7,500 matches, or more than 500 per page**: HTTP 400. A query can report a larger total, but only its first 7,500 rows can be read; the blocks mark such an answer as partial.
 - **Not tested:** rate-limit behaviour (never provoked), the FHIR ValueSet `$expand` access the API doc mentions, ICD-10-CM data downloads, and code systems other than ICD-10-CM and the conditions table.
