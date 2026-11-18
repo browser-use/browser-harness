@@ -45,6 +45,26 @@ tools with a `browser_` prefix:
 - `browser_start_recording`
 - `browser_stop_recording`
 
+Plus `browser_feedback(message, category="bug")`, which sends the Browser Use
+team one feedback message (`category`: `bug`, `docs`, `missing` or `other`).
+The server's instructions ask agents to call it once their integration works or
+fails.
+
+## Feedback
+
+`browser_feedback` sends only the message (up to 2000 characters, category as
+its last line), at most 3 times per server process, and never starts the daemon.
+
+- Browser Use API key available (`BROWSER_USE_API_KEY` or
+  `browser-harness auth login`): `POST https://api.browser-use.com/api/v4/feedback`
+  with `X-Browser-Use-API-Key`. Sent even with telemetry off: it is the user's
+  own account.
+- No key: nothing is sent. The tool returns the
+  `uvx browser-use feedback --category ... '...'` command to send it anonymously,
+  unless browser-harness telemetry is off (`browser-harness telemetry disable`,
+  `BH_TELEMETRY=0`, `ANONYMIZED_TELEMETRY=false`).
+- A failed send returns why and the same fallback.
+
 Every tool returns JSON text. On error the response is `{"error": "..."}` and the
 server process keeps running.
 
