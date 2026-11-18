@@ -22,4 +22,7 @@ def _runtime_in_tmp(tmp_path, monkeypatch):
     from browser_harness import _ipc, daemon
     monkeypatch.setattr(daemon, "STATE", tmp_path / "owners.json")
     monkeypatch.setattr(_ipc, "_RUNTIME", tmp_path)
+    # Daemons the tests spawn (integration tests) read the dir from the env: without it they listen in the real
+    # runtime dir while this process pings tmp_path, so start_remote_daemon() never sees them come up.
+    monkeypatch.setenv("BH_RUNTIME_DIR", str(tmp_path))
     monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION", raising=False)  # tests may themselves run inside a sub-agent
