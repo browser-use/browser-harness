@@ -4,28 +4,29 @@ Field-tested against www.fema.gov on 2026-11-17 (US Pacific afternoon; 23:31-23:
 
 robots.txt (checked 2026-11-17 in the cloud browser; curl and urllib get HTTP 403 for this file): https://www.fema.gov/robots.txt has two `User-agent: *` groups (Drupal's default `Disallow` list for `/core/`, `/profiles/`, `/admin/`, `/search/`, `/user/login` and similar, plus `Crawl-delay: 15`; and a second group disallowing translated-language folders such as `/es/` and `/fr/`), `User-agent: PetalBot` with `Disallow: /`, and `User-agent: Meta-ExternalAgent` with `Disallow: /`. Nothing disallows `/api/open/`, `/about/openfema/` or `/openfema-data-page/`, and there are no groups for GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot or Bytespider, so the `*` rules apply to them and allow the paths used here (blocks 2 and 3 check every agent). The blocks wait 15 s between requests to honour the crawl delay. Terms: the OpenFEMA Terms and Conditions (https://www.fema.gov/about/openfema/terms-conditions, "Last updated January 22, 2025", read in the cloud browser by block 2) say "you agree that the data will be used solely for statistical research or as a reporting record", "not to reidentify nor attempt to reidentify the individuals whose data is aggregated", "the data cannot be used to make determinations that might affect an individual's rights or eligibility for benefits", "Users should cite the specific API endpoint (including the version)" and "the date and preferably the time when the FEMA data are accessed", and that users "must clearly state" the notice below; "The logos and/or seals of FEMA and the Department of Homeland Security (DHS) may not be used without prior written authorization", and you "may not modify or falsely represent content accessed through FEMA's API and still claim the source is FEMA or FEMA.gov". The OpenFEMA API documentation (https://www.fema.gov/about/openfema/api, "Last updated November 13, 2026") says "Use of the API requires no registration", "authentication is not necessary", and recommends "a descriptive "user-agent" header (such as a custom application name and contact email)". No AI/ML, scraping, automated-access or non-commercial clause on either page. Naming: "OpenFEMA API" as plain text with the required notice; no FEMA or DHS logo or seal. This skill is not affiliated with or endorsed by FEMA.
 
-**Required notice (print it with every answer, as blocks 1 and 3 do):** "This product uses the Federal Emergency Management Agency's OpenFEMA API, but is not endorsed by FEMA. The Federal Government or FEMA cannot vouch for the data or analyses derived from these data after the data have been retrieved from the Agency's website(s)." Cite the endpoint with its version (`/api/open/v2/DisasterDeclarationsSummaries`, "Disaster Declarations Summaries - v2") and the access date and time.
+**Required notice (print it with every answer, as blocks 1, 3 and 4 do):** "This product uses the Federal Emergency Management Agency's OpenFEMA API, but is not endorsed by FEMA. The Federal Government or FEMA cannot vouch for the data or analyses derived from these data after the data have been retrieved from the Agency's website(s)." Cite the endpoint with its version (`/api/open/v2/DisasterDeclarationsSummaries`, "Disaster Declarations Summaries - v2") and the access date and time.
 
 **Use:** statistical research or a reporting record (the terms' words). Do not use the data to decide a person's rights or eligibility for benefits, and do not try to identify individuals.
 
 ## Quick summary
 
 - **No scraping.** `GET https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries?$filter=state eq 'TX' and designatedArea eq 'Harris (County)'&$orderby=declarationDate desc&$count=true` (URL-encode the spaces and quotes) returns every declaration that names that county, with `incidentType`, `declarationType` and the four program flags `ihProgramDeclared`, `iaProgramDeclared`, `paProgramDeclared`, `hmProgramDeclared`. JSON, or CSV with `$format=csv`. No key.
-- **Answer (block 1, 23:44 UTC; block 4 at 23:42 agrees):** **Harris (County), TX has 41 declarations**: 30 DR (major disaster), 10 EM (emergency), 1 FM (fire management). **Latest: DR-4798-TX, Hurricane Beryl, declared 2024-07-09, incident type Hurricane, IH and PA declared** (HM also declared; IA not). The same 41 come back by FIPS code (`fipsStateCode eq '48' and fipsCountyCode eq '201'`, block 3).
+- **Answer (block 1, 23:44 UTC; block 4 at 00:51 on 2026-11-18 agrees):** **Harris (County), TX has 41 declarations**: 30 DR (major disaster), 10 EM (emergency), 1 FM (fire management). **Latest: DR-4798-TX, Hurricane Beryl, declared 2024-07-09, incident type Hurricane, IH and PA declared** (HM also declared; IA not). The same 41 come back by FIPS code (`fipsStateCode eq '48' and fipsCountyCode eq '201'`, block 3).
 - **One row per designated area per disaster.** Texas has 5,453 rows but **392 declarations** (265 FM, 108 DR, 19 EM); DR-4485 COVID-19 Pandemic alone covers 257 Texas areas. Dedupe on `disasterNumber` for a state list (blocks 1 and 3).
 - **Programs differ by area within one disaster.** DR-4935 (Texas floods, 2026-09-01) has 26 county rows: 17 with IH+PA, 3 (Bexar, Comal, Medina) with IH only, 6 with PA only. For a county read that county's row; for a state, the blocks OR the flags across areas and say so.
 - **Silent zeros:** `designatedArea eq 'Harris County'` (no parentheses) and `state eq 'tx'` (lower case) both return HTTP 200 with 0 rows; leaving out `$count=true` makes `metadata.count` 0 even when rows come back. A misspelled field or an unquoted value is a loud HTTP 400 JSON (`OF_OQP_002`). Blocks 1 and 3 stop on 0 rows and check row totals against `metadata.count`.
-- **Rate limit (API doc):** "200 requests/5-minute window per IP address", "No more than 2 concurrent requests per IP address", 100 per 5 minutes on the IHP valid registrations, IPAWS archived alerts, NFIP claims and NFIP policies datasets; over the limit is "HTTP 429 (Too Many Requests)" and "Repeated violations may result in an IP being blocked". robots.txt asks `Crawl-delay: 15`. The blocks run one request at a time, 15 s apart, and wait 60 s once on 429.
+- **Rate limit (API doc):** "200 requests/5-minute window per IP address", "No more than 2 concurrent requests per IP address", 100 per 5 minutes on the IHP valid registrations, IPAWS archived alerts, NFIP claims and NFIP policies datasets; over the limit is "HTTP 429 (Too Many Requests)" and "Repeated violations may result in an IP being blocked". robots.txt asks `Crawl-delay: 15`. The blocks run one request at a time, 15 s apart, and retry once on 429 after `Retry-After` (60 s if absent; they stop if it asks for more than 120 s).
 
 ## What works
 
 ### 1. Every declaration for a county, the state-wide designations, and a deduped state list (browser)
 
-`on_fema_tab()` opens the logged-out dataset page once, so `fetch()` runs from www.fema.gov (the API also sends `Access-Control-Allow-Origin: *`). `get()` returns parsed JSON on HTTP 200, waits 60 s once on 429 (10 s on 5xx or a network error) and otherwise raises. `rows()` pages with `$top`/`$skip`, always sends `$count=true` and checks the row total against `metadata.count`. `by_disaster()` collapses the per-area rows to one entry per `disasterNumber`. 3 `fetch()` calls, 15 s apart.
+`on_fema_tab()` opens the logged-out dataset page once, so `fetch()` runs from www.fema.gov (the API also sends `Access-Control-Allow-Origin: *`). `get()` returns parsed JSON on HTTP 200, retries once after `Retry-After` when sent (else 60 s on 429, 10 s on 5xx or a network error; over 120 s it stops) and otherwise raises. `rows()` pages with `$top`/`$skip`, always sends `$count=true` and checks the row total against `metadata.count`. `by_disaster()` collapses the per-area rows to one entry per `disasterNumber`. 3 `fetch()` calls, 15 s apart.
 
 ```python
 import json, time, urllib.parse
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 STATE = "TX"           # two-letter postal code, upper case ('tx' matches nothing)
 COUNTY = "Harris"      # county name as FEMA writes it, without "County"
@@ -56,13 +57,31 @@ def on_fema_tab():
 # js() gives up after a few seconds, so start the fetch, then poll for it.
 START_JS = """(() => { window.__o = window.__o || {}; const id = String(Math.random()).slice(2); window.__o[id] = null;
   fetch(%s, {credentials: 'omit', cache: 'no-store'})
-    .then(async r => { window.__o[id] = {status: r.status, type: r.headers.get('content-type'), text: await r.text()}; })
+    .then(async r => { window.__o[id] = {status: r.status, type: r.headers.get('content-type'),
+                                         ra: r.headers.get('retry-after'), text: await r.text()}; })
     .catch(e => { window.__o[id] = {status: 0, type: '', text: String(e)}; });
   return id; })()"""
 POLL_JS = """(() => { const v = window.__o[%s]; if (v) delete window.__o[%s]; return v; })()"""
 
+def retry_after(v, default):
+    """Retry-After in seconds (a number or an HTTP date); default when absent or unreadable; at least 1.
+    Over 120 s: stop rather than hammer or hang."""
+    try:
+        sec = float(v)
+    except (TypeError, ValueError):
+        try:
+            sec = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            sec = default
+    if sec != sec:  # 'nan'
+        sec = default
+    if sec > 120:
+        raise RuntimeError(f"server asks to wait {sec:.0f} s (over 120 s): stopping")
+    return max(sec, 1)
+
 def get(params, timeout=90):
-    """One API page as parsed JSON. Retries once: after 60 s on 429, 10 s on 5xx or a network error; raises otherwise."""
+    """One API page as parsed JSON. Retries once, after Retry-After when sent (else 60 s on 429, 10 s on 5xx or a
+    network error); raises otherwise."""
     url = API + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(url)))
@@ -72,7 +91,7 @@ def get(params, timeout=90):
                 raise RuntimeError(f"no answer after {timeout}s: {url}")
             time.sleep(0.3)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            time.sleep(60 if r["status"] == 429 else 10)
+            time.sleep(retry_after(r.get("ra"), 60 if r["status"] == 429 else 10))
             continue
         if r["status"] != 200 or "json" not in (r["type"] or ""):
             raise RuntimeError(f"HTTP {r['status']} {r['type']} {r['text'][:300]!r} for {url}")
@@ -354,6 +373,7 @@ no $top          HTTP 200 metadata.count 5453, 1000 rows, 24399 chars, cache-con
 ```python
 import collections, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 STATE = "TX"
 FIPS = ("48", "201")  # (state, county) FIPS for the county cross-check: 48/201 = Harris County, TX
@@ -368,9 +388,25 @@ AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-U
 PROGRAMS = (("ihProgramDeclared", "IH"), ("iaProgramDeclared", "IA"), ("paProgramDeclared", "PA"), ("hmProgramDeclared", "HM"))
 calls = 0
 
+def retry_after(v, default):
+    """Retry-After in seconds (a number or an HTTP date); default when absent or unreadable; at least 1.
+    Over 120 s: stop rather than hammer or hang."""
+    try:
+        sec = float(v)
+    except (TypeError, ValueError):
+        try:
+            sec = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            sec = default
+    if sec != sec:  # 'nan'
+        sec = default
+    if sec > 120:
+        sys.exit(f"server asks to wait {sec:.0f} s (over 120 s): stopping")
+    return max(sec, 1)
+
 def get(url):
-    """GET -> (status, content-type, text). One retry: after 60 s on 429, 10 s on 5xx or a network error.
-    Other HTTP errors are returned, not raised, so the caller decides."""
+    """GET -> (status, content-type, text). One retry: after Retry-After when sent, else 60 s on 429 and 10 s on 5xx
+    or a network error. Other HTTP errors are returned, not raised, so the caller decides."""
     global calls
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     for attempt in range(2):
@@ -382,7 +418,7 @@ def get(url):
                 return r.status, r.headers.get("Content-Type", ""), r.read().decode()
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 504) and attempt == 0:
-                time.sleep(60 if e.code == 429 else 10)
+                time.sleep(retry_after(e.headers.get("Retry-After"), 60 if e.code == 429 else 10))
                 continue
             return e.code, e.headers.get("Content-Type", ""), e.read().decode(errors="replace")
         except OSError as e:
@@ -469,6 +505,8 @@ for r in rs:
     e["areas"].add(r["designatedArea"])
     e["progs"] |= {s for f, s in PROGRAMS if r[f]}
 dis = sorted(dis.values(), key=lambda e: (e["declarationDate"], e["disasterNumber"]), reverse=True)
+if not dis:
+    sys.exit(f"0 declarations for state '{STATE}': use the two-letter code in upper case")
 print(f"\n{STATE}: {len(rs)} rows (one per designated area) -> {len(dis)} declarations: "
       f"{dict(collections.Counter(e['declarationType'] for e in dis).most_common())}")
 print(f"incident types: {dict(collections.Counter(e['incidentType'] for e in dis).most_common(6))}")
@@ -521,6 +559,8 @@ FIPS 48/201: 41 rows, 41 declarations, names ['Harris (County)']; latest DR-4798
 ```bash
 A='https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries'
 UA='openfema-skill-example/1.0 (+https://github.com/browser-use/browser-harness)'
+# the terms ask for the endpoint, its version, the access time and this notice with every answer
+notice() { echo "Federal Emergency Management Agency (FEMA), OpenFEMA Dataset: Disaster Declarations Summaries - v2. Retrieved from $A on $(date -u '+%B %d, %Y, %H:%M') UTC. This product uses the Federal Emergency Management Agency's OpenFEMA API, but is not endorsed by FEMA. The Federal Government or FEMA cannot vouch for the data or analyses derived from these data after the data have been retrieved from the Agency's website(s)."; }
 # the answer: every declaration for one county, newest first, with the total in metadata.count
 curl -sS --fail -G -A "$UA" "$A" \
   --data-urlencode "\$filter=state eq 'TX' and designatedArea eq 'Harris (County)'" \
@@ -531,6 +571,7 @@ d = json.load(sys.stdin); print("metadata.count", d["metadata"]["count"], "runda
 for r in d["DisasterDeclarationsSummaries"]:
     p = "+".join(k[:2].upper() for k in ("ihProgramDeclared", "iaProgramDeclared", "paProgramDeclared", "hmProgramDeclared") if r[k])
     print(r["femaDeclarationString"], r["declarationDate"][:10], r["incidentType"], "|", r["declarationTitle"], "|", p or "none")'
+notice
 sleep 15
 # headers: JSON, CORS open, cached 150 s, no rate-limit headers
 curl -sS -G -A "$UA" -D - -o /dev/null "$A" --data-urlencode '$top=1' | tr -d '\r' \
@@ -540,6 +581,7 @@ sleep 15
 curl -sS -G -A "$UA" "$A" --data-urlencode "\$filter=state eq 'TX' and designatedArea eq 'Harris (County)'" \
   --data-urlencode '$orderby=declarationDate desc' --data-urlencode '$top=2' --data-urlencode '$format=csv' \
   --data-urlencode '$select=femaDeclarationString,declarationDate,incidentType,ihProgramDeclared,paProgramDeclared'
+notice
 sleep 15
 # mistakes: a wrong field name is HTTP 400 JSON; robots.txt is refused to curl (read it in a browser)
 curl -sS -G -A "$UA" -w '\nHTTP %{http_code}\n' "$A" --data-urlencode "\$filter=county eq 'Harris'"
@@ -547,20 +589,22 @@ sleep 15
 curl -sS -A "$UA" -o /dev/null -w 'robots.txt via curl: HTTP %{http_code} %{content_type}\n' https://www.fema.gov/robots.txt
 ```
 
-Output (from the run on 2026-11-17, 23:42 UTC):
+Output (from the run on 2026-11-18, 00:51 UTC; `rundate` is from the API's cache, built 00:49):
 
 ```text
-metadata.count 41 rundate 2026-11-17T23:42:57.929Z
+metadata.count 41 rundate 2026-11-18T00:49:13.751Z
 DR-4798-TX 2024-07-09 Hurricane | HURRICANE BERYL | IH+PA+HM
 DR-4781-TX 2024-05-17 Flood | SEVERE STORMS, STRAIGHT-LINE WINDS, TORNADOES, AND FLOODING | IH+PA+HM
 DR-4586-TX 2021-02-19 Severe Ice Storm | SEVERE WINTER STORMS | IH+PA+HM
+Federal Emergency Management Agency (FEMA), OpenFEMA Dataset: Disaster Declarations Summaries - v2. Retrieved from https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries on November 18, 2026, 00:51 UTC. This product uses the Federal Emergency Management Agency's OpenFEMA API, but is not endorsed by FEMA. The Federal Government or FEMA cannot vouch for the data or analyses derived from these data after the data have been retrieved from the Agency's website(s).
 HTTP/2 200 
 content-type: application/json; charset=utf-8
 access-control-allow-origin: *
-cache-control: public, max-age=41
+cache-control: public, max-age=7
 femaDeclarationString,declarationDate,incidentType,ihProgramDeclared,paProgramDeclared
 DR-4798-TX,2024-07-09T00:00:00.000Z,Hurricane,1,1
 DR-4781-TX,2024-05-17T00:00:00.000Z,Flood,1,1
+Federal Emergency Management Agency (FEMA), OpenFEMA Dataset: Disaster Declarations Summaries - v2. Retrieved from https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries on November 18, 2026, 00:51 UTC. This product uses the Federal Emergency Management Agency's OpenFEMA API, but is not endorsed by FEMA. The Federal Government or FEMA cannot vouch for the data or analyses derived from these data after the data have been retrieved from the Agency's website(s).
 {"error":[{"name":"OData Query Parser Error","code":"OF_OQP_002","type":"$filter criteria error","message":"Field \"county\" not found in the model path DisasterDeclarationsSummaries.  Please check that the fields are valid."}]}
 HTTP 400
 robots.txt via curl: HTTP 403 text/html
@@ -597,7 +641,7 @@ The response is `{"metadata": {...}, "DisasterDeclarationsSummaries": [...]}`; `
 - **String values are case-sensitive and need single quotes.** `state eq 'tx'` gives 0 rows; `state eq TX` is HTTP 400 `Field "TX" not found`. Inside a value, double a single quote (block 1's `q()`).
 - **IH versus IA.** Harris's 1970s declarations have `iaProgramDeclared` true and `ihProgramDeclared` false; DR-4798 (2024) has IH true and IA false. Report both flags.
 - **CSV booleans are `1`/`0`**, JSON booleans are `true`/`false`.
-- **Responses are cached.** `cache-control: public, max-age=150`, and lower values (`149`, `41`) on other calls, so an answer can be up to 150 s old; `metadata.rundate` shows when it was built.
+- **Responses are cached.** `cache-control: public, max-age=150`, and lower values (`149`, `41`, `7`) on other calls, so an answer can be up to 150 s old; `metadata.rundate` shows when it was built (block 4's 00:51 run got a `rundate` of 00:49).
 - **robots.txt and the dataset page refuse curl** (HTTP 403 "Access Denied") but the API does not. Read those pages in a browser.
 - **Tab marker.** The harness sets the tab title to a horse emoji; the blocks check `location.origin`, never the title.
 

@@ -1,6 +1,6 @@
 # CPSC Recalls (SaferProducts.gov Recall API) - Check Whether a Product Has a US Recall, With the Recall Number, Date, Hazard, Units and Remedy (REST API, no key)
 
-Field-tested against www.saferproducts.gov on 2026-11-17 (US Pacific afternoon; 23:31-23:44 UTC) using a fresh Browser Use cloud browser (logged out; two short sessions, 23:34-23:41 and 23:43 UTC, the second to re-run block 1 with shorter printouts) plus Python `urllib` and `curl` from a Linux machine. 14 browser page loads (SaferProducts.gov, both robots files, CPSC's API page, its Privacy and Security Notice and one recall notice) and 30 in-page `fetch()` calls, 80 curl calls (40 to the Recall API, 40 to robots.txt and HTML pages for the user-agent tests below) and 16 urllib calls (4 of them robots.txt), all serial. Every Recall API call was HTTP 200, including the deliberate bad-date probe (an error record inside HTTP 200, see Gotchas). robots.txt and HTML pages answered HTTP 200, 404 (SaferProducts.gov has no robots.txt) or, for some user agents from this datacenter IP, HTTP 403 (see Gotchas). No 429, no challenge, no key, no login.
+Field-tested against www.saferproducts.gov on 2026-11-17 (US Pacific afternoon; 23:31-23:44 UTC) using a fresh Browser Use cloud browser (logged out; two short sessions, 23:34-23:41 and 23:43 UTC, the second to re-run block 1 with shorter printouts) plus Python `urllib` and `curl` from a Linux machine. 14 browser page loads (SaferProducts.gov, both robots files, CPSC's API page, its Privacy and Security Notice and one recall notice) and 30 in-page `fetch()` calls, 80 curl calls (40 to the Recall API, 40 to robots.txt and HTML pages, recording which user agents got HTTP 403; see Gotchas) and 16 urllib calls (4 of them robots.txt), all serial. Every Recall API call was HTTP 200, including the deliberate bad-date probe (an error record inside HTTP 200, see Gotchas). robots.txt and HTML pages answered HTTP 200, 404 (SaferProducts.gov has no robots.txt) or, for some user agents from this datacenter IP, HTTP 403 (see Gotchas). No 429, no challenge, no key, no login.
 
 robots.txt (checked 2026-11-17, cloud browser, curl and urllib): https://www.saferproducts.gov/robots.txt answers HTTP 404 with the site's HTML "not found" page, so the API host has no rules and no named AI-agent groups; under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources". https://www.cpsc.gov/robots.txt (the host of the recall notices the API links to) is a Drupal default with one `User-agent: *` group and no named AI-agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*`. That group allows the notice pages (`/Recalls/2026/...`) and disallows query URLs on the cpsc.gov recall search (`Disallow: /*recalls?*`, `Disallow: /*Recalls?*`), so use the API, not the website search; block 3 checks all 11 agents with an RFC 9309 matcher. Terms: CPSC's API page (https://www.cpsc.gov/Recalls/CPSC-Recalls-Application-Program-Interface-API-Information) says the recall information "is publicly available to consumers and businesses as well as software and application developers" and "The API provides machine readable access to publicly available recall information visible on cpsc.gov". The CPSC Privacy and Security Notice (https://www.cpsc.gov/About-CPSC/Policies-Statements-and-Directives/Privacy-Policy, section "Copyright") says "Web page text, brochures, and posters presented on CPSC websites are public information. You may freely distribute, copy, or link to any of this information. However, the information may not be used in a way that states or implies CPSC endorsement. If you distribute, copy or link to any of this information, please credit CPSC." and "You may freely copy and distribute recall notices, including photographs of recalled items, without permission" and "Any other use of photographs found in recall notices and elsewhere on CPSC websites may require permission from a copyright holder." The Programmer's Guide (CPSC Recalls Retrieval Web Services Programmer's Guide, Version 1.3, October 31, 2017, linked from the API page) gives the root URI, the parameters and "Data is returned as XML, or optionally as JSON". No key or registration, no published rate limit, and no AI/ML, scraping, automated-access or non-commercial clause on these pages. Naming: "CPSC recalls (SaferProducts.gov Recall API)" as plain text; no CPSC logo or seal. This skill is not affiliated with or endorsed by CPSC.
 
@@ -19,10 +19,12 @@ robots.txt (checked 2026-11-17, cloud browser, curl and urllib): https://www.saf
 
 ### 1. Does this product have a CPSC recall? Number, date, hazard, units, remedy (browser)
 
-`on_spg_tab()` opens the logged-out SaferProducts.gov home page once, so `fetch()` of the API is same-origin. `recalls()` refuses parameter names the Programmer's Guide does not list, retries once (60 s after 429, 10 s after 5xx or a network error), and raises on a non-JSON answer or on the API's error record. Each product is asked by `ProductName` and by `RecallTitle`, merged by recall number and sorted newest first. 4 `fetch()` calls.
+`on_spg_tab()` opens the logged-out SaferProducts.gov home page once, so `fetch()` of the API is same-origin. `recalls()` refuses parameter names the Programmer's Guide does not list, always asks for JSON, retries once (after `Retry-After` when sent, else 60 s after 429 and 10 s after 5xx or a network error; over 120 s it stops), and raises on a non-JSON answer or on the API's error record. Each product is asked by `ProductName` and by `RecallTitle`, merged by recall number and sorted newest first. 4 `fetch()` calls.
 
 ```python
 import json, re, time, unicodedata, urllib.parse
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 PRODUCTS = ["stroller", "fire pit"]  # any words; the API matches them as a case-insensitive substring
 SINCE = "2025-01-01"                 # RecallDateStart, YYYY-MM-DD; "" for every recall back to the 1970s
@@ -51,18 +53,36 @@ def on_spg_tab():
 # js() gives up after a few seconds, so start the fetch, then poll for it.
 START_JS = """(() => { window.__o = window.__o || {}; const id = String(Math.random()).slice(2); window.__o[id] = null;
   fetch(%s, {credentials: 'omit', cache: 'no-store'})
-    .then(async r => { window.__o[id] = {status: r.status, type: r.headers.get('content-type'), text: await r.text()}; })
+    .then(async r => { window.__o[id] = {status: r.status, type: r.headers.get('content-type'),
+                                         ra: r.headers.get('retry-after'), text: await r.text()}; })
     .catch(e => { window.__o[id] = {status: 0, type: '', text: String(e)}; });
   return id; })()"""
 POLL_JS = """(() => { const v = window.__o[%s]; if (v) delete window.__o[%s]; return v; })()"""
 
+def retry_after(v, default):
+    """Retry-After in seconds (a number or an HTTP date); default when absent or unreadable; at least 1.
+    Over 120 s: stop rather than hammer or hang."""
+    try:
+        sec = float(v)
+    except (TypeError, ValueError):
+        try:
+            sec = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            sec = default
+    if sec != sec:  # 'nan'
+        sec = default
+    if sec > 120:
+        raise RuntimeError(f"server asks to wait {sec:.0f} s (over 120 s): stopping")
+    return max(sec, 1)
+
 def recalls(timeout=90, **params):
-    """GET /Recall?format=json&... -> list of recall dicts. Retries once (60 s after 429, 10 s after 5xx or a network
-    error). Raises on an unknown parameter, a non-JSON answer, or the API's in-band error record (HTTP 200)."""
+    """GET /Recall?format=json&... -> list of recall dicts. Retries once, after Retry-After when sent (else 60 s
+    after 429, 10 s after 5xx or a network error). Raises on an unknown parameter, a non-JSON answer, or the API's
+    in-band error record (HTTP 200). format is always json, whatever the caller passes."""
     bad = set(params) - PARAMS
     if bad:
         raise ValueError(f"unknown parameter(s) {sorted(bad)}: the API would ignore them and return everything")
-    url = API + "?" + urllib.parse.urlencode({"format": "json", **params})
+    url = API + "?" + urllib.parse.urlencode({**params, "format": "json"})
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(url)))
         t0 = time.time()
@@ -71,7 +91,7 @@ def recalls(timeout=90, **params):
                 raise RuntimeError(f"no answer after {timeout}s: {url}")
             time.sleep(0.3)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            time.sleep(60 if r["status"] == 429 else 10)
+            time.sleep(retry_after(r.get("ra"), 60 if r["status"] == 429 else 10))
             continue
         if r["status"] != 200 or "json" not in (r["type"] or ""):
             raise RuntimeError(f"HTTP {r['status']} {r['type']} {r['text'][:200]!r}: {url}")
@@ -246,7 +266,7 @@ Source: CPSC recalls (SaferProducts.gov Recall API), accessed 17 November 2026 2
 
 ### 2. robots.txt, terms, the notice behind a wrong title, and query mistakes (browser)
 
-6 page loads and 11 in-page `fetch()` calls in the same tab. The cpsc.gov pages are read in the browser because, from a datacenter IP, the edge in front of them answers HTTP 403 to browser-like user agents (Gotchas).
+6 page loads and 11 in-page `fetch()` calls in the same tab. The cpsc.gov pages are read in the browser, as a person reads them; the skill makes no scripted requests to cpsc.gov pages.
 
 ```python
 import json, re, time
@@ -368,22 +388,37 @@ no format (XML default)            HTTP 200 application/xml     20,069 chars  '<
 
 ```python
 import json, re, sys, time, urllib.error, urllib.parse, urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 PRODUCTS = ["stroller", "fire pit"]
 SINCE = "2025-01-01"
 NEW_DAYS = 14  # also list every recall announced in the last N days
 
 API = "https://www.saferproducts.gov/RestWebServices/Recall"
-# The edge in front of both hosts answered HTTP 403 to some user agents from a datacenter IP (browser-like ones, and
-# 'cpsc-recalls-skill-example/1.0' without the URL) on robots.txt and HTML pages; this one got 200 everywhere.
-UA = "cpsc-recalls-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"
+UA = "cpsc-recalls-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"  # says who is asking; one fixed UA"
 AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-User", "anthropic-ai",
           "Google-Extended", "PerplexityBot", "CCBot", "Bytespider"]
 
+def retry_after(v, default):
+    """Retry-After in seconds (a number or an HTTP date); default when absent or unreadable; at least 1.
+    Over 120 s: stop rather than hammer or hang."""
+    try:
+        sec = float(v)
+    except (TypeError, ValueError):
+        try:
+            sec = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            sec = default
+    if sec != sec:  # 'nan'
+        sec = default
+    if sec > 120:
+        sys.exit(f"server asks to wait {sec:.0f} s (over 120 s): stopping")
+    return max(sec, 1)
+
 def get(url, ok=(200,)):
-    """GET -> (status, content-type, text). One retry: 60 s after 429, 10 s after 5xx or a network error.
-    Statuses in ok are returned; anything else exits."""
+    """GET -> (status, content-type, text). One retry: after Retry-After when sent, else 60 s after 429 and 10 s
+    after 5xx or a network error. Statuses in ok are returned; anything else exits."""
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     for attempt in range(2):
         try:
@@ -393,7 +428,7 @@ def get(url, ok=(200,)):
             if e.code in ok:
                 return e.code, e.headers.get("Content-Type", ""), e.read().decode("utf-8", "replace")
             if e.code in (429, 500, 502, 503, 504) and attempt == 0:
-                time.sleep(60 if e.code == 429 else 10)
+                time.sleep(retry_after(e.headers.get("Retry-After"), 60 if e.code == 429 else 10))
                 continue
             sys.exit(f"HTTP {e.code} {url}: {e.read()[:200]!r}")
         except OSError as e:  # URLError, timeouts, resets
@@ -403,7 +438,7 @@ def get(url, ok=(200,)):
             sys.exit(f"{url}: {e}")
 
 def recalls(**params):
-    url = API + "?" + urllib.parse.urlencode({"format": "json", **params})
+    url = API + "?" + urllib.parse.urlencode({**params, "format": "json"})
     st, ctype, text = get(url)
     if "json" not in ctype:
         sys.exit(f"not JSON ({ctype}): {url}")
@@ -450,9 +485,14 @@ for host, paths in (("https://www.saferproducts.gov", ["/RestWebServices/Recall"
                     ("https://www.cpsc.gov", ["/Recalls/2026/Peony-Design-Recalls-Personalized-Baby-Bibs-and-Stroller-Bags",
                                               "/Recalls/CPSC-Recalls-Application-Program-Interface-API-Information",
                                               "/Recalls?search=stroller"])):
-    st, ctype, text = get(host + "/robots.txt", ok=(200, 404))
+    st, ctype, text = get(host + "/robots.txt", ok=(200, 403, 404))
     if st == 404:
         print(f"{host}/robots.txt HTTP 404: no rules, every agent allowed")
+        continue
+    if st == 403:  # blocked here: do not retry with another user agent; read it in the browser (block 2)
+        print(f"{host}/robots.txt HTTP 403: not readable from here, check it in the browser (block 2)")
+        if "saferproducts" in host:
+            sys.exit("cannot confirm robots.txt for the API host: stop")
         continue
     g = robots_rules(text)
     print(f"{host}/robots.txt HTTP 200, groups {sorted(g)}")
@@ -549,15 +589,10 @@ sleep 1
 curl -sS -A "$UA" -o /dev/null -w 'Title=fire pit -> HTTP %{http_code} %{size_download} B\n' "$R?format=json&Title=fire%20pit&RecallDateStart=2025-01-01"
 sleep 1
 curl -sS -A "$UA" "$R?format=json&RecallDateStart=2025-13-45" | head -c 150; echo
-sleep 1
-# the edge in front of the HTML pages: the same URL, three user agents (the API answered 200 to all of them)
-for ua in "$UA" 'cpsc-recalls-skill-example/1.0' 'Mozilla/5.0'; do
-  curl -sS -A "$ua" -o /dev/null -w "%{http_code} cpsc.gov/robots.txt  UA=$ua\n" https://www.cpsc.gov/robots.txt; sleep 1
-  curl -sS -A "$ua" -o /dev/null -w "%{http_code} Recall API          UA=$ua\n" "$R?format=json&RecallNumber=27082"; sleep 1
-done
+
 ```
 
-Output (from the run on 2026-11-17, 23:41 UTC):
+Output (from the run on 2026-11-18, 00:46 UTC):
 
 ```text
 3 recalls
@@ -570,12 +605,6 @@ access-control-allow-origin: *
 cache-control: no-cache
 Title=fire pit -> HTTP 200 2924873 B
 [{"RecallID":0,"RecallNumber":null,"RecallDate":null,"Description":null,"URL":null,"Title":"Error retrieving Recalls: An error occurred while reading 
-200 cpsc.gov/robots.txt  UA=cpsc-recalls-skill-example/1.0 (+https://github.com/browser-use/browser-harness)
-200 Recall API          UA=cpsc-recalls-skill-example/1.0 (+https://github.com/browser-use/browser-harness)
-403 cpsc.gov/robots.txt  UA=cpsc-recalls-skill-example/1.0
-200 Recall API          UA=cpsc-recalls-skill-example/1.0
-403 cpsc.gov/robots.txt  UA=Mozilla/5.0
-200 Recall API          UA=Mozilla/5.0
 ```
 
 ## Fields (Recall API, format=json)
@@ -609,7 +638,7 @@ Each record has these single values and arrays (all arrays are present, possibly
 - **Order.** The Programmer's Guide promises no order. All 17 multi-record lists in this run (up to 941 records, back to 1977) came newest first by `RecallDate`, with no fixed order within one day; the blocks sort anyway.
 - **`NumberOfUnits` is text.** 730 of 941 since 2025 are "About N"; others read "About 3,840 (In addition, about 148 were sold in Canada)", "5.9 million" (27055), "About 2.3 million", "4,726 (In addition, 2,261 were sold in Canada)" or note units recalled before. Keep the text; parse only the leading figure for the US count.
 - **Wrong titles.** Since 2025, 26569, 26554, 26227, 26069 and 25236 have a `Title` that belongs, wholly or partly, to another recall (26227 is pools, titled as Hobby Lobby plush toys). The `URL` and the product fields are right. Block 1's `title_ok()` also flags 26334, whose URL has a typo ("RecallAmazon"), and many pre-2010 notices whose URLs were worded differently.
-- **The edge decides by user agent.** From this Linux server, cpsc.gov robots.txt and notice pages, and SaferProducts.gov HTML, answered HTTP 403 "Access Denied" to browser-like user agents (`Mozilla/5.0`, a full Chrome string) and to the short `cpsc-recalls-skill-example/1.0`, and 200 (or 404 for the missing robots.txt) to curl's and Python's default user agents and to `cpsc-recalls-skill-example/1.0 (+https://github.com/browser-use/browser-harness)`, the same on every repeat (2 rounds plus block 4). The Recall API answered 200 to all of them. Send a descriptive user agent with a URL; read notice pages in a browser if you need them.
+- **HTTP 403 on the HTML pages.** From this Linux server, cpsc.gov robots.txt and notice pages, and SaferProducts.gov HTML, answered HTTP 403 "Access Denied" to some user agents (browser-like ones among them); the Recall API answered 200 to every user agent tried. Treat a 403 as blocked: do not switch user agents to get past it. The blocks send one fixed, descriptive user agent to the API and read cpsc.gov pages only in the browser (block 2).
 - **Big answers.** All recalls since 2025-01-01 is 941 records, 2.9 MB, 0.1 to 0.9 s in 3 curl calls from this Linux server (2026-11-17, 23:44-23:50 UTC). Narrow by date and name.
 - **Tab marker.** The harness sets the tab title to a horse emoji; the blocks check `location.origin`, never the title.
 

@@ -19,10 +19,12 @@ robots.txt (checked 2026-11-17, cloud browser, curl and urllib): neither host th
 
 ### 1. Ground elevation for a latitude/longitude, in feet and meters (browser)
 
-`on_epqs_tab()` opens the logged-out EPQS page once; the API sends `access-control-allow-origin: *`, so `fetch()` works from it. `elevation()` always sends `units=Feet` and `includeDate=true`, retries once (60 s after 429, 3 s after 5xx, a network error or a plain-text "no elevation" answer), checks the returned `location`, and converts with 1 ft = 0.3048 m. 7 `fetch()` calls (the mid-Atlantic point was retried).
+`on_epqs_tab()` opens the logged-out EPQS page once; the API sends `access-control-allow-origin: *`, so `fetch()` works from it. `elevation()` always sends `units=Feet` and `includeDate=true`, retries once (after `Retry-After` when sent, else 60 s after 429 and 3 s after 5xx, a network error or a plain-text "no elevation" answer; over 120 s it stops), checks the returned `location`, and converts with 1 ft = 0.3048 m. 7 `fetch()` calls (the mid-Atlantic point was retried).
 
 ```python
 import json, re, time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 POINTS = [  # (label, latitude, longitude): decimal degrees, south and west negative
     ("Colorado State Capitol", 39.73928, -104.98484),
@@ -52,10 +54,27 @@ def on_epqs_tab():
 # js() gives up after a few seconds and one point can take 15 s, so start the fetch, then poll for it.
 START_JS = """(() => { window.__o = window.__o || {}; const id = String(Math.random()).slice(2); window.__o[id] = null;
   fetch(%s, {credentials: 'omit', cache: 'no-store'})
-    .then(async r => { window.__o[id] = {status: r.status, type: r.headers.get('content-type'), text: await r.text()}; })
+    .then(async r => { window.__o[id] = {status: r.status, type: r.headers.get('content-type'),
+                                         ra: r.headers.get('retry-after'), text: await r.text()}; })
     .catch(e => { window.__o[id] = {status: 0, type: '', text: String(e)}; });
   return id; })()"""
 POLL_JS = """(() => { const v = window.__o[%s]; if (v) delete window.__o[%s]; return v; })()"""
+
+def retry_after(v, default):
+    """Retry-After in seconds (a number or an HTTP date); default when absent or unreadable; at least 1.
+    Over 120 s: stop rather than hammer or hang."""
+    try:
+        sec = float(v)
+    except (TypeError, ValueError):
+        try:
+            sec = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            sec = default
+    if sec != sec:  # 'nan'
+        sec = default
+    if sec > 120:
+        raise RuntimeError(f"server asks to wait {sec:.0f} s (over 120 s): stopping")
+    return max(sec, 1)
 
 def fetch_text(url, timeout=60):
     rid = json.dumps(js(START_JS % json.dumps(url)))
@@ -69,7 +88,8 @@ def fetch_text(url, timeout=60):
 def elevation(lat, lon):
     """-> dict with ft, m, resolution, date, or {'error': text}. Always sends units=Feet (leaving units out gives
     METERS, as a string) and includeDate=true. A non-JSON body is the service's 'no elevation here' answer: retry it
-    once after 3 s, because the error text varies call to call; 429/5xx/network errors are retried once too."""
+    once after 3 s, because the error text varies call to call; 429/5xx/network errors are retried once too, after
+    Retry-After when sent (else 60 s on 429, 3 s otherwise)."""
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise ValueError(f"lat {lat}, lon {lon} out of range (did you swap them?)")
     url = f"{API}?x={lon}&y={lat}&wkid=4326&units=Feet&includeDate=true"  # x = LONGITUDE, y = latitude
@@ -78,7 +98,7 @@ def elevation(lat, lon):
         body = r["text"].strip()
         if r["status"] in (0, 429, 500, 502, 503, 504) or (r["status"] == 200 and not body.startswith("{")):
             if attempt == 0:
-                time.sleep(60 if r["status"] == 429 else 3)
+                time.sleep(retry_after(r.get("ra"), 60 if r["status"] == 429 else 3) if r["status"] != 200 else 3)
                 continue
             if r["status"] == 200:
                 return {"error": body[:120], "secs": secs}
@@ -285,6 +305,8 @@ Give waypoints; the block adds a point every `STEP_KM` on each leg, asks each on
 
 ```python
 import json, math, sys, time, urllib.error, urllib.request, urllib.robotparser
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 ROUTE = [(39.73928, -104.98484), (40.2549, -105.6836)]  # waypoints (lat, lon); any polyline works
 STEP_KM = 8.0      # one sample every ~8 km along each leg, plus every waypoint
@@ -294,20 +316,36 @@ API = "https://epqs.nationalmap.gov/v1/json"
 UA = "usgs-elevation-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"
 FT_TO_M = 0.3048
 
+def retry_after(v, default):
+    """Retry-After in seconds (a number or an HTTP date); default when absent or unreadable; at least 1.
+    Over 120 s: stop rather than hammer or hang."""
+    try:
+        sec = float(v)
+    except (TypeError, ValueError):
+        try:
+            sec = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError):
+            sec = default
+    if sec != sec:  # 'nan'
+        sec = default
+    if sec > 120:
+        sys.exit(f"server asks to wait {sec:.0f} s (over 120 s): stopping")
+    return max(sec, 1)
+
 def http(url, timeout=60):
-    """GET -> (status, content-type, text); HTTP errors are returned, not raised."""
+    """GET -> (status, content-type, text, Retry-After header); HTTP errors are returned, not raised."""
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.headers.get("Content-Type", ""), r.read().decode()
+            return r.status, r.headers.get("Content-Type", ""), r.read().decode(), None
     except urllib.error.HTTPError as e:
-        return e.code, e.headers.get("Content-Type", ""), e.read().decode(errors="replace")
+        return e.code, e.headers.get("Content-Type", ""), e.read().decode(errors="replace"), e.headers.get("Retry-After")
 
 def robots_ok(host, path):
     """RFC 9309 by hand: 2xx -> parse; 4xx -> 'unavailable', any path allowed; 5xx/network -> stop.
     (urllib.robotparser treats 401/403 as 'disallow all', which is not what RFC 9309 section 2.3.1.3 says.)"""
     try:
-        st, ctype, text = http(f"https://{host}/robots.txt", timeout=30)
+        st, ctype, text, _ = http(f"https://{host}/robots.txt", timeout=30)
     except OSError as e:
         sys.exit(f"robots.txt on {host} unreachable ({e}): stop")
     if 400 <= st < 500:
@@ -325,17 +363,18 @@ def robots_ok(host, path):
 
 def elevation_ft(lat, lon):
     """-> (feet, resolution, AcquisitionDate) or (None, error text, None). units=Feet always (left out = meters).
-    A non-JSON 200 body means no elevation at that point; it is retried once, as are 429, 5xx and network errors."""
+    A non-JSON 200 body means no elevation at that point; it is retried once, as are 429, 5xx and network errors
+    (after Retry-After when sent)."""
     url = f"{API}?x={lon:.6f}&y={lat:.6f}&wkid=4326&units=Feet&includeDate=true"  # x = longitude, y = latitude
     for attempt in range(2):
         try:
-            st, ctype, body = http(url)
+            st, ctype, body, ra = http(url)
         except OSError as e:  # URLError, timeouts, resets
-            st, ctype, body = 0, "", str(e)
+            st, ctype, body, ra = 0, "", str(e), None
         body = body.strip()
         retry = st in (0, 429, 500, 502, 503, 504) or (st == 200 and not body.startswith("{"))
         if retry and attempt == 0:
-            time.sleep(60 if st == 429 else 3)
+            time.sleep(retry_after(ra, 60 if st == 429 else 3) if st != 200 else 3)
             continue
         if st == 200 and body.startswith("{"):
             d = json.loads(body)
@@ -382,14 +421,19 @@ secs = time.time() - t0
 good = [r for r in rows if r[2] is not None]
 if len(good) < 2:
     sys.exit("fewer than 2 elevations: no profile")
-up = sum(max(0, b[2] - a[2]) for a, b in zip(good, good[1:]))
-down = sum(max(0, a[2] - b[2]) for a, b in zip(good, good[1:]))
+# rises and drops only between neighbouring samples that both have a value; a gap is not bridged
+pairs = [(a, b) for a, b in zip(rows, rows[1:]) if a[2] is not None and b[2] is not None]
+gaps = len(rows) - 1 - len(pairs)
+up = sum(max(0, b[2] - a[2]) for a, b in pairs)
+down = sum(max(0, a[2] - b[2]) for a, b in pairs)
 lo, hi = min(good, key=lambda r: r[2]), max(good, key=lambda r: r[2])
 print(f"\n{len(good)}/{len(rows)} points with an elevation in {secs:.0f} s ({secs / len(rows):.1f} s per point incl. {PAUSE:g} s pause)")
 print(f"start {good[0][2]:,.0f} ft, end {good[-1][2]:,.0f} ft; lowest {lo[2]:,.0f} ft at km {lo[0]:.1f}, "
       f"highest {hi[2]:,.0f} ft at km {hi[0]:.1f}")
 print(f"sum of rises {up:,.0f} ft, sum of drops {down:,.0f} ft between samples {STEP_KM:g} km apart "
       f"(a lower bound: climbs between samples are missed)")
+if gaps:
+    print(f"PARTIAL: {gaps} of {len(rows) - 1} legs skipped because a sample had no elevation")
 print("\nSource: USGS Elevation Point Query Service (The National Map). Credit: U.S. Geological Survey.")
 ```
 
@@ -439,13 +483,16 @@ sleep 1
 for q in "x=39.73928&y=-104.98484&units=Feet" "x=-0.1276&y=51.5072&units=Feet" "x=-104.98484&units=Feet"; do
   curl -sS -A "$UA" -w "  <- HTTP %{http_code} %{content_type} ($q)\n" "$E?$q"; sleep 1
 done
+# unknown path and POST: HTTP 403 from API Gateway
+curl -sS -A "$UA" -X POST -w "  <- HTTP %{http_code} (POST /v1/json)\n" "$E?x=-104.98484&y=39.73928&units=Feet"; sleep 1
+curl -sS -A "$UA" -w "  <- HTTP %{http_code} (GET /v1/)\n" https://epqs.nationalmap.gov/v1/; sleep 1
 # robots.txt on both hosts: HTTP 403, no file served
 for h in epqs.nationalmap.gov apps.nationalmap.gov; do
   curl -sS -A "$UA" -o /dev/null -w "https://$h/robots.txt -> HTTP %{http_code} %{content_type}\n" "https://$h/robots.txt"; sleep 1
 done
 ```
 
-Output (from the run on 2026-11-18, 00:11 UTC):
+Output (from the run on 2026-11-18, 00:46 UTC):
 
 ```text
 5,275.99 ft = 1,608.12 m, resolution 1 acquired 2/6/2021
@@ -453,10 +500,12 @@ HTTP/2 200
 content-type: application/json
 access-control-allow-origin: *
 x-cache: Miss from cloudfront
-via: 1.1 a6c63f350fbfa9acf0de9a685e93cde8.cloudfront.net (CloudFront)
+via: 1.1 109f4ff6e5e144109ffbce3fd668a510.cloudfront.net (CloudFront)
 The operation was attempted on an empty geometry.  <- HTTP 200 application/json (x=39.73928&y=-104.98484&units=Feet)
-Invalid or missing input parameters.  <- HTTP 200 application/json (x=-0.1276&y=51.5072&units=Feet)
+Call failed.  [Failed cloud operation: Open, Path: /vsimem/_00000514.aux.xml]  <- HTTP 200 application/json (x=-0.1276&y=51.5072&units=Feet)
  {"errorMessage" : "[BadRequest] missing parameters"}  <- HTTP 400 application/json (x=-104.98484&units=Feet)
+{"message":"Missing Authentication Token"}  <- HTTP 403 (POST /v1/json)
+{"message":"Missing Authentication Token"}  <- HTTP 403 (GET /v1/)
 https://epqs.nationalmap.gov/robots.txt -> HTTP 403 application/json
 https://apps.nationalmap.gov/robots.txt -> HTTP 403 application/xml
 ```
@@ -489,7 +538,7 @@ Units are international feet (EPQS page). The USGS FAQ on 3DEP DEMs (https://www
 - **Bare earth, interpolated.** USGS FAQs: a DEM is "the bare ground (bare earth) topographic surface of the Earth excluding trees, buildings, and any other surface objects", and EPQS values "might differ from monumented control elevation values ... for features such as mountain peaks or summits". Do not quote them as survey heights.
 - **Slow and uneven.** `curl` time per call ranged from 0.09 s (the 400) to 15.07 s (the Hawaii point, which took 5.9 s in block 1). In a 2026-11-18 verify run one call returned HTTP 504 `{"message": "Endpoint request timed out"}` after 29.1 s and the same query answered in 0.2 s on retry. Use a 60 s timeout and retry 5xx once. Block 3 averaged 3.1 s per point including the 1 s pause.
 - **No batch in the API.** `x=-104.98484,-105.6836&y=39.73928,40.2549` returned `Unable to complete operation.` and, later, `Call failed. ...`. The Bulk Point Query page (https://apps.nationalmap.gov/bulkpqs/) takes an uploaded text or CSV file of `longitude,latitude` lines; its instructions say "Number of coordinates cannot exceed 500". It is a web form, not tested here.
-- **Unknown paths are HTTP 403 without CORS.** `/v1/`, `/v1/csv` and `POST /v1/json` return HTTP 403 `{"message":"Missing Authentication Token"}`; in the browser `/v1/csv` fails as `TypeError: Failed to fetch` because that answer has no `access-control-allow-origin`.
+- **Unknown paths are HTTP 403 without CORS.** `/v1/`, `/v1/csv` and `POST /v1/json` return HTTP 403 `{"message":"Missing Authentication Token"}` (block 4); in the browser `/v1/csv` fails as `TypeError: Failed to fetch` because that answer has no `access-control-allow-origin`.
 - **Other `wkid` values.** `wkid=102100` with Web Mercator metres works (5,268.93 ft at x=-11686597, y=4828890, a point about 0.6 km north-northeast of the Capitol); `wkid=3857` with degrees gave `Call failed. ...`, `wkid=9999` gave `'spatialReference' parameter is invalid.`
 - **www.usgs.gov from a datacenter.** curl to https://www.usgs.gov/robots.txt got a CloudFront HTTP 403 error page on 2026-11-17 but HTTP 200 from the same kind of machine on 2026-11-18, so the block is intermittent; the cloud browser loaded the USGS pages with HTTP 200 both days. The API host was not affected.
 - **Tab marker.** The harness sets the tab title to a horse emoji; the blocks check `location.href`, never the title.
