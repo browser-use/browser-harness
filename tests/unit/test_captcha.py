@@ -18,6 +18,8 @@ class _SolverCDP:
         self.d, self.enabled, self.available, self.sets = d, enabled, available, []
 
     async def send_raw(self, method, params=None, session_id=None):
+        if method == "Target.attachToTarget":
+            return {"sessionId": "S1"}
         if not self.available:
             raise RuntimeError(f"{{'code': -32601, 'message': \"'{method}' wasn't found\"}}")
         if not method.startswith("BrowserUse."):
@@ -37,7 +39,8 @@ def solver(monkeypatch):
     threading.Thread(target=loop.run_forever, daemon=True).start()
     d = daemon.Daemon()
     d.cdp = _SolverCDP(d)
-    d.target_id = "T1"  # the attached tab
+    d.owner("default")
+    d._own("default", "T1")  # the owner's current tab
 
     def send(req, response_timeout=5.0):
         r = asyncio.run_coroutine_threadsafe(d.handle(req), loop).result(response_timeout)
@@ -242,3 +245,19 @@ def test_captcha_note_is_empty_without_a_daemon(monkeypatch):
 
     monkeypatch.setattr(helpers, "_send", no_daemon)
     assert helpers.captcha_note() == ""
+
+
+def test_solver_events_reach_drain_events_of_the_tabs_owner():
+    """Callers that keep the solver state themselves (browser-use's REPL) read these events with drain_events()."""
+    d = daemon.Daemon()
+    for key, tid in (("a", "T1"), ("b", "T2")):
+        d.owner(key)
+        d._own(key, tid)
+    drained = lambda key: [e["method"] for e in d.owners[key].events]
+
+    d._record_event(STARTED, {"targetId": "T1", "vendor": "recaptcha"})
+    assert drained("a") == [STARTED] and drained("b") == []  # another agent's tab: not b's
+    d._record_event(STARTED, {"targetId": "T9"})  # a tab nobody holds, such as the person's
+    d._record_event(CHANGED, {"enabled": True})  # the browser-wide switch
+    assert drained("a") == [STARTED, STARTED, CHANGED] and drained("b") == [STARTED, CHANGED]
+    assert set(d.captcha_active) == {"T1", "T9"}  # solve_captcha()'s own state is kept as before

@@ -372,22 +372,67 @@ def daemon_alive(name=None):
     return ipc.ping(name or NAME, timeout=1.0)
 
 
+def _ping(name=None):
+    """The live daemon's ping reply, or {} when unreachable."""
+    c = None
+    try:
+        c, token = ipc.connect(name or NAME, timeout=1.0)
+        # `keep` tells a provisioned daemon that its clients require it, so it never idle-exits.
+        response = ipc.request(c, token, {"meta": "ping", "owner": ipc.owner(),
+                                          "keep": os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"})
+        return response if isinstance(response, dict) else {}
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, ValueError):
+        return {}
+    finally:
+        if c:
+            c.close()
+
+
 def daemon_browser_kind(name=None):
     """'cloud' | 'cdp' | 'local' as self-reported by a live daemon, else None.
 
     None covers unreachable daemons and pre-browser_kind daemons still running
     from an older version."""
-    c = None
-    try:
-        c, token = ipc.connect(name or NAME, timeout=1.0)
-        response = ipc.request(c, token, {"meta": "ping"})
-        kind = response.get("browser_kind") if isinstance(response, dict) else None
-        return kind if kind in {"cloud", "cdp", "local"} else None
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, ValueError):
-        return None
-    finally:
-        if c:
-            c.close()
+    kind = _ping(name).get("browser_kind")
+    return kind if kind in {"cloud", "cdp", "local"} else None
+
+
+def _restart_if_outdated(name=None, may_restart=True):
+    """A client on the same protocol just uses the daemon. An older daemon is stopped only
+    when it is a local-Chrome one nobody else uses: a CDP or Cloud daemon would come back
+    on this caller's browser, not its own. A newer daemon is never stopped by an older client."""
+    ping = _ping(name)
+    have, kind = ping.get("protocol", 1), ping.get("browser_kind")
+    if not ping.get("pong") or have == ipc.PROTOCOL:  # an unanswered ping is no reason to drop a healthy connection
+        return False
+    if have > ipc.PROTOCOL:
+        why, fix = "it is newer than this client", "Update browser-harness (browser-harness --update)."
+    elif not may_restart:
+        why, fix = "it must stay as provisioned", "Have its orchestrator restart it."
+    elif kind != "local":
+        why = "its Cloud browser would stop" if kind == "cloud" else "only its starter knows which browser it drives"
+        fix = "Stop it with browser-harness --reload and start it again the way it was started."
+    elif ping.get("active"):
+        why, fix = "other agents are using it", "Retry when they finish, or run browser-harness --reload."
+    else:
+        restart_daemon(name)
+        return True
+    raise RuntimeError(
+        f"daemon-outdated: daemon {name or NAME!r} speaks protocol {have}, this client {ipc.PROTOCOL}. "
+        f"It was not restarted because {why}. Nothing was sent. {fix}"
+    )
+
+
+def _check_same_browser(name=None):
+    """A daemon reached by name must drive the browser BU_CDP_URL/BU_CDP_WS points at."""
+    if not (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")):
+        return
+    have, want = _ping(name).get("endpoint"), ipc.endpoint_label()
+    if have and have != want:
+        raise RuntimeError(
+            f"browser-mismatch: daemon {name or NAME!r} drives {have}, but BU_CDP_URL/BU_CDP_WS points at {want}. "
+            "Nothing was sent. Use another BU_NAME, or run --reload to reconnect this one."
+        )
 
 
 def _daemon_endpoint_names():
@@ -407,7 +452,7 @@ def _daemon_browser_connection(name):
     c = None
     try:
         c, token = ipc.connect(name, timeout=1.0)
-        response = ipc.request(c, token, {"meta": "connection_status"})
+        response = ipc.request(c, token, {"meta": "connection_status", "owner": ipc.owner()})
         if "error" in response:
             return None
         page = response.get("page")
@@ -552,6 +597,28 @@ def _check_cdp_endpoint(name, env):
     )
 
 
+def _approve_command(name=None):
+    daemon_name = name or NAME
+    return "browser-harness mac-approve" if daemon_name == "default" else f"BU_NAME={daemon_name} browser-harness mac-approve"
+
+
+def _launch_and_wait_for_browser(name=None):
+    """Launch the browser in the background and wait up to 15 s for it to exist."""
+    import sys
+    launched = _launch_browser()
+    if launched is None:
+        raise RuntimeError(
+            "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
+        )
+    hint = f"click Allow or run `{_approve_command(name)}`" if sys.platform == "darwin" else "click Allow"
+    print(f'browser-harness: Chrome isn\'t running — launching it in the background. If Chrome shows an "Allow remote debugging?" popup, {hint}.', file=sys.stderr)
+    from .daemon import supported_browser_running
+    boot_deadline = time.time() + 15
+    while time.time() < boot_deadline and not supported_browser_running():
+        time.sleep(0.3)
+    return launched
+
+
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
     Chrome, and missing Allow on chrome://inspect. Never replaces a name bound
@@ -566,29 +633,36 @@ def ensure_daemon(wait=None, name=None, env=None):
         for last in (False, True):
             try:
                 s, token = ipc.connect(name or NAME, timeout=3.0)
-                healthy = "result" in ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+                try:
+                    resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}, "owner": ipc.owner()})
+                finally:
+                    s.close()
             except Exception:
-                healthy = False
-            if healthy:
+                resp = {}
+            if isinstance(resp, dict) and "result" in resp:
+                _check_same_browser(name)
                 _check_cdp_endpoint(name, env)
-                return
+                if not _restart_if_outdated(name):
+                    return
+                break
             if not last: time.sleep(0.5)
-        browser_kind = daemon_browser_kind(name)
-        prior = ipc.read_remote_marker(daemon_name) or {}
-        if browser_kind in {"cloud", None}:
-            # A stale Cloud daemon still owns a billable browser. Its shutdown
-            # handler stops that browser before acknowledging, and stays alive
-            # when the Cloud stop fails so a later call can retry cleanup. Treat
-            # an unknown kind the same way: the health failure that made the
-            # daemon stale may also prevent classification, and replacing an
-            # unclassified daemon best-effort could orphan a Cloud browser.
-            stop_remote_daemon(daemon_name)
         else:
+            browser_kind = daemon_browser_kind(name)
+            if browser_kind in {"cloud", None}:
+                # A failed CDP probe can be temporary. Shutdown destroys the Cloud
+                # session; this caller may not have its transport to reconnect.
+                # Unknown kind may also own a Cloud browser. Leave cleanup explicit.
+                raise RuntimeError(
+                    f"daemon {name or NAME!r} is unhealthy; existing browser preserved. "
+                    f"Retry after it recovers, or explicitly stop_remote_daemon({name or NAME!r}) "
+                    "when finished; the Cloud browser still bills until stopped or timed out."
+                )
+            prior = ipc.read_remote_marker(daemon_name) or {}
             restart_daemon(name)
-        if local and browser_kind != "local":
-            # Stopping cleared the marker; keep the name bound so this and every
-            # later local-mode call fails closed instead of using local Chrome.
-            ipc.write_remote_marker(daemon_name, browser_kind or "unknown", prior.get("browser_id"))
+            if local and browser_kind != "local":
+                # Stopping cleared the marker; keep the name bound so this and every
+                # later local-mode call fails closed instead of using local Chrome.
+                ipc.write_remote_marker(daemon_name, browser_kind, prior.get("browser_id"))
     if local and (marker := ipc.read_remote_marker(daemon_name)) is not None:
         what = " ".join(str(v) for v in (marker.get("kind"), marker.get("browser_id")) if v) or "unknown"
         raise RuntimeError(
@@ -612,32 +686,29 @@ def ensure_daemon(wait=None, name=None, env=None):
             stderr_sink = open(ipc.log_path(name or NAME), "ab")
         except OSError:
             stderr_sink = subprocess.DEVNULL
-        # BU_CDP_URL/WS spawns take the lock too, so two cold callers asking one name for two
-        # browsers cannot both spawn and steal each other's socket; the loser gets cdp-mismatch.
-        if local or not e.get("BU_BROWSER_ID"):
-            with _spawn_lock(name, timeout=startup_wait) as lock:
-                if lock.fd is None:
-                    raise RuntimeError("daemon-starting: another browser-harness daemon is still starting; retry later")
-                if daemon_alive(name):
-                    if stderr_sink is not subprocess.DEVNULL:
-                        stderr_sink.close()
-                    _check_cdp_endpoint(name, env)
-                    return
-                pending_pid = _parked_daemon_pid(name) or _starting_daemon_pid(name)
-                if pending_pid:
-                    p = None
-                else:
-                    p = subprocess.Popen(
-                        [sys.executable, "-m", "browser_harness.daemon"],
-                        env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
-                    )
-                    _publish_pid(ipc.pid_path(name or NAME), p.pid)
-                    pending_pid = p.pid
-        else:
-            p = subprocess.Popen(
-                [sys.executable, "-m", "browser_harness.daemon"],
-                env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
-            )
+        # One spawner per daemon name, for every browser kind: agents starting
+        # together share one daemon and one browser connection (one Allow), and two
+        # cold callers asking one name for two browsers cannot steal each other's
+        # socket; the loser gets cdp-mismatch.
+        with _spawn_lock(name, timeout=startup_wait) as lock:
+            if lock.fd is None:
+                raise RuntimeError("daemon-starting: another browser-harness daemon is still starting; retry later")
+            if daemon_alive(name):
+                if stderr_sink is not subprocess.DEVNULL:
+                    stderr_sink.close()
+                _check_cdp_endpoint(name, env)
+                return
+            ipc.sweep_dead_endpoints()
+            pending_pid = _parked_daemon_pid(name) or _starting_daemon_pid(name)
+            if pending_pid:
+                p = None
+            else:
+                p = subprocess.Popen(
+                    [sys.executable, "-m", "browser_harness.daemon"],
+                    env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
+                )
+                _publish_pid(ipc.pid_path(name or NAME), p.pid)
+                pending_pid = p.pid
         if stderr_sink is not subprocess.DEVNULL:
             stderr_sink.close()
         spawned = time.monotonic()
@@ -698,6 +769,14 @@ def ensure_daemon(wait=None, name=None, env=None):
                     "permission-blocked: the pending Chrome connection ended before approval; "
                     "browser-harness did not retry or create another connection."
                 )
+            if launched_browser is None and _chrome_not_running(msg):
+                # Cold start (#786): with no browser running the daemon exits on
+                # its first liveness check, so the chrome-not-running rescue
+                # below (which needs a live daemon) never ran and three doomed
+                # respawns ended in "didn't come up". Launch the browser here.
+                if _pid_number(ipc.pid_path(name or NAME)) not in (None, pending_pid):
+                    continue  # a concurrent caller published a successor
+                launched_browser = _launch_and_wait_for_browser(name)
             continue
         if local and msg.startswith("handshake-wait"):
             # Leave it running: this daemon's connection is what holds the popup
@@ -719,16 +798,7 @@ def ensure_daemon(wait=None, name=None, env=None):
         if local and launched_browser is None and _chrome_not_running(msg):
             # Chrome is closed — launch the browser and retry
             restart_daemon(name)
-            launched_browser = _launch_browser()
-            if launched_browser is None:
-                raise RuntimeError(
-                    "chrome-not-running: no supported browser is running and none could be launched -- ask the user to open Chrome, then retry."
-                )
-            print("browser-harness: Chrome isn't running — launching it. If Chrome shows an \"Allow remote debugging?\" popup, click Allow.", file=sys.stderr)
-            from .daemon import supported_browser_running
-            boot_deadline = time.time() + 15
-            while time.time() < boot_deadline and not supported_browser_running():
-                time.sleep(0.3)
+            launched_browser = _launch_and_wait_for_browser(name)
             continue
         if local and not opened_inspect and _needs_chrome_remote_debugging_prompt(msg):
             opened_inspect = True
@@ -773,13 +843,15 @@ def require_existing_daemon(name=None):
     try:
         s, token = ipc.connect(daemon_name, timeout=3.0)
         try:
-            resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+            resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}, "owner": ipc.owner()})
         finally:
             s.close()
     except Exception as exc:
         raise RuntimeError(f"required daemon {daemon_name!r} is unhealthy: {exc}") from exc
     if not isinstance(resp, dict) or "result" not in resp:
         raise RuntimeError(f"required daemon {daemon_name!r} failed its CDP health check")
+    _check_same_browser(daemon_name)
+    _restart_if_outdated(daemon_name, may_restart=False)
 
 
 def stop_remote_daemon(name="remote"):
@@ -1337,6 +1409,57 @@ def _profile_directory_args(base):
     return [f"--profile-directory={last}"]
 
 
+def _preenable_remote_debugging(base):
+    """Tick chrome://inspect's "Allow remote debugging for this browser instance"
+    in Local State while the browser is closed.
+
+    Chrome stores that checkbox as the application-wide pref
+    ``devtools.remote_debugging.user-enabled`` and starts its approval-mode
+    DevTools server on launch whenever the pref is true (chrome/browser/devtools/
+    remote_debugging_server.cc). Setting it before the relaunch removes the
+    "open chrome://inspect and tick the box" step; the per-connection Allow
+    dialog still appears, so the user keeps exactly one approval per Chrome run.
+    Only called from the relaunch path: a running Chrome rewrites Local State on
+    exit and would discard the edit. Only a never-set pref is filled in: an
+    explicit false means the person unticked the box. The file keeps its mode.
+    ``BH_PRESET_INSPECT_TOGGLE=0`` disables it. Returns True when it changed."""
+    if os.environ.get("BH_PRESET_INSPECT_TOGGLE", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    local_state = Path(base) / "Local State"
+    try:
+        state = json.loads(local_state.read_text(encoding="utf-8"))
+        mode = local_state.stat().st_mode & 0o777
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    devtools = state.setdefault("devtools", {})
+    if not isinstance(devtools, dict):
+        return False
+    remote = devtools.setdefault("remote_debugging", {})
+    if not isinstance(remote, dict):
+        return False
+    if "user-enabled" in remote:
+        # True: nothing to do. False: the person unticked the box on purpose;
+        # that is their call, the harness only fills in a never-set pref.
+        return False
+    remote["user-enabled"] = True
+    tmp = local_state.with_name(local_state.name + ".bh-tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(state))
+        os.chmod(tmp, mode)
+        os.replace(tmp, local_state)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def _launch_browser():
     """Prefers the browser whose profile already has perm box checked.
 
@@ -1373,15 +1496,24 @@ def _launch_browser():
                 continue
 
     base = enabled[0] if enabled else next((b for b in PROFILES if (b / "Local State").exists()), None)
+    if base is not None and not enabled:
+        _preenable_remote_debugging(base)
     mac_app, posix_cmds, win_target = _browser_launch_spec(base) if base else _DEFAULT_LAUNCH
     profile_args = _profile_directory_args(base)
     try:
         if system == "Darwin":
-            cmd = ["open", "-a", mac_app] + (["--args"] + profile_args if profile_args else [])
+            # `-g`: launch in the background. Chrome's own "Allow remote debugging?"
+            # dialog activates its window once the daemon connects; the launch
+            # itself must not steal focus a second time.
+            cmd = ["open", "-g", "-a", mac_app] + (["--args"] + profile_args if profile_args else [])
             r = subprocess.run(cmd, timeout=10, check=False, capture_output=True)
             if r.returncode != 0 and mac_app != "Google Chrome":
                 # Different app → its profile dir may not match; launch plain
-                r = subprocess.run(["open", "-a", "Google Chrome"], timeout=10, check=False, capture_output=True)
+                # Chrome, and pre-tick its own profile, not the one chosen above.
+                chrome_root = Path.home() / "Library/Application Support/Google/Chrome"
+                if chrome_root not in enabled:
+                    _preenable_remote_debugging(chrome_root)
+                r = subprocess.run(["open", "-g", "-a", "Google Chrome"], timeout=10, check=False, capture_output=True)
             return (None, base) if r.returncode == 0 else None
         if system == "Windows":
             # `start <name>` resolves browsers via App Paths without knowing the install dir
@@ -1644,11 +1776,8 @@ def run_update(yes=False):
     cache.pop("banner_shown_on", None)
     _cache_write(cache)
 
-    if daemon_alive():
-        if _prompt_yes("restart the running daemon so it picks up the new code?", default_yes=True, yes=yes):
-            restart_daemon()
-            print("daemon stopped; it will auto-restart on next `browser-harness` call.")
-        else:
-            print("daemon left running on old code. run `browser-harness` and it'll use the new code after the daemon recycles.")
-    print("update complete.")
+    # The daemon only holds the browser connection; new helpers work through it as
+    # is. Restarting it would make Chrome ask to Allow again. A protocol change is
+    # handled on the next call, once no other agent is using the daemon.
+    print("update complete. The running daemon keeps its browser connection.")
     return 0

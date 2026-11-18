@@ -23,6 +23,14 @@
 - Opt-in idle exit: `BH_IDLE_TIMEOUT=<seconds>`. A daemon spawned with `BH_OWNS_BROWSER=1` defaults to 30 min and closes the browser it launched. Default unchanged: never exits, never closes a user's Chrome.
 - Daemon files are always `bu-<name>.*`, also under `BH_RUNTIME_DIR`.
 
+### macOS and local Chrome
+- Cold start: with Chrome closed, the harness launches it in the background (`open -g`) and pre-ticks chrome://inspect's "Allow remote debugging for this browser instance" in Local State (never-set pref only; `BH_PRESET_INSPECT_TOGGLE=0` disables). Chrome's one "Allow remote debugging?" dialog per Chrome run remains; the daemon retries the 403 Chrome sends before it has a window.
+- `mac-approve` returns `accessibility-required` at once instead of hanging on macOS's consent prompt, matches the Chrome 153+ sheet (title in a heading), and works for Chrome Canary/Beta/Dev, Chromium, Brave, Edge, Arc and the other launchable browsers.
+
+### Many agents, one Chrome
+- Agents share one local Chrome through one daemon and each drives only its own tabs (`BH_OWNER`, else the host session id). Another agent's tab fails with `tab-taken`; a lost tab is `tab-closed`, never silently another tab. New: `name_session`, `mark_tab`, `release_tabs`, `list_browsers`, `use_browser`; idle tabs are given back after `BH_OWNER_IDLE` (30 min) and `BH_OWNER_FORGET` (24 h).
+- One "Allow remote debugging?" per Chrome run: one daemon per browser, started under a lock; `--update` no longer restarts it; a `BU_NAME` with no browser of its own becomes an owner instead of a second connection (`BH_NAMED_LOCAL_DAEMON=1` for a separate one). Sub-agents need their own `BH_OWNER`.
+
 ### For tools that embed the harness
 - `BH_CLI_NAME` / `run.main(prog=...)`: help, usage and hint text name the wrapping CLI (for example `browser-use`) instead of `browser-harness`.
 - `telemetry.set_sink(...)`: an embedding CLI sends harness telemetry through its own pipeline and consent setting.

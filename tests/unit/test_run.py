@@ -1,3 +1,4 @@
+import os
 import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
@@ -340,3 +341,69 @@ def test_without_prog_the_name_is_browser_harness(monkeypatch):
     with patch.object(sys, "argv", ["browser-harness", "--help"]), patch("sys.stdout", stdout):
         run.main()
     assert stdout.getvalue() == run.HELP + "\n"
+
+
+
+def test_named_local_daemon_becomes_an_owner_when_no_such_daemon_exists(monkeypatch, capsys):
+    from browser_harness import run as run_mod
+    monkeypatch.setenv("BU_NAME", "gmail1375")
+    for k in ("BH_OWNER", "BU_CDP_URL", "BU_CDP_WS", "BH_REQUIRE_EXISTING_DAEMON", "BH_NAMED_LOCAL_DAEMON"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(run_mod._ipc, "ping", lambda name, timeout=1.0: False)
+
+    assert run_mod._alias_named_local_daemon_to_owner() is True
+    assert os.environ["BU_NAME"] == "default"
+    assert os.environ["BH_OWNER"] == "gmail1375"
+    assert capsys.readouterr().err == ""  # said when a script runs, not on import
+
+
+def test_owner_notice_only_when_a_script_runs_and_under_the_cli_name(monkeypatch, capsys):
+    """A host CLI (browser-use) imports run.py for help and doctor too: those print nothing extra, and the
+    notice names the command the user typed."""
+    monkeypatch.setattr(run, "_owner_alias", "gmail1375")
+    monkeypatch.setenv("BH_OWNER", "gmail1375")
+    monkeypatch.setenv("BH_TELEMETRY", "0")
+    monkeypatch.setenv("BH_CLI_NAME", "")
+    with patch.object(sys, "argv", ["x", "--help"]), patch("sys.stdout", StringIO()):
+        run.main(prog="browser-use")
+    with patch.object(sys, "argv", ["x", "doctor", "--bogus"]), pytest.raises(SystemExit):
+        run.main(prog="browser-use")
+    assert capsys.readouterr().err == "usage: browser-use doctor [--fix-snap|--json [--require-existing-daemon]]\n"
+    with patch.object(sys, "argv", ["x"]), patch("sys.stdin", StringIO("x = 1")), \
+         patch("browser_harness.run.ensure_daemon"), patch("browser_harness.run.print_update_banner"):
+        run.main(prog="browser-use")
+    assert capsys.readouterr().err.startswith("browser-use: BU_NAME=gmail1375 has no browser of its own")
+    with patch.object(sys, "argv", ["x"]), patch("sys.stdin", StringIO('start_remote_daemon("r7k2")')), \
+         patch("browser_harness.run.start_remote_daemon"), patch("browser_harness.run.print_update_banner"):
+        run.main(prog="browser-use")
+    assert capsys.readouterr().err == ""  # a cloud start uses no local Chrome
+
+
+def test_a_name_whose_remote_browser_ended_still_fails_closed(monkeypatch, tmp_path):
+    """BU_NAME of a cloud daemon that timed out must keep raising remote-browser-ended, never drive local Chrome."""
+    from browser_harness import run as run_mod
+    monkeypatch.setenv("BU_NAME", "r7k2")
+    for k in ("BH_OWNER", "BU_CDP_URL", "BU_CDP_WS", "BH_REQUIRE_EXISTING_DAEMON", "BH_NAMED_LOCAL_DAEMON"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(run_mod._ipc, "ping", lambda name, timeout=1.0: False)
+    monkeypatch.setattr(run_mod._ipc, "read_remote_marker", lambda name: {"kind": "cloud"} if name == "r7k2" else None)
+
+    assert run_mod._alias_named_local_daemon_to_owner() is False
+    assert os.environ["BU_NAME"] == "r7k2" and "BH_OWNER" not in os.environ
+
+
+def test_named_daemon_keeps_its_name_when_it_is_alive_or_remote(monkeypatch):
+    from browser_harness import run as run_mod
+    monkeypatch.setenv("BU_NAME", "r7k2")
+    monkeypatch.delenv("BH_OWNER", raising=False)
+    monkeypatch.setattr(run_mod._ipc, "ping", lambda name, timeout=1.0: True)
+    assert run_mod._alias_named_local_daemon_to_owner() is False
+    assert os.environ["BU_NAME"] == "r7k2" and "BH_OWNER" not in os.environ
+
+    monkeypatch.setattr(run_mod._ipc, "ping", lambda name, timeout=1.0: False)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
+    assert run_mod._alias_named_local_daemon_to_owner() is False
+    monkeypatch.delenv("BU_CDP_URL")
+    monkeypatch.setenv("BH_NAMED_LOCAL_DAEMON", "1")
+    assert run_mod._alias_named_local_daemon_to_owner() is False
+    assert os.environ["BU_NAME"] == "r7k2"

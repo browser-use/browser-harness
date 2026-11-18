@@ -10,6 +10,45 @@ for _stream in (sys.stdout, sys.stderr):
         try: _stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception: pass
 
+from . import _ipc
+
+
+def _alias_named_local_daemon_to_owner():
+    """`BU_NAME=<x>` on the local Chrome, with no daemon of that name, means owner x
+    on the shared daemon instead of a second browser connection.
+
+    Agents invent per-job names (`gmail1375`) to isolate work. On the local Chrome
+    a second daemon isolates nothing more than an owner does, and each one costs
+    another "Allow remote debugging?" dialog that brings Chrome to the front (3
+    named daemons = 3 dialogs, measured). Remote and CDP daemons keep their names:
+    a live daemon of that name, a name whose remote browser ended (it fails closed
+    with remote-browser-ended instead of falling back to local Chrome),
+    BU_CDP_URL/BU_CDP_WS, BH_REQUIRE_EXISTING_DAEMON=1 or BH_NAMED_LOCAL_DAEMON=1
+    leaves BU_NAME alone. Runs before the modules that read BU_NAME at import, so
+    it is silent: _print_owner_alias() says it when a script runs, under the CLI's
+    name (help, doctor and a host that imports this module print nothing)."""
+    global _owner_alias
+    name = os.environ.get("BU_NAME")
+    if not name or name == "default":
+        return False
+    if (os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS")
+            or os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
+            or os.environ.get("BH_NAMED_LOCAL_DAEMON") == "1"):
+        return False
+    try:
+        if _ipc.ping(name, timeout=0.5) or _ipc.read_remote_marker(name) is not None:
+            return False
+    except Exception:
+        return False
+    os.environ.setdefault("BH_OWNER", name)
+    os.environ["BU_NAME"] = "default"
+    _owner_alias = name
+    return True
+
+
+_owner_alias = None  # the BU_NAME that became an owner, for the notice when a script runs
+_alias_named_local_daemon_to_owner()
+
 from .admin import (
     _version,
     NAME,
@@ -33,6 +72,7 @@ from . import auth, recorder, telemetry
 from .helpers import *
 from .helpers import captcha_note as _captcha_note  # private name: not traced as a step of the agent's script
 from .naming import cli_name as _cli_name, named as _named
+from .helpers import _warn_shared_owner
 
 HELP = """Browser Harness
 
@@ -40,7 +80,7 @@ Read SKILL.md for the default workflow and examples.
 
 Typical usage:
   browser-harness <<'PY'
-  ensure_real_tab()
+  new_tab("https://example.com")
   print(page_info())
   PY
 
@@ -115,6 +155,11 @@ def _print_captcha_note():
     note = _captcha_note()
     if note:
         print(note)
+
+
+def _print_owner_alias():
+    if _owner_alias:
+        print(f"{_cli_name()}: BU_NAME={_owner_alias} has no browser of its own; using the shared local Chrome as owner {os.environ.get('BH_OWNER') or _owner_alias!r} (no extra Allow prompt). Set BH_NAMED_LOCAL_DAEMON=1 for a separate connection.", file=sys.stderr)
 
 
 def _print_skill():
@@ -398,7 +443,8 @@ def _run(args):
     # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
     # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
     cloud_admin = code.lstrip().startswith(("start_remote_daemon(", "stop_remote_daemon("))
-    if not cloud_admin:
+    if not cloud_admin:  # a cloud start or stop uses no local Chrome: no owner notice either
+        _print_owner_alias()
         require_existing = os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
         try:
             if require_existing:
@@ -417,6 +463,7 @@ def _run(args):
             # Setup/permission errors are instructions for calling agent
             print(f"{_cli_name()}: {e}", file=sys.stderr)
             sys.exit(1)
+    _warn_shared_owner()
     _install_helper_trace()
     try:
         exec(code, globals())
