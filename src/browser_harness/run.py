@@ -438,13 +438,13 @@ def _run(args):
     else:
         sys.exit(_named(USAGE))
     print_update_banner()
-    _print_owner_alias()
     # Auto-bootstrap a cloud browser is opt-in via BU_AUTOSPAWN — BROWSER_USE_API_KEY alone
     # is not enough, since the key is commonly set for unrelated reasons (profile sync,
     # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
     # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
     cloud_admin = code.lstrip().startswith(("start_remote_daemon(", "stop_remote_daemon("))
-    if not cloud_admin:
+    if not cloud_admin:  # a cloud start or stop uses no local Chrome: no owner notice either
+        _print_owner_alias()
         require_existing = os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
         try:
             if require_existing:

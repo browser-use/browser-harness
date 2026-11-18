@@ -373,6 +373,10 @@ def test_owner_notice_only_when_a_script_runs_and_under_the_cli_name(monkeypatch
          patch("browser_harness.run.ensure_daemon"), patch("browser_harness.run.print_update_banner"):
         run.main(prog="browser-use")
     assert capsys.readouterr().err.startswith("browser-use: BU_NAME=gmail1375 has no browser of its own")
+    with patch.object(sys, "argv", ["x"]), patch("sys.stdin", StringIO('start_remote_daemon("r7k2")')), \
+         patch("browser_harness.run.start_remote_daemon"), patch("browser_harness.run.print_update_banner"):
+        run.main(prog="browser-use")
+    assert capsys.readouterr().err == ""  # a cloud start uses no local Chrome
 
 
 def test_a_name_whose_remote_browser_ended_still_fails_closed(monkeypatch, tmp_path):
