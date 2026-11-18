@@ -428,7 +428,9 @@ up = sum(max(0, b[2] - a[2]) for a, b in pairs)
 down = sum(max(0, a[2] - b[2]) for a, b in pairs)
 lo, hi = min(good, key=lambda r: r[2]), max(good, key=lambda r: r[2])
 print(f"\n{len(good)}/{len(rows)} points with an elevation in {secs:.0f} s ({secs / len(rows):.1f} s per point incl. {PAUSE:g} s pause)")
-print(f"start {good[0][2]:,.0f} ft, end {good[-1][2]:,.0f} ft; lowest {lo[2]:,.0f} ft at km {lo[0]:.1f}, "
+def ft_or_gap(r):
+    return "NO ELEVATION" if r[2] is None else f"{r[2]:,.0f} ft"
+print(f"start {ft_or_gap(rows[0])}, end {ft_or_gap(rows[-1])}; lowest {lo[2]:,.0f} ft at km {lo[0]:.1f}, "
       f"highest {hi[2]:,.0f} ft at km {hi[0]:.1f}")
 print(f"sum of rises {up:,.0f} ft, sum of drops {down:,.0f} ft between samples {STEP_KM:g} km apart "
       f"(a lower bound: climbs between samples are missed)")
