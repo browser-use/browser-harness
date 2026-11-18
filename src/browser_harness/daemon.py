@@ -815,7 +815,8 @@ class Daemon:
 
     def _route_event(self, method, params, session_id=None):
         if method.startswith("BrowserUse.captchaSolver"):
-            return self._record_captcha(method, params or {})
+            self._record_captcha(method, params or {})
+            return self._share_captcha_event(method, params or {})
         key = self.session_owner.get(session_id)
         if method == "Target.attachedToTarget" and key:
             self.session_owner[params["sessionId"]] = key  # auto-attached iframes and workers
@@ -859,6 +860,16 @@ class Daemon:
             o = self.owners.get(self.session_owner.pop(p.get("sessionId"), None))
             if o and o.tabs.get(tid) == p.get("sessionId"):
                 o.tabs[tid] = None  # reattached on next use
+
+    def _share_captcha_event(self, method, params):
+        """The solver's events in drain_events() too, as before owners: callers that read them
+        (browser-use's REPL keeps the solver state from them) would otherwise never see a solve.
+        A solve on an owned tab goes to that tab's owner only; a solve on a tab nobody holds,
+        and a solver state change (no tab), to every owner."""
+        event = {"method": method, "params": params, "session_id": None}
+        key = self.tab_owner.get(self._root(str(params.get("targetId", ""))))
+        for o in ([self.owners[key]] if key in self.owners else self.owners.values()):
+            o.events.append(event)
 
     def _record_captcha(self, method, params):
         key = str(params.get("targetId", ""))

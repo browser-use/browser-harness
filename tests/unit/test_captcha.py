@@ -245,3 +245,19 @@ def test_captcha_note_is_empty_without_a_daemon(monkeypatch):
 
     monkeypatch.setattr(helpers, "_send", no_daemon)
     assert helpers.captcha_note() == ""
+
+
+def test_solver_events_reach_drain_events_of_the_tabs_owner():
+    """Callers that keep the solver state themselves (browser-use's REPL) read these events with drain_events()."""
+    d = daemon.Daemon()
+    for key, tid in (("a", "T1"), ("b", "T2")):
+        d.owner(key)
+        d._own(key, tid)
+    drained = lambda key: [e["method"] for e in d.owners[key].events]
+
+    d._record_event(STARTED, {"targetId": "T1", "vendor": "recaptcha"})
+    assert drained("a") == [STARTED] and drained("b") == []  # another agent's tab: not b's
+    d._record_event(STARTED, {"targetId": "T9"})  # a tab nobody holds, such as the person's
+    d._record_event(CHANGED, {"enabled": True})  # the browser-wide switch
+    assert drained("a") == [STARTED, STARTED, CHANGED] and drained("b") == [STARTED, CHANGED]
+    assert set(d.captcha_active) == {"T1", "T9"}  # solve_captcha()'s own state is kept as before

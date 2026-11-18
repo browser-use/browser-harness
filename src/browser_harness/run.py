@@ -21,9 +21,13 @@ def _alias_named_local_daemon_to_owner():
     a second daemon isolates nothing more than an owner does, and each one costs
     another "Allow remote debugging?" dialog that brings Chrome to the front (3
     named daemons = 3 dialogs, measured). Remote and CDP daemons keep their names:
-    a live daemon of that name, BU_CDP_URL/BU_CDP_WS, BH_REQUIRE_EXISTING_DAEMON=1
-    or BH_NAMED_LOCAL_DAEMON=1 leaves BU_NAME alone. Runs before the modules that
-    read BU_NAME at import."""
+    a live daemon of that name, a name whose remote browser ended (it fails closed
+    with remote-browser-ended instead of falling back to local Chrome),
+    BU_CDP_URL/BU_CDP_WS, BH_REQUIRE_EXISTING_DAEMON=1 or BH_NAMED_LOCAL_DAEMON=1
+    leaves BU_NAME alone. Runs before the modules that read BU_NAME at import, so
+    it is silent: _print_owner_alias() says it when a script runs, under the CLI's
+    name (help, doctor and a host that imports this module print nothing)."""
+    global _owner_alias
     name = os.environ.get("BU_NAME")
     if not name or name == "default":
         return False
@@ -32,16 +36,17 @@ def _alias_named_local_daemon_to_owner():
             or os.environ.get("BH_NAMED_LOCAL_DAEMON") == "1"):
         return False
     try:
-        if _ipc.ping(name, timeout=0.5):
+        if _ipc.ping(name, timeout=0.5) or _ipc.read_remote_marker(name) is not None:
             return False
     except Exception:
         return False
     os.environ.setdefault("BH_OWNER", name)
     os.environ["BU_NAME"] = "default"
-    print(f"browser-harness: BU_NAME={name} has no browser of its own; using the shared local Chrome as owner {name!r} (no extra Allow prompt). Set BH_NAMED_LOCAL_DAEMON=1 for a separate connection.", file=sys.stderr)
+    _owner_alias = name
     return True
 
 
+_owner_alias = None  # the BU_NAME that became an owner, for the notice when a script runs
 _alias_named_local_daemon_to_owner()
 
 from .admin import (
@@ -150,6 +155,11 @@ def _print_captcha_note():
     note = _captcha_note()
     if note:
         print(note)
+
+
+def _print_owner_alias():
+    if _owner_alias:
+        print(f"{_cli_name()}: BU_NAME={_owner_alias} has no browser of its own; using the shared local Chrome as owner {os.environ.get('BH_OWNER') or _owner_alias!r} (no extra Allow prompt). Set BH_NAMED_LOCAL_DAEMON=1 for a separate connection.", file=sys.stderr)
 
 
 def _print_skill():
@@ -428,6 +438,7 @@ def _run(args):
     else:
         sys.exit(_named(USAGE))
     print_update_banner()
+    _print_owner_alias()
     # Auto-bootstrap a cloud browser is opt-in via BU_AUTOSPAWN — BROWSER_USE_API_KEY alone
     # is not enough, since the key is commonly set for unrelated reasons (profile sync,
     # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
