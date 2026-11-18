@@ -21,7 +21,7 @@ robots.txt (checked 2026-11-17 in the cloud browser; curl and urllib get HTTP 40
 
 ### 1. Every declaration for a county, the state-wide designations, and a deduped state list (browser)
 
-`on_fema_tab()` opens the logged-out dataset page once, so `fetch()` runs from www.fema.gov (the API also sends `Access-Control-Allow-Origin: *`). `get()` returns parsed JSON on HTTP 200, retries once after `Retry-After` when sent (else 60 s on 429, 10 s on 5xx or a network error; over 120 s it stops) and otherwise raises. `rows()` pages with `$top`/`$skip`, always sends `$count=true` and checks the row total against `metadata.count`. `by_disaster()` collapses the per-area rows to one entry per `disasterNumber`. 3 `fetch()` calls, 15 s apart.
+`on_fema_tab()` opens the logged-out dataset page once, so `fetch()` runs from www.fema.gov (the API also sends `Access-Control-Allow-Origin: *`). `get()` returns parsed JSON on HTTP 200, retries once after `Retry-After` when sent (else 60 s on 429, 10 s on 5xx or a network error; never under the 15 s crawl delay; over 120 s it stops) and otherwise raises. `rows()` pages with `$top`/`$skip`, always sends `$count=true` and checks the row total against `metadata.count`. `by_disaster()` collapses the per-area rows to one entry per `disasterNumber`. 3 `fetch()` calls, 15 s apart.
 
 ```python
 import json, time, urllib.parse
@@ -81,7 +81,7 @@ def retry_after(v, default):
 
 def get(params, timeout=90):
     """One API page as parsed JSON. Retries once, after Retry-After when sent (else 60 s on 429, 10 s on 5xx or a
-    network error); raises otherwise."""
+    network error), never sooner than the PAUSE crawl delay; raises otherwise."""
     url = API + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     for attempt in range(2):
         rid = json.dumps(js(START_JS % json.dumps(url)))
@@ -91,7 +91,7 @@ def get(params, timeout=90):
                 raise RuntimeError(f"no answer after {timeout}s: {url}")
             time.sleep(0.3)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            time.sleep(retry_after(r.get("ra"), 60 if r["status"] == 429 else 10))
+            time.sleep(max(PAUSE, retry_after(r.get("ra"), 60 if r["status"] == 429 else 10)))  # never under the crawl delay
             continue
         if r["status"] != 200 or "json" not in (r["type"] or ""):
             raise RuntimeError(f"HTTP {r['status']} {r['type']} {r['text'][:300]!r} for {url}")
@@ -637,7 +637,7 @@ The response is `{"metadata": {...}, "DisasterDeclarationsSummaries": [...]}`; `
 - **Area names carry the kind in parentheses.** `Harris (County)`, `Orleans (Parish)` (39 rows), and in Alaska `(Borough)`, `(Census Area)`, `(ANV/ANVSA)` and names such as `Lower Yukon Regional Educational Attendance Area`. `'Harris County'` matches nothing and still returns HTTP 200. FIPS codes avoid the spelling problem (block 3).
 - **`Statewide` rows are separate.** A county query does not return them: Texas has 103 `Statewide` declarations, 101 of them not listed under Harris (block 1); the newest is FM-2807, 2009. Decide whether "declarations for a county" includes them, and say which you used.
 - **`metadata.count` is 0 unless you send `$count=true`.** It is not the number of rows returned: with `$count=true` and the default page, Texas says 5,453 and returns 1,000.
-- **Pages are 1,000 rows by default.** No `$top` and `$top=0` both returned 1,000 rows; `$top=10000` and `$top=10001` both returned all 5,453 Texas rows in one call. The blocks page at 1,000 with `$skip`.
+- **Pages are 1,000 rows by default.** In a curl probe on 2026-11-18 (01:47-01:49 UTC, `$filter=state eq 'TX'&$select=disasterNumber`, at least 15 s apart), no `$top` and `$top=0` both returned 1,000 rows; `$top=10000` and `$top=10001` both returned all 5,453 Texas rows in one call (HTTP 200, 130,718 bytes). The blocks page at 1,000 with `$skip`.
 - **String values are case-sensitive and need single quotes.** `state eq 'tx'` gives 0 rows; `state eq TX` is HTTP 400 `Field "TX" not found`. Inside a value, double a single quote (block 1's `q()`).
 - **IH versus IA.** Harris's 1970s declarations have `iaProgramDeclared` true and `ihProgramDeclared` false; DR-4798 (2024) has IH true and IA false. Report both flags.
 - **CSV booleans are `1`/`0`**, JSON booleans are `true`/`false`.
@@ -650,4 +650,4 @@ The response is `{"metadata": {...}, "DisasterDeclarationsSummaries": [...]}`; `
 - **`'Harris County'`, `'tx'`, partial names with `eq`**: HTTP 200 with 0 rows, no error. Use the exact `designatedArea` value or FIPS codes.
 - **Unknown field names** in `$filter`, `$orderby` or `$select`: HTTP 400 JSON with codes `OF_OQP_002`, `OF_OQP_001` and `OF_OQP_003`.
 - **robots.txt from curl or urllib**: HTTP 403; `urllib.robotparser.read()` then reports every path as disallowed.
-- **Not tested:** rate-limit behaviour (never provoked), the largest `$top` the server accepts, `$apply`/aggregation, and the other OpenFEMA datasets (the `/api/open/v1/OpenFemaDataSets` index is linked from the dataset page).
+- **Not tested:** rate-limit behaviour (never provoked), a `$top` above 10,001, `$apply`/aggregation, and the other OpenFEMA datasets (the `/api/open/v1/OpenFemaDataSets` index is linked from the dataset page).
