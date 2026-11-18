@@ -20,11 +20,14 @@
 ## Rate limits and CAPTCHA (the main trap)
 
 - **Search:** at 6–10 s spacing, Google redirected to `/sorry/index?...` (CAPTCHA) after
-  about 40 queries. The block stayed for hours. At 50–80 s spacing it ran without a block.
+  about 40 queries. The block stayed for hours. At 50–80 s spacing, 230 queries ran
+  over about 4 hours without a block.
   Detect the block with `"/sorry" in location.href` or the "unusual traffic" text,
   stop the loop, and do not solve the CAPTCHA.
 - **Autocomplete endpoint:** about 7 requests/s from one IP returned 403 after
   about 4k requests. After a few hours it worked again. 1 thread with 2.5–4.5 s sleep
   then ran 4.5k requests without a block. Poll every 5 min for HTTP 200 before resuming.
+- `goto_url` sometimes raises `Page.navigate timed out after 5s waiting for the daemon`
+  on a long loop. Catch it and retry the same query after 30 s.
 - Use one dedicated tab for the loop (`goto_url` in that tab, not `new_tab` per query),
   so the user's tabs stay untouched.
