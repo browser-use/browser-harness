@@ -2,8 +2,7 @@
 
 Use the Trends private API instead of scraping the charts. Open any
 `trends.google.com/trends/explore?...` tab first, then call `fetch()` from that
-tab with `js(..., target_id=...)`. The page cookies (NID) make the requests
-work. The same URLs fetched with `http_get` outside the browser usually return 429.
+tab with `js(..., target_id=...)`, so the requests carry the page's cookies.
 
 ## Flow
 
@@ -43,7 +42,7 @@ so ratios below about 0.02× the anchor are noise.
   daemon and switches tabs, `fetch` runs on the wrong origin and fails.
 - **Timeouts.** `explore` sometimes hangs and causes `Runtime.evaluate timed out`.
   Wrap fetches in `AbortSignal.timeout(20000)` and retry with backoff (30 s, 60 s, …).
-- **Rate.** 12–20 s between explore calls ran for 100+ requests without a 429.
-  At faster rates you get 429s; slow down rather than rotating anything.
+- **Rate.** 12–20 s between explore calls ran for about 50 explore
+  requests (plus their widget calls) without a 429.
 - **Two jobs at once.** Running a Google Search loop and a Trends loop on one
   daemon slowed both and caused timeouts. Run them one after the other.
