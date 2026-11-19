@@ -1,6 +1,6 @@
 # EPSS (FIRST) via the FIRST API (api.first.org) - Get the Exploitation Probability and Percentile for a List of CVEs to Decide Which to Patch First (REST API, no key)
 
-Field-tested against api.first.org on 2026-11-18 (US Pacific afternoon; 23:46-23:54 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:50-23:51 UTC) plus Python `urllib` and `curl` from a Linux machine. 17 browser page loads (an API JSON answer 3 times, both robots files and five documentation and terms pages twice each) and 28 in-page `fetch()` calls (blocks 1 and 2 each ran twice), 75 curl calls (67 to the API, 8 to robots.txt and documentation pages) and 14 urllib calls (8 of them robots.txt), all serial. Every API call was HTTP 200 except the deliberate HTTP 422 probes (a `date` before 2021-04-14) and one HTTP 404 probe of a misspelled path. Each call took about 0.05-0.7 s (most 0.15-0.35 s). No 429, no challenge, no key, no login. On 2026-11-19 (00:05 UTC) block 3 was re-run with an empty cache after a guard for an empty mover list: same output except the times.
+Field-tested against api.first.org on 2026-11-18 (US Pacific afternoon; 23:46-23:54 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:50-23:51 UTC) plus Python `urllib` and `curl` from a Linux machine. 17 browser page loads (an API JSON answer 3 times, both robots files and five documentation and terms pages twice each) and 28 in-page `fetch()` calls (blocks 1 and 2 each ran twice), 75 curl calls (67 to the API, 8 to robots.txt and documentation pages) and 14 urllib calls (8 of them robots.txt), all serial. Every API call was HTTP 200 except the deliberate HTTP 422 probes (a `date` before 2021-04-14) and one HTTP 404 probe of a misspelled path. Each call took about 0.05-0.7 s (most 0.15-0.35 s). No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1, 3 and 4 were re-run at 00:16-00:17 UTC (block 1 in a new cloud browser, block 3 with an empty cache): same output except the times, plus block 3's new missing-ID line and block 4's source line; blocks 3 and 4 show the re-run output.
 
 robots.txt (checked 2026-11-18, curl, the cloud browser and `urllib.robotparser`): https://api.first.org/robots.txt answers HTTP 404 (the HTML "Oops, where is this page?" page), so the API host has no rules and no named AI-agent groups; under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources", and Python's parser treats it as allow-all. https://www.first.org/robots.txt is three lines: `User-agent: *`, `Disallow: /signin*`, `Disallow: /_/links/*`, with no named AI-agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*`; the documentation and terms pages this skill reads (`/epss/data`, `/epss/faq`, `/about/policies/terms`) are allowed for all 11 agents (block 3). Terms: the "Get the Data" page https://www.first.org/epss/data says "EPSS scores are published daily, free of charge, with no registration required" and "The EPSS API is designed for lookup, not bulk access. The intended use case is querying the current score for one CVE or a small batch"; for "bulk downloads or to keep a local copy of all scores in sync" it points to the daily CSV or the GitHub archive instead. The EPSS FAQ https://www.first.org/epss/faq: "Attribution is requested when EPSS data is used in publications or products." The API documentation https://api.first.org/ says "Public endpoints without authentication are limited to 1000 requests per minute" and "In the event you receive the response 429 Too many requests you have exceeded this limit and have been temporarily blocked", and asks to "avoid concurrent requests". The FIRST Services Terms of Use https://www.first.org/about/policies/terms (Version 1.0.0, effective September 2023; "API (Public)" is one of the listed Services) grant "a nonexclusive, nontransferable, revocable, limited license to view, copy, print, and distribute Content retrieved from the Services to the extent permissible under applicable laws only for vulnerability disclosure, cybersecurity incident response, or preventative cybersecurity uses", provided copyright and trademark notices are kept. Ranking your own CVEs for patching is a preventative cybersecurity use. No AI/ML, scraping, automated-access or non-commercial clause on any of these pages. Naming: the same terms say "FIRST® is a registered trademark of FIRST" and "You may not use or display any trademarks, service marks, logos, or designs owned by FIRST or its affiliates without FIRST’s prior written consent", so this skill says "EPSS (FIRST)" in plain text with a source line, uses no FIRST or EPSS logo, and is not affiliated with or endorsed by FIRST.
 
@@ -13,7 +13,7 @@ robots.txt (checked 2026-11-18, curl, the cloud browser and `urllib.robotparser`
 - **`epss` is the probability of exploitation in the wild in the next 30 days; `percentile` is the share of all scored CVEs with the same score or lower** (FAQ and Get the Data page). Both are strings ("0.999990000"): convert before sorting. The FAQ says a 0.10 threshold "is commonly cited in the field but carries no special authority from EPSS".
 - **Sort yourself, or use `sort=-epss`.** The answer comes in CVE-ID order, not by score. `order=!epss` was ignored in every run; the documented global parameter `sort=-epss` sorts by score, highest first.
 - **Silent failures:** an unknown ID, a malformed ID, an ID with a leading space (`%20CVE-...`), a wrong date format, `epss-gt=abc` and a `cve=` value over 2000 characters are all HTTP 200: the ID is dropped, or (for the long list) **0 rows for the whole list**, or (for `epss-gt=abc`) the filter is ignored. The default `limit` is **100**, so a 133-ID list returned 100 of its 125 scored rows. Blocks 1 and 3 clean the IDs, split at 2000 characters, set `limit` to the chunk size and check `total` against the rows.
-- **Rate limit:** 1000 requests per minute without auth; a 429 means a temporary block. All blocks are serial at 0.5 s or more per call (120/min at most), wait `Retry-After` once on 429/5xx (default 60 s) and stop above 120 s; block 3 caches answers on disk for 6 h. The server sends `Cache-Control: public, max-age=86400`. For your whole inventory or all scores, the docs say use the daily CSV, not the API.
+- **Rate limit:** 1000 requests per minute without auth; a 429 means a temporary block. All blocks are serial at 0.5 s or more per call (120/min at most). Blocks 1 and 3 wait `Retry-After` once on 429/5xx (default 60 s) and stop above 120 s; block 4 uses curl's `--retry 1` (it retries on 408, 429, 500, 502, 503 and 504 and honours `Retry-After`) and `--max-time 60`. Block 3 caches answers on disk for 6 h, and never past 14:00 UTC, about half an hour after the daily scores come out. The server sends `Cache-Control: public, max-age=86400`. For your whole inventory or all scores, the docs say use the daily CSV, not the API.
 
 ## What works
 
@@ -67,6 +67,8 @@ def retry_after(v):
             s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError):
             s = 60
+    if s != s:  # 'nan'
+        s = 60
     if s > 120:
         raise RuntimeError(f"server asks to wait {s:.0f} s (over 120 s): stopping")
     return max(s, 1)
@@ -316,7 +318,7 @@ Sends a descriptive User-Agent (curl's default User-Agent also got HTTP 200). `d
 
 ```python
 import hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 API = "https://api.first.org/data/v1/epss"
@@ -325,7 +327,7 @@ AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-U
           "Google-Extended", "PerplexityBot", "CCBot", "Bytespider"]
 CACHE_DIR = "~/.cache/epss-skill"
 CACHE = os.path.expanduser(CACHE_DIR)
-TTL = 6 * 3600  # scores change once a day (about 13:30 UTC); 6 h picks up a new day without re-asking every run
+TTL = 6 * 3600  # scores change once a day (about 13:30 UTC); entries also expire at 14:00 UTC (see get())
 PAUSE = 0.5     # public limit: 1000 requests per minute. Serial, 0.5 s apart = at most 120/min
 MAX_CVE = 2000  # documented cap on cve=; a longer value returns 0 rows with HTTP 200
 CVE_ID = re.compile(r"CVE-\d{4}-\d{4,}")
@@ -340,6 +342,8 @@ def retry_after(v):
             s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError):
             s = 60
+    if s != s:  # 'nan'
+        s = 60
     if s > 120:
         sys.exit(f"server asks to wait {s:.0f} s (over 120 s): stopping")
     return max(s, 1)
@@ -349,7 +353,9 @@ def get(params):
     429/500/502/503/504 or a network error; exits on anything else and on a body whose status-code is not 200."""
     global calls, hits
     url = API + "?" + urllib.parse.urlencode(params, safe=",")
-    f = os.path.join(CACHE, hashlib.sha256(url.encode()).hexdigest() + ".json")
+    # the key carries the publication day (which starts at 14:00 UTC), so a cached answer never outlives a new score
+    pub = (datetime.now(timezone.utc) - timedelta(hours=14)).date()
+    f = os.path.join(CACHE, hashlib.sha256(f"{url} {pub}".encode()).hexdigest() + ".json")
     try:
         if time.time() - os.path.getmtime(f) < TTL:
             hits += 1
@@ -431,12 +437,17 @@ THEN = "2026-10-01"  # the day of your last triage; the API keeps every daily sc
 now = datetime.now(timezone.utc)
 today, before = epss(QUEUE), epss(QUEUE, THEN)
 day = {d for _, _, d in today.values()}
+if len(day) > 1:
+    sys.exit(f"rows carry several score dates {sorted(day)} (a new day was published between calls): run again")
 print(f"\nEPSS (FIRST), queried {now:%Y-%m-%d %H:%M} UTC: scores of {', '.join(sorted(day))} vs {THEN}")
 print(f"{'CVE':<16} {'EPSS now':>9} {'pctl':>8} {'EPSS ' + THEN[5:]:>10} {'change':>8}")
 for c, (e, p, _) in sorted(today.items(), key=lambda kv: -kv[1][0]):
     b = before.get(c)
     ch = f"{e - b[0]:+.5f}" if b else "new"
     print(f"{c:<16} {e:>9.5f} {p:>8.5f} {(f'{b[0]:.5f}' if b else '-'):>10} {ch:>8}")
+asked = clean(QUEUE)
+print(f"no score now: {', '.join(c for c in asked if c not in today) or 'none'}; "
+      f"no score on {THEN}: {', '.join(c for c in asked if c not in before) or 'none'}")
 
 # 30-day history for the two biggest movers (scope=time-series takes the same cve list)
 movers = sorted((c for c in today if c in before), key=lambda c: -abs(today[c][0] - before[c][0]))[:2]
@@ -453,7 +464,7 @@ print(f"\nnetwork calls {n1}, then {calls - n1} more for 2 repeated lookups (cac
 print(f"Source: EPSS (FIRST), {API}, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-18, 23:53 UTC):
+Output (from the re-run on 2026-11-19, 00:16 UTC):
 
 ```text
 https://api.first.org/robots.txt: HTTP 404
@@ -464,7 +475,7 @@ https://www.first.org/robots.txt: HTTP 200
   robots /epss/faq                          allowed for all 11 agents
   robots /about/policies/terms              allowed for all 11 agents
 
-EPSS (FIRST), queried 2026-11-18 23:53 UTC: scores of 2026-11-18 vs 2026-10-01
+EPSS (FIRST), queried 2026-11-19 00:16 UTC: scores of 2026-11-18 vs 2026-10-01
 CVE               EPSS now     pctl EPSS 10-01   change
 CVE-2024-3400      0.99999  1.00000    0.99999 +0.00000
 CVE-2021-44228     0.99999  1.00000    0.99999 +0.00000
@@ -476,11 +487,12 @@ CVE-2024-7340      0.05015  0.92414    0.05015 +0.00000
 CVE-2024-9340      0.00970  0.62577    0.00952 +0.00018
 CVE-2024-20129     0.00306  0.23791    0.00306 +0.00000
 CVE-2024-20131     0.00175  0.07066    0.00175 +0.00000
+no score now: none; no score on 2026-10-01: none
 CVE-2026-8037: 30 days before 2026-11-18, EPSS min 0.77362 max 0.99837, 2026-10-19 0.77362 -> 2026-11-18 0.99794
 CVE-2024-3094: 30 days before 2026-11-18, EPSS min 0.90900 max 0.90900, 2026-10-19 0.90900 -> 2026-11-18 0.90900
 
 network calls 3, then 0 more for 2 repeated lookups (cache hits so far: 2, cache ~/.cache/epss-skill)
-Source: EPSS (FIRST), https://api.first.org/data/v1/epss, accessed 18 November 2026 23:53 UTC.
+Source: EPSS (FIRST), https://api.first.org/data/v1/epss, accessed 19 November 2026 00:16 UTC.
 ```
 
 ### 4. curl, CSV, headers and mistakes
@@ -488,27 +500,30 @@ Source: EPSS (FIRST), https://api.first.org/data/v1/epss, accessed 18 November 2
 ```bash
 B=https://api.first.org/data/v1/epss
 # CVE list -> EPSS and percentile, highest first (sort=-epss is the documented sort; limit covers the whole list)
-curl -sS --fail -G "$B" -d "cve=CVE-2024-3400,CVE-2024-21762,CVE-2024-9340,CVE-2024-3094" -d limit=4 -d sort=-epss \
+# --retry 1 retries once on 429/5xx after Retry-After (curl's own rule); --max-time stops a stalled call
+C="curl -sS --max-time 60 --retry 1"
+$C --fail -G "$B" -d "cve=CVE-2024-3400,CVE-2024-21762,CVE-2024-9340,CVE-2024-3094" -d limit=4 -d sort=-epss \
   | python3 -c 'import json, sys
 b = json.load(sys.stdin); print("total", b["total"])
 for d in b["data"]: print(d["cve"], d["epss"], d["percentile"], d["date"])'
 sleep 0.5
 # the same as CSV (".csv" extension); the first line is the header
-curl -sS --fail "$B.csv?cve=CVE-2024-3400,CVE-2024-9340"
+$C --fail "$B.csv?cve=CVE-2024-3400,CVE-2024-9340"
 sleep 0.5
 # headers: JSON, cached 1 day, CORS open, a total count
-curl -sS -D - -o /dev/null "$B?cve=CVE-2024-3400" | tr -d '\r' \
+$C -D - -o /dev/null "$B?cve=CVE-2024-3400" | tr -d '\r' \
   | grep -iE '^(HTTP/|(content-type|cache-control|access-control-allow-origin|x-total|retry-after|x-ratelimit-limit):)'
 sleep 0.5
 # mistakes: an unknown ID is silently dropped; order=!epss is not a sort; a date before 2021-04-14 is HTTP 422
-curl -sS -w ' <- HTTP %{http_code}\n' "$B?cve=CVE-2099-0001"
+$C -w ' <- HTTP %{http_code}\n' "$B?cve=CVE-2099-0001"
 sleep 0.5
-curl -sS "$B?epss-gt=0.95&order=!epss&limit=3" | python3 -c 'import json, sys; print("order=!epss:", [d["epss"] for d in json.load(sys.stdin)["data"]])'
+$C "$B?epss-gt=0.95&order=!epss&limit=3" | python3 -c 'import json, sys; print("order=!epss:", [d["epss"] for d in json.load(sys.stdin)["data"]])'
 sleep 0.5
-curl -sS -w ' <- HTTP %{http_code}\n' "$B?cve=CVE-2021-44228&date=2021-04-13"
+$C -w ' <- HTTP %{http_code}\n' "$B?cve=CVE-2021-44228&date=2021-04-13"
+echo "Source: EPSS (FIRST), $B, scores of the date in each row, accessed $(date -u '+%d %B %Y %H:%M') UTC."
 ```
 
-Output (from the run on 2026-11-18, 23:53 UTC):
+Output (from the re-run on 2026-11-19, 00:16 UTC):
 
 ```text
 total 4
@@ -520,15 +535,16 @@ cve,epss,percentile,date
 CVE-2024-9340,0.009700000,0.625770000,2026-11-18
 CVE-2024-3400,0.999990000,1.000000000,2026-11-18
 HTTP/2 200 
-cache-control: public, max-age=86400, s-maxage=86400
 content-type: application/json; charset=utf-8
-access-control-allow-origin: *
 x-total: 1
+cache-control: public, max-age=86400, s-maxage=86400
+access-control-allow-origin: *
 {"status":"OK","status-code":200,"version":"1.0","access":"public","total":0,"offset":0,"limit":100,"data":[]}
  <- HTTP 200
 order=!epss: ['0.957690000', '0.973550000', '0.997940000']
 {"status":"Unprocessable Entity","status-code":422,"version":"1.0","access":"public","message":["listNoResults"],"data":{"error":["listNoResults"]}}
  <- HTTP 422
+Source: EPSS (FIRST), https://api.first.org/data/v1/epss, scores of the date in each row, accessed 19 November 2026 00:16 UTC.
 ```
 
 ## Fields (`GET /data/v1/epss`)

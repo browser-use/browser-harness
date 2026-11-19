@@ -1,6 +1,6 @@
 # endoflife.date API (endoflife.date) - Check Whether a Software Version (Python, Node.js, Ubuntu, PostgreSQL...) Is Still Supported and When It Reaches End of Life (REST API, no key)
 
-Field-tested against endoflife.date on 2026-11-18 (US Pacific afternoon; 23:47-23:56 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:49-23:54 UTC) plus Python `urllib` and `curl` from a Linux machine. 20 browser page loads (the Python product page, robots.txt 4 times, the API index 4 times, the OpenAPI spec twice (a page load downloads it, see Gotchas), the GitHub README 4 times and the LICENSE 5 times, 4 on github.com and 1 on raw.githubusercontent.com) and 71 in-page `fetch()` calls (blocks 1 and 2 ran 2 and 4 times while they were written), 57 curl calls and 21 urllib calls to endoflife.date (plus 2 curl calls for the README and LICENSE on raw.githubusercontent.com), all serial (1 s apart in the blocks below). Every call was HTTP 200 except the deliberate HTTP 404 (unknown product, release or category), HTTP 301 (alias) and HTTP 304 (conditional GET) probes below, and https://endoflife.date/terms and https://endoflife.date/credits, which do not exist (HTTP 404). Each call took about 0.07-0.33 s. No 429, no challenge, no key, no login. On 2026-11-19 (00:05 UTC) blocks 3 and 4 were re-run after two small fixes (a fallback label, a `mktemp` file): same output except the times and day counts, which moved by 1 day at midnight UTC.
+Field-tested against endoflife.date on 2026-11-18 (US Pacific afternoon; 23:47-23:56 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:49-23:54 UTC) plus Python `urllib` and `curl` from a Linux machine. 20 browser page loads (the Python product page, robots.txt 4 times, the API index 4 times, the OpenAPI spec twice (a page load downloads it, see Gotchas), the GitHub README 4 times and the LICENSE 5 times, 4 on github.com and 1 on raw.githubusercontent.com) and 71 in-page `fetch()` calls (blocks 1 and 2 ran 2 and 4 times while they were written), 57 curl calls and 21 urllib calls to endoflife.date (plus 2 curl calls for the README and LICENSE on raw.githubusercontent.com), all serial (1 s apart in the blocks below). Every call was HTTP 200 except the deliberate HTTP 404 (unknown product, release or category), HTTP 301 (alias) and HTTP 304 (conditional GET) probes below, and https://endoflife.date/terms and https://endoflife.date/credits, which do not exist (HTTP 404). Each call took about 0.07-0.33 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1, 3 and 4 were re-run at 00:05-00:17 UTC (block 1 in a new cloud browser, block 3 with an empty cache) after small fixes (hyphen-suffix versions, a label fallback, a `mktemp` file, a NaN-safe `Retry-After`): same output except the times and block 3's day counts, which moved by 1 day at midnight UTC.
 
 robots.txt (checked 2026-11-18, curl, the cloud browser and `urllib.robotparser`): https://endoflife.date/robots.txt is three lines, `User-Agent: *`, `Allow: /` and a `Sitemap:` line, with no named AI-agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*` and may fetch `/api/v1/` (block 3 checks all 11 agents). Terms: endoflife.date has no terms page (`/terms` is HTTP 404; the site's "Credits" link goes to the GitHub README). The OpenAPI spec (https://endoflife.date/docs/api/v1/openapi.yml, version 1.2.1) declares `license: name: MIT License` with a link to the repository LICENSE, which reads "Copyright 2020 endoflife.date contributors" and "Permission is hereby granted, free of charge ... to deal in the Software without restriction"; the README (https://github.com/endoflife-date/endoflife.date) says "Licensed under the MIT License." and "The API is currently in Beta, and breaking changes can happen." The spec asks clients to "follow the 301 redirects (products, categories or tags may occasionally be renamed)" and documents HTTP 429, whose response "may contain a `Retry-After` header", "to prevent abuse of the API and ensure fair usage for all users"; it gives no number. No AI/ML, scraping, crawling, automated-access, rate-limit number or non-commercial wording in the spec, the README or the LICENSE (block 2 checks the quotes; a word search of all three found none). The README also says product descriptions are adapted from English Wikipedia under CC BY-SA 3.0 and the site icon is CC-BY-SA-4.0; the API responses used here carry no descriptions, and this skill shows no icon or logo (`links.icon` points to Simple Icons brand logos: not used). Naming: the project writes its name "endoflife.date", lowercase, and so does this skill. It is a community project; this is its own API, and this skill is not affiliated with or endorsed by it.
 
@@ -10,7 +10,7 @@ robots.txt (checked 2026-11-18, curl, the cloud browser and `urllib.robotparser`
 
 - **No scraping.** `GET https://endoflife.date/api/v1/products/python/releases/3.12` -> `{"schema_version": "1.2.1", "generated_at": ..., "result": {"name": "3.12", "isEol": false, "eolFrom": "2028-10-31", "isMaintained": true, "latest": {"name": "3.12.16", ...}}}`. `/products/<product>/` returns every cycle at once (newest first), `/products/<product>/releases/latest` the newest cycle, `/products` the 489 product names with aliases, `/categories/<c>` and `/tags/<t>` a product list. JSON, `Access-Control-Allow-Origin: *`, no key.
 - **Answers (block 1, 23:51 UTC; block 4 at 23:56 agrees on Python 3.12 and Node.js 26):** **Python 3.12 is supported (security fixes only) until 2028-10-31**, latest 3.12.16; **Node.js latest is 26 (LTS) at 26.13.1 (2026-11-11), end of life 2029-04-30**; **Node.js 20 reached end of life on 2026-04-30** (the API still marks it maintained: "Commercial Support", no end date); **Ubuntu 20.04 reached end of life on 2025-05-31**, with Expanded Security Maintenance until 2030-04-23; **PostgreSQL 13 reached end of life on 2025-11-13** (`isMaintained` false).
-- **Ask for the cycle, not the version.** The release name is the cycle (`3.12`, `20`, `22.04`, `13`): `releases/3.12.4` and `releases/v20` are HTTP 404. Blocks 1 and 3 fetch the product once and map a version to its cycle locally (longest cycle name followed by a dot, so `3.1` never takes `3.12.4`), then compare it with the cycle's `latest`.
+- **Ask for the cycle, not the version.** The release name is the cycle (`3.12`, `20`, `22.04`, `13`): `releases/3.12.4` and `releases/v20` are HTTP 404. Blocks 1 and 3 fetch the product once and map a version to its cycle locally (longest cycle name followed by a dot or a hyphen, so `3.1` never takes `3.12.4`), then compare it with the cycle's `latest`.
 - **404 is an HTML page.** An unknown product (`java`, `pyhton`), release or category answers HTTP 404 `text/html` "Page not Found | endoflife.date", not JSON (the spec says so). Check the status before parsing. Names: `/products` lists names, labels and aliases (`node` -> `nodejs`, `pg` -> `postgresql`, which the API also serves as HTTP 301); there is no product "java" (14 products carry the tag `java-distribution`).
 - **"End of life" and "maintained" are different fields.** `isMaintained` is "any level of support, even extended support": 207 of 9,419 cycles are `isEol` true and `isMaintained` true (Node.js 20, Ubuntu 20.04, Amazon EKS 1.31). The blocks report the phase from the dates: active support (`eoasFrom`), end of life (`eolFrom`), extended support (`eoesFrom`), with each product's own phase names from `labels`.
 - **Rate limit:** none published; the spec documents 429 with an optional `Retry-After`. All blocks send 1 request per second, serial, wait `Retry-After` (seconds or an HTTP date; default 60 s) once on 429/502/503/504 and stop when it asks for more than 120 s. Responses carry an `ETag` and `Cache-Control: public,max-age=0,must-revalidate`; block 3 keeps answers on disk for 6 h and then revalidates with `If-None-Match` (HTTP 304, no body).
@@ -63,6 +63,8 @@ def retry_after(v):
             s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError):
             s = 60
+    if s != s:  # 'nan'
+        s = 60
     if s > 120:
         raise RuntimeError(f"server asks to wait {s:.0f} s (over 120 s): stopping")
     return max(s, 1)
@@ -104,9 +106,9 @@ def resolve(name, products):
 
 def cycle(version, releases):
     """'v20.11.1' -> the release cycle '20'; '3.12.4' -> '3.12'; '22.04.3' -> '22.04'. Longest cycle name equal to the
-    version or followed by a dot in it, so '3.1' never takes '3.12.4'."""
+    version or followed by a dot or a hyphen ('1.31-eks-70' -> '1.31'), so '3.1' never takes '3.12.4'."""
     v = version.lower().lstrip("v")
-    found = [r for r in releases if v == r["name"].lower() or v.startswith(r["name"].lower() + ".")]
+    found = [r for r in releases if v == r["name"].lower() or v.startswith((r["name"].lower() + ".", r["name"].lower() + "-"))]
     return max(found, key=lambda r: len(r["name"]), default=None)
 
 def nums(s):
@@ -370,6 +372,8 @@ def retry_after(v):
             s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError):
             s = 60
+    if s != s:  # 'nan'
+        s = 60
     if s > 120:
         sys.exit(f"server asks to wait {s:.0f} s (over 120 s): stopping")
     return max(s, 1)
@@ -422,9 +426,9 @@ def get(path):
     return body
 
 def cycle(version, releases):
-    """'18.20.4' -> cycle '18', '22.04.4' -> '22.04', '1.30.2' -> '1.30'; the longest cycle name followed by a dot."""
+    """'18.20.4' -> cycle '18', '22.04.4' -> '22.04', '1.30.2' -> '1.30'; the longest cycle name followed by a dot or '-'."""
     v = version.lower().lstrip("v")
-    found = [r for r in releases if v == r["name"].lower() or v.startswith(r["name"].lower() + ".")]
+    found = [r for r in releases if v == r["name"].lower() or v.startswith((r["name"].lower() + ".", r["name"].lower() + "-"))]
     return max(found, key=lambda r: len(r["name"]), default=None)
 
 def nums(s):
@@ -584,7 +588,7 @@ Counts are from one `GET /api/v1/products/full` (3.06 MB, all 489 products with 
 
 - **The flags are as of the build, the dates are not.** `isEol`, `isEoas` and `isMaintained` come with `generated_at`, which the spec calls "The time this response was generated" but which stayed `2026-11-18T09:37:30+00:00` on every response from 2026-11-18 23:47 to 2026-11-19 00:02 UTC, so it is a build time (the README lists Jekyll, "a static site generator", and Netlify, which the `Server` header names). So a cycle whose `eolFrom` passes after a build would read `isEol` false until the next one (inferred from `generated_at`; not observed). Blocks 1 and 3 compare `eolFrom` with today and fall back to `isEol` only when the date is null. On 2026-11-18 no cycle disagreed. The blocks count the `eolFrom` day itself as end of life; the spec does not say.
 - **"Supported" needs a definition.** Python 3.12 is past active support (`eoasFrom` 2025-04-02) and gets security fixes only until 2028-10-31. Node.js 20 is past `eolFrom` but `isMaintained` true (paid "Commercial Support", `eoesFrom` null). Ubuntu 20.04 is past `eolFrom` but has Expanded Security Maintenance until 2030-04-23. Report the phase and its product-specific label, as the blocks do, not a single yes/no.
-- **Cycle names differ per product** (`3.12`, `20`, `22.04`, `1.30`, `7.2`), and `latest.name` need not be a plain version (Amazon EKS 1.31: `1.31-eks-70`). Map a version to its cycle by the longest cycle name followed by a dot. A leading `v` (`v20.11.1`) is not part of any cycle name; the blocks drop it.
+- **Cycle names differ per product** (`3.12`, `20`, `22.04`, `1.30`, `7.2`), and `latest.name` need not be a plain version (Amazon EKS 1.31: `1.31-eks-70`). Map a version to its cycle by the longest cycle name followed by a dot or a hyphen (`1.31-eks-70` -> `1.31`). A leading `v` (`v20.11.1`) is not part of any cycle name; the blocks drop it.
 - **Unknown names fail as HTML 404**, with no suggestion. Resolve names first from `/products` (names, labels and the 214 products with aliases). "Java" is not a product: the JDK builds are separate products (`oracle-jdk`, `eclipse-temurin`, `amazon-corretto`, `openjdk-builds-from-oracle` and 10 more; tag `java-distribution`, 14 products).
 - **Aliases and renamed products answer HTTP 301** with a `text/plain` body "Redirecting to /api/v1/products/nodejs/". `fetch()` (block 2) and urllib (`/products/node/releases/latest` -> `/products/nodejs/releases/latest`, HTTP 200) follow it; curl needs `-L` (block 4). The spec asks clients to follow 301s.
 - **Case does not matter in the path** (`/products/PYTHON/releases/3.12` and `/releases/LATEST` were HTTP 200), and the trailing slash is optional.

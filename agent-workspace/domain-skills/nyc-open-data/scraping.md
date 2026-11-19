@@ -1,6 +1,6 @@
 # NYC Open Data (data.cityofnewyork.us) - Get a NYC Restaurant's Latest Health Inspection Score, Grade and Violations by Name or Address, or the Latest 311 Complaints for a ZIP Code (SODA API, no key)
 
-Field-tested against data.cityofnewyork.us on 2026-11-18 (US Eastern evening; 23:27-23:37 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:30-23:34 UTC) plus Python `urllib` and `curl` from a Linux machine. 16 browser page loads (an API JSON page, robots.txt, the NYC Open Data FAQ, the NYC.gov Terms of Use, the Socrata app-token doc, the DOHMH restaurant grades page and the ABCEats FAQ; block 2 ran twice) and 34 in-page `fetch()` calls, plus 28 curl calls and 10 urllib calls (2 of them robots.txt) to data.cityofnewyork.us, all serial at 1 s or more spacing: every API call was HTTP 200 except the deliberate HTTP 400 and 404 probes below. Most answers took 0.1-4.5 s; counting the not-yet-inspected rows took 10.8 s, the 311 metadata (`/api/views/erm2-nwe9.json`) 9.6 s, an unknown dataset id 6.0 s and a 60,000-row answer 17.6 s. No 429, no challenge, no key, no login. On 2026-11-19 (00:05-00:07 UTC) blocks 1 and 3 gained PARTIAL notes for answers that hit their `$limit` and were re-run (block 1 in a new cloud browser): same output except the times.
+Field-tested against data.cityofnewyork.us on 2026-11-18 (US Eastern evening; 23:27-23:37 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:30-23:34 UTC) plus Python `urllib` and `curl` from a Linux machine. 16 browser page loads (an API JSON page, robots.txt, the NYC Open Data FAQ, the NYC.gov Terms of Use, the Socrata app-token doc, the DOHMH restaurant grades page and the ABCEats FAQ; block 2 ran twice) and 34 in-page `fetch()` calls, plus 28 curl calls and 10 urllib calls (2 of them robots.txt) to data.cityofnewyork.us, all serial at 1 s or more spacing: every API call was HTTP 200 except the deliberate HTTP 400 and 404 probes below. Most answers took 0.1-4.5 s; counting the not-yet-inspected rows took 10.8 s, the 311 metadata (`/api/views/erm2-nwe9.json`) 9.6 s, an unknown dataset id 6.0 s and a 60,000-row answer 17.6 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1 and 3 were re-run at 00:16 UTC (block 1 in a new cloud browser, block 3 locally) with PARTIAL notes for answers that hit their `$limit`, A/B/C as the only letter grades, a closed 7-day window and a NaN-safe `Retry-After`: same output except the times.
 
 robots.txt (checked 2026-11-18 in the cloud browser, block 2, and with Python, block 3): https://data.cityofnewyork.us/robots.txt has one `User-agent: *` group with `Crawl-delay: 1` and 54 `Disallow` lines: catalog search URLs with filters (`/browse?*&q=`, `/catalog/*?*&tags=` and the like), `*/alt$`, `*/edit$`, `/*/*/*/widget_preview`, `/OData.svc/`, `/api/odata/`, `/browse/embed`, `/login`, `/reset_password/`, `/tiles/`, `/views/INLINE/rows.json?*method=clustered2*` and `/api/collocate*`. No rule touches `/resource/`, and there are no groups for GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot or Bytespider, so the `*` rules apply to them: `/resource/43nn-pn8j.json` and `/resource/erm2-nwe9.json` are allowed for all 11 agents, OData for none (block 3). The blocks never use OData and wait 1 s between calls. Terms: the NYC Open Data FAQ (https://www.nyc.gov/opendata/get-started/FAQs) says "Are there restrictions on how I can use Open Data? Open Data belongs to all New Yorkers. There are no restrictions on the use of Open Data." The NYC.gov Terms of Use (https://www.nyc.gov/main/terms-of-use) say "You agree to access and use NYC.gov only for lawful purposes", ask you not to "disrupt NYC.gov or its servers or networks in any way", and say "Service marks and trademarks contained in or displayed on NYC.gov ... are the property of their respective owners (which may be the City)"; the footer of the FAQ page says "NYC is a trademark and service mark of the City of New York." The Socrata app-token doc (https://dev.socrata.com/docs/app-tokens.html; the portal runs on Socrata, and its answers carry `X-Socrata-Region`) says "requests that aren’t using an application token come from a shared pool via IP address", "IP addresses that make too many requests during a given period may be subject to throttling" and "If you are throttled for any reason, you will receive a status code 429 response". No AI/ML, scraping, automated-access or non-commercial clause on any of these pages (block 2). Naming: this skill says "NYC Open Data" in plain text, uses no NYC logo or City seal, and is not affiliated with or endorsed by the City of New York, DOHMH or 311.
 
@@ -69,6 +69,8 @@ def retry_after(v):
             s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError):
             s = 60
+    if s != s:  # 'nan'
+        s = 60
     if s > 120:
         raise RuntimeError(f"server asks to wait {s:.0f} s (over 120 s): stopping")
     return max(s, 1)
@@ -173,8 +175,8 @@ for name, z in RESTAURANTS:
         print("  not yet inspected")
         continue
     print(f"  latest inspection:       {describe(insp[0])}")
-    graded = next((i for i in insp if i["grade"]), None)
-    print(f"  latest graded:           {describe(graded) if graded else 'none in the data'}")
+    graded = next((i for i in insp if i["grade"] in ("A", "B", "C")), None)  # N, Z, P are not letter grades
+    print(f"  latest graded:           {describe(graded) if graded else 'no A, B or C in the data'}")
     cycle = next((i for i in insp if i["type"].startswith("Cycle Inspection") and i["score"] is not None), None)
     if cycle:
         print(f"  latest cycle inspection: {describe(cycle)}; score is in the {band(cycle['score'])}")
@@ -191,7 +193,8 @@ if reqs:
     newest = datetime.fromisoformat(reqs[0]["created_date"][:19])
     since = newest.replace(hour=0, minute=0, second=0) - timedelta(days=6)
     top = soql(REQUESTS_311, select="complaint_type,count(*) as n", group="complaint_type", order="n DESC", limit=5,
-               where=f"incident_zip={lit(ZIP_311)} AND created_date >= {lit(since.strftime('%Y-%m-%dT%H:%M:%S'))}")
+               where=f"incident_zip={lit(ZIP_311)} AND created_date >= {lit(since.strftime('%Y-%m-%dT%H:%M:%S'))}"
+                     f" AND created_date <= {lit(reqs[0]['created_date'][:19])}")
     print(f"  top complaint types, {since:%Y-%m-%d} to {newest:%Y-%m-%d %H:%M} (7 days to the newest request, NYC local time):")
     print("    " + "; ".join(f"{t['complaint_type']} {t['n']}" for t in top))
 
@@ -431,6 +434,8 @@ def retry_after(v):
             s = (parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError):
             s = 60
+    if s != s:  # 'nan'
+        s = 60
     if s > 120:
         sys.exit(f"server asks to wait {s:.0f} s (over 120 s): stopping")
     return max(s, 1)
@@ -535,7 +540,7 @@ def by_address(address, zipcode):
     return places
 
 def summary(rows):
-    """One restaurant's rows (one per violation) -> (latest inspection, latest graded inspection) as dicts."""
+    """One restaurant's rows (one per violation) -> (latest inspection, latest A/B/C-graded inspection) as dicts."""
     insp = OrderedDict()
     for r in rows:
         day = r.get("inspection_date", "")[:10]
@@ -546,7 +551,7 @@ def summary(rows):
         if r.get("violation_code"):
             i["v"].append((r["violation_code"], r.get("critical_flag", "")))
     items = list(insp.values())
-    return (items[0] if items else None), next((i for i in items if i.get("grade")), None)
+    return (items[0] if items else None), next((i for i in items if i.get("grade") in ("A", "B", "C")), None)
 
 now = datetime.now(timezone.utc)
 print(f"\nNYC Open Data restaurant inspections by address, queried {now:%Y-%m-%d %H:%M} UTC")

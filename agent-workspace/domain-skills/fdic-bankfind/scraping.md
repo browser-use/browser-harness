@@ -1,6 +1,6 @@
 # FDIC BankFind Suite API (api.fdic.gov) - Check Whether a Bank Is Open and FDIC-Insured, Get Its CERT Number, Assets and Branches, or List Recent Bank Failures (REST API, no key)
 
-Field-tested against api.fdic.gov on 2026-11-18 (US Pacific afternoon; 23:27-23:35 UTC) using a fresh Browser Use cloud browser (logged out; one session) plus Python `urllib` and `curl` from a Linux machine. 13 browser page loads (the BankFind "Find Insured Banks" page 3 times, the three robots.txt files twice each, the API documentation and the FDIC website policies twice each) and 29 in-page `fetch()` calls, 14 urllib calls and 49 curl calls (plus an independent re-run of every block at 23:36-23:41 UTC; block 4 then gained 3 curl probes) to api.fdic.gov, banks.data.fdic.gov and www.fdic.gov, all serial (at least 1 s apart in the blocks below): every API call was HTTP 200 except the deliberate HTTP 400 probes below, and robots.txt is HTTP 404 on both API hosts. Each call took about 0.16-0.32 s. No 429, no challenge, no key, no login.
+Field-tested against api.fdic.gov on 2026-11-18 (US Pacific afternoon; 23:27-23:35 UTC) using a fresh Browser Use cloud browser (logged out; one session) plus Python `urllib` and `curl` from a Linux machine. 13 browser page loads (the BankFind "Find Insured Banks" page 3 times, the three robots.txt files twice each, the API documentation and the FDIC website policies twice each) and 29 in-page `fetch()` calls, 14 urllib calls and 49 curl calls (plus an independent re-run of every block at 23:36-23:41 UTC; block 4 then gained 3 curl probes) to api.fdic.gov, banks.data.fdic.gov and www.fdic.gov, all serial (at least 1 s apart in the blocks below): every API call was HTTP 200 except the deliberate HTTP 400 probes below, and robots.txt is HTTP 404 on both API hosts. Each call took about 0.16-0.32 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1 and 3 were re-run at 00:16-00:17 UTC (block 1 in a new cloud browser) so that failure lists and counts keep only `RESTYPE` FAILURE rows and block 1 pages past 100 failures; they show the re-run output.
 
 robots.txt (checked 2026-11-18, curl, urllib and the cloud browser): https://api.fdic.gov/robots.txt answers HTTP 404 (JSON `NOT_FOUND`), and https://banks.data.fdic.gov/robots.txt redirects to https://api.fdic.gov/banks/robots.txt, also HTTP 404. A 4xx robots.txt means no rules apply (RFC 9309, 2.3.1.3: the crawler "MAY access any resources on the server"), so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider may all fetch `/banks/institutions`, `/banks/locations`, `/banks/failures` and the BankFind pages. https://www.fdic.gov/robots.txt (where the website policies live) has one `User-agent: *` group with `Crawl-delay: 1` and Drupal's default `Disallow` list (`/core/`, `/admin/`, `/search/`, `/fdic-search/`, `/user/login` and similar), and no named AI-agent groups; `/about/website-policies` is allowed for all 11 agents (block 3). The blocks wait 1 s between requests. Terms: the BankFind Suite API documentation (https://api.fdic.gov/banks/docs/, read in the cloud browser by block 2) says "Users are currently not required to register and obtain a unique “key” to use with every query submitted to our API" and links an optional key ("Obtain your API key here", via api.data.gov; the OpenAPI spec already lists an optional `api_key` parameter, so a key may become required later). The FDIC Website Policies (https://www.fdic.gov/about/website-policies, "Last Updated: May 12, 2026") say "Access to or use of the FDIC website constitutes consent to the following terms", that the FDIC "makes no express or implied warranty regarding such information or data", that the content "is not designed or intended to provide authoritative financial, accounting, investment, or other professional advice", that a reference to a commercial product "does not constitute an endorsement, a recommendation, or a favoring by the FDIC", and that attempts to "upload or change information, or otherwise cause damage" are "strictly prohibited". No AI/ML, scraping, automated-access or non-commercial clause on either page, and no published rate limit. Naming: "FDIC BankFind Suite" as plain text; no FDIC logo or official sign, no implied endorsement, and no statement about deposit insurance beyond what the API returns. This skill is not affiliated with or endorsed by the FDIC.
 
@@ -153,19 +153,24 @@ for name in BANKS:
         f = rows(get("failures", {"filters": f"CERT:{b['CERT']}", "fields": "NAME,FAILDATE,RESTYPE,RESTYPE1,QBFASSET,COST"}))
         if f:
             x = f[0]
-            print(f"  failure record: {x['NAME']} failed {x['FAILDATE']}, {x['RESTYPE']} {x['RESTYPE1']}, assets "
+            what = "failed" if x["RESTYPE"] == "FAILURE" else "got FDIC assistance (not a failure) on"
+            print(f"  failure record: {x['NAME']} {what} {x['FAILDATE']}, {x['RESTYPE']} {x['RESTYPE1']}, assets "
                   f"{usd(x['QBFASSET'])}, estimated loss to the fund {usd(x['COST'])}")
         else:
             print("  no failure record: it closed some other way (merger, voluntary closing); see the /history endpoint")
     print()
 
-d = get("failures", {"filters": f"FAILDATE:[{SINCE} TO *]", "fields": "NAME,CERT,CITYST,FAILDATE,QBFASSET,QBFDEP,COST,RESTYPE1",
-                     "sort_by": "FAILDATE", "sort_order": "DESC", "limit": 100})
-recent = rows(d)
-if len(recent) != d["meta"]["total"]:
-    raise RuntimeError(f"got {len(recent)} failures, meta.total {d['meta']['total']}")
-alltime = get("failures", {"fields": "CERT", "limit": 1})["meta"]["total"]
-print(f"bank failures since {SINCE}: {len(recent)} (of {alltime} since 1934), newest first")
+# RESTYPE:FAILURE leaves out the ASSISTANCE rows the same endpoint returns; page with offset until meta.total
+recent, total = [], None
+while total is None or len(recent) < total:
+    d = get("failures", {"filters": f"FAILDATE:[{SINCE} TO *] AND RESTYPE:FAILURE", "sort_by": "FAILDATE", "sort_order": "DESC",
+                         "fields": "NAME,CERT,CITYST,FAILDATE,QBFASSET,QBFDEP,COST,RESTYPE1", "limit": 100, "offset": len(recent)})
+    total = d["meta"]["total"]
+    if not d["data"]:
+        raise RuntimeError(f"got {len(recent)} failures, meta.total {total}")
+    recent += rows(d)
+alltime = get("failures", {"filters": "RESTYPE:FAILURE", "fields": "CERT", "limit": 1})["meta"]["total"]
+print(f"bank failures since {SINCE}: {len(recent)} (of {alltime} since 1934, RESTYPE FAILURE only), newest first")
 for x in recent:
     print(f"  {day(x['FAILDATE'])}  {x['NAME']:<40} {x['CITYST']:<14} CERT {x['CERT']:<6} assets {usd(x['QBFASSET']):<16} "
           f"est. loss {usd(x['COST'])}")
@@ -174,7 +179,7 @@ print(f"\n{get.calls} API calls. Source: FDIC BankFind Suite API ({API}), retrie
       f"with or endorsed by the FDIC.")
 ```
 
-Output (from the run on 2026-11-18, 23:31 UTC):
+Output (from the re-run on 2026-11-19, 00:17 UTC):
 
 ```text
 'Silicon Valley Bank' -> exact name, 1 match(es); using Silicon Valley Bank, Santa Clara, CA
@@ -188,7 +193,7 @@ Output (from the run on 2026-11-18, 23:31 UTC):
   locations: 5416 (OFFICES says 5416) in 50 states/territories; top: CA 855, NY 580, TX 489, FL 439, IL 264, OH 235
   main office: JPMorgan Chase Bank, National Association, Columbus, OH
 
-bank failures since 2025-01-01: 6 (of 4117 since 1934), newest first
+bank failures since 2025-01-01: 6 (of 3524 since 1934, RESTYPE FAILURE only), newest first
   2026-07-17  SMALL BUSINESS BANK                      LENEXA, KS     CERT 25744  assets $72.95 million   est. loss $5.67 million
   2026-07-10  KENTLAND FS&LA                           KENTLAND, IN   CERT 28722  assets $3.81 million    est. loss $1.19 million
   2026-05-01  COMMUNITY BANK AND TRUST - WEST GEORGIA  LAGRANGE, GA   CERT 25796  assets $305.72 million  est. loss $97.28 million
@@ -196,7 +201,7 @@ bank failures since 2025-01-01: 6 (of 4117 since 1934), newest first
   2025-06-27  SANTA ANNA NATIONAL BANK                 SANTA ANNA, TX CERT 5520   assets $76.94 million   est. loss $9.76 million
   2025-01-17  PULASKI SAVINGS BANK                     CHICAGO, IL    CERT 28611  assets $49.47 million   est. loss $31.85 million
 
-7 API calls. Source: FDIC BankFind Suite API (https://api.fdic.gov/banks), retrieved 2026-11-18 23:31 UTC. Data is as the FDIC reports it; this skill is not affiliated with or endorsed by the FDIC.
+7 API calls. Source: FDIC BankFind Suite API (https://api.fdic.gov/banks), retrieved 2026-11-19 00:17 UTC. Data is as the FDIC reports it; this skill is not affiliated with or endorsed by the FDIC.
 ```
 
 ### 2. robots.txt, the API doc, the website policies, and the API's answers to mistakes (browser)
@@ -484,15 +489,15 @@ years = collections.Counter(int(f["FAILYR"]) for f in fails if f["RESTYPE"] == "
 print(f"\n{len(fails)} rows since {min(int(f['FAILYR']) for f in fails)}: RESTYPE {dict(kinds)}; "
       f"RESTYPE FAILURE per year from {SINCE_YEAR}:")
 print("  " + ", ".join(f"{y} {years.get(y, 0)}" for y in range(SINCE_YEAR, max(years) + 1)))
-newest = max(fails, key=lambda f: datetime.strptime(f["FAILDATE"], "%m/%d/%Y"))
-print(f"  newest FAILDATE {newest['FAILDATE']}; peak year for failures {years.most_common(1)[0]}")
+newest = max((f for f in fails if f["RESTYPE"] == "FAILURE"), key=lambda f: datetime.strptime(f["FAILDATE"], "%m/%d/%Y"))
+print(f"  newest FAILURE {newest['FAILDATE']}; peak year for failures {years.most_common(1)[0]}")
 
 rl = {k.lower(): v for k, v in last_headers.items() if k.lower().startswith("x-ratelimit")}
 print(f"\n{calls} requests; last response headers {rl}. Source: FDIC BankFind Suite API ({API}), retrieved "
       f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-18, 23:34 UTC):
+Output (from the re-run on 2026-11-19, 00:16 UTC):
 
 ```text
 https://api.fdic.gov/robots.txt: HTTP 404 application/json (final https://api.fdic.gov/robots.txt) -> no rules apply
@@ -516,9 +521,9 @@ https://www.fdic.gov/robots.txt: HTTP 200, groups ['*'], crawl-delay ['1']; /abo
 
 4117 rows since 1934: RESTYPE {'FAILURE': 3524, 'ASSISTANCE': 593}; RESTYPE FAILURE per year from 2008:
   2008 25, 2009 140, 2010 157, 2011 92, 2012 51, 2013 24, 2014 18, 2015 8, 2016 5, 2017 8, 2018 0, 2019 4, 2020 4, 2021 0, 2022 0, 2023 5, 2024 2, 2025 2, 2026 4
-  newest FAILDATE 7/17/2026; peak year for failures (1989, 530)
+  newest FAILURE 7/17/2026; peak year for failures (1989, 530)
 
-7 requests; last response headers {'x-ratelimit-limit': '20', 'x-ratelimit-remaining': '19'}. Source: FDIC BankFind Suite API (https://api.fdic.gov/banks), retrieved 2026-11-18 23:34 UTC.
+7 requests; last response headers {'x-ratelimit-limit': '20', 'x-ratelimit-remaining': '19'}. Source: FDIC BankFind Suite API (https://api.fdic.gov/banks), retrieved 2026-11-19 00:16 UTC.
 ```
 
 ### 4. curl
