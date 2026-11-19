@@ -772,6 +772,10 @@ def ensure_daemon(wait=None, name=None, env=None):
                 hinted = True
             time.sleep(0.2)
         msg = _log_tail(name) or ""
+        if not local and pending_died and p is None:
+            # The daemon we waited on was one that was exiting (killed a moment before, not yet a
+            # zombie): nothing of ours failed, so start our own instead of raising its last log line.
+            continue
         permission_wait = local and (msg.startswith("handshake-wait") or _needs_chrome_permission_popup(msg))
         if local and pending_died:
             # Serialize cleanup with publishers and remove only the generation

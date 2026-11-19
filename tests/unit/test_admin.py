@@ -1839,3 +1839,34 @@ def test_reap_leaves_a_live_child_and_a_foreign_pid_alone():
     finally:
         child.kill()
         child.wait()
+
+
+def test_a_remote_daemon_that_was_still_exiting_is_replaced_not_reported(tmp_path, monkeypatch):
+    """browser-use kills a stuck cloud/CDP daemon, then calls ensure_daemon(). Caught between its socket closing and
+    becoming a zombie, the dying daemon looked like one still starting; when it was gone a moment later,
+    ensure_daemon() raised its last log line ('listening on ...') instead of starting a new daemon."""
+    from browser_harness import admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
+    monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: tmp_path / "daemon.log")
+    monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
+    (tmp_path / "daemon.log").write_text("listening on /tmp/bu-x.sock (name=x, remote=local, owner=none)")
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: False)
+    monkeypatch.setattr(admin_mod, "_check_cdp_endpoint", lambda name, env: None)
+    monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
+    exiting = iter([4321])
+    monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: next(exiting, None))
+    monkeypatch.setattr(admin_mod, "_pending_pid_record", lambda path: None)  # gone on the first look
+    monkeypatch.setattr(admin_mod, "_process_start_time", lambda pid: "start")
+    spawned = []
+
+    class Live:
+        pid = 5678
+        def poll(self): return None
+
+    monkeypatch.setattr(admin_mod.subprocess, "Popen", lambda *a, **k: spawned.append(a) or Live())
+    monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: bool(spawned))
+
+    admin_mod.ensure_daemon(name="x", env={"BU_CDP_WS": "ws://127.0.0.1:1/devtools/browser/x"})
+
+    assert len(spawned) == 1
