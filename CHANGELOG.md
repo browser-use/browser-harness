@@ -45,3 +45,10 @@
 ### Behavior changes to know
 - `http_get()` can now return `bytes`. Code that assumed `str` for a binary URL must handle it.
 - `new_tab()` prints one line to stdout. Code that parses all of stdout as JSON must skip it.
+- A script's first call no longer attaches to the tab you are looking at: `current_tab()` / `ensure_real_tab()` open the caller's own background tab. Use `list_tabs()` and `switch_tab()` to work in an existing tab.
+- `new_tab(url)` reuses the caller's current tab when it is blank instead of opening a second one.
+- `list_tabs()` gives every tab an `owner`; another agent's tab has empty `title` and `url`.
+- `close_tab()` returns the closed tab's id (was `None`) and closes only the caller's own tabs: `switch_tab()` to a person's tab first; another agent's tab fails with `tab-taken`.
+- In a Claude Code sub-agent without `BH_OWNER`, `close_tab()` and `release_tabs()` raise `owner-shared` instead of closing the parent's tab.
+- `upload_file(selector, path)`'s first parameter is now `target` (a selector or a backendNodeId); a call with `selector=` must drop the keyword.
+- Pillow is pinned to 13.0.0.

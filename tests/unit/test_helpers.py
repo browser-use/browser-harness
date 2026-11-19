@@ -596,7 +596,7 @@ def test_list_tabs_hides_other_agents_tabs(monkeypatch):
 
     assert helpers.list_tabs(include_chrome=False) == [
         {"targetId": "mine", "target_id": "mine", "owner": "you", "title": "Mine", "url": "https://a.example/", "mark": "handoff"},
-        {"targetId": "theirs", "target_id": "theirs", "owner": "taken"},
+        {"targetId": "theirs", "target_id": "theirs", "owner": "taken", "title": "", "url": ""},
     ]
 
 
