@@ -22,6 +22,9 @@
 - `ensure_daemon` refuses a live daemon attached to a different CDP endpoint (`cdp-mismatch`) instead of silently driving the other browser.
 - Opt-in idle exit: `BH_IDLE_TIMEOUT=<seconds>`. A daemon spawned with `BH_OWNS_BROWSER=1` defaults to 30 min and closes the browser it launched. Default unchanged: never exits, never closes a user's Chrome.
 - Daemon files are always `bu-<name>.*`, also under `BH_RUNTIME_DIR`.
+- A daemon that crashed or was killed under the process that started it is started again at once, instead of being waited on for 60 s as a daemon "still starting" (it was an unreaped zombie with the same pid and start time).
+- Clients before 0.1.14 (protocol 2, `set_session` after a raw attach) keep working on a 0.1.14 daemon: `set_session` takes the tab like `switch_tab`.
+- `Browser.download*` events reported on a `Target.attachToBrowserTarget` session reach the owner of the tab the download came from.
 
 ### macOS and local Chrome
 - Cold start: with Chrome closed, the harness launches it in the background (`open -g`) and pre-ticks chrome://inspect's "Allow remote debugging for this browser instance" in Local State (never-set pref only; `BH_PRESET_INSPECT_TOGGLE=0` disables). Chrome's one "Allow remote debugging?" dialog per Chrome run remains; the daemon retries the 403 Chrome sends before it has a window.
