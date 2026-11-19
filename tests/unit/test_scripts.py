@@ -219,3 +219,16 @@ def test_merge_shapes_keeps_only_what_both_outputs_share():
     assert scripts.check_output(merged, {"a": "", "b": [9]}) == []
     assert scripts.check_output(merged, {"a": "z", "b": []}) == ["output.b is empty"]
     assert "c" not in merged["keys"]
+
+
+def test_from_last_is_per_working_directory(ws, tmp_path, monkeypatch):
+    a, b = tmp_path / "agent-a", tmp_path / "agent-b"
+    a.mkdir(); b.mkdir()
+    monkeypatch.chdir(a)
+    assert cli(stdin=SCRIPT)[0] == 0
+    monkeypatch.chdir(b)  # another agent on the same daemon, different folder
+    assert cli(stdin='url = "https://other.org/"\nprint("b")\n')[0] == 0
+    monkeypatch.chdir(a)
+    assert cli("scripts", "save", "greet", "--from-last")[0] == 0
+    assert (ws / "scripts" / "example.com" / "greet.py").exists()
+    assert not (ws / "scripts" / "other.org").exists()

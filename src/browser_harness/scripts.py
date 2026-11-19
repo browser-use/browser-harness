@@ -22,7 +22,7 @@ was non-empty comes back null/empty, so a broken page cannot pass as a quiet
 `null`. If the new output is valid, rerun with `--accept`: it keeps the new
 output and relaxes the expectation to what both runs share.
 """
-import ast, io, json, os, re, sys, time, traceback
+import ast, hashlib, io, json, os, re, sys, time, traceback
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -53,9 +53,14 @@ def scripts_dir():
 
 
 def journal_path():
-    """Last successful stdin script for this BU_NAME; `scripts save --from-last` reads it."""
+    """Last successful stdin script for this BU_NAME and working directory; `scripts save --from-last` reads it.
+
+    Agents often share the default daemon, so the directory is part of the key: an agent working in
+    another folder cannot overwrite (or save) this one's last script.
+    """
     name = os.environ.get("BU_NAME", "default")
-    return paths.runtime_dir() / f"last-script-{name if _NAME_RE.match(name) else 'default'}.py"
+    where = hashlib.sha256(os.getcwd().encode()).hexdigest()[:12]
+    return paths.runtime_dir() / f"last-script-{name if _NAME_RE.match(name) else 'default'}-{where}.py"
 
 
 def journal(code):
