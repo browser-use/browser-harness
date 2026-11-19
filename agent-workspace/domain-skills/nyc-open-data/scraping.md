@@ -1,6 +1,6 @@
 # NYC Open Data (data.cityofnewyork.us) - Get a NYC Restaurant's Latest Health Inspection Score, Grade and Violations by Name or Address, or the Latest 311 Complaints for a ZIP Code (SODA API, no key)
 
-Field-tested against data.cityofnewyork.us on 2026-11-18 (US Eastern evening; 23:27-23:37 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:30-23:34 UTC) plus Python `urllib` and `curl` from a Linux machine. 16 browser page loads (an API JSON page, robots.txt, the NYC Open Data FAQ, the NYC.gov Terms of Use, the Socrata app-token doc, the DOHMH restaurant grades page and the ABCEats FAQ; block 2 ran twice) and 34 in-page `fetch()` calls, plus 28 curl calls and 10 urllib calls (2 of them robots.txt) to data.cityofnewyork.us, all serial at 1 s or more spacing: every API call was HTTP 200 except the deliberate HTTP 400 and 404 probes below. Most answers took 0.1-4.5 s; counting the not-yet-inspected rows took 10.8 s, the 311 metadata (`/api/views/erm2-nwe9.json`) 9.6 s, an unknown dataset id 6.0 s and a 60,000-row answer 17.6 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1 and 3 were re-run at 00:16 UTC (block 1 in a new cloud browser, block 3 locally) with PARTIAL notes for answers that hit their `$limit`, A/B/C as the only letter grades, a closed 7-day window and a NaN-safe `Retry-After`: same output except the times.
+Field-tested against data.cityofnewyork.us on 2026-11-18 (US Eastern evening; 23:27-23:37 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:30-23:34 UTC) plus Python `urllib` and `curl` from a Linux machine. 16 browser page loads (an API JSON page, robots.txt, the NYC Open Data FAQ, the NYC.gov Terms of Use, the Socrata app-token doc, the DOHMH restaurant grades page and the ABCEats FAQ; block 2 ran twice) and 34 in-page `fetch()` calls, plus 28 curl calls and 10 urllib calls (2 of them robots.txt) to data.cityofnewyork.us, all serial at 1 s or more spacing: every API call was HTTP 200 except the deliberate HTTP 400 and 404 probes below. Most answers took 0.1-4.5 s; counting the not-yet-inspected rows took 10.8 s, the 311 metadata (`/api/views/erm2-nwe9.json`) 9.6 s, an unknown dataset id 6.0 s and a 60,000-row answer 17.6 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1 and 3 were re-run at 00:16 UTC (block 1 in a new cloud browser, block 3 locally) with PARTIAL notes for answers that hit their `$limit`, A/B/C as the only letter grades, a closed 7-day window and a NaN-safe `Retry-After`: same output except the times. After a second review the same day, block 1 was re-run at 01:14 UTC in a new cloud browser with a full 7 x 24 h 311 window ending at the newest request (it started at midnight 6 days before, so about 6 days and a half): only the window line and its counts changed; block 1 shows that output.
 
 robots.txt (checked 2026-11-18 in the cloud browser, block 2, and with Python, block 3): https://data.cityofnewyork.us/robots.txt has one `User-agent: *` group with `Crawl-delay: 1` and 54 `Disallow` lines: catalog search URLs with filters (`/browse?*&q=`, `/catalog/*?*&tags=` and the like), `*/alt$`, `*/edit$`, `/*/*/*/widget_preview`, `/OData.svc/`, `/api/odata/`, `/browse/embed`, `/login`, `/reset_password/`, `/tiles/`, `/views/INLINE/rows.json?*method=clustered2*` and `/api/collocate*`. No rule touches `/resource/`, and there are no groups for GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot or Bytespider, so the `*` rules apply to them: `/resource/43nn-pn8j.json` and `/resource/erm2-nwe9.json` are allowed for all 11 agents, OData for none (block 3). The blocks never use OData and wait 1 s between calls. Terms: the NYC Open Data FAQ (https://www.nyc.gov/opendata/get-started/FAQs) says "Are there restrictions on how I can use Open Data? Open Data belongs to all New Yorkers. There are no restrictions on the use of Open Data." The NYC.gov Terms of Use (https://www.nyc.gov/main/terms-of-use) say "You agree to access and use NYC.gov only for lawful purposes", ask you not to "disrupt NYC.gov or its servers or networks in any way", and say "Service marks and trademarks contained in or displayed on NYC.gov ... are the property of their respective owners (which may be the City)"; the footer of the FAQ page says "NYC is a trademark and service mark of the City of New York." The Socrata app-token doc (https://dev.socrata.com/docs/app-tokens.html; the portal runs on Socrata, and its answers carry `X-Socrata-Region`) says "requests that aren’t using an application token come from a shared pool via IP address", "IP addresses that make too many requests during a given period may be subject to throttling" and "If you are throttled for any reason, you will receive a status code 429 response". No AI/ML, scraping, automated-access or non-commercial clause on any of these pages (block 2). Naming: this skill says "NYC Open Data" in plain text, uses no NYC logo or City seal, and is not affiliated with or endorsed by the City of New York, DOHMH or 311.
 
@@ -9,7 +9,7 @@ robots.txt (checked 2026-11-18 in the cloud browser, block 2, and with Python, b
 ## Quick summary
 
 - **No scraping.** `GET https://data.cityofnewyork.us/resource/43nn-pn8j.json?$where=upper(dba) like '%KATZ%S%DELI%'&$order=inspection_date DESC` (URL-encode it) returns DOHMH restaurant inspection rows; `GET https://data.cityofnewyork.us/resource/erm2-nwe9.json?$where=incident_zip='10001'&$order=created_date DESC&$limit=5` returns the newest 311 service requests for a ZIP. SoQL parameters: `$select`, `$where`, `$group`, `$order`, `$limit`, `$q`. JSON, or CSV with `.csv`. No key.
-- **Answer (block 1, 23:32 UTC):** **Katz's Delicatessen, camis 40732665, 205 East Houston Street, Manhattan 10002.** Latest inspection **2026-09-30, "Inter-Agency Task Force / Initial Inspection", score 0, no violations, no grade.** Latest letter grade in the data: **A, 2025-02-25 (score 12).** Latest cycle inspection: **2026-07-13, score 20 (the B range), 7 violations, 3 critical (04H, 04K "Evidence of rats or live rats", 04N "Filth flies"), no grade recorded.** A second "KATZ'S DELICATESSEN" is camis 50062888 at 445 Gold Street, Brooklyn 11201. **ZIP 10001, 311:** newest request **2026-11-17 00:30 (NYC time), #71146891, DOT, Sidewalk Condition / Cellar Door Open/Unprotected**; in the 7 days to it the top types were Illegal Parking 45, Encampment 37, Water Maintenance 17.
+- **Answer (block 1, re-run 2026-11-19 01:14 UTC):** **Katz's Delicatessen, camis 40732665, 205 East Houston Street, Manhattan 10002.** Latest inspection **2026-09-30, "Inter-Agency Task Force / Initial Inspection", score 0, no violations, no grade.** Latest letter grade in the data: **A, 2025-02-25 (score 12).** Latest cycle inspection: **2026-07-13, score 20 (the B range), 7 violations, 3 critical (04H, 04K "Evidence of rats or live rats", 04N "Filth flies"), no grade recorded.** A second "KATZ'S DELICATESSEN" is camis 50062888 at 445 Gold Street, Brooklyn 11201. **ZIP 10001, 311:** newest request **2026-11-17 00:30 (NYC time), #71146891, DOT, Sidewalk Condition / Cellar Door Open/Unprotected**; in the 7 x 24 h to it the top types were Illegal Parking 53, Encampment 49, Noise - Residential 20.
 - **One row per violation.** An inspection with 7 violations is 7 rows with the same date, type, score and grade; an inspection with none is 1 row with `action` "No violations were recorded at the time of this inspection." The blocks group rows by `(inspection_date, inspection_type)`: Katz's 20 rows are 8 inspections, two of them on 2026-07-13 (Cycle and Administrative Miscellaneous).
 - **Latest is not graded.** `grade` was blank on 150,520 of 295,247 rows (23:28 UTC). DOHMH's ABCEats FAQ: "A" is 0 to 13 points, "B" 14 to 27, "C" 28 or more, and "Grade Pending" means "on both the initial inspection and reinspection, the restaurant received 14 or more points". The blocks print the latest inspection, the latest one with a grade, and the latest cycle inspection with its violations.
 - **Every value is a string** (`"score":"20"`) and **missing columns are left out** of the row, not sent as null (`grade`, `score`, `violation_code`, `descriptor` all go missing). Use `.get()`.
@@ -191,20 +191,20 @@ for q in reqs:
           f" / {q.get('descriptor', '-')} ({q.get('street_name', 'no street')}; {q.get('status', '?')})")
 if reqs:
     newest = datetime.fromisoformat(reqs[0]["created_date"][:19])
-    since = newest.replace(hour=0, minute=0, second=0) - timedelta(days=6)
+    since = newest - timedelta(days=7)  # a full 7 x 24 h window ending at the newest request
     top = soql(REQUESTS_311, select="complaint_type,count(*) as n", group="complaint_type", order="n DESC", limit=5,
-               where=f"incident_zip={lit(ZIP_311)} AND created_date >= {lit(since.strftime('%Y-%m-%dT%H:%M:%S'))}"
+               where=f"incident_zip={lit(ZIP_311)} AND created_date > {lit(since.strftime('%Y-%m-%dT%H:%M:%S'))}"
                      f" AND created_date <= {lit(reqs[0]['created_date'][:19])}")
-    print(f"  top complaint types, {since:%Y-%m-%d} to {newest:%Y-%m-%d %H:%M} (7 days to the newest request, NYC local time):")
+    print(f"  top complaint types, {since:%Y-%m-%d %H:%M} to {newest:%Y-%m-%d %H:%M} (7 x 24 h to the newest request, NYC local time):")
     print("    " + "; ".join(f"{t['complaint_type']} {t['n']}" for t in top))
 
 print(f"\nSource: NYC Open Data, datasets 43nn-pn8j (DOHMH) and erm2-nwe9 (311), {SITE}, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-18, 23:32 UTC):
+Output (from the re-run on 2026-11-19, 01:14 UTC):
 
 ```text
-NYC Open Data (data.cityofnewyork.us), queried 2026-11-18 23:32 UTC
+NYC Open Data (data.cityofnewyork.us), queried 2026-11-19 01:14 UTC
 
 === "Katz's Deli" in ZIP 10002
   camis 40732665 KATZ'S DELICATESSEN, 205 EAST HOUSTON STREET, Manhattan 10002; Sandwiches; last inspected 2026-09-30
@@ -251,10 +251,10 @@ NYC Open Data (data.cityofnewyork.us), queried 2026-11-18 23:32 UTC
   2026-11-16 23:03  #71152197 DOT    Street Condition / Plate Condition - Noisy (AVENUE OF THE AMERICAS; In Progress)
   2026-11-16 22:57  #71150415 DOT    Street Condition / Plate Condition - Noisy (6 AVENUE; In Progress)
   2026-11-16 22:28  #71141788 DOHMH  Food Establishment / Food Contaminated (BROADWAY; In Progress)
-  top complaint types, 2026-11-11 to 2026-11-17 00:30 (7 days to the newest request, NYC local time):
-    Illegal Parking 45; Encampment 37; Water Maintenance 17; Noise - Residential 16; Street Condition 13
+  top complaint types, 2026-11-10 00:30 to 2026-11-17 00:30 (7 x 24 h to the newest request, NYC local time):
+    Illegal Parking 53; Encampment 49; Noise - Residential 20; Water Maintenance 17; Noise 16
 
-Source: NYC Open Data, datasets 43nn-pn8j (DOHMH) and erm2-nwe9 (311), https://data.cityofnewyork.us, accessed 18 November 2026 23:32 UTC.
+Source: NYC Open Data, datasets 43nn-pn8j (DOHMH) and erm2-nwe9 (311), https://data.cityofnewyork.us, accessed 19 November 2026 01:14 UTC.
 ```
 
 ### 2. robots.txt, the terms pages, the grade cut-offs and query mistakes (browser)

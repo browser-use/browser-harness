@@ -1,6 +1,6 @@
 # EPSS (FIRST) via the FIRST API (api.first.org) - Get the Exploitation Probability and Percentile for a List of CVEs to Decide Which to Patch First (REST API, no key)
 
-Field-tested against api.first.org on 2026-11-18 (US Pacific afternoon; 23:46-23:54 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:50-23:51 UTC) plus Python `urllib` and `curl` from a Linux machine. 17 browser page loads (an API JSON answer 3 times, both robots files and five documentation and terms pages twice each) and 28 in-page `fetch()` calls (blocks 1 and 2 each ran twice), 75 curl calls (67 to the API, 8 to robots.txt and documentation pages) and 14 urllib calls (8 of them robots.txt), all serial. Every API call was HTTP 200 except the deliberate HTTP 422 probes (a `date` before 2021-04-14) and one HTTP 404 probe of a misspelled path. Each call took about 0.05-0.7 s (most 0.15-0.35 s). No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1, 3 and 4 were re-run at 00:16-00:17 UTC (block 1 in a new cloud browser, block 3 with an empty cache): same output except the times, plus block 3's new missing-ID line and block 4's source line; blocks 3 and 4 show the re-run output. Block 3 ran again at 00:24 UTC with one cache file per URL that expires at 14:00 UTC (same output except the time; a second run made 0 network calls and left 3 files).
+Field-tested against api.first.org on 2026-11-18 (US Pacific afternoon; 23:46-23:54 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:50-23:51 UTC) plus Python `urllib` and `curl` from a Linux machine. 17 browser page loads (an API JSON answer 3 times, both robots files and five documentation and terms pages twice each) and 28 in-page `fetch()` calls (blocks 1 and 2 each ran twice), 75 curl calls (67 to the API, 8 to robots.txt and documentation pages) and 14 urllib calls (8 of them robots.txt), all serial. Every API call was HTTP 200 except the deliberate HTTP 422 probes (a `date` before 2021-04-14) and one HTTP 404 probe of a misspelled path. Each call took about 0.05-0.7 s (most 0.15-0.35 s). No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1, 3 and 4 were re-run at 00:16-00:17 UTC (block 1 in a new cloud browser, block 3 with an empty cache): same output except the times, plus block 3's new missing-ID line and block 4's source line; blocks 3 and 4 show the re-run output. Block 3 ran again at 00:24 UTC with one cache file per URL that expires at 14:00 UTC (same output except the time; a second run made 0 network calls and left 3 files). After a second review the same day, block 1 was re-run at 01:14 UTC in a new cloud browser so a list in which no ID has a score is a normal answer, not an error: same output except the time; with only unscored and malformed IDs it prints "scores dated none (no row came back)", lists them and exits 0.
 
 robots.txt (checked 2026-11-18, curl, the cloud browser and `urllib.robotparser`): https://api.first.org/robots.txt answers HTTP 404 (the HTML "Oops, where is this page?" page), so the API host has no rules and no named AI-agent groups; under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources", and Python's parser treats it as allow-all. https://www.first.org/robots.txt is three lines: `User-agent: *`, `Disallow: /signin*`, `Disallow: /_/links/*`, with no named AI-agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*`; the documentation and terms pages this skill reads (`/epss/data`, `/epss/faq`, `/about/policies/terms`) are allowed for all 11 agents (block 3). Terms: the "Get the Data" page https://www.first.org/epss/data says "EPSS scores are published daily, free of charge, with no registration required" and "The EPSS API is designed for lookup, not bulk access. The intended use case is querying the current score for one CVE or a small batch"; for "bulk downloads or to keep a local copy of all scores in sync" it points to the daily CSV or the GitHub archive instead. The EPSS FAQ https://www.first.org/epss/faq: "Attribution is requested when EPSS data is used in publications or products." The API documentation https://api.first.org/ says "Public endpoints without authentication are limited to 1000 requests per minute" and "In the event you receive the response 429 Too many requests you have exceeded this limit and have been temporarily blocked", and asks to "avoid concurrent requests". The FIRST Services Terms of Use https://www.first.org/about/policies/terms (Version 1.0.0, effective September 2023; "API (Public)" is one of the listed Services) grant "a nonexclusive, nontransferable, revocable, limited license to view, copy, print, and distribute Content retrieved from the Services to the extent permissible under applicable laws only for vulnerability disclosure, cybersecurity incident response, or preventative cybersecurity uses", provided copyright and trademark notices are kept. Ranking your own CVEs for patching is a preventative cybersecurity use. No AI/ML, scraping, automated-access or non-commercial clause on any of these pages. Naming: the same terms say "FIRST® is a registered trademark of FIRST" and "You may not use or display any trademarks, service marks, logos, or designs owned by FIRST or its affiliates without FIRST’s prior written consent", so this skill says "EPSS (FIRST)" in plain text with a source line, uses no FIRST or EPSS logo, and is not affiliated with or endorsed by FIRST.
 
@@ -138,10 +138,11 @@ now = datetime.now(timezone.utc)
 ids, bad = clean(QUEUE)
 rows, calls = scores(ids)
 dates = sorted({d["date"] for d in rows.values()})
-if len(dates) != 1:
+if len(dates) > 1:
     raise RuntimeError(f"rows carry several score dates {dates}: stop")
+day = dates[0] if dates else "none (no row came back)"  # every ID unscored or malformed is a normal answer
 order = sorted(rows.values(), key=lambda d: (-float(d["epss"]), -float(d["percentile"]), d["cve"]))
-print(f"EPSS (FIRST) for {len(ids)} CVEs, scores dated {dates[0]}, queried {now:%Y-%m-%d %H:%M} UTC")
+print(f"EPSS (FIRST) for {len(ids)} CVEs, scores dated {day}, queried {now:%Y-%m-%d %H:%M} UTC")
 print(f"{'#':>2}  {'CVE':<16} {'EPSS':>7}  {'percentile':>10}")
 for i, d in enumerate(order, 1):
     print(f"{i:>2}  {d['cve']:<16} {float(d['epss']):>7.5f}  {float(d['percentile']):>10.5f}")
@@ -150,13 +151,13 @@ print(f"no EPSS score (unknown or not yet scored): {', '.join(missing) or 'none'
 print(f"not a CVE ID, not sent: {', '.join(repr(x) for x in bad) or 'none'}")
 print(f"{len(QUEUE)} inputs -> {len(ids)} unique IDs -> {calls} API call(s) (at most {MAX_CVE} characters of cve= each)")
 print(f"\nEPSS: estimated probability that a CVE is exploited in the wild in the next 30 days. Source: EPSS (FIRST), {API}, "
-      f"scores of {dates[0]}, accessed {now:%d %B %Y %H:%M} UTC.")
+      f"scores of {day}, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-18, 23:51 UTC):
+Output (from the re-run on 2026-11-19, 01:14 UTC):
 
 ```text
-EPSS (FIRST) for 10 CVEs, scores dated 2026-11-18, queried 2026-11-18 23:51 UTC
+EPSS (FIRST) for 10 CVEs, scores dated 2026-11-18, queried 2026-11-19 01:14 UTC
  #  CVE                 EPSS  percentile
  1  CVE-2021-44228   0.99999     1.00000
  2  CVE-2024-3400    0.99999     1.00000
@@ -171,7 +172,7 @@ no EPSS score (unknown or not yet scored): CVE-2099-0001
 not a CVE ID, not sent: 'CVE-2024-12'
 12 inputs -> 10 unique IDs -> 1 API call(s) (at most 2000 characters of cve= each)
 
-EPSS: estimated probability that a CVE is exploited in the wild in the next 30 days. Source: EPSS (FIRST), https://api.first.org/data/v1/epss, scores of 2026-11-18, accessed 18 November 2026 23:51 UTC.
+EPSS: estimated probability that a CVE is exploited in the wild in the next 30 days. Source: EPSS (FIRST), https://api.first.org/data/v1/epss, scores of 2026-11-18, accessed 19 November 2026 01:14 UTC.
 ```
 
 ### 2. robots.txt, the terms pages and query mistakes (browser)
