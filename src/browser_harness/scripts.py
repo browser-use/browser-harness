@@ -215,9 +215,9 @@ def save(args):
 
 
 def resolve(ref):
-    host, _, name = ref.rpartition("/")
-    host = host.lower().removeprefix("www.")
-    if not _NAME_RE.match(name) or (host and not _HOST_RE.match(host)):
+    raw, _, name = ref.rpartition("/")
+    host = raw.lower().removeprefix("www.")
+    if not _NAME_RE.match(name) or ((raw or host) and not _HOST_RE.match(host)):
         raise SystemExit(f"browser-harness: bad script name {ref!r}")
     found = [scripts_dir() / host / f"{name}.py"] if host else sorted(scripts_dir().glob(f"*/{name}.py"))
     found = [p for p in found if p.is_file()]

@@ -264,6 +264,8 @@ def test_host_qualified_refs_and_hints(ws, tmp_path, monkeypatch):
         cli("scripts", "save", "top", "--file", str(src))
     assert cli("scripts", "run", "top")[0] != 0  # ambiguous bare name
     assert cli("scripts", "run", "www.A.com/top")[1] == "a.com\n"  # www. and case normalized
+    code, _, err = cli("scripts", "run", "www./top")
+    assert code != 0 and "bad script name" in err  # never falls back to the bare name
     from browser_harness import helpers
     monkeypatch.setattr(helpers, "AGENT_WORKSPACE", ws)
     assert helpers._saved_scripts("a.com") == ["top"]
