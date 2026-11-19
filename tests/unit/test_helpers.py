@@ -838,12 +838,35 @@ def test_wait_for_load_waits_out_the_start_grace_on_a_captcha_page():
     assert len(sends) == 4
 
 
-def test_wait_for_load_skips_the_start_grace_on_a_page_without_a_captcha():
-    sends, *patches = _solver([{"seconds": None, "grace": 2.0}])
+class _Clock:
+    """time.time that advances only when the code under test sleeps."""
+    def __init__(self): self.now = 1000.0
+    def time(self): return self.now
+    def sleep(self, s): self.now += s
+
+
+def test_wait_for_load_ends_the_start_grace_once_no_captcha_showed_for_a_second():
+    clock = _Clock()
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}] * 20)
     js_answers = lambda expr, **_: False if expr == helpers._CAPTCHA_MARKERS else "complete"
-    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), patches[2]:
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), \
+            patch("browser_harness.helpers.time.time", side_effect=clock.time), \
+            patch("browser_harness.helpers.time.sleep", side_effect=clock.sleep):
         assert helpers.wait_for_load() is True
-    assert len(sends) == 1
+    assert 4 <= len(sends) <= 6  # ~1 s of 0.25 s polls, not the whole grace
+
+
+def test_wait_for_load_waits_for_a_captcha_injected_after_the_load():
+    clock = _Clock()
+    marks = iter([False, False, True, True, True, True, True, True, True, True])
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}] * 3 + [{"seconds": 0.5, "grace": 1.0}] * 3
+                              + [{"seconds": None, "grace": 0.0}])
+    js_answers = lambda expr, **_: next(marks) if expr == helpers._CAPTCHA_MARKERS else "complete"
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), \
+            patch("browser_harness.helpers.time.time", side_effect=clock.time), \
+            patch("browser_harness.helpers.time.sleep", side_effect=clock.sleep):
+        assert helpers.wait_for_load() is True
+    assert len(sends) == 7  # waited through the solve that started after the widget appeared
 
 
 def test_wait_for_captcha_solver_returns_false_while_still_solving():

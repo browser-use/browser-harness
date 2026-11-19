@@ -876,8 +876,20 @@ def test_captcha_solving_reports_a_start_grace_after_load_on_cloud_browsers(monk
     d.session = "s1"
     d._record_event("Page.loadEventFired", {}, "s1")
     assert (asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] > 0) is grace
-    d.loaded_at -= daemon.CAPTCHA_GRACE_S
+    d.loaded_at["s1"] -= daemon.CAPTCHA_GRACE_S
     assert asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] == 0
+
+
+def test_captcha_start_grace_follows_the_attached_tab(monkeypatch):
+    """A load on another tab must not give (or take) the attached tab's solver-start grace."""
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cloud")
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+    d = _fresh_daemon()
+    d.session = "s1"
+    d._record_event("Page.loadEventFired", {}, "s2")
+    assert asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] == 0
+    d.session = "s2"
+    assert asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] > 0
 
 
 def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab():
@@ -887,3 +899,30 @@ def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab():
     asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "session_id": "iframe",
                           "params": {"type": "mouseMoved", "x": 1, "y": 1}}))
     assert asyncio.run(d.handle({"meta": "pointer"})) == {"pointer": (12, 34)}
+
+
+def test_start_taps_events_before_attaching(monkeypatch):
+    """A captcha solve that starts while the daemon attaches must be recorded."""
+    class Registry:
+        async def handle_event(self, method, params, session_id=None):
+            return None
+
+    class FakeCDP:
+        def __init__(self, url):
+            self._event_registry = Registry()
+        async def start(self):
+            return None
+
+    d = _fresh_daemon()
+    seen = []
+
+    async def attach_first_page(*a, **k):
+        await d.cdp._event_registry.handle_event("BrowserUse.captchaSolverStarted", {"targetId": "t1"})
+        seen.append(dict(d.captcha_started))
+
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cloud")
+    monkeypatch.setattr(daemon, "CDPClient", FakeCDP)
+    monkeypatch.setattr(daemon, "get_ws_url", lambda: "ws://127.0.0.1:1/devtools/browser/x")
+    monkeypatch.setattr(d, "attach_first_page", attach_first_page)
+    asyncio.run(d.start())
+    assert "t1" in seen[0]

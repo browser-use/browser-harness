@@ -523,7 +523,8 @@ def _page_ready(timeout):
 
 def wait_for_load(timeout=15.0):
     """Poll document.readyState == 'complete' or timeout. On a cloud browser whose captcha solver
-    is mid-solve on this tab, also wait for the solve (wait_for_captcha_solver) and poll again."""
+    is mid-solve on this tab, also wait for the solve (wait_for_captcha_solver, up to 60 s on top of
+    timeout: a solve outlasts a page load) and poll the reloaded page again within timeout."""
     if not _page_ready(timeout): return False
     if wait_for_captcha_solver(timeout=0): return True  # nothing solving: one IPC call
     return wait_for_captcha_solver() and _page_ready(timeout)
@@ -537,7 +538,7 @@ def wait_for_captcha_solver(timeout=60.0):
     BrowserUse.captchaSolverStarted event has no Finished yet), or may still start one: on a page
     with a captcha it starts up to ~2 s after the load. Don't click, type or navigate meanwhile.
     True once no solve runs (at once on local Chrome), False if one still runs after timeout."""
-    deadline, marked = time.time() + timeout, None
+    deadline, unmarked_since = time.time() + timeout, None
     while True:
         try:
             state = _send({"meta": "captcha_solving"})
@@ -545,10 +546,11 @@ def wait_for_captcha_solver(timeout=60.0):
             return True  # daemon predates solver tracking: browser-harness --reload
         if state.get("seconds") is None:
             if not state.get("grace"): return True
-            if marked is None:
-                try: marked = bool(js(_CAPTCHA_MARKERS))
-                except RuntimeError: marked = True  # page mid-navigation: assume it may have one
-            if not marked: return True
+            try: marked = bool(js(_CAPTCHA_MARKERS))
+            except RuntimeError: marked = True  # page mid-navigation: assume it may have one
+            # A widget can be injected after the load: recheck, and go on once it stayed absent for 1 s.
+            unmarked_since = None if marked else unmarked_since or time.time()
+            if unmarked_since and time.time() - unmarked_since >= 1.0: return True
         if time.time() >= deadline: return False
         time.sleep(0.25)
 

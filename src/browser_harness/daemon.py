@@ -440,7 +440,7 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.captcha_started = {}  # targetId -> monotonic start of a cloud captcha solve with no finish yet
-        self.loaded_at = 0.0  # monotonic time of the attached tab's last load event
+        self.loaded_at = {}  # sessionId -> monotonic time of that tab's last load event
         self.pointer = None  # last (x, y) of Input.dispatchMouseEvent on the attached tab
         self.stop = None  # asyncio.Event, set inside start()
 
@@ -636,8 +636,8 @@ class Daemon:
             self.dialog = None
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
             self._schedule_tab_marker(self.session)
-            if method == "Page.loadEventFired" and session_id == self.session:
-                self.loaded_at = time.monotonic()
+            if method == "Page.loadEventFired" and session_id:
+                self.loaded_at[session_id] = time.monotonic()
         elif method == "BrowserUse.captchaSolverStarted":
             self.captcha_started[str((params or {}).get("targetId", ""))] = time.monotonic()
         elif method == "BrowserUse.captchaSolverFinished":
@@ -666,12 +666,13 @@ class Daemon:
                     "browser-harness did not retry or create another connection"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
-        await self.attach_first_page()
+        # Tap events before attaching: a captcha solve that starts while we attach must not be missed.
         orig = self.cdp._event_registry.handle_event
         async def tap(method, params, session_id=None):
             self._record_event(method, params, session_id)
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+        await self.attach_first_page()
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -753,7 +754,8 @@ class Daemon:
             now = time.monotonic()      # and how much longer one may still start after the last load
             ages = [now - t for k, t in self.captcha_started.items()
                     if k in ("", self.target_id) and now - t < CAPTCHA_LOST_S]
-            grace = max(0.0, CAPTCHA_GRACE_S - (now - self.loaded_at)) if BROWSER_KIND == "cloud" else 0.0
+            loaded = self.loaded_at.get(self.session, 0.0)
+            grace = max(0.0, CAPTCHA_GRACE_S - (now - loaded)) if BROWSER_KIND == "cloud" else 0.0
             return {"seconds": max(ages) if ages else None, "grace": grace}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
