@@ -1,6 +1,6 @@
 # FDIC BankFind Suite API (api.fdic.gov) - Check Whether a Bank Is Open and FDIC-Insured, Get Its CERT Number, Assets and Branches, or List Recent Bank Failures (REST API, no key)
 
-Field-tested against api.fdic.gov on 2026-11-18 (US Pacific afternoon; 23:27-23:35 UTC) using a fresh Browser Use cloud browser (logged out; one session) plus Python `urllib` and `curl` from a Linux machine. 13 browser page loads (the BankFind "Find Insured Banks" page 3 times, the three robots.txt files twice each, the API documentation and the FDIC website policies twice each) and 29 in-page `fetch()` calls, 14 urllib calls and 49 curl calls (plus an independent re-run of every block at 23:36-23:41 UTC; block 4 then gained 3 curl probes) to api.fdic.gov, banks.data.fdic.gov and www.fdic.gov, all serial (at least 1 s apart in the blocks below): every API call was HTTP 200 except the deliberate HTTP 400 probes below, and robots.txt is HTTP 404 on both API hosts. Each call took about 0.16-0.32 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1 and 3 were re-run at 00:16-00:17 UTC (block 1 in a new cloud browser) so that failure lists and counts keep only `RESTYPE` FAILURE rows and block 1 pages past 100 failures; they show the re-run output. Block 1 ran again at 00:24 UTC after an empty date range was made a normal result (same output except the time; with `SINCE = "2030-01-01"` it prints 0 failures, rc 0). After a second review the same day, block 1 was re-run at 01:15 UTC in a new cloud browser: a name that matches more than one bank now lists the candidates with their CERT and reports none, and `BANKS` takes a CERT number (628 is JPMorgan Chase Bank, National Association); block 1 shows that output.
+Field-tested against api.fdic.gov on 2026-11-18 (US Pacific afternoon; 23:27-23:35 UTC) using a fresh Browser Use cloud browser (logged out; one session) plus Python `urllib` and `curl` from a Linux machine. 13 browser page loads (the BankFind "Find Insured Banks" page 3 times, the three robots.txt files twice each, the API documentation and the FDIC website policies twice each) and 29 in-page `fetch()` calls, 14 urllib calls and 49 curl calls (plus an independent re-run of every block at 23:36-23:41 UTC; block 4 then gained 3 curl probes) to api.fdic.gov, banks.data.fdic.gov and www.fdic.gov, all serial (at least 1 s apart in the blocks below): every API call was HTTP 200 except the deliberate HTTP 400 probes below, and robots.txt is HTTP 404 on both API hosts. Each call took about 0.16-0.32 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1 and 3 were re-run at 00:16-00:17 UTC (block 1 in a new cloud browser) so that failure lists and counts keep only `RESTYPE` FAILURE rows and block 1 pages past 100 failures; they show the re-run output. Block 1 ran again at 00:24 UTC after an empty date range was made a normal result (same output except the time; with `SINCE = "2030-01-01"` it prints 0 failures, rc 0). After a second review the same day, block 1 was re-run at 01:15 and 01:21 UTC (each in a new cloud browser): a name that matches more than one bank now lists the candidates with their CERT and reports none, with the full match count from `meta.total` ("First National Bank": 81 matches, the first 5 shown), and `BANKS` takes a CERT number (628 is JPMorgan Chase Bank, National Association); block 1 shows the 01:21 output.
 
 robots.txt (checked 2026-11-18, curl, urllib and the cloud browser): https://api.fdic.gov/robots.txt answers HTTP 404 (JSON `NOT_FOUND`), and https://banks.data.fdic.gov/robots.txt redirects to https://api.fdic.gov/banks/robots.txt, also HTTP 404. A 4xx robots.txt means no rules apply (RFC 9309, 2.3.1.3: the crawler "MAY access any resources on the server"), so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider may all fetch `/banks/institutions`, `/banks/locations`, `/banks/failures` and the BankFind pages. https://www.fdic.gov/robots.txt (where the website policies live) has one `User-agent: *` group with `Crawl-delay: 1` and Drupal's default `Disallow` list (`/core/`, `/admin/`, `/search/`, `/fdic-search/`, `/user/login` and similar), and no named AI-agent groups; `/about/website-policies` is allowed for all 11 agents (block 3). The blocks wait 1 s between requests. Terms: the BankFind Suite API documentation (https://api.fdic.gov/banks/docs/, read in the cloud browser by block 2) says "Users are currently not required to register and obtain a unique “key” to use with every query submitted to our API" and links an optional key ("Obtain your API key here", via api.data.gov; the OpenAPI spec already lists an optional `api_key` parameter, so a key may become required later). The FDIC Website Policies (https://www.fdic.gov/about/website-policies, "Last Updated: May 12, 2026") say "Access to or use of the FDIC website constitutes consent to the following terms", that the FDIC "makes no express or implied warranty regarding such information or data", that the content "is not designed or intended to provide authoritative financial, accounting, investment, or other professional advice", that a reference to a commercial product "does not constitute an endorsement, a recommendation, or a favoring by the FDIC", and that attempts to "upload or change information, or otherwise cause damage" are "strictly prohibited". No AI/ML, scraping, automated-access or non-commercial clause on either page, and no published rate limit. Naming: "FDIC BankFind Suite" as plain text; no FDIC logo or official sign, no implied endorsement, and no statement about deposit insurance beyond what the API returns. This skill is not affiliated with or endorsed by the FDIC.
 
@@ -116,23 +116,25 @@ def day(s):
 
 def find(name):
     """A CERT number -> that institution. A name: exact name first (quoted phrase, case-insensitive); else the fuzzy
-    'search' parameter. -> (rows, how)"""
+    'search' parameter. -> (rows shown, how, meta.total: every match, not only the rows shown)"""
     if isinstance(name, int) or str(name).strip().isdigit():
-        return rows(get("institutions", {"filters": f"CERT:{int(name)}", "fields": INST, "limit": 1})), "CERT"
+        d = get("institutions", {"filters": f"CERT:{int(name)}", "fields": INST, "limit": 1})
+        return rows(d), "CERT", d["meta"]["total"]
     q = name.replace("\\", "\\\\").replace('"', '\\"')
     d = get("institutions", {"filters": f'NAME:"{q}"', "fields": INST, "sort_by": "ACTIVE", "sort_order": "DESC", "limit": 10})
     if d["meta"]["total"]:
-        return rows(d), "exact name"
+        return rows(d), "exact name", d["meta"]["total"]
     d = get("institutions", {"search": f"NAME:{name}", "fields": INST, "limit": 5})
-    return rows(d), "fuzzy search"
+    return rows(d), "fuzzy search", d["meta"]["total"]
 
 on_bankfind_tab()
 for name in BANKS:
-    found, how = find(name)
+    found, how, total = find(name)
     if not found:
         raise RuntimeError(f"no institution matches {name!r}: try a shorter name or the CERT number")
-    if len(found) > 1:  # never guess which bank was meant: list the candidates, the next run takes the CERT
-        print(f"{name!r} -> {how}, {len(found)} matches: ambiguous, put the right CERT in BANKS and run again")
+    if total > 1:  # never guess which bank was meant: list the candidates, the next run takes the CERT
+        shown = f"all {total}" if total <= 5 else f"the first 5 of {total}: narrow the name if yours is not here"
+        print(f"{name!r} -> {how}, {total} matches: ambiguous, put the right CERT in BANKS and run again ({shown})")
         for x in found[:5]:
             print(f"  CERT {x['CERT']:<6} ACTIVE {x['ACTIVE']}  {x['NAME']}, {x.get('CITY', 'n/a')}, {x.get('STALP', 'n/a')}")
         print()
@@ -186,7 +188,7 @@ print(f"\n{get.calls} API calls. Source: FDIC BankFind Suite API ({API}), retrie
       f"with or endorsed by the FDIC.")
 ```
 
-Output (from the re-run on 2026-11-19, 01:15 UTC):
+Output (from the re-run on 2026-11-19, 01:21 UTC):
 
 ```text
 'Silicon Valley Bank' -> exact name, 1 match: Silicon Valley Bank, Santa Clara, CA
@@ -194,7 +196,7 @@ Output (from the re-run on 2026-11-19, 01:15 UTC):
   status: ACTIVE 0 = 'Institution closed or not insured by FDIC'; closed 03/10/2023
   failure record: SILICON VALLEY BANK failed 3/10/2023, FAILURE PA, assets $209.03 billion, estimated loss to the fund $18.74 billion
 
-'JPMorgan Chase Bank' -> fuzzy search, 2 matches: ambiguous, put the right CERT in BANKS and run again
+'JPMorgan Chase Bank' -> fuzzy search, 2 matches: ambiguous, put the right CERT in BANKS and run again (all 2)
   CERT 628    ACTIVE 1  JPMorgan Chase Bank, National Association, Columbus, OH
   CERT 21761  ACTIVE 1  JPMorgan Chase Bank, Dearborn, Dearborn, MI
 
@@ -212,7 +214,7 @@ bank failures since 2025-01-01: 6 (of 3524 since 1934, RESTYPE FAILURE only), ne
   2025-06-27  SANTA ANNA NATIONAL BANK                 SANTA ANNA, TX CERT 5520   assets $76.94 million   est. loss $9.76 million
   2025-01-17  PULASKI SAVINGS BANK                     CHICAGO, IL    CERT 28611  assets $49.47 million   est. loss $31.85 million
 
-8 API calls. Source: FDIC BankFind Suite API (https://api.fdic.gov/banks), retrieved 2026-11-19 01:15 UTC. Data is as the FDIC reports it; this skill is not affiliated with or endorsed by the FDIC.
+8 API calls. Source: FDIC BankFind Suite API (https://api.fdic.gov/banks), retrieved 2026-11-19 01:21 UTC. Data is as the FDIC reports it; this skill is not affiliated with or endorsed by the FDIC.
 ```
 
 ### 2. robots.txt, the API doc, the website policies, and the API's answers to mistakes (browser)
