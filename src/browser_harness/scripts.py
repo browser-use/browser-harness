@@ -41,6 +41,8 @@ _URL_RE = re.compile(r"""https?://[^\s'"{}]+""")
 # Text typed by a call whose source lines smell like a credential gets swapped for a param.
 _TYPING_CALLS = {"type_text", "fill_input"}
 _SECRET_RE = re.compile(r"pass|secret|token|otp|api_?key", re.I)
+# --param keys that hold secrets: whole words only, so `passage` or `footprint` stay plain.
+_SECRET_KEY_RE = re.compile(r"(?:^|_)(?:pass(?:word)?|pwd|secret|token|otp|api_?key|key)(?:$|_)", re.I)
 
 USAGE = """usage:
   browser-harness scripts save <name> [--from-last | --file PATH] [--host HOST] [--param k=v ...]
@@ -199,6 +201,10 @@ def save(args):
     if not _HOST_RE.match(host):
         raise SystemExit("browser-harness: cannot infer the site from the script; pass --host example.com")
     code, notes = _redact(code, params)
+    for k, v in params.items():  # never write a secret-looking --param value into the header
+        if v is not None and _SECRET_KEY_RE.search(k):
+            params[k] = None
+            notes.append(f"param {k} looks secret: not stored; pass --param {k}=... when running")
     path = scripts_dir() / host / f"{pos[0]}.py"
     paths.ensure_private_dir(path.parent)
     path.write_text(_header(host, _scrub_url(url), params) + code, encoding="utf-8")
@@ -210,6 +216,7 @@ def save(args):
 
 def resolve(ref):
     host, _, name = ref.rpartition("/")
+    host = host.lower().removeprefix("www.")
     if not _NAME_RE.match(name) or (host and not _HOST_RE.match(host)):
         raise SystemExit(f"browser-harness: bad script name {ref!r}")
     found = [scripts_dir() / host / f"{name}.py"] if host else sorted(scripts_dir().glob(f"*/{name}.py"))
@@ -245,9 +252,11 @@ class _Tee(io.TextIOBase):
         self.out, self.buf, self.size = out, [], 0
 
     def write(self, text):
-        if self.size < _CAPTURE_LIMIT:
-            self.buf.append(text)
-            self.size += len(text)
+        room = _CAPTURE_LIMIT - self.size
+        if room > 0:
+            kept = text[:room]
+            self.buf.append(kept)
+            self.size += len(kept)
         return self.out.write(text)
 
     def flush(self):
@@ -324,8 +333,6 @@ def merge_shapes(old, new):
         out["keys"] = {k: merge_shapes(v, new["keys"][k]) for k, v in old["keys"].items() if k in new["keys"]}
     if "item" in old and "item" in new:
         out["item"] = merge_shapes(old["item"], new["item"])
-    elif "item" in old and old.get("t") == "list":
-        out["item"] = old["item"]
     return out
 
 
@@ -351,8 +358,10 @@ def replay(path, code, g):
         if problems and not ACCEPT_OUTPUT:
             return _drifted(path, "output changed: " + "; ".join(problems[:5]),
                             "if this output is correct, accept it: browser-harness scripts run ... --accept")
+        if problems and out is None:  # e.g. an outage page: never accept away the check itself
+            return _drifted(path, "output changed: " + problems[0], "--accept needs JSON output to accept; fix the script instead")
         if problems:
-            record = merge_shapes(expect, shape(out)) if out is not None else "drop"
+            record = merge_shapes(expect, shape(out))
             print("accepted: output check now allows: " + "; ".join(problems[:5]), file=sys.stderr)
     stamp(path, record)
     return 0

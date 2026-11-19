@@ -232,3 +232,72 @@ def test_from_last_is_per_working_directory(ws, tmp_path, monkeypatch):
     assert cli("scripts", "save", "greet", "--from-last")[0] == 0
     assert (ws / "scripts" / "example.com" / "greet.py").exists()
     assert not (ws / "scripts" / "other.org").exists()
+
+
+def test_secret_looking_param_is_not_stored_and_is_required(ws, tmp_path):
+    src = tmp_path / "s.py"
+    src.write_text('url = "https://example.com/login"\npw = "hunter2"\nprint("ok")\n')
+    code, _, err = cli("scripts", "save", "login", "--file", str(src), "--param", "password=hunter2", "--param", "passage=x")
+    text = (ws / "scripts" / "example.com" / "login.py").read_text()
+    assert code == 0 and "hunter2" not in text
+    assert '"password": null' in text and '"passage": "x"' in text
+    assert "looks secret" in err
+    code, _, err = cli("scripts", "run", "login")
+    assert code != 0 and "--param password=" in err
+
+
+def test_accept_without_json_keeps_the_check(ws, tmp_path):
+    src = tmp_path / "s.py"
+    src.write_text('import json\nurl = "https://example.com/"\nprint(json.dumps({"a": 1}) if PARAMS["state"] != "down" else "outage page")\n')
+    cli("scripts", "save", "a", "--file", str(src), "--param", "state=up")
+    path = ws / "scripts" / "example.com" / "a.py"
+    assert cli("scripts", "run", "a")[0] == 0
+    code, _, err = cli("scripts", "run", "a", "--param", "state=down", "--accept")
+    assert code == 1 and "needs JSON output" in err
+    assert "# expect:" in path.read_text()  # the check is still there
+
+
+def test_host_qualified_refs_and_hints(ws, tmp_path, monkeypatch):
+    for host in ("a.com", "b.com"):
+        src = tmp_path / f"{host}.py"
+        src.write_text(f'url = "https://{host}/"\nprint("{host}")\n')
+        cli("scripts", "save", "top", "--file", str(src))
+    assert cli("scripts", "run", "top")[0] != 0  # ambiguous bare name
+    assert cli("scripts", "run", "www.A.com/top")[1] == "a.com\n"  # www. and case normalized
+    from browser_harness import helpers
+    monkeypatch.setattr(helpers, "AGENT_WORKSPACE", ws)
+    assert helpers._saved_scripts("a.com") == ["top"]
+    assert helpers._saved_scripts("..\\x") == [] and helpers._saved_scripts("a.com/../b") == []
+
+
+def test_tee_caps_a_single_huge_write(monkeypatch):
+    from io import StringIO
+    from browser_harness import scripts
+    monkeypatch.setattr(scripts, "_CAPTURE_LIMIT", 10)
+    tee = scripts._Tee(StringIO())
+    tee.write("x" * 100)
+    assert tee.size == 10 and len("".join(tee.buf)) == 10
+
+
+def test_accepting_an_empty_list_drops_its_item_shape():
+    from browser_harness import scripts
+    merged = scripts.merge_shapes(scripts.shape({"l": [{"a": 1}]}), scripts.shape({"l": []}))
+    assert "item" not in merged["keys"]["l"]
+    assert scripts.check_output(merged, {"l": ["anything"]}) == []
+
+
+def test_stdin_script_ending_in_sys_exit_zero_is_journaled(ws):
+    assert cli(stdin='import sys\nurl = "https://example.com/"\nprint("hi")\nsys.exit(0)\n')[0] == 0
+    assert cli("scripts", "save", "bye", "--from-last")[0] == 0
+    assert (ws / "scripts" / "example.com" / "bye.py").exists()
+
+
+def test_explicit_zero_ipc_timeout_is_kept(monkeypatch):
+    seen = {}
+    class C:
+        def settimeout(self, t): seen["t"] = t; raise RuntimeError("stop")
+        def close(self): pass
+    monkeypatch.setattr(helpers.ipc, "connect", lambda *a, **k: (C(), "tok"))
+    with pytest.raises(RuntimeError):
+        helpers._send({"x": 1}, response_timeout=0)
+    assert seen["t"] == 0

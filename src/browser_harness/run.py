@@ -419,7 +419,12 @@ def _run(args):
     _install_helper_trace()
     globals()["PARAMS"] = params
     if saved is None:
-        exec(code, globals())
+        try:
+            exec(code, globals())
+        except SystemExit as e:
+            if e.code in (None, 0):  # sys.exit(0) is still a successful script
+                scripts.journal(code)
+            raise
         scripts.journal(code)
         return
     # Replays run unattended, often on loaded machines: don't fail on a slow daemon reply.

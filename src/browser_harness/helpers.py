@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, sys, time, urllib.request
+import base64, importlib.util, json, math, os, re, sys, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -51,7 +51,8 @@ class _IPCResponseTimeout(TimeoutError):
 
 def _send(req, response_timeout=None):
     # Resolved per call so `scripts run` can raise the default for a whole replay.
-    response_timeout = response_timeout or DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS
+    if response_timeout is None:
+        response_timeout = DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS
     c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
     try:
         c.settimeout(response_timeout)
@@ -164,15 +165,22 @@ def goto_url(url):
         # new_tab() drops goto_url's return value, so also say it once on stderr.
         if SAVED_SCRIPT_HINTS and host not in _hinted_hosts:
             _hinted_hosts.add(host)
-            print(f"saved scripts for {host}: {', '.join(saved[:10])} (browser-harness scripts run <name>)", file=sys.stderr)
+            names = ", ".join(f"{host}/{n}" for n in saved[:10])
+            print(f"saved scripts for {host}: {names} (browser-harness scripts run <host>/<name>)", file=sys.stderr)
     if os.environ.get("BH_DOMAIN_SKILLS") != "1":
         return r
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
 
+_HOST_RE = re.compile(r"\A[a-z0-9-]+(\.[a-z0-9-]+)*\Z")
+
+
 def _saved_scripts(host):
+    # Only plain hostnames: a crafted URL host must not become a path outside scripts/.
+    if not _HOST_RE.match(host or ""):
+        return []
     d = AGENT_WORKSPACE / "scripts" / host
-    return sorted(p.stem for p in d.glob("*.py")) if host and ".." not in host and d.is_dir() else []
+    return sorted(p.stem for p in d.glob("*.py")) if d.is_dir() else []
 
 def page_info():
     """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
