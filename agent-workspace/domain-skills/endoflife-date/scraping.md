@@ -1,6 +1,6 @@
 # endoflife.date API (endoflife.date) - Check Whether a Software Version (Python, Node.js, Ubuntu, PostgreSQL...) Is Still Supported and When It Reaches End of Life (REST API, no key)
 
-Field-tested against endoflife.date on 2026-11-18 (US Pacific afternoon; 23:47-23:56 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:49-23:54 UTC) plus Python `urllib` and `curl` from a Linux machine. 20 browser page loads (the Python product page, robots.txt 4 times, the API index 4 times, the OpenAPI spec twice (a page load downloads it, see Gotchas), the GitHub README 4 times and the LICENSE 5 times, 4 on github.com and 1 on raw.githubusercontent.com) and 71 in-page `fetch()` calls (blocks 1 and 2 ran 2 and 4 times while they were written), 57 curl calls and 21 urllib calls to endoflife.date (plus 2 curl calls for the README and LICENSE on raw.githubusercontent.com), all serial (1 s apart in the blocks below). Every call was HTTP 200 except the deliberate HTTP 404 (unknown product, release or category), HTTP 301 (alias) and HTTP 304 (conditional GET) probes below, and https://endoflife.date/terms and https://endoflife.date/credits, which do not exist (HTTP 404). Each call took about 0.07-0.33 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1, 3 and 4 were re-run at 00:05-00:17 UTC (block 1 in a new cloud browser, block 3 with an empty cache) after small fixes (hyphen-suffix versions, a label fallback, a `mktemp` file, a NaN-safe `Retry-After`): same output except the times and block 3's day counts, which moved by 1 day at midnight UTC.
+Field-tested against endoflife.date on 2026-11-18 (US Pacific afternoon; 23:47-23:56 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:49-23:54 UTC) plus Python `urllib` and `curl` from a Linux machine. 20 browser page loads (the Python product page, robots.txt 4 times, the API index 4 times, the OpenAPI spec twice (a page load downloads it, see Gotchas), the GitHub README 4 times and the LICENSE 5 times, 4 on github.com and 1 on raw.githubusercontent.com) and 71 in-page `fetch()` calls (blocks 1 and 2 ran 2 and 4 times while they were written), 57 curl calls and 21 urllib calls to endoflife.date (plus 2 curl calls for the README and LICENSE on raw.githubusercontent.com), all serial (1 s apart in the blocks below). Every call was HTTP 200 except the deliberate HTTP 404 (unknown product, release or category), HTTP 301 (alias) and HTTP 304 (conditional GET) probes below, and https://endoflife.date/terms and https://endoflife.date/credits, which do not exist (HTTP 404). Each call took about 0.07-0.33 s. No 429, no challenge, no key, no login. After code review on 2026-11-19, blocks 1, 3 and 4 were re-run at 00:05-00:17 UTC (block 1 in a new cloud browser, block 3 with an empty cache) after small fixes (hyphen-suffix versions, a label fallback, a `mktemp` file, a NaN-safe `Retry-After`): same output except the times and block 3's day counts, which moved by 1 day at midnight UTC. After a second review the same day, blocks 1 and 3 were re-run at 01:15 UTC (block 1 in a new cloud browser, block 3 with an empty cache) after a cycle with no end-of-life date that is neither `isEol` nor `isMaintained` became UNKNOWN instead of supported: same output except the times and block 3's day counts (1 day later); none of the cycles asked about is in that state. They show the re-run output.
 
 robots.txt (checked 2026-11-18, curl, the cloud browser and `urllib.robotparser`): https://endoflife.date/robots.txt is three lines, `User-Agent: *`, `Allow: /` and a `Sitemap:` line, with no named AI-agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*` and may fetch `/api/v1/` (block 3 checks all 11 agents). Terms: endoflife.date has no terms page (`/terms` is HTTP 404; the site's "Credits" link goes to the GitHub README). The OpenAPI spec (https://endoflife.date/docs/api/v1/openapi.yml, version 1.2.1) declares `license: name: MIT License` with a link to the repository LICENSE, which reads "Copyright 2020 endoflife.date contributors" and "Permission is hereby granted, free of charge ... to deal in the Software without restriction"; the README (https://github.com/endoflife-date/endoflife.date) says "Licensed under the MIT License." and "The API is currently in Beta, and breaking changes can happen." The spec asks clients to "follow the 301 redirects (products, categories or tags may occasionally be renamed)" and documents HTTP 429, whose response "may contain a `Retry-After` header", "to prevent abuse of the API and ensure fair usage for all users"; it gives no number. No AI/ML, scraping, crawling, automated-access, rate-limit number or non-commercial wording in the spec, the README or the LICENSE (block 2 checks the quotes; a word search of all three found none). The README also says product descriptions are adapted from English Wikipedia under CC BY-SA 3.0 and the site icon is CC-BY-SA-4.0; the API responses used here carry no descriptions, and this skill shows no icon or logo (`links.icon` points to Simple Icons brand logos: not used). Naming: the project writes its name "endoflife.date", lowercase, and so does this skill. It is a community project; this is its own API, and this skill is not affiliated with or endorsed by it.
 
@@ -19,7 +19,7 @@ robots.txt (checked 2026-11-18, curl, the cloud browser and `urllib.robotparser`
 
 ### 1. Product and version as a person types them -> support phase, end-of-life date and latest patch (browser)
 
-`on_eol_tab()` opens the logged-out API index, so `fetch()` is same-origin (the API also allows any origin). `get()` returns parsed JSON on HTTP 200, `None` on 404, waits once on 429/502/503/504 and otherwise raises; `fetch()` follows the 301 of an alias by itself. `resolve()` matches the typed name against each product's name, label and aliases from `/products`; with no match it prints close names and tags. `status()` works from the dates for today, not from the `is*` flags (see Gotchas). 6 `fetch()` calls for the 7 questions.
+`on_eol_tab()` opens the logged-out API index, so `fetch()` is same-origin (the API also allows any origin). `get()` returns parsed JSON on HTTP 200, `None` on 404, waits once on 429/502/503/504 and otherwise raises; `fetch()` follows the 301 of an alias by itself. `resolve()` matches the typed name against each product's name, label and aliases from `/products`; with no match it prints close names and tags. `status()` works from the dates for today, not from the `is*` flags (see Gotchas); a cycle with no end-of-life date that is neither `isEol` nor `isMaintained` is UNKNOWN, not supported (block 3 does the same). 6 `fetch()` calls for the 7 questions.
 
 ```python
 import difflib, json, re, time
@@ -118,6 +118,8 @@ def status(r, labels, today):
     """Support phase for today, from the dates (the is* flags are as of the API's generated_at)."""
     eol, eoas, eoes = r.get("eolFrom"), r.get("eoasFrom"), r.get("eoesFrom")
     past_eol = today >= eol if eol else r["isEol"]
+    if not eol and not r["isEol"] and not r["isMaintained"]:  # no date and the flags disagree: do not call it supported
+        return "UNKNOWN", "no end-of-life date; isEol is false but isMaintained is false: check the product's own page"
     if not past_eol:
         if eoas and today < eoas:
             return "SUPPORTED", f"{labels.get('eoas') or 'active support'} until {eoas}, then {labels['eol']} until {eol or 'a date not known'}"
@@ -168,10 +170,10 @@ print(f"\nSource: endoflife.date (https://endoflife.date), community-maintained,
       "Check the vendor's own policy link before acting on a date.")
 ```
 
-Output (from the run on 2026-11-18, 23:51 UTC):
+Output (from the re-run on 2026-11-19, 01:15 UTC):
 
 ```text
-endoflife.date API, 489 products, checked 2026-11-18 23:51 UTC
+endoflife.date API, 489 products, checked 2026-11-19 01:15 UTC
 
 Python 3.12.4 -> Python (python), page https://endoflife.date/python, product data modified 2026-11-16
   cycle 3.12 (released 2023-10-02): SUPPORTED, Security Support until 2028-10-31 (Active Support ended 2025-04-02)
@@ -201,7 +203,7 @@ Java 21: 0 products match; close names: none; tags: java-distribution (14 produc
 
 pyhton 3.12: 0 products match; close names: python, photon, iphone; tags: none
 
-Source: endoflife.date (https://endoflife.date), community-maintained, via https://endoflife.date/api/v1, accessed 18 November 2026 23:51 UTC. Check the vendor's own policy link before acting on a date.
+Source: endoflife.date (https://endoflife.date), community-maintained, via https://endoflife.date/api/v1, accessed 19 November 2026 01:15 UTC. Check the vendor's own policy link before acting on a date.
 ```
 
 ### 2. robots.txt, the license and spec quotes, and what the API does with mistakes (browser)
@@ -461,6 +463,7 @@ for product, version in STACK:
     eol = r["eolFrom"]
     left = (datetime.strptime(eol, "%Y-%m-%d").date() - today).days if eol else None
     state = ("EOL" if (left is not None and left <= 0) or (left is None and r["isEol"]) else
+             "UNKNOWN" if left is None and not r["isMaintained"] else  # no date, not EOL, not maintained: flags disagree
              "EOL SOON" if left is not None and left <= WARN_DAYS else "ok")
     extra = ""
     if state != "ok" and r.get("eoesFrom") and r["eoesFrom"] > str(today):
@@ -483,22 +486,22 @@ print(f"\nfirst pass: {first['200']} HTTP 200 downloads, {first['304']} 304s, {f
 print("Source: endoflife.date (https://endoflife.date), community-maintained data; confirm with each vendor's policy.")
 ```
 
-Output (from the run on 2026-11-18, 23:55 UTC):
+Output (from the re-run on 2026-11-19, 01:15 UTC, empty cache):
 
 ```text
 robots.txt HTTP 200
   robots /api/v1/products/python/                 allowed for all 11 agents
   robots /api/v1/products/nodejs/releases/latest  allowed for all 11 agents
 
-Stack check against endoflife.date, 2026-11-18 23:55 UTC (flag: end of life within 365 days)
-  python     3.11.9    cycle 3.11   EOL SOON  eol 2027-10-31 (+347 days); latest 3.11.18 (update)
-  nodejs     18.20.4   cycle 18     EOL       eol 2025-04-30 (-567 days), API still says maintained (Commercial Support, no end date); latest 18.20.8 (update)
-  ubuntu     22.04.4   cycle 22.04  EOL SOON  eol 2027-06-01 (+195 days), then Expanded Security Maintenance until 2032-04-21; latest 22.04.5 (update)
-  postgresql 16.3      cycle 16     ok        eol 2028-11-09 (+722 days); latest 16.16 (update)
-  redis      7.2.5     cycle 7.2    ok        eol 2029-12-01 (+1109 days); latest 7.2.17 (update)
-  django     4.2.14    cycle 4.2    EOL       eol 2026-04-07 (-225 days); latest 4.2.30 (update)
-  nginx      1.26.1    cycle 1.26   EOL       eol 2025-04-23 (-574 days); latest 1.26.3 (update)
-  kubernetes 1.30.2    cycle 1.30   EOL       eol 2025-07-15 (-491 days); latest 1.30.14 (update)
+Stack check against endoflife.date, 2026-11-19 01:15 UTC (flag: end of life within 365 days)
+  python     3.11.9    cycle 3.11   EOL SOON  eol 2027-10-31 (+346 days); latest 3.11.18 (update)
+  nodejs     18.20.4   cycle 18     EOL       eol 2025-04-30 (-568 days), API still says maintained (Commercial Support, no end date); latest 18.20.8 (update)
+  ubuntu     22.04.4   cycle 22.04  EOL SOON  eol 2027-06-01 (+194 days), then Expanded Security Maintenance until 2032-04-21; latest 22.04.5 (update)
+  postgresql 16.3      cycle 16     ok        eol 2028-11-09 (+721 days); latest 16.16 (update)
+  redis      7.2.5     cycle 7.2    ok        eol 2029-12-01 (+1108 days); latest 7.2.17 (update)
+  django     4.2.14    cycle 4.2    EOL       eol 2026-04-07 (-226 days); latest 4.2.30 (update)
+  nginx      1.26.1    cycle 1.26   EOL       eol 2025-04-23 (-575 days); latest 1.26.3 (update)
+  kubernetes 1.30.2    cycle 1.30   EOL       eol 2025-07-15 (-492 days); latest 1.30.14 (update)
 
 first pass: 8 HTTP 200 downloads, 0 304s, 0 cache hits; then 3 repeats -> 3 cache hits, 1 aged entry -> 1 HTTP 304 (cache ~/.cache/endoflife-date-skill)
 Source: endoflife.date (https://endoflife.date), community-maintained data; confirm with each vendor's policy.
