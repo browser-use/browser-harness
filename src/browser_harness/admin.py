@@ -33,6 +33,7 @@ def _process_start_time(pid):
     """
     if type(pid) is not int or pid <= 0:
         return None
+    _reap(pid)
     if sys.platform.startswith("linux"):
         try:
             with open(f"/proc/{pid}/stat", "rb") as f:
@@ -43,19 +44,23 @@ def _process_start_time(pid):
         # everything after the LAST `)` and index from there.
         try:
             tail = raw[raw.rindex(")") + 2:].split()
+            if tail[0] in ("Z", "X"):  # exited, not yet reaped by its parent: dead, never "still starting"
+                return None
             return tail[19]  # starttime is field 22 (0-indexed: 21 - skipped 2 = 19)
         except (ValueError, IndexError):
             return None
     if sys.platform == "darwin":
         try:
             out = subprocess.check_output(
-                ["ps", "-o", "lstart=", "-p", str(pid)],
+                ["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)],
                 stderr=subprocess.DEVNULL, timeout=2,
             )
         except (subprocess.SubprocessError, OSError):
             return None
-        s = out.decode("ascii", errors="replace").strip()
-        return s or None
+        state, _, s = out.decode("ascii", errors="replace").strip().partition(" ")
+        if state.startswith("Z"):  # a zombie: exited, not yet reaped
+            return None
+        return s.strip() or None
     if sys.platform == "win32":
         # Windows users running a remote daemon hit the same slow-shutdown
         # window as POSIX (stop_remote() PATCHes api.browser-use.com after
@@ -104,6 +109,23 @@ def _process_start_time(pid):
         finally:
             kernel32.CloseHandle(h)
     return None
+
+
+def _reap(pid):
+    """Reap pid if it is a child of this process that has exited.
+
+    ensure_daemon() drops the Popen of the daemon it spawns, so a daemon that
+    crashed or was killed stays a zombie of its spawner (browser-use, an MCP
+    server) until reaped. A zombie keeps its pid and start time: it looked like
+    a daemon "still starting", and the next ensure_daemon() waited 60 s for it.
+    A live child, or a pid that is not our child, is left alone.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass
 
 
 def _load_env():
@@ -750,6 +772,10 @@ def ensure_daemon(wait=None, name=None, env=None):
                 hinted = True
             time.sleep(0.2)
         msg = _log_tail(name) or ""
+        if not local and pending_died and p is None:
+            # The daemon we waited on was one that was exiting (killed a moment before, not yet a
+            # zombie): nothing of ours failed, so start our own instead of raising its last log line.
+            continue
         permission_wait = local and (msg.startswith("handshake-wait") or _needs_chrome_permission_popup(msg))
         if local and pending_died:
             # Serialize cleanup with publishers and remove only the generation
@@ -983,6 +1009,7 @@ def restart_daemon(name=None, require_clean=False):
     if daemon_pid is not None:
         for _ in range(75):
             try:
+                _reap(daemon_pid)  # a zombie answers kill(0) until reaped
                 os.kill(daemon_pid, 0)
                 time.sleep(0.2)
             except (ProcessLookupError, OSError, SystemError, OverflowError):

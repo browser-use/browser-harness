@@ -240,6 +240,8 @@ class _Browser:
         if method == "Target.attachToTarget":
             self.n += 1
             return {"sessionId": f"s{self.n}-{tid}"}
+        if method == "Target.attachToBrowserTarget":
+            return {"sessionId": "browser-session"}
         if method == "Target.closeTarget":
             self.pages.pop(tid, None)
         if method == "Target.detachFromTarget":
@@ -649,6 +651,55 @@ def test_events_and_dialogs_belong_to_their_owner():
     assert da == {"dialog": None} and db == {"dialog": {"message": "hi"}}
 
 
+def test_downloads_reported_on_a_browser_session_reach_the_owner_of_their_tab():
+    """browser-use sets the download behavior on a Target.attachToBrowserTarget session, so Chrome reports
+    Browser.download* on that session. They were dropped as events of an unknown session: no progress, files left
+    unnamed and stop() waiting for the download to finish."""
+    d = _daemon()
+    [browser] = _run(d, cmd("a", "Target.attachToBrowserTarget"))
+    bs = browser["result"]["sessionId"]
+    *_, second = _run(d, cmd("a"), cmd("b"), meta("a", "new_tab"))
+    b_tab = d.owners["b"].current
+
+    d._record_event("Browser.downloadWillBegin", {"frameId": second["target_id"], "guid": "g", "url": "https://a.example/r.pdf"}, bs)
+    d._record_event("Browser.downloadProgress", {"guid": "g", "state": "completed"}, bs)
+    d._record_event("Browser.downloadWillBegin", {"frameId": b_tab, "guid": "h", "url": "https://b.example/s.pdf"}, bs)
+
+    ea, eb = _run(d, meta("a", "drain_events"), meta("b", "drain_events"))
+    assert [(e["method"], e["params"]["guid"]) for e in ea["events"]] == [
+        ("Browser.downloadWillBegin", "g"), ("Browser.downloadProgress", "g")]
+    assert [(e["method"], e["params"]["guid"]) for e in eb["events"]] == [("Browser.downloadWillBegin", "h")]
+
+
+def test_set_session_from_a_0_1_13_client_makes_its_tab_current():
+    """browser-harness 0.1.13 (what browser-use pinned) switches tabs with a raw attach, then meta set_session. 0.1.14
+    answered "unknown request 'set_session'" with the same protocol number, so every 0.1.13 switch_tab() and second
+    new_tab() on a daemon a 0.1.14 client had started raised."""
+    d = _daemon(PERSON)
+    _run(d, cmd("a"))
+    [attach] = _run(d, cmd("a", "Target.attachToTarget", targetId="person-tab", flatten=True))
+    sid = attach["result"]["sessionId"]
+
+    r, typed, current = _run(d, meta("a", "set_session", session_id=sid, target_id="person-tab"), cmd("a"),
+                             meta("a", "current_tab"))
+
+    assert r == {"target_id": "person-tab", "session_id": sid}
+    assert d.cdp.sent("Input.insertText")[-1] == sid and current["targetId"] == "person-tab"
+    assert sid in d.cdp.sent("Network.enable")
+
+
+def test_set_session_never_takes_another_owners_tab():
+    d = _daemon(PERSON)
+    _run(d, cmd("a"))
+    sa = d.owners["a"].tabs["tab-1"]
+
+    tab, session = _run(d, meta("b", "set_session", session_id="s-mine", target_id="tab-1"),
+                        meta("b", "set_session", session_id=sa, target_id="person-tab"))
+
+    assert tab["error"].startswith("tab-taken: tab tab-1") and session["error"].startswith(f"tab-taken: session {sa}")
+    assert d.tab_owner == {"tab-1": "a"} and d.owners["a"].current == "tab-1"
+
+
 def test_auto_attached_child_sessions_belong_to_their_owner():
     d = _daemon()
     _run(d, cmd("a"))
@@ -689,13 +740,14 @@ def test_current_tab_meta_passes_the_owners_target_id():
     assert [p for m, p, s in d.cdp.calls if m == "Target.getTargetInfo"][-1] == {"targetId": "person-tab"}
 
 
-def test_an_old_clients_request_opens_no_tab():
+def test_an_unknown_request_or_a_set_session_to_a_missing_tab_opens_no_tab():
     d = _daemon()
 
-    [r] = _run(d, {"meta": "set_session", "session_id": "s", "target_id": "t"})
+    unknown, missing = _run(d, {"meta": "set_frame", "target_id": "t"}, {"meta": "set_session", "session_id": "s", "target_id": "t"})
 
-    assert r["error"].startswith("unknown request 'set_session': this daemon speaks protocol")
-    assert d.cdp.calls == []
+    assert unknown["error"].startswith("unknown request 'set_frame': this daemon speaks protocol")
+    assert missing["error"].startswith("tab-closed: tab t does not exist.")
+    assert [m for m, _p, _s in d.cdp.calls] == ["Target.getTargetInfo"] and d.tab_owner == {}
 
 
 def test_connection_status_is_healthy_before_any_tab():

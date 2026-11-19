@@ -527,6 +527,7 @@ class Daemon:
         self.idle_timeout = 0.0  # BH_IDLE_TIMEOUT, set by main(); when on, it replaces sweep()'s IDLE_EXIT
         self.idle_exit = False
         self.own_targets = set()  # every targetId this daemon attached (Target.getTargets shows them attached)
+        self.browser_sessions = set()  # sessions from Target.attachToBrowserTarget: browser-wide, like no session
 
     def owner(self, key):
         o = self.owners.setdefault(key, Owner())
@@ -822,7 +823,9 @@ class Daemon:
             self.session_owner[params["sessionId"]] = key  # auto-attached iframes and workers
         if method.startswith("Target.") and not session_id:
             return self._target_event(method, params)
-        if not session_id:  # browser-level, such as downloads: only for the owner of the tab it came from
+        if not session_id or session_id in self.browser_sessions:
+            # browser-level, such as downloads (also on a browser session that set the download behavior):
+            # only for the owner of the tab it came from
             key = self.tab_owner.get(params.get("frameId")) or self.downloads.get(params.get("guid"))
             if key and "guid" in params:
                 self.downloads[params["guid"]] = key
@@ -1163,6 +1166,29 @@ class Daemon:
             if req.get("activate"):
                 await self.cdp.send_raw("Target.activateTarget", {"targetId": tid})
             return {"target_id": tid, "session_id": sid}
+        if meta == "set_session":
+            # Protocol-2 clients before 0.1.14 (browser-use pinned 0.1.13) switch tabs with a raw
+            # Target.attachToTarget, then this. Same as switch_tab, on the session the client attached.
+            tid, sid = req.get("target_id"), req.get("session_id")
+            if not tid:
+                return {"error": "set_session: target_id is required"}
+            try:
+                await self.cdp.send_raw("Target.getTargetInfo", {"targetId": tid})
+            except Exception:
+                return {"error": f"tab-closed: tab {tid} does not exist. Nothing was sent. {self._yours(o)} Call list_tabs()."}
+            if self._holder(tid) not in (None, key):
+                return self._taken(o, tid)
+            if sid and self.session_owner.get(sid, key) != key:
+                return self._taken(o, sid, "session")
+            o.gone = None
+            await self._take(key, tid, current=False)
+            async with o.lock:
+                if sid and tid in o.tabs and o.tabs[tid] is None:
+                    o.tabs[tid], self.session_owner[sid] = sid, key
+                    self.own_targets.add(tid)
+                    await self._enable_default_domains(sid)
+                    self._mark(key, tid)
+            return {"target_id": tid, "session_id": await self._switch(key, o, tid)}
         if meta == "new_tab":
             o.gone = None
             reuse = req.get("reuse") and o.current and is_blank(self.info.get(o.current, {}).get("url", "-"))
@@ -1191,7 +1217,9 @@ class Daemon:
                 return {"error": f"frame-not-yours: iframe {params['targetId']} is not known to be inside a tab you hold. "
                                  "Nothing was sent. switch_tab() to its tab, then use iframe_target(url)."}
             result = await self.cdp.send_raw(method, params)
-            if method == "Target.attachToTarget":
+            if method == "Target.attachToBrowserTarget":
+                self.browser_sessions.add(result["sessionId"])
+            elif method == "Target.attachToTarget":
                 self.session_owner.setdefault(result["sessionId"], key)
                 self.own_targets.add(params.get("targetId"))
                 if self.info.get(params.get("targetId"), {}).get("type") == "page":

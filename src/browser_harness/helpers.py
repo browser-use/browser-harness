@@ -430,8 +430,9 @@ def list_tabs(include_chrome=True):
         if _is_agent_startup_placeholder(t.get("title", ""), url): continue
         if not include_chrome and url.startswith(INTERNAL): continue
         tab = {"targetId": t["targetId"], "target_id": t["targetId"], "owner": t["owner"]}
-        if t["owner"] != "taken":
-            tab.update(title=t.get("title", ""), url=url)
+        # another agent's tab keeps the keys 0.1.13 gave every tab, empty, so t["url"] still works
+        taken = t["owner"] == "taken"
+        tab.update(title="" if taken else t.get("title", ""), url="" if taken else url)
         if t.get("mark"):
             tab["mark"] = t["mark"]
         out.append(tab)

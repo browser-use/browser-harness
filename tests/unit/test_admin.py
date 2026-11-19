@@ -3,6 +3,7 @@ import os
 import signal
 import time
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1780,3 +1781,92 @@ def test_cold_start_launches_browser_when_the_daemon_exits_before_connecting(mon
     with pytest.raises(RuntimeError):
         admin.ensure_daemon(name="default")
     assert launches == [1], "the browser must be launched exactly once after the daemon dies on a cold start"
+
+
+# --- a dead daemon that is still a zombie (browser-use's reattach) ---
+
+def _dead_child_record(tmp_path):
+    """A daemon this process spawned that then died: a zombie until this process reaps it.
+    Its pid record is the one ensure_daemon() published for it."""
+    child = subprocess.Popen(["sleep", "30"])
+    pid_file = tmp_path / "daemon.pid"
+    admin._publish_pid(pid_file, child.pid)
+    os.kill(child.pid, signal.SIGKILL)
+    deadline = time.time() + 5
+    while time.time() < deadline and not Path(f"/proc/{child.pid}/stat").read_text().split(")")[1].split()[0] == "Z":
+        time.sleep(0.02)
+    return child, pid_file
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="reads /proc to confirm the zombie")
+def test_a_killed_daemon_child_is_dead_not_still_starting(tmp_path, monkeypatch):
+    """browser-use's reattach waited 60 s and then failed: the daemon it had spawned was SIGKILLed, stayed a zombie
+    of browser-use with the same pid and start time, and ensure_daemon() took it for a daemon still starting."""
+    child, pid_file = _dead_child_record(tmp_path)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_file)
+
+    assert admin._pending_pid_record(pid_file) is None
+    assert admin._starting_daemon_pid("zombie") is None
+    assert not Path(f"/proc/{child.pid}").exists()  # reaped, so it is gone for every other caller too
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="builds a zombie whose parent is another process")
+def test_another_processs_zombie_daemon_is_dead_not_still_starting(tmp_path):
+    """The zombie of a daemon another process spawned (and has not reaped yet) cannot be reaped from here."""
+    parent = subprocess.Popen(
+        [sys.executable, "-c", "import subprocess, sys, time; c = subprocess.Popen(['true']); print(c.pid, flush=True); time.sleep(30)"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        pid = int(parent.stdout.readline())
+        deadline = time.time() + 5
+        while time.time() < deadline and Path(f"/proc/{pid}/stat").read_text().split(")")[1].split()[0] != "Z":
+            time.sleep(0.02)
+        assert Path(f"/proc/{pid}/stat").read_text().split(")")[1].split()[0] == "Z"
+
+        assert admin._process_start_time(pid) is None
+    finally:
+        parent.kill()
+        parent.wait()
+
+
+def test_reap_leaves_a_live_child_and_a_foreign_pid_alone():
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        admin._reap(child.pid)
+        admin._reap(1)  # not our child: ChildProcessError, ignored
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_a_remote_daemon_that_was_still_exiting_is_replaced_not_reported(tmp_path, monkeypatch):
+    """browser-use kills a stuck cloud/CDP daemon, then calls ensure_daemon(). Caught between its socket closing and
+    becoming a zombie, the dying daemon looked like one still starting; when it was gone a moment later,
+    ensure_daemon() raised its last log line ('listening on ...') instead of starting a new daemon."""
+    from browser_harness import admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
+    monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: tmp_path / "daemon.log")
+    monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
+    (tmp_path / "daemon.log").write_text("listening on /tmp/bu-x.sock (name=x, remote=local, owner=none)")
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: False)
+    monkeypatch.setattr(admin_mod, "_check_cdp_endpoint", lambda name, env: None)
+    monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
+    exiting = iter([4321])
+    monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: next(exiting, None))
+    monkeypatch.setattr(admin_mod, "_pending_pid_record", lambda path: None)  # gone on the first look
+    monkeypatch.setattr(admin_mod, "_process_start_time", lambda pid: "start")
+    spawned = []
+
+    class Live:
+        pid = 5678
+        def poll(self): return None
+
+    monkeypatch.setattr(admin_mod.subprocess, "Popen", lambda *a, **k: spawned.append(a) or Live())
+    monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: bool(spawned))
+
+    admin_mod.ensure_daemon(name="x", env={"BU_CDP_WS": "ws://127.0.0.1:1/devtools/browser/x"})
+
+    assert len(spawned) == 1
