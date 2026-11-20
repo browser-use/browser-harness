@@ -145,6 +145,16 @@ def test_tab_marker_disabled_on_page_load_events(monkeypatch, value):
     assert not [call for call in d.cdp.calls if call[0] == "Runtime.evaluate"]
 
 
+def test_pending_dialog_clears_when_its_session_detaches():
+    """The Closed event never comes when the tab closes with the dialog open."""
+    d = _fresh_daemon()
+    d._record_event("Page.javascriptDialogOpening", {"type": "beforeunload"}, "tab-session")
+    d._record_event("Target.detachedFromTarget", {"sessionId": "other-session"})
+    assert d.dialog == {"type": "beforeunload"}
+    d._record_event("Target.detachedFromTarget", {"sessionId": "tab-session"})
+    assert d.dialog is None
+
+
 def test_set_session_enables_all_four_default_domains_on_new_session():
     """Regression: switch_tab() / new_tab() in helpers.py route through the
     `set_session` IPC, which previously only enabled Page on the new
