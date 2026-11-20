@@ -97,14 +97,24 @@ def norm(s):
     s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
     return re.sub(r"[^a-z0-9 ]", " ", s).split()
 
+MAX_CREATORS = 500  # creator records read per name at most (10 calls)
+
 def pick_creator(typed):
     """/api/creators/?name= -> (name, ids, artwork count, note), or None. One person can have several creator records
     (Rembrandt van Rijn has two), so the ids of every record with the chosen name are kept. Several different names:
     take the one with 5x the artworks of the next, else return the choices."""
-    found = get("/api/creators/", name=typed, limit=50)
+    data, total = [], None
+    while total is None or len(data) < min(total, MAX_CREATORS):  # page through every match, up to MAX_CREATORS
+        d = get("/api/creators/", name=typed, limit=50, skip=len(data))
+        total = d["info"]["total"]
+        if not d["data"]:
+            break
+        data += d["data"]
+    if len(data) < total:
+        print(f"  PARTIAL: read {len(data)} of {total} creator records for {typed!r}; type more of the name")
     want = norm(typed)
     by_name = {}
-    for c in found["data"]:
+    for c in data:
         words = norm(c["name"])
         if all(w in words for w in want):  # every typed word is a whole word of the name ('smith' is not 'silversmith')
             n = by_name.setdefault(c["name"], {"ids": set(), "works": 0, "desc": c["description"]})
@@ -114,10 +124,10 @@ def pick_creator(typed):
     if not ranked:
         return None
     if len(ranked) > 1 and ranked[0][1]["works"] < 5 * ranked[1][1]["works"]:
-        return "choices", ranked, found["info"]["total"]
+        return "choices", ranked, total
     name, n = ranked[0]
     others = ", ".join(f"{k} ({v['works']})" for k, v in ranked[1:4])
-    return "one", (name, n, others), found["info"]["total"]
+    return "one", (name, n, others), total
 
 MAX_SCAN = 1000  # records read per question at most (10 calls)
 
@@ -183,7 +193,7 @@ print(f"\nSource: Cleveland Museum of Art Open Access ({API}), CC0, accessed {no
       "Not affiliated with or endorsed by the museum.")
 ```
 
-Output (from the run on 2026-11-20, 00:07 UTC):
+Output (from the run on 2026-11-20, 00:07 UTC; re-run 00:52 UTC in a new cloud browser after creator matches are paged: same output except the time):
 
 ```text
 Cleveland Museum of Art Open Access API, checked 2026-11-20 00:07 UTC (CC0 works with images only)
@@ -569,15 +579,22 @@ for kind, text, n in WANT:
                      "page": a["url"], "image_url": im["url"], "file": im["filename"], "bytes": len(data),
                      "sha256": hashlib.sha256(data).hexdigest()[:16]})
 
-with open(os.path.join(OUT, "credits.csv"), "w", newline="") as f:
-    w = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["id"])
+CREDITS = os.path.join(OUT, "credits.csv")
+COLS = ["id", "accession_number", "title", "date", "creator", "credit_line", "license", "page", "image_url", "file", "bytes", "sha256"]
+old = {}
+if os.path.exists(CREDITS):  # keep the rows of images from earlier runs; this run's rows replace same-file rows
+    with open(CREDITS, newline="", encoding="utf-8") as f:
+        old = {r["file"]: r for r in csv.DictReader(f) if r.get("file")}
+merged = {**old, **{r["file"]: r for r in rows}}
+with open(CREDITS, "w", newline="", encoding="utf-8") as f:
+    w = csv.DictWriter(f, fieldnames=COLS, extrasaction="ignore")
     w.writeheader()
-    w.writerows(rows)
-print(f"\n{got} downloaded, {kept} already on disk, {len(rows)} rows in {OUT}/credits.csv")
+    w.writerows(merged.values())
+print(f"\n{got} downloaded, {kept} already on disk, {len(merged)} rows in {OUT}/credits.csv")
 print(f"Source: Cleveland Museum of Art Open Access, CC0 (attribution optional), accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-20, 00:09 UTC, empty folder):
+Output (from the run on 2026-11-20, 00:09 UTC, empty folder; re-run 00:53 UTC after credits.csv started keeping earlier rows: same output except the time, and a later run that picked only 1958.39 still left 6 rows):
 
 ```text
 robots https://openaccess-api.clevelandart.org/api/artworks/                  HTTP 200; allowed for 11 of 12 agents, disallowed: Amazonbot

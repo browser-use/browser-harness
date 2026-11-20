@@ -486,12 +486,12 @@ ls -l --time-style='+%Y-%m-%d %H:%M' "$K" | awk '{print "file:", $5, "bytes, mti
 # 3. Filter on your side: added in the last 7 days, and one vendor with ransomware use 'Known'
 python3 -I - "$K" <<'PY'
 import json, sys
-from datetime import date, timedelta
+from datetime import datetime, timedelta, timezone
 b = json.load(open(sys.argv[1]))
 if b.get("count") != len(b.get("vulnerabilities") or []):
     sys.exit("count does not match the rows: not the full catalog")
 v = b["vulnerabilities"]
-since = (date.today() - timedelta(days=7)).isoformat()
+since = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()  # dateAdded is a UTC date
 print(f"catalogVersion {b['catalogVersion']}, count {b['count']}; dateAdded >= {since}:")
 for x in sorted((x for x in v if x["dateAdded"] >= since), key=lambda x: x["dateAdded"], reverse=True):
     print(" ", x["dateAdded"], "due", x["dueDate"], x["cveID"], x["vendorProject"], "/", x["product"], "ransomware", x["knownRansomwareCampaignUse"])
@@ -515,7 +515,7 @@ rm -r "$(dirname "$K")"
 echo "Source: CISA Known Exploited Vulnerabilities (KEV) catalog, $F, accessed $(date -u '+%d %B %Y %H:%M') UTC."
 ```
 
-Output (from the verifier's re-run on 2026-11-19, 23:47 UTC, after the mirror URL moved to `develop`):
+Output (from the verifier's re-run on 2026-11-19, 23:47 UTC, after the mirror URL moved to `develop`; re-run 2026-11-20 00:53 UTC after the 7-day window switched to the UTC date: same entries, `dateAdded >= 2026-11-13`, `max-age=2947`):
 
 ```text
 HTTP 200, 204849 bytes on the wire, 0.125729 s

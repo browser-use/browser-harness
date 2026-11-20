@@ -191,11 +191,12 @@ else:
     print(f"verdict: geomagnetic storm (G1 or more) expected tonight: {'YES' if g or storm else 'NO'}: max Kp {peak['kp']:.2f} "
           f"({peak['observed']}, {peak['t']:%H:%M} UTC) = {'G' + str(g) if g else 'below G1'}; "
           f"G1+ watches or K5+ warnings in effect: {len(storm)}")
-print(f"\nfiles last modified (UTC): scales {lm_s:%H:%M:%S}, Kp forecast {lm_k:%H:%M:%S}, alerts {lm_a:%H:%M:%S}")
+hms = lambda t: f"{t:%H:%M:%S}" if t else "unavailable"  # get() returns None when a file has no Last-Modified
+print(f"\nfiles last modified (UTC): scales {hms(lm_s)}, Kp forecast {hms(lm_k)}, alerts {hms(lm_a)}")
 print(f"Source: NOAA Space Weather Prediction Center (SWPC), {SITE}/products/, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-19, 23:36 UTC):
+Output (from the run on 2026-11-19, 23:36 UTC; re-run 2026-11-20 00:52 UTC in a new cloud browser after the Last-Modified fallback was added: same lines, live values moved with the clock):
 
 ```text
 NOAA Space Weather Prediction Center (SWPC), checked 2026-11-19 23:36 UTC

@@ -22,7 +22,7 @@ robots.txt (checked 2026-11-19/20, curl, the cloud browser and `urllib.robotpars
 `on_loc_tab()` opens the logged-out "Working Within Limits" page (robots.txt allows `/apis/`), so `fetch()` is same-origin (the API also sends `Access-Control-Allow-Origin: *`). `get()` returns parsed JSON on HTTP 200, `None` on 404 (a JSON body), retries once after 30 s on a network error or 502/503/504, and stops on a 429 or any non-JSON answer. One search per topic, then one item record per hit: 8 `fetch()` calls for 2 topics x 3 items.
 
 ```python
-import html, json, re, time
+import html, json, re, time, urllib.parse
 from datetime import datetime, timezone
 
 ASK = [("photos", "wright brothers"), ("maps", "yellowstone national park")]  # (format endpoint, topic)
@@ -86,7 +86,7 @@ def get(path):
     return json.loads(r["text"])
 
 def q(s):
-    return re.sub(r"[^A-Za-z0-9._~-]", lambda m: "%%%02X" % ord(m[0]), s)
+    return urllib.parse.quote(s, safe="")  # UTF-8 percent-encoding, so accented or non-Latin topics work
 
 def biggest_jpeg(urls):
     """image_url entries carry '#h=..&w=..'; keep the widest .jpg (no fragment)."""
@@ -287,7 +287,7 @@ item 2001696291 resources: HTTP 200, 6 files
 
 ### 3. A topic to CSV with Python urllib: robots check for every agent, paging, disk cache (no browser)
 
-Sends a descriptive User-Agent. Reads `sp=1, 2, ...` at `c=25` until it has `PER_FORMAT` items per format, then one item record each, and writes a CSV with the full rights text. Every answer is cached on disk for 24 h, so a second run makes no requests. Run with an empty cache: 13 requests (robots.txt, 2 searches, 10 items) in about 100 s.
+Sends a descriptive User-Agent. Reads `sp=1, 2, ...` at `c=25` until it has `PER_FORMAT` items per format, then one item record each, and writes a CSV with the full rights text. Every answer is cached on disk for 24 h, so a second run makes only the robots.txt request. Run with an empty cache: 13 requests (robots.txt, 2 searches, 10 items) in about 100 s.
 
 ```python
 import csv, hashlib, html, http.client, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
@@ -309,6 +309,7 @@ calls = {"http": 0, "cache": 0}
 
 # robots.txt: only 008 and Baiduspider are named; '*' disallows /search, /pictures/search, /pictures/related, Crawl-Delay 5
 rp = urllib.robotparser.RobotFileParser(SITE + "/robots.txt")
+calls["http"] += 1  # robots.txt is fetched on every run and counts toward the 10 a minute
 with urllib.request.urlopen(urllib.request.Request(rp.url, headers={"User-Agent": UA}), timeout=30) as r:
     rp.parse(r.read().decode().splitlines())
     print(f"robots.txt HTTP {r.status}, Crawl-Delay for '*': {rp.crawl_delay('*')}")
@@ -394,8 +395,9 @@ for fmt in FORMATS:
                      "rights_advisory": it.get("rights_advisory") or "", "rights": text(it.get("rights")),
                      "access_restricted": it.get("access_restricted")})
 
-with open(OUT, "w", newline="") as fh:
-    w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+with open(OUT, "w", newline="") as fh:  # a topic with no items still gets a header row
+    w = csv.DictWriter(fh, fieldnames=["format", "item_id", "title", "date", "item_url", "image_url",
+                                       "rights_advisory", "rights", "access_restricted"])
     w.writeheader()
     w.writerows(rows)
 for x in rows:
@@ -407,7 +409,7 @@ print(f"{calls['http']} HTTP requests, {calls['cache']} from the disk cache ({CA
 print("Source: Library of Congress (https://www.loc.gov). Check each item's rights before reuse.")
 ```
 
-Output (from the run on 2026-11-20, 00:15 UTC, empty cache):
+Output (from the run on 2026-11-20, 00:15 UTC, empty cache; the request count line is from the re-run at 00:54 UTC, which counts robots.txt and otherwise gave the same output):
 
 ```text
 robots.txt HTTP 200, Crawl-Delay for '*': 5
@@ -432,15 +434,15 @@ robots.txt HTTP 200, Crawl-Delay for '*': 5
   maps   00554824   1831                   The tourist's map of the state of New Yo rights: The content of the Library of Congress Geogr
 
 10 rows -> loc_erie_canal.csv; 0 without a JPEG, 0 without any rights text
-12 HTTP requests, 0 from the disk cache (~/.cache/library-of-congress-skill, 24 h)
+13 HTTP requests, 0 from the disk cache (~/.cache/library-of-congress-skill, 24 h)
 Source: Library of Congress (https://www.loc.gov). Check each item's rights before reuse.
 ```
 
-The same script run again at 00:17 UTC ended with:
+The same script run again at 00:17 UTC ended with (the request count line from the 00:56 UTC re-run, robots.txt included):
 
 ```text
 10 rows -> loc_erie_canal.csv; 0 without a JPEG, 0 without any rights text
-0 HTTP requests, 12 from the disk cache (~/.cache/library-of-congress-skill, 24 h)
+1 HTTP requests, 12 from the disk cache (~/.cache/library-of-congress-skill, 24 h)
 Source: Library of Congress (https://www.loc.gov). Check each item's rights before reuse.
 ```
 
@@ -450,7 +452,8 @@ Source: Library of Congress (https://www.loc.gov). Check each item's rights befo
 B=https://www.loc.gov
 UA='library-of-congress-skill-example/1.0 (+https://github.com/browser-use/browser-harness)'
 # loc.gov/legal: no more than 10 requests per minute; robots.txt Crawl-Delay 5. Every call below waits 7 s.
-T=$(mktemp); E=$(mktemp); P=$(mktemp)  # temp files, removed at the end
+T=$(mktemp); E=$(mktemp); P=$(mktemp)
+trap 'rm -f "$T" "$E" "$P"' EXIT
 j() {  # GET -> JSON on stdout. A 5xx (a 525 and a 503 were seen) or a cut connection: wait 30 s, retry once.
        # 429 or a non-JSON page (CAPTCHA, Cloudflare "Just a moment..."): stop, the API blocks for 1 hour.
   for i in 1 2; do
@@ -463,11 +466,12 @@ j() {  # GET -> JSON on stdout. A 5xx (a 525 and a 503 were seen) or a cut conne
   done; return 1
 }
 # search one format endpoint (never /search/: robots.txt disallows it); fa= keeps images viewable off-site
-j "$B/maps/" --data-urlencode 'q=chesapeake bay' -d fo=json -d c=3 -d at=results,pagination \
-  --data-urlencode 'fa=online-format:image|access-restricted:false' \
-  | python3 -c 'import sys, json
+# run it as a script: "|| exit 1" ends the run at the first stop, before any further loc.gov request
+d=$(j "$B/maps/" --data-urlencode 'q=chesapeake bay' -d fo=json -d c=3 -d at=results,pagination \
+  --data-urlencode 'fa=online-format:image|access-restricted:false') || exit 1
+python3 -c 'import sys, json
 d = json.load(sys.stdin); print("maps chesapeake bay:", d["pagination"]["of"], "online images")
-for r in d["results"]: print(" ", r["url"], "|", r.get("date"), "|", r["title"][:60])'
+for r in d["results"]: print(" ", r["url"], "|", r.get("date"), "|", r["title"][:60])' <<<"$d"
 sleep 7
 # headers: JSON, CORS open, cached a day; the X-Nearside-Cache header says MISS or HIT
 curl -sS -G -A "$UA" -D - -o /dev/null "$B/maps/" --data-urlencode 'q=chesapeake bay' -d fo=json -d c=3 -d at=results,pagination \
@@ -475,10 +479,11 @@ curl -sS -G -A "$UA" -D - -o /dev/null "$B/maps/" --data-urlencode 'q=chesapeake
   | grep -iE '^(HTTP/|(content-type|access-control-allow-origin|cache-control|x-nearside-cache|cf-cache-status|retry-after|server):)'
 sleep 7
 # one item record (at=item drops related items and facets): rights and image list live here
-j "$B/item/2017821363/" -d fo=json -d at=item | python3 -c 'import sys, json
+d=$(j "$B/item/2017821363/" -d fo=json -d at=item) || exit 1
+python3 -c 'import sys, json
 it = json.load(sys.stdin)["item"]
 print("item:", it["title"], "|", it.get("created_published_date"), "| rights_advisory:", it.get("rights_advisory"))
-print("  biggest image:", [u.split("#")[0] for u in it["image_url"] if ".jpg" in u][-1])'
+print("  biggest image:", [u.split("#")[0] for u in it["image_url"] if ".jpg" in u][-1])' <<<"$d"
 sleep 7
 # mistakes: an unknown item is HTTP 404 with a JSON body; the HTML page (no fo=json) is a different answer
 curl -sS -A "$UA" -o "$E" -w 'unknown item -> HTTP %{http_code} %{content_type} ' "$B/item/not-a-real-item-zz9/?fo=json&at=item"
@@ -486,10 +491,9 @@ python3 -I -c 'import json, sys; print("exception:", json.load(open(sys.argv[1])
 sleep 7
 curl -sS -A "$UA" -o "$P" -w 'no fo=json -> HTTP %{http_code} %{content_type} ' "$B/maps/?q=chesapeake%20bay&c=3"
 grep -o '<title>[^<]*</title>' "$P" | head -1 | tr -s ' \n' ' '; echo
-rm -f "$T" "$E" "$P"
 ```
 
-Output (from the run on 2026-11-20, 00:19 UTC; the first run at 00:17 got HTTP 525 on its first call and had no retry; re-run at 00:43 UTC after the temp files moved to `mktemp`, same output):
+Output (from the run on 2026-11-20, 00:19 UTC; the first run at 00:17 got HTTP 525 on its first call and had no retry; re-run at 00:43 UTC after the temp files moved to `mktemp` and again at 00:57 UTC after the `|| exit 1` stops were added, same output):
 
 ```text
 maps chesapeake bay: 107 online images
