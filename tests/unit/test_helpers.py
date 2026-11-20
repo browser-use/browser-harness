@@ -835,6 +835,24 @@ def test_fill_input_skips_the_click_for_a_zero_size_field():
     assert not _mouse(calls)
 
 
+def test_fill_input_does_not_click_what_covers_the_field():
+    """A cookie banner over the field gets no click (it could press a button); JS focus instead."""
+    calls = _mouse_calls(lambda: helpers.fill_input("#inp", "x", clear_first=False), js_value=[10, 20, 100, False])
+    assert not _mouse(calls)
+    assert [m for m, _ in calls if m == "Input.dispatchKeyEvent"]
+
+
+def test_fill_input_appending_moves_the_caret_to_the_end_after_the_click():
+    exprs = []
+    with patch("browser_harness.helpers.js", side_effect=lambda e, **_: exprs.append(e) or [10, 20, 100, True]), \
+         patch("browser_harness.helpers.click_at_xy"), patch("browser_harness.helpers.cdp", return_value={}):
+        helpers.fill_input("#inp", "x", clear_first=False)
+        assert "setSelectionRange" in exprs[1]
+        exprs.clear()
+        helpers.fill_input("#inp", "x", clear_first=True)
+        assert "setSelectionRange" not in exprs[1]
+
+
 # --- captcha solver wait ---
 
 def _solver(states, ready="complete"):

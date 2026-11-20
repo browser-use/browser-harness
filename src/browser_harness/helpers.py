@@ -276,15 +276,23 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         if not wait_for_element(selector, timeout=timeout):
             raise RuntimeError(f"fill_input: element not found: {selector!r}")
     q = f"document.querySelector({json.dumps(selector)})"
+    # The field's centre, and whether a click there lands on the field (or its own label or wrapper),
+    # not on a cookie banner or modal covering it: clicking that could press a button on it.
     box = js(
         f"(()=>{{const e={q};if(!e)return null;e.scrollIntoView({{block:'center',behavior:'instant'}});"
-        f"const r=e.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2,r.width*r.height];}})()"
+        f"const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,h=document.elementFromPoint(x,y);"
+        f"const own=!!h&&(h===e||e.contains(h)||h.contains(e)||(h.closest('label')||{{}}).control===e"
+        f"||!!(e.parentElement&&e.parentElement.contains(h)));"
+        f"return [x,y,r.width*r.height,own];}})()"
     )
     if not box:
         raise RuntimeError(f"fill_input: element not found: {selector!r}")
-    if box[2]:
+    if box[2] and (len(box) < 4 or box[3]):
         click_at_xy(box[0], box[1])  # trusted press: Akamai 403s a submit whose page never saw one
-    js(f"(()=>{{const e={q},a=document.activeElement;if(e&&a!==e&&!e.contains(a))e.focus();}})()")
+    # JS focus only if the click did not focus it. Appending (clear_first=False): put the caret at the
+    # end, where focus() leaves it, not where the click landed (inputs like type=email have no caret API).
+    end = "" if clear_first else "try{const n=(e.value||'').length;e.setSelectionRange(n,n)}catch(_){}"
+    js(f"(()=>{{const e={q},a=document.activeElement;if(!e)return;if(a!==e&&!e.contains(a))e.focus();{end}}})()")
     if clear_first:
         # Dispatch select-all directly — NOT via press_key, which always emits a
         # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
