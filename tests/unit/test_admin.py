@@ -1448,3 +1448,75 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+# BH_CDP_DENY=tokens: callers must not get an unprotected daemon back.
+
+def _deny_env(monkeypatch, tmp_path, value=None, marker=False):
+    path = tmp_path / "bu.deny"
+    if marker:
+        path.write_text("tokens")
+    monkeypatch.setattr(admin.ipc, "deny_path", lambda _name: path)
+    if value is None:
+        monkeypatch.delenv("BH_CDP_DENY", raising=False)
+    else:
+        monkeypatch.setenv("BH_CDP_DENY", value)
+
+
+@pytest.mark.parametrize("value,marker,expected", [
+    (None, False, None),
+    ("tokens", False, "tokens"),
+    (None, True, "tokens"),
+    ("off", True, None),
+])
+def test_required_deny_mode_reads_env_then_sticky_marker(monkeypatch, tmp_path, value, marker, expected):
+    _deny_env(monkeypatch, tmp_path, value, marker)
+
+    assert admin.required_deny_mode("scoped") == expected
+
+
+def test_required_deny_mode_honors_explicit_env_argument(monkeypatch, tmp_path):
+    _deny_env(monkeypatch, tmp_path)
+
+    assert admin.required_deny_mode("scoped", env={"BH_CDP_DENY": "tokens"}) == "tokens"
+
+
+@pytest.mark.parametrize("reported", [None, "off", "garbage"])
+def test_ensure_daemon_refuses_unprotected_daemon_when_tokens_required(monkeypatch, tmp_path, reported):
+    """A stale/legacy daemon, or one respawned without the env var, must not be reused."""
+    _deny_env(monkeypatch, tmp_path, marker=True)
+    monkeypatch.setattr(admin, "_ensure_daemon", lambda **kwargs: None)
+    sock = FakeSocket(response=json.dumps({"pong": True, "pid": 1, "cdp_deny": reported}).encode() + b"\n")
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (sock, None))
+
+    with pytest.raises(RuntimeError, match="running without BH_CDP_DENY=tokens"):
+        admin.ensure_daemon(name="scoped")
+
+
+def test_ensure_daemon_accepts_protected_daemon(monkeypatch, tmp_path):
+    _deny_env(monkeypatch, tmp_path, value="tokens")
+    monkeypatch.setattr(admin, "_ensure_daemon", lambda **kwargs: None)
+    sock = FakeSocket(response=b'{"pong": true, "pid": 1, "cdp_deny": "tokens"}\n')
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (sock, None))
+
+    admin.ensure_daemon(name="scoped")
+
+    assert b'"meta": "ping"' in sock.sent
+
+
+def test_ensure_daemon_skips_mode_probe_when_not_required(monkeypatch, tmp_path):
+    _deny_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(admin, "_ensure_daemon", lambda **kwargs: None)
+    monkeypatch.setattr(admin.ipc, "connect", lambda *a, **k: pytest.fail("no probe expected"))
+
+    admin.ensure_daemon(name="scoped")
+
+
+def test_require_existing_daemon_refuses_unprotected_daemon(monkeypatch, tmp_path):
+    _deny_env(monkeypatch, tmp_path, value="tokens")
+    responses = iter([b'{"result":{"targetInfos":[]}}\n', b'{"pong": true, "pid": 1}\n'])
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (FakeSocket(response=next(responses)), None))
+
+    with pytest.raises(RuntimeError, match="running without BH_CDP_DENY=tokens"):
+        admin.require_existing_daemon("scoped")

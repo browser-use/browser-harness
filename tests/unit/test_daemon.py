@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 import pytest
@@ -845,3 +846,367 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+# BH_CDP_DENY=tokens: opt-in fail-closed CDP filter for browser tokens.
+
+_TOKENS_DENIED = [
+    ("Fetch.enable", {"patterns": [{"urlPattern": "*"}]}),
+    ("Fetch.continueRequest", {"requestId": "1"}),
+    ("Tracing.start", {}),
+    ("Target.attachToBrowserTarget", {}),
+    ("Target.exposeDevToolsProtocol", {"targetId": "t"}),
+    ("Target.sendMessageToTarget", {"message": '{"id":1,"method":"Fetch.enable"}', "sessionId": "s"}),
+    # DevTools frontend can drive the backend itself (review repro: Fetch via InspectorFrontendHost).
+    ("Target.openDevTools", {"targetId": "page-target"}),
+    ("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True}),
+    ("Target.autoAttachRelated", {"targetId": "page-target", "waitForDebuggerOnStart": False}),
+    ("Target.setDiscoverTargets", {"discover": False}),
+    ("Target.createBrowserContext", {"proxyServer": "http://attacker.example:8080"}),
+    ("Security.setIgnoreCertificateErrors", {"ignore": True}),
+    ("Security.handleCertificateError", {"eventId": 1, "action": "continue"}),
+    ("Network.setRequestInterception", {"patterns": [{"urlPattern": "*"}]}),
+    ("Network.getResponseBody", {"requestId": "1"}),
+    ("Network.searchInResponseBody", {"requestId": "1", "query": "4111"}),
+    ("Network.streamResourceContent", {"requestId": "1"}),
+    ("Network.replayXHR", {"requestId": "1"}),
+    ("Network.getRequestPostData", {"requestId": "1"}),
+    ("Page.getResourceContent", {"frameId": "f", "url": "https://shop.example.com/"}),
+    ("Page.navigateToHistoryEntry", {"entryId": 1}),
+    ("Audits.getEncodedResponse", {"requestId": "1", "encoding": "webp"}),
+    ("Extensions.loadUnpacked", {"path": "/tmp/ext"}),
+    ("ServiceWorker.inspectWorker", {"versionId": "1"}),
+    ("Browser.executeBrowserCommand", {"commandId": "openTabSearch"}),
+    ("DOM.setFileInputFiles", {"files": ["/etc/passwd"], "nodeId": 1}),
+    ("Input.dispatchDragEvent", {"type": "drop", "x": 1, "y": 1, "data": {"items": [], "files": ["/etc/passwd"], "dragOperationsMask": 1}}),
+    ("Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": "/home/u/.config/browser-harness/agent-workspace"}),
+    ("Page.setDownloadBehavior", {"behavior": "allowAndName", "downloadPath": "/tmp"}),
+    ("Page.navigate", {"url": "chrome://net-export"}),
+    ("Page.navigate", {"url": "FILE:///etc/passwd"}),
+    ("Page.navigate", {"url": " \tchr\tome://settings"}),
+    ("Page.navigate", {"url": "devtools://devtools/bundled/inspector.html"}),
+    ("Page.navigate", {"url": "view-source:file:///etc/passwd"}),
+    ("Page.navigate", {"url": "chrome-untrusted://print"}),
+    ("Page.navigate", {"url": "chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html"}),
+    ("Page.navigate", {"url": "isolated-app://xyz/"}),
+    ("Page.navigate", {"url": "edge://net-export"}),
+    ("Page.navigate", {"url": ["chrome://net-export"]}),
+    ("Target.createTarget", {"url": "chrome://net-internals"}),
+    ("Target.createTarget", {"url": "file:///tmp/x.html", "background": True}),
+]
+
+_TOKENS_ALLOWED = [
+    ("Page.navigate", {"url": "https://shop.example.com/checkout"}),
+    ("Page.navigate", {"url": "about:blank"}),
+    ("Page.navigate", {"url": "https://example.com/?next=chrome://settings"}),
+    ("Target.createTarget", {"url": "about:blank", "background": True}),
+    ("Target.getTargets", {}),
+    ("Runtime.evaluate", {"expression": "1"}),
+    ("Network.enable", {}),
+    ("Input.insertText", {"text": "4242 4242 4242 4242"}),
+    ("Accessibility.getFullAXTree", {}),
+    ("DOM.getBoxModel", {"backendNodeId": 1}),
+    ("Page.captureScreenshot", {"format": "png"}),
+    ("Browser.getVersion", {}),
+    ("Browser.setDownloadBehavior", {"behavior": "deny"}),
+    ("Input.dispatchDragEvent", {"type": "dragEnter", "x": 1, "y": 1, "data": {"items": [], "dragOperationsMask": 1}}),
+]
+
+_PAGE = {"targetId": "page-target", "type": "page", "url": "https://shop.example.com/"}
+
+
+class _TargetsCDP(_FakeCDP):
+    """_FakeCDP that knows targets, for the tokens-mode attach check."""
+
+    def __init__(self, targets=()):
+        super().__init__()
+        self.targets = {t["targetId"]: t for t in targets}
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.calls.append((method, params, session_id))
+        if method == "Target.getTargetInfo":
+            if params["targetId"] not in self.targets:
+                raise RuntimeError("No target with given id found")
+            return {"targetInfo": self.targets[params["targetId"]]}
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"session-{params['targetId']}"}
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_deny_marker(monkeypatch, tmp_path):
+    marker = tmp_path / "bu.deny"
+    monkeypatch.setattr(daemon, "_deny_marker", lambda: marker)
+    return marker
+
+
+def _deny_daemon(monkeypatch, value, targets=()):
+    if value is None:
+        monkeypatch.delenv("BH_CDP_DENY", raising=False)
+    else:
+        monkeypatch.setenv("BH_CDP_DENY", value)
+    d = _fresh_daemon()
+    d.cdp = _TargetsCDP([_PAGE, *targets])
+    d.session = "page-session"
+    d.target_id = _PAGE["targetId"]
+    d._track_session("page-session", _PAGE)
+    return d
+
+
+def _call(d, method, params=None, **req):
+    return asyncio.run(d.handle({"method": method, "params": params or {}, **req}))
+
+
+@pytest.mark.parametrize("method,params", _TOKENS_DENIED)
+def test_cdp_deny_unset_passes_every_call_through(monkeypatch, method, params):
+    d = _deny_daemon(monkeypatch, None)
+
+    result = _call(d, method, params)
+
+    assert result == {"result": {}}
+    assert [call[0] for call in d.cdp.calls] == [method]
+
+
+@pytest.mark.parametrize("method,params", _TOKENS_DENIED)
+def test_cdp_deny_tokens_refuses_without_reaching_chrome(monkeypatch, method, params):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = _call(d, method, params)
+
+    assert "BH_CDP_DENY=tokens" in result["error"]
+    assert method in result["error"]
+    assert d.cdp.calls == []
+
+
+@pytest.mark.parametrize("method,params", _TOKENS_ALLOWED)
+def test_cdp_deny_tokens_keeps_normal_calls_working(monkeypatch, method, params):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = _call(d, method, params)
+
+    assert result == {"result": {}}
+    assert [call[0] for call in d.cdp.calls] == [method]
+
+
+def test_cdp_deny_tokens_ignores_explicit_session(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = _call(d, "Fetch.enable", session_id="page-session")
+
+    assert "Fetch.enable is blocked" in result["error"]
+    assert d.cdp.calls == []
+
+
+def test_cdp_deny_tokens_error_names_scheme_not_full_url(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = _call(d, "Page.navigate", {"url": "file:///home/u/secret.txt"})
+
+    assert result == {"error": "Page.navigate to file: URLs is blocked by BH_CDP_DENY=tokens (browser tokens are active)"}
+
+
+def test_cdp_deny_tokens_attaches_to_web_page_and_drives_its_session(monkeypatch):
+    other = {"targetId": "tab-2", "type": "page", "url": "https://bank.example.com/"}
+    d = _deny_daemon(monkeypatch, "tokens", [other])
+
+    attached = _call(d, "Target.attachToTarget", {"targetId": "tab-2", "flatten": True})
+    evaluated = _call(d, "Runtime.evaluate", {"expression": "1"}, session_id="session-tab-2")
+
+    assert attached == {"result": {"sessionId": "session-tab-2"}}
+    assert evaluated == {"result": {}}
+    assert [c[0] for c in d.cdp.calls] == ["Target.getTargetInfo", "Target.attachToTarget", "Runtime.evaluate"]
+
+
+@pytest.mark.parametrize("target", [
+    # Target.openDevTools result: DevTools frontend can send Fetch.enable itself.
+    {"targetId": "dt", "type": "page", "url": "devtools://devtools/bundled/devtools_app.html"},
+    {"targetId": "omni", "type": "browser_ui", "url": "chrome://omnibox-popup.top-chrome/"},
+    {"targetId": "inspect", "type": "page", "url": "chrome://inspect/#devices"},
+    {"targetId": "ext-sw", "type": "service_worker", "url": "chrome-extension://abcdefghijklmnop/bg.js"},
+    {"targetId": "tab", "type": "tab", "url": "https://shop.example.com/"},
+    {"targetId": "browser", "type": "browser", "url": ""},
+])
+def test_cdp_deny_tokens_refuses_attach_to_privileged_targets(monkeypatch, target):
+    d = _deny_daemon(monkeypatch, "tokens", [target])
+
+    result = _call(d, "Target.attachToTarget", {"targetId": target["targetId"], "flatten": True})
+
+    assert "Target.attachToTarget" in result["error"] and "BH_CDP_DENY=tokens" in result["error"]
+    assert [c[0] for c in d.cdp.calls] == ["Target.getTargetInfo"]
+
+
+@pytest.mark.parametrize("params", [{}, {"targetId": ""}, {"targetId": ["dt"]}, {"targetId": "missing"}])
+def test_cdp_deny_tokens_refuses_attach_without_a_live_target(monkeypatch, params):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = _call(d, "Target.attachToTarget", params)
+
+    assert "error" in result
+    assert "Target.attachToTarget" not in [c[0] for c in d.cdp.calls]
+
+
+def test_cdp_deny_tokens_refuses_session_after_tab_lands_on_chrome_page(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+    d._record_event("Target.targetInfoChanged", {"targetInfo": {**_PAGE, "url": "chrome://inspect/"}})
+
+    evaluated = _call(d, "Runtime.evaluate", {"expression": "chrome.send('x')"})
+    left = _call(d, "Page.navigate", {"url": "https://shop.example.com/"})
+
+    assert "chrome: target is blocked" in evaluated["error"]
+    assert left == {"result": {}}
+    assert [c[0] for c in d.cdp.calls] == ["Page.navigate"]
+
+
+def test_cdp_deny_tokens_refuses_sessions_it_did_not_attach(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+    asyncio.run(d.handle({"meta": "set_session", "session_id": "foreign", "target_id": "x"}))
+    d.cdp.calls.clear()
+
+    explicit = _call(d, "Runtime.evaluate", {"expression": "1"}, session_id="smuggled")
+    default = _call(d, "Runtime.evaluate", {"expression": "1"})
+
+    assert "not attached through this daemon" in explicit["error"]
+    assert "not attached through this daemon" in default["error"]
+    assert d.cdp.calls == []
+
+
+def test_cdp_deny_tokens_tracks_sessions_from_attach_events(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+    d._record_event("Target.attachedToTarget", {
+        "sessionId": "evt-session", "waitingForDebugger": False,
+        "targetInfo": {"targetId": "dt", "type": "page", "url": "devtools://devtools/x"},
+    })
+
+    result = _call(d, "Runtime.evaluate", {"expression": "1"}, session_id="evt-session")
+
+    assert "devtools: target is blocked" in result["error"]
+
+
+def test_cdp_deny_tokens_lets_destroyed_target_hit_stale_session_recovery(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+    d._record_event("Target.targetDestroyed", {"targetId": "page-target"})
+
+    assert d._session_denied("page-session", "Runtime.evaluate") is None
+
+
+def test_cdp_deny_tokens_upload_only_inside_upload_dir(monkeypatch, tmp_path):
+    up = tmp_path / "uploads"
+    up.mkdir()
+    (up / "id.pdf").write_text("x")
+    (up / "escape").symlink_to("/etc/passwd")
+    monkeypatch.setenv("BH_UPLOAD_DIR", str(up))
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    ok = _call(d, "DOM.setFileInputFiles", {"files": [str(up / "id.pdf")], "nodeId": 1})
+    refused = [
+        _call(d, "DOM.setFileInputFiles", {"files": files, "nodeId": 1})
+        for files in ([str(up / ".." / "x")], [str(up / "escape")], ["id.pdf"], "/etc/passwd", [str(up / "id.pdf"), "/etc/passwd"])
+    ]
+
+    assert ok == {"result": {}}
+    assert all("outside BH_UPLOAD_DIR" in r["error"] for r in refused)
+    assert [c[0] for c in d.cdp.calls] == ["DOM.setFileInputFiles"]
+
+
+def test_cdp_deny_tokens_download_only_inside_download_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("BH_DOWNLOAD_DIR", str(tmp_path))
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    ok = _call(d, "Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": str(tmp_path / "dl")})
+    refused = _call(d, "Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": str(tmp_path.parent)})
+
+    assert ok == {"result": {}}
+    assert "outside BH_DOWNLOAD_DIR" in refused["error"]
+
+
+def _drain(d):
+    return asyncio.run(d.handle({"meta": "drain_events"}))["events"]
+
+
+def test_cdp_deny_tokens_drops_wire_header_events_from_drain(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+    real = {"X-Card": "REAL4111", "Authorization": "Bearer real"}
+    d._record_event("Network.requestWillBeSent", {"requestId": "1", "request": {"url": "https://shop.example.com/", "headers": {"X-Card": "DUMMY"}}}, "page-session")
+    d._record_event("Network.requestWillBeSentExtraInfo", {"requestId": "1", "headers": real}, "page-session")
+    d._record_event("Network.responseReceivedExtraInfo", {"requestId": "1", "headers": {}, "headersText": "X-Card: REAL4111"}, "page-session")
+    d._record_event("Network.responseReceived", {"requestId": "1", "response": {"status": 200, "requestHeaders": real, "requestHeadersText": "X-Card: REAL4111"}}, "page-session")
+    d._record_event("Network.requestWillBeSent", {"requestId": "2", "request": {"url": "https://shop.example.com/b"}, "redirectResponse": {"status": 302, "requestHeaders": real}}, "page-session")
+    d._record_event("Fetch.requestPaused", {"requestId": "f1", "request": {"headers": real}}, "page-session")
+
+    events = _drain(d)
+
+    assert "REAL4111" not in json.dumps(events) and "Bearer real" not in json.dumps(events)
+    assert [e["method"] for e in events] == ["Network.requestWillBeSent", "Network.responseReceived", "Network.requestWillBeSent"]
+    assert events[1]["params"]["response"] == {"status": 200}
+
+
+def test_cdp_deny_unset_keeps_extra_info_events(monkeypatch):
+    d = _deny_daemon(monkeypatch, None)
+    d._record_event("Network.requestWillBeSentExtraInfo", {"requestId": "1", "headers": {"X-Card": "REAL4111"}})
+
+    assert [e["method"] for e in _drain(d)] == ["Network.requestWillBeSentExtraInfo"]
+
+
+@pytest.mark.parametrize("value,expected", [(None, None), ("tokens", "tokens")])
+def test_ping_reports_cdp_deny_mode(monkeypatch, value, expected):
+    d = _deny_daemon(monkeypatch, value)
+
+    assert asyncio.run(d.handle({"meta": "ping"}))["cdp_deny"] == expected
+
+
+@pytest.mark.parametrize("value", ["", "  ", "Tokens", " TOKENS "])
+def test_cdp_deny_mode_accepts_unset_or_tokens(monkeypatch, value):
+    monkeypatch.setenv("BH_CDP_DENY", value)
+
+    assert daemon.cdp_deny_mode() == ("tokens" if value.strip() else None)
+
+
+@pytest.mark.parametrize("value", ["token", "1", "on", "fetch"])
+def test_cdp_deny_unknown_value_fails_daemon_start(monkeypatch, value):
+    monkeypatch.setenv("BH_CDP_DENY", value)
+
+    with pytest.raises(ValueError, match="BH_CDP_DENY"):
+        daemon.Daemon()
+
+
+def test_cdp_deny_tokens_survives_respawn_without_env(monkeypatch, _isolated_deny_marker):
+    """A later CLI call that respawns the daemon without BH_CDP_DENY keeps tokens mode."""
+    monkeypatch.setenv("BH_CDP_DENY", "tokens")
+    daemon.persist_cdp_deny_mode(daemon.Daemon().deny)
+    monkeypatch.delenv("BH_CDP_DENY")
+
+    respawned = daemon.Daemon()
+
+    assert respawned.deny == "tokens"
+    assert _isolated_deny_marker.read_text() == "tokens"
+
+
+def test_cdp_deny_off_clears_sticky_mode(monkeypatch, _isolated_deny_marker):
+    _isolated_deny_marker.write_text("tokens")
+    monkeypatch.setenv("BH_CDP_DENY", "off")
+
+    d = daemon.Daemon()
+    daemon.persist_cdp_deny_mode(d.deny)
+    monkeypatch.delenv("BH_CDP_DENY")
+
+    assert d.deny is None
+    assert not _isolated_deny_marker.exists()
+    assert daemon.Daemon().deny is None
+
+
+def test_cdp_deny_corrupt_marker_fails_closed(monkeypatch, _isolated_deny_marker):
+    _isolated_deny_marker.write_text("garbage")
+    monkeypatch.delenv("BH_CDP_DENY", raising=False)
+
+    with pytest.raises(ValueError, match="garbage"):
+        daemon.Daemon()
+
+
+def test_cdp_deny_tokens_keeps_discovery_events_out_of_drain(monkeypatch):
+    """Discovery is daemon-internal in tokens mode; it must not evict Network events."""
+    d = _deny_daemon(monkeypatch, "tokens")
+    d._record_event("Target.targetInfoChanged", {"targetInfo": {**_PAGE, "title": "x"}})
+    d._record_event("Target.targetCreated", {"targetInfo": {"targetId": "t2", "type": "page", "url": "about:blank"}})
+
+    assert _drain(d) == []
+    assert d._targets["t2"]["url"] == "about:blank"

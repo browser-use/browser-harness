@@ -389,6 +389,43 @@ def daemon_browser_kind(name=None):
             c.close()
 
 
+def daemon_deny_mode(name=None):
+    """BH_CDP_DENY mode a live daemon reports ('tokens' or None). None also for
+    unreachable daemons and daemons from before the mode was reported."""
+    c = None
+    try:
+        c, token = ipc.connect(name or NAME, timeout=1.0)
+        response = ipc.request(c, token, {"meta": "ping"})
+        mode = response.get("cdp_deny") if isinstance(response, dict) else None
+        return mode if mode == "tokens" else None
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, socket.timeout, OSError, ValueError):
+        return None
+    finally:
+        if c:
+            c.close()
+
+
+def required_deny_mode(name=None, env=None):
+    """'tokens' when the caller's env sets BH_CDP_DENY=tokens or this daemon name
+    was last started in tokens mode (sticky marker); BH_CDP_DENY=off opts out."""
+    v = {**os.environ, **(env or {})}.get("BH_CDP_DENY", "").strip().lower()
+    if v == "tokens":
+        return "tokens"
+    if v:
+        return None
+    return "tokens" if ipc.deny_path(name or NAME).exists() else None
+
+
+def check_deny_mode(name=None, env=None):
+    """Fail closed when tokens mode is required but the live daemon runs without it."""
+    required = required_deny_mode(name, env)
+    if required and daemon_deny_mode(name) != required:
+        raise RuntimeError(
+            f"daemon {name or NAME!r} is running without BH_CDP_DENY={required}; "
+            "stop it (browser-harness --reload) and retry so it restarts protected"
+        )
+
+
 def _daemon_endpoint_names():
     # BH_RUNTIME_DIR isolates one daemon per dir → no filename-prefix discovery,
     # just check whether our local endpoint exists. Without BH_RUNTIME_DIR, or
@@ -524,7 +561,13 @@ def run_doctor_fix_snap():
 
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
-    Chrome, and missing Allow on chrome://inspect."""
+    Chrome, and missing Allow on chrome://inspect. Refuses to hand back a daemon
+    running without a required BH_CDP_DENY mode."""
+    _ensure_daemon(wait=wait, name=name, env=env)
+    check_deny_mode(name, env)
+
+
+def _ensure_daemon(wait=None, name=None, env=None):
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
@@ -728,6 +771,7 @@ def require_existing_daemon(name=None):
         raise RuntimeError(f"required daemon {daemon_name!r} is unhealthy: {exc}") from exc
     if not isinstance(resp, dict) or "result" not in resp:
         raise RuntimeError(f"required daemon {daemon_name!r} failed its CDP health check")
+    check_deny_mode(daemon_name)
 
 
 def stop_remote_daemon(name="remote"):

@@ -52,6 +52,7 @@ def log_path(name):   return _TMP / f"{_tmp_stem(name)}.log"
 def pid_path(name):   return _RUNTIME / f"{_runtime_stem(name)}.pid"
 def port_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.port"  # Windows-only: holds {"port","token"} JSON
 def _sock_path(name): return _RUNTIME / f"{_runtime_stem(name)}.sock"
+def deny_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.deny"  # sticky BH_CDP_DENY mode
 
 
 def _read_port_file(name):

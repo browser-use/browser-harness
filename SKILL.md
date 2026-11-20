@@ -260,6 +260,16 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - Trusted orchestrators that already provisioned an exact named daemon can set
   `BH_REQUIRE_EXISTING_DAEMON=1`. Each CLI call then health-checks and reuses
   that daemon or fails closed; it never auto-starts or discovers another Chrome.
+- Orchestrators using browser tokens can start the daemon with `BH_CDP_DENY=tokens`.
+  The daemon then passes only allowlisted CDP domains/methods (no `Fetch`,
+  `Tracing`, `Security`, `Target.openDevTools`, `createBrowserContext`,
+  `setAutoAttach`, response/post bodies), refuses sessions on `devtools:`,
+  `chrome:`, extension and browser-UI targets, limits uploads/downloads to
+  `BH_UPLOAD_DIR`/`BH_DOWNLOAD_DIR`, and drops `*ExtraInfo` events from
+  `drain_events()`. The mode sticks for that daemon name across respawns
+  (`BH_CDP_DENY=off` clears it). It is a speed bump, not a security boundary:
+  the real value is only safe if the swap happens outside Chrome and responses
+  never echo it.
 - Core helpers stay short. Put task-specific helper additions in `$BH_AGENT_WORKSPACE/agent_helpers.py`.
 
 ## Feedback

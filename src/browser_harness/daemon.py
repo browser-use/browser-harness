@@ -135,6 +135,178 @@ def tab_marker_enabled():
     return os.environ.get("BH_TAB_MARKER", "").strip().lower() not in {"0", "false", "no", "off"}
 
 
+# BH_CDP_DENY=tokens: browser tokens swap real values into requests outside the
+# daemon. This narrows what model-driven CDP through the daemon can reach; it is
+# a speed bump, not an isolation boundary (code with host access can open its
+# own CDP socket). It fails closed:
+#   - only allowlisted domains/methods pass (unknown or new domains are refused),
+#   - privileged targets (devtools:, chrome:, extensions, browser UI) cannot be
+#     attached or driven, even after a tab navigates there,
+#   - local file reads/writes go only through BH_UPLOAD_DIR / BH_DOWNLOAD_DIR,
+#   - events that carry on-the-wire request headers never reach drain_events.
+_TOKENS_DOMAINS = frozenset({
+    "Accessibility", "Animation", "CSS", "CacheStorage", "Console", "DOM",
+    "DOMDebugger", "DOMSnapshot", "DOMStorage", "Debugger", "DeviceOrientation",
+    "Emulation", "HeapProfiler", "IO", "IndexedDB", "Input", "Inspector",
+    "LayerTree", "Log", "Media", "Memory", "Network", "Overlay", "Page",
+    "Performance", "PerformanceTimeline", "Profiler", "Runtime", "Schema",
+    "Storage", "WebAudio", "WebAuthn",
+})
+# Methods allowed from otherwise refused domains (Browser.* and Target.* hold
+# openDevTools, createBrowserContext, setAutoAttach, executeBrowserCommand...).
+_TOKENS_METHODS = frozenset({
+    "Browser.getVersion", "Browser.getWindowForTarget", "Browser.getWindowBounds",
+    "Browser.setWindowBounds", "Browser.grantPermissions", "Browser.resetPermissions",
+    "Browser.setPermission", "Browser.setDownloadBehavior", "Browser.cancelDownload",
+    "Target.getTargets", "Target.getTargetInfo", "Target.getBrowserContexts",
+    "Target.attachToTarget", "Target.detachFromTarget", "Target.activateTarget",
+    "Target.closeTarget", "Target.createTarget",
+})
+# Refused even inside allowed domains: interception, response/post bodies,
+# history jumps that can land on chrome:// entries, legacy file choosers.
+_TOKENS_DENIED_METHODS = frozenset({
+    "Network.setRequestInterception", "Network.getResponseBody",
+    "Network.getResponseBodyForInterception", "Network.takeResponseBodyForInterceptionAsStream",
+    "Network.searchInResponseBody", "Network.streamResourceContent", "Network.replayXHR",
+    "Network.getRequestPostData",
+    "Page.getResourceContent", "Page.searchInResource", "Page.navigateToHistoryEntry",
+    "Page.handleFileChooser",
+})
+_DENY_URL_METHODS = {"Page.navigate", "Target.createTarget"}
+_DENY_SCHEMES = {
+    "chrome", "chrome-untrusted", "chrome-extension", "chrome-search", "edge", "brave",
+    "devtools", "file", "view-source", "isolated-app",
+}
+_ATTACH_TYPES = {"page", "iframe", "worker", "shared_worker", "service_worker"}
+_DOWNLOAD_METHODS = {"Browser.setDownloadBehavior", "Page.setDownloadBehavior"}
+# Network events whose payload is what actually went on the wire, after any
+# interceptor rewrote it (the swapped real value), or interception traffic.
+_TOKENS_DROPPED_EVENTS = ("Network.requestIntercepted",)
+_WIRE_HEADER_KEYS = {"requestHeaders", "requestHeadersText"}
+_DISCOVERY_EVENTS = {"Target.targetCreated", "Target.targetInfoChanged", "Target.targetDestroyed"}
+
+
+def _deny_marker():
+    """Per-daemon file that keeps tokens mode across respawns without the env var."""
+    return ipc.deny_path(NAME)
+
+
+def cdp_deny_mode():
+    """'tokens' when BH_CDP_DENY=tokens or this daemon name was last started in
+    tokens mode; None when unset or BH_CDP_DENY=off. Anything else raises, so a
+    typo never silently runs the daemon unprotected."""
+    v = os.environ.get("BH_CDP_DENY", "").strip().lower()
+    if v == "off":
+        return None
+    if v == "tokens":
+        return v
+    if v:
+        raise ValueError(f"BH_CDP_DENY={v!r} is not supported; use 'tokens', 'off', or leave it unset")
+    marker = _deny_marker()
+    try:
+        sticky = marker.read_text().strip()
+    except FileNotFoundError:
+        return None
+    if sticky == "tokens":
+        return sticky
+    raise ValueError(f"{marker} holds {sticky!r}; delete it or set BH_CDP_DENY")
+
+
+def persist_cdp_deny_mode(mode):
+    """Make tokens mode sticky for this daemon name; BH_CDP_DENY=off clears it."""
+    marker = _deny_marker()
+    if mode:
+        marker.write_text(mode)
+    else:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _blocked(what):
+    return f"{what} is blocked by BH_CDP_DENY=tokens (browser tokens are active)"
+
+
+def _url_scheme(url):
+    # Mirror Chrome's URL parser: trim C0/space at the ends, drop tab/CR/LF anywhere.
+    url = "".join(c for c in url.strip("".join(map(chr, range(33)))) if c not in "\t\r\n")
+    scheme, sep, _ = url.partition(":")
+    return scheme.lower() if sep else ""
+
+
+def _paths_under(files, root):
+    """True when root is set and every entry is an absolute path inside it."""
+    if not root or not isinstance(files, list):
+        return False
+    root = os.path.realpath(os.path.expanduser(root))
+    for f in files:
+        if not isinstance(f, str) or not os.path.isabs(f):
+            return False
+        if os.path.commonpath([root, os.path.realpath(f)]) != root:
+            return False
+    return True
+
+
+def cdp_denied(method, params):
+    """Error string if BH_CDP_DENY=tokens refuses this call, else None."""
+    if not isinstance(method, str):
+        return _blocked("non-string method")
+    if not isinstance(params, dict):
+        return _blocked(f"{method} with non-object params")
+    domain = method.partition(".")[0]
+    if method in _TOKENS_DENIED_METHODS or not (domain in _TOKENS_DOMAINS or method in _TOKENS_METHODS):
+        return _blocked(method)
+    if method in _DENY_URL_METHODS:
+        url = params.get("url", "")
+        if not isinstance(url, str):
+            return _blocked(f"{method} with a non-string url")
+        scheme = _url_scheme(url)
+        if scheme in _DENY_SCHEMES:
+            return _blocked(f"{method} to {scheme}: URLs")
+    if method == "DOM.setFileInputFiles" and not _paths_under(params.get("files"), os.environ.get("BH_UPLOAD_DIR")):
+        return _blocked(f"{method} outside BH_UPLOAD_DIR")
+    if method == "Input.dispatchDragEvent":
+        data = params.get("data")
+        if data is not None and (not isinstance(data, dict) or data.get("files")):
+            return _blocked(f"{method} with files")
+    if method in _DOWNLOAD_METHODS and params.get("behavior") not in ("deny", "default"):
+        if not _paths_under([params.get("downloadPath")], os.environ.get("BH_DOWNLOAD_DIR")):
+            return _blocked(f"{method} outside BH_DOWNLOAD_DIR")
+    return None
+
+
+def target_denied(info, method=None):
+    """Error string if tokens mode refuses to attach to / drive this target.
+    Page.navigate stays allowed on page targets so a chrome:// tab (New Tab
+    Page) can still leave; the url itself is checked by cdp_denied."""
+    ttype = info.get("type")
+    url = info.get("url")
+    scheme = _url_scheme(url if isinstance(url, str) else "")
+    if ttype not in _ATTACH_TYPES:
+        return _blocked(f"{method or 'Target.attachToTarget'} on a {ttype or 'unknown'} target")
+    if scheme in _DENY_SCHEMES and not (method == "Page.navigate" and ttype == "page"):
+        return _blocked(f"{method or 'Target.attachToTarget'} on a {scheme}: target")
+    return None
+
+
+def scrub_event(method, params):
+    """(keep, params) for the drain_events buffer in tokens mode. Drops
+    *ExtraInfo and interception events, strips wire request headers."""
+    if method.endswith("ExtraInfo") or method.startswith("Fetch.") or method in _TOKENS_DROPPED_EVENTS:
+        return False, None
+    if not isinstance(params, dict):
+        return True, params
+    hits = [k for k in ("response", "redirectResponse")
+            if isinstance(params.get(k), dict) and _WIRE_HEADER_KEYS & params[k].keys()]
+    if not hits:
+        return True, params
+    params = dict(params)
+    for k in hits:
+        params[k] = {kk: vv for kk, vv in params[k].items() if kk not in _WIRE_HEADER_KEYS}
+    return True, params
+
+
 def _devtools_port_live(base):
     """True when something is listening on the profile's DevToolsActivePort port.
 
@@ -423,6 +595,11 @@ class _PatientCDPClient(CDPClient):
 
 class Daemon:
     def __init__(self):
+        self.deny = cdp_deny_mode()
+        # Tokens mode: what each session drives, so a tab that later lands on a
+        # privileged page (history.back() to chrome://...) is refused too.
+        self._targets = {}           # targetId -> latest targetInfo
+        self._session_targets = {}   # sessionId -> targetId
         self.cdp = None
         self.session = None
         self.target_id = None
@@ -475,6 +652,7 @@ class Daemon:
                 "Target.attachToTarget", {"targetId": tid, "flatten": True}
             ))["sessionId"]
             self._record_session_replacement(replaces_session, self.session)
+            self._track_session(self.session, page)
             self.target_id = tid
             log(f"attached {tid} ({page.get('url','')[:80]}) session={self.session}")
             if enable_domains:
@@ -508,6 +686,7 @@ class Daemon:
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
         ))["sessionId"]
         self._record_session_replacement(replaces_session, self.session)
+        self._track_session(self.session, pages[0])
         self.target_id = pages[0]["targetId"]
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         if take_over:
@@ -623,7 +802,60 @@ class Daemon:
             timeout=2,
         )))
 
+    def _track_session(self, session_id, info):
+        tid = info.get("targetId") if isinstance(info, dict) else None
+        if session_id and tid:
+            self._session_targets[session_id] = tid
+            self._targets.setdefault(tid, info)
+
+    def _track_target_event(self, method, params):
+        if not isinstance(params, dict):
+            return
+        if method in ("Target.targetCreated", "Target.targetInfoChanged"):
+            info = params.get("targetInfo")
+            if isinstance(info, dict) and info.get("targetId"):
+                self._targets[info["targetId"]] = info
+        elif method == "Target.targetDestroyed":
+            self._targets.pop(params.get("targetId"), None)
+        elif method == "Target.attachedToTarget":
+            info = params.get("targetInfo")
+            if isinstance(info, dict) and info.get("targetId"):
+                self._targets[info["targetId"]] = info
+            self._track_session(params.get("sessionId"), info)
+
+    def _session_denied(self, sid, method):
+        """Tokens mode: refuse sessions this daemon did not attach, and sessions
+        whose target is (now) privileged. A destroyed target passes so Chrome's
+        stale-session error drives the normal recovery."""
+        if not isinstance(sid, str):
+            return _blocked(f"{method} with a non-string session_id")
+        tid = self._session_targets.get(sid)
+        if tid is None:
+            return _blocked(f"{method} on a session not attached through this daemon")
+        info = self._targets.get(tid)
+        return target_denied(info, method) if info is not None else None
+
+    async def _attach_denied(self, params):
+        """Tokens mode: check the live target before Target.attachToTarget."""
+        tid = params.get("targetId")
+        if not isinstance(tid, str) or not tid:
+            return _blocked("Target.attachToTarget without a targetId"), None
+        try:
+            info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": tid}))["targetInfo"]
+        except Exception as e:
+            return str(e), None
+        if not isinstance(info, dict) or info.get("targetId") != tid:
+            return _blocked("Target.attachToTarget on an unknown target"), None
+        return target_denied(info), info
+
     def _record_event(self, method, params, session_id=None):
+        if self.deny:
+            self._track_target_event(method, params)
+            if method in _DISCOVERY_EVENTS:
+                return  # only exist because tokens mode turned discovery on
+            keep, params = scrub_event(method, params)
+            if not keep:
+                return
         self.events.append({"method": method, "params": params, "session_id": session_id})
         if method == "Page.javascriptDialogOpening":
             self.dialog = params
@@ -661,6 +893,10 @@ class Daemon:
             self._record_event(method, params, session_id)
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+        if self.deny:
+            # targetInfoChanged keeps _targets current when a tab navigates.
+            await self.cdp.send_raw("Target.setDiscoverTargets", {"discover": True})
+            log("BH_CDP_DENY=tokens active")
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -674,7 +910,7 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
+        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND, "cdp_deny": self.deny}
         if meta == "drain_events":
             out = list(self.events); self.events.clear()
             return {"events": out}
@@ -762,9 +998,23 @@ class Daemon:
 
         method = req["method"]
         params = req.get("params") or {}
+        if self.deny and (denied := cdp_denied(method, params)):
+            return {"error": denied}
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+        if self.deny and sid is not None and (denied := self._session_denied(sid, method)):
+            return {"error": denied}
+        if self.deny and method == "Target.attachToTarget":
+            denied, info = await self._attach_denied(params)
+            if denied:
+                return {"error": denied}
+            try:
+                result = await self.cdp.send_raw(method, params, session_id=None)
+            except Exception as e:
+                return {"error": str(e)}
+            self._track_session(result.get("sessionId") if isinstance(result, dict) else None, info)
+            return {"result": result}
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
@@ -865,6 +1115,7 @@ async def serve(d):
 
 async def main():
     d = Daemon()
+    persist_cdp_deny_mode(d.deny)
     await d.start()
     await serve(d)
 
