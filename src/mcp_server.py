@@ -50,6 +50,7 @@ from browser_harness.helpers import (
     wait,
     wait_for_element,
     wait_for_load,
+    wait_until,
 )
 
 SERVER = MCPServer("browser-harness")
@@ -251,6 +252,12 @@ def browser_wait_for_element(
     """Wait for an element matching `selector` to appear. Set `visible=True` to
     also require it to be rendered."""
     return {"ok": wait_for_element(selector, timeout=timeout, visible=visible)}
+
+
+@_tool
+def browser_wait_until(js_condition: str, timeout: float = 10.0):
+    """Wait for a read-only JavaScript expression on the original tab. Timeout and JS errors raise."""
+    return {"ok": wait_until(js_condition, timeout=timeout)}
 
 
 @_tool
