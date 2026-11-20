@@ -533,8 +533,11 @@ def ensure_daemon(wait=None, name=None, env=None):
         for last in (False, True):
             try:
                 s, token = ipc.connect(name or NAME, timeout=3.0)
-                resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
-                if "result" in resp: return
+                try:
+                    resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
+                    if "result" in resp: return
+                finally:
+                    s.close()
             except Exception:
                 pass
             if not last: time.sleep(0.5)
