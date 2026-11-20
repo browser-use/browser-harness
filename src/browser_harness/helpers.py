@@ -211,20 +211,26 @@ def _mouse(x, y, press=None):
         state = {}  # daemon predates pointer tracking
     view = state.get("viewport")
     if not view:
-        try: view = js("[innerWidth, innerHeight]")
+        try: view = js("[innerWidth, innerHeight, devicePixelRatio]")
         except Exception: view = None
-    w, h = view if isinstance(view, list) and len(view) == 2 else (max(x, 800), max(y, 600))
+    w, h, dpr = (view + [1])[:3] if isinstance(view, list) and len(view) >= 2 else (max(x, 800), max(y, 600), 1)
     bounds = (0.0, 0.0, max(float(w), x + 1.0), max(float(h), y + 1.0))
     start = state.get("pointer") or (
         _pointer.clamp(x + random.uniform(-150, 150), 0, bounds[2]), _pointer.clamp(y + random.uniform(-100, 100), 0, bounds[3]))
-    events = [{"at": t, "type": "mouseMoved", "x": px, "y": py} for t, px, py in _pointer.moves(tuple(start), (x, y), bounds)]
+    # Draw the macOS Harness arrow on the page's DevTools overlay (live view, not the DOM): default on cloud.
+    draw = "browser_kind" in state and os.environ.get(
+        "BH_POINTER", "1" if state["browser_kind"] == "cloud" else "0").lower() not in ("0", "false", "no", "off")
+    events = [{"at": t, "type": "mouseMoved", "x": px, "y": py, **({"quad": _pointer.arrow(px, py, shape, dpr=dpr)} if draw else {})}
+              for t, px, py, shape in _pointer.samples(tuple(start), (x, y), bounds)]
     if press:
         button, clicks = press
         # Press on arrival, as macOS Harness does: the spring's soft landing is the pause before it.
         t = (events[-1]["at"] if events else 0.0) + random.uniform(0.01, 0.03)
+        pulse = [{"at": t + dt, "quad": _pointer.arrow(x, y, press=k, dpr=dpr)} for dt, k in _pointer.PRESS[1:]] if draw else []
         for kind, hold in (("mousePressed", random.uniform(0.03, 0.08)), ("mouseReleased", 0.0)):
             events.append({"at": t, "type": kind, "x": x, "y": y, "button": button, "clickCount": clicks})
             t += hold
+        events = sorted(events + pulse, key=lambda e: e["at"])
     if not events:
         return
     if "viewport" in state:  # daemon with meta=mouse
@@ -237,8 +243,8 @@ def _mouse(x, y, press=None):
             _send(req, response_timeout=events[-1]["at"] + 10)
         return
     t0 = time.time()  # older daemon: one call per event, on the same schedule
-    for e in events:
-        e = dict(e)
+    for e in (e for e in events if "type" in e):
+        e = {k: v for k, v in e.items() if k != "quad"}
         delay = t0 + e.pop("at") - time.time()
         if delay > 0: time.sleep(delay)
         cdp("Input.dispatchMouseEvent", **e)

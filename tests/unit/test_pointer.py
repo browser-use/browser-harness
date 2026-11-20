@@ -1,6 +1,8 @@
 import math
 import random
 
+import pytest
+
 from browser_harness import pointer
 
 VIEW = (0.0, 0.0, 1280.0, 720.0)
@@ -50,3 +52,30 @@ def test_a_glide_follows_its_curve_not_the_straight_line():
 
 def test_no_moves_when_already_there():
     assert pointer.moves((10, 10), (10, 10), VIEW) == []
+
+
+def test_the_arrow_at_rest_is_the_macos_outline_around_the_click_point():
+    quad = pointer.arrow(100, 50)
+    want = [c for x, y in pointer.OUTLINE for c in (100 + pointer.SIZE * x, 50 + pointer.SIZE * y)]
+    assert quad == pytest.approx(want, abs=0.01)
+    # Chrome draws a quad unit as devicePixelRatio CSS pixels
+    assert pointer.arrow(100, 50, dpr=2) == pytest.approx([c / 2 for c in quad], abs=0.01)
+
+
+def test_a_press_pulses_the_arrow_smaller_and_back():
+    assert pointer.press_scale(0) == 1 and pointer.press_scale(0.3) == 1 and pointer.press_scale(5) == 1
+    assert pointer.press_scale(0.075) == pytest.approx(0.881) == min(pointer.press_scale(k / 200) for k in range(61))
+
+    def area(q):
+        return abs(sum(q[i] * q[(i + 3) % 8] - q[(i + 2) % 8] * q[i + 1] for i in range(0, 8, 2))) / 2
+    assert area(pointer.arrow(0, 0, press=0.881)) == pytest.approx(0.881 ** 2 * area(pointer.arrow(0, 0)), rel=1e-3)
+
+
+def test_the_drawn_arrow_stretches_on_a_hop_turns_on_a_glide_and_lands_at_rest():
+    hop = pointer.samples((100, 100), (250, 160), VIEW, random.Random(4))
+    glide = pointer.samples((100, 600), (1100, 100), VIEW, random.Random(4))
+    assert hop[-1][3] == glide[-1][3] == pointer.REST
+    assert max(s[3][1] for s in hop) > 1.1  # stretched along its travel
+    assert any(abs(s[3][0] - pointer.U_ANGLE) > 20 for s in glide)  # turned into its path
+    assert min(s[3][2] for s in glide) < 0.8  # thinned at speed
+    assert [s[:3] for s in glide] == pointer.moves((100, 600), (1100, 100), VIEW, random.Random(4))

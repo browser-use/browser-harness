@@ -48,6 +48,9 @@ PY
   another Allow prompt.
 - Set `BH_TAB_MARKER=0` before starting the daemon to leave page titles unchanged.
   The horse marker remains enabled by default.
+- On cloud browsers `click_at_xy` and `move_mouse` also draw the macOS Harness arrow where the mouse goes, so people
+  watching the live view see it glide and pulse on a press. It is drawn on Chrome's DevTools overlay, not in the page,
+  and left out of `capture_screenshot`. `BH_POINTER=0` turns it off; `BH_POINTER=1` turns it on for other browsers.
 - A timeout or page that pauses while hidden is not permission to foreground
   Chrome. Keep using background CDP operations. For a focus-gated page,
   temporarily call `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`,

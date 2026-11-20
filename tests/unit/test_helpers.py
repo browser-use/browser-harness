@@ -917,3 +917,33 @@ def test_wait_for_captcha_solver_passes_on_a_daemon_without_tracking():
     sends, *patches = _solver([RuntimeError("'method'")])
     with patches[0], patches[1], patches[2]:
         assert helpers.wait_for_captcha_solver() is True
+
+
+def _quads(env, kind, viewport=(1280, 720, 2)):
+    with patch.dict(os.environ, {"BH_POINTER": env} if env is not None else {}, clear=False):
+        if env is None:
+            os.environ.pop("BH_POINTER", None)
+        calls = _mouse_calls(lambda: helpers.click_at_xy(900, 600),
+                             state={"viewport": list(viewport), "browser_kind": kind})
+    return [kw for m, kw in calls if m == "mouse"]
+
+
+def test_click_at_xy_draws_the_arrow_on_cloud_browsers_by_default():
+    events = _quads(None, "cloud")
+    moves = [e for e in events if e.get("type") == "mouseMoved"]
+    assert moves and all(len(e["quad"]) == 8 for e in moves)
+    # drawn where the move goes, in quad units of CSS px / devicePixelRatio
+    assert all(abs(e["quad"][0] * 2 - e["x"]) < 30 and abs(e["quad"][1] * 2 - e["y"]) < 30 for e in moves)
+    assert moves[-1]["quad"] == helpers._pointer.arrow(900, 600, dpr=2)  # lands at rest on the target
+    # the press pulse: draw-only events after the press, ending back at full size
+    press = next(e["at"] for e in events if e.get("type") == "mousePressed")
+    pulse = [e for e in events if "type" not in e]
+    assert len(pulse) == len(helpers._pointer.PRESS) - 1 and all(e["at"] > press for e in pulse)
+    assert pulse[-1]["quad"] == helpers._pointer.arrow(900, 600, dpr=2)
+    assert [e["at"] for e in events] == sorted(e["at"] for e in events)
+
+
+def test_bh_pointer_turns_the_drawn_arrow_off_on_cloud_and_on_elsewhere():
+    assert not any("quad" in e for e in _quads("0", "cloud"))
+    assert not any("quad" in e for e in _quads(None, "local"))
+    assert any("quad" in e for e in _quads("1", "local"))

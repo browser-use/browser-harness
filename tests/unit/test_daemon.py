@@ -898,7 +898,7 @@ def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab():
     asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "params": {"type": "mouseMoved", "x": 12, "y": 34}}))
     asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "session_id": "iframe",
                           "params": {"type": "mouseMoved", "x": 1, "y": 1}}))
-    assert asyncio.run(d.handle({"meta": "pointer"})) == {"pointer": (12, 34), "viewport": None}
+    assert asyncio.run(d.handle({"meta": "pointer"})) == {"pointer": (12, 34), "viewport": None, "browser_kind": "local", "drawn": False}
 
 
 class _SlowCDP:
@@ -982,3 +982,64 @@ def test_start_taps_events_before_attaching(monkeypatch):
     monkeypatch.setattr(d, "attach_first_page", attach_first_page)
     asyncio.run(d.start())
     assert "t1" in seen[0]
+
+
+QUAD = [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_mouse_draws_the_arrow_on_the_overlay_and_pulses_after_returning():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.05), "s1"
+    events = [{"at": 0.01 * i, "type": "mouseMoved", "x": i, "y": i, "quad": QUAD} for i in range(1, 4)]
+    events += [{"at": 0.05, "type": "mousePressed", "x": 3, "y": 3, "button": "left", "clickCount": 1},
+               {"at": 0.08, "type": "mouseReleased", "x": 3, "y": 3, "button": "left", "clickCount": 1}]
+    events += [{"at": 0.05 + k / 10, "quad": QUAD} for k in range(1, 4)]  # pulse, ends at 0.35 s
+
+    async def run():
+        t0 = time.monotonic()
+        r = await d.handle({"meta": "mouse", "events": events})
+        wall = time.monotonic() - t0
+        before = [s[1] for s in d.cdp.sent]
+        await asyncio.sleep(0.4)
+        return r, wall, before, [s[1] for s in d.cdp.sent]
+
+    r, wall, before, after = asyncio.run(run())
+    assert r == {"sent": 5, "late": 0} and wall < 0.25  # the pulse does not hold up the click
+    assert before.count("Overlay.enable") == 1 and before.index("Overlay.enable") < before.index("Overlay.highlightQuad")
+    assert after.count("Overlay.highlightQuad") == 6  # 3 moves, then 3 pulse frames after returning
+    quads = [s for s in d.cdp.sent if s[1] == "Overlay.highlightQuad"]
+    assert all(s[2]["quad"] == QUAD and s[3] == "s1" for s in quads)
+    assert all("quad" not in s[2] for s in d.cdp.sent if s[1] == "Input.dispatchMouseEvent")
+    assert d.drawn == {"s1": QUAD}
+
+
+def test_mouse_with_only_drawing_returns_at_once():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.05), "s1"
+    r = asyncio.run(d.handle({"meta": "mouse", "events": [{"at": 0, "quad": QUAD}]}))
+    assert r == {"sent": 0, "late": 0}
+
+
+def test_screenshots_leave_the_drawn_arrow_out_and_draw_it_again():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.01), "s1"
+
+    async def run():
+        d.drawn["s1"] = QUAD
+        await d.handle({"method": "Page.captureScreenshot", "params": {"format": "png"}})
+        await asyncio.sleep(0.05)
+    asyncio.run(run())
+    assert [s[1] for s in d.cdp.sent] == ["Overlay.hideHighlight", "Page.captureScreenshot", "Overlay.highlightQuad"]
+
+
+def test_the_drawn_arrow_hides_when_idle(monkeypatch):
+    monkeypatch.setattr(daemon._pointer, "IDLE", 0.05)
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.01), "s1"
+
+    async def run():
+        d.draw("s1", QUAD)
+        await asyncio.sleep(0.15)
+    asyncio.run(run())
+    assert [s[1] for s in d.cdp.sent] == ["Overlay.enable", "Overlay.highlightQuad", "Overlay.hideHighlight"]
+    assert d.drawn == {}
