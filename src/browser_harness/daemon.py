@@ -49,6 +49,11 @@ _MAC_PROFILES = (
     "Library/Application Support/BraveSoftware/Brave-Origin",
 )
 _LINUX_PROFILES = (
+    # dedicated harness-launch profile: headless-server launches need an
+    # explicit non-default user-data-dir (Chrome refuses remote debugging on
+    # a browser's default data directory), and using a dedicated dir keeps
+    # harness launches out of real desktop profiles
+    ".config/chrome-harness",
     ".config/google-chrome",
     ".config/chromium",
     ".config/chromium-browser",
