@@ -79,6 +79,28 @@ def _seed_skill(tmp_path):
     (site / "scraping.md").write_text("hi")
 
 
+def test_goto_url_uses_navigation_response_timeout_without_forwarding_it_to_cdp(monkeypatch):
+    monkeypatch.delenv("BH_DOMAIN_SKILLS", raising=False)
+
+    with patch(
+        "browser_harness.helpers._send",
+        return_value={"result": {"frameId": "f"}},
+    ) as send:
+        result = helpers.goto_url("https://www.example.com/")
+
+    assert result == {"frameId": "f"}
+
+    request = send.call_args.args[0]
+    assert request == {
+        "method": "Page.navigate",
+        "params": {"url": "https://www.example.com/"},
+        "session_id": None,
+    }
+    assert send.call_args.kwargs == {
+        "response_timeout": 30.0,
+    }
+
+
 def test_goto_url_omits_domain_skills_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("BH_DOMAIN_SKILLS", raising=False)
     monkeypatch.setattr(helpers, "AGENT_WORKSPACE", tmp_path)
