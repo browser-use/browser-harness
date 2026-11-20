@@ -559,7 +559,11 @@ def ensure_daemon(wait=None, name=None, env=None):
     launched_browser = None
     opened_inspect = False
     for _ in range(3):
-        e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+        # The explicit `name` argument must win over anything in `env` — otherwise a
+        # caller-supplied env={"BU_NAME": ...} silently overrides which daemon this
+        # spawns as, defeating callers (and the fail-closed guard in get_ws_url())
+        # that rely on `name` to say what the daemon's identity actually is.
+        e = {**os.environ, **(env or {}), **({"BU_NAME": name} if name else {})}
         try:
             stderr_sink = open(ipc.log_path(name or NAME), "ab")
         except OSError:
