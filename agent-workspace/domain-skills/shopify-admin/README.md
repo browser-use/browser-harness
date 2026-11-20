@@ -7,6 +7,7 @@ Browser-harness patterns for `admin.shopify.com` and embedded Shopify apps.
 - `embedded-apps.md` — every Shopify app runs in an iframe; how to target it
 - `polaris-inputs.md` — Polaris React inputs reject synthetic value setters; use CDP type_text
 - `knowledge-base.md` — automating the Shopify Knowledge Base App for FAQ entries
+- `checkout-attributes.md` — mystery order attributes (`__ref_id`, `shipping-token`) = Triple Whale pixel; recipe to trace attribute writers with a clean CDP context
 
 ## When to use these
 
