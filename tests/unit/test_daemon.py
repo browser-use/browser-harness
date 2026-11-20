@@ -1032,6 +1032,26 @@ def test_screenshots_leave_the_drawn_arrow_out_and_draw_it_again():
     assert [s[1] for s in d.cdp.sent] == ["Overlay.hideHighlight", "Page.captureScreenshot", "Overlay.highlightQuad"]
 
 
+def test_a_screenshot_during_the_press_pulse_stops_the_pulse_and_leaves_the_arrow_out():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.01), "s1"
+    rest = [9] * 8
+    events = [{"at": 0, "type": "mousePressed", "x": 3, "y": 3, "button": "left", "clickCount": 1, "quad": QUAD},
+              {"at": 0.01, "type": "mouseReleased", "x": 3, "y": 3, "button": "left", "clickCount": 1}]
+    events += [{"at": 0.2, "quad": QUAD}, {"at": 0.3, "quad": rest}]
+
+    async def run():
+        await d.handle({"meta": "mouse", "events": events})
+        n = len(d.cdp.sent)
+        await d.handle({"method": "Page.captureScreenshot", "params": {}})
+        await asyncio.sleep(0.4)
+        return [(s[1], s[2].get("quad")) for s in d.cdp.sent[n:]]
+    sent = asyncio.run(run())
+    # no pulse frame lands during or after the capture; the arrow comes back at its rest shape
+    assert sent == [("Overlay.hideHighlight", None), ("Page.captureScreenshot", None), ("Overlay.highlightQuad", rest)]
+    assert d.drawn == {"s1": rest}
+
+
 def test_the_drawn_arrow_hides_when_idle(monkeypatch):
     monkeypatch.setattr(daemon._pointer, "IDLE", 0.05)
     d = daemon.Daemon()

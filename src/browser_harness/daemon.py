@@ -449,6 +449,7 @@ class Daemon:
         self.drawn = {}  # sessionId -> quad of the arrow drawn on that tab's overlay (BH_POINTER)
         self._overlay_on = set()  # sessions with Overlay.enable sent
         self._draw_tail = None  # task drawing the press pulse after the input of a meta=mouse
+        self._tail_end = None  # (sessionId, quad) the press pulse ends on
         self._hide_at = None  # timer that hides the drawn arrow after pointer.IDLE
         self.stop = None  # asyncio.Event, set inside start()
 
@@ -708,6 +709,7 @@ class Daemon:
                 self.draw(sid, quad)
         if events[last + 1:]:
             self._draw_tail = asyncio.ensure_future(self._draw_later(sid, t0, events[last + 1:]))
+            self._tail_end = (sid, events[-1]["quad"])
         if not sent:
             return {"sent": 0, "late": 0}
         # Refresh the viewport for the next path's bounds, alongside the events (costs no wall time).
@@ -876,6 +878,12 @@ class Daemon:
         if method == "Input.dispatchMouseEvent" and sid == self.session and "x" in params:
             self.pointer = (params["x"], params.get("y", 0))
         try:
+            if method == "Page.captureScreenshot" and self._draw_tail and not self._draw_tail.done():
+                # a press pulse still drawing would paint the arrow into this screenshot: jump to its end
+                self._draw_tail.cancel()
+                tail_sid, tail_quad = self._tail_end
+                if tail_sid in self.drawn:
+                    self.drawn[tail_sid] = tail_quad
             quad = self.drawn.get(sid) if method == "Page.captureScreenshot" else None
             if quad:  # keep the drawn arrow out of the agent's screenshots: hide, capture, draw again
                 self._fire("Overlay.hideHighlight", {}, sid)
