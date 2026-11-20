@@ -135,6 +135,52 @@ def tab_marker_enabled():
     return os.environ.get("BH_TAB_MARKER", "").strip().lower() not in {"0", "false", "no", "off"}
 
 
+# BH_CDP_DENY=tokens: browser tokens swap real values into requests outside the
+# daemon. Refuse the daemon calls that could install a second interceptor, trace
+# traffic, or open browser-internal/local pages that would show those values.
+_DENY_PREFIXES = ("Fetch.", "Tracing.")
+_DENY_METHODS = {
+    "Target.attachToBrowserTarget",
+    "Target.exposeDevToolsProtocol",
+    "Target.sendMessageToTarget",  # legacy wrapper: would smuggle any method past this check
+    "Network.setRequestInterception",
+}
+_DENY_URL_METHODS = {"Page.navigate", "Target.createTarget"}
+_DENY_SCHEMES = {"chrome", "chrome-untrusted", "edge", "brave", "devtools", "file", "view-source"}
+
+
+def cdp_deny_mode():
+    """'tokens' when BH_CDP_DENY=tokens, None when unset/empty. Anything else raises,
+    so a typo never silently runs the daemon unprotected."""
+    v = os.environ.get("BH_CDP_DENY", "").strip().lower()
+    if not v:
+        return None
+    if v == "tokens":
+        return v
+    raise ValueError(f"BH_CDP_DENY={v!r} is not supported; use 'tokens' or leave it unset")
+
+
+def _url_scheme(url):
+    # Mirror Chrome's URL parser: trim C0/space at the ends, drop tab/CR/LF anywhere.
+    url = "".join(c for c in url.strip("".join(map(chr, range(33)))) if c not in "\t\r\n")
+    scheme, sep, _ = url.partition(":")
+    return scheme.lower() if sep else ""
+
+
+def cdp_denied(method, params):
+    """Error string if BH_CDP_DENY=tokens refuses this call, else None."""
+    if method.startswith(_DENY_PREFIXES) or method in _DENY_METHODS:
+        return f"{method} is blocked by BH_CDP_DENY=tokens (browser tokens are active)"
+    if method in _DENY_URL_METHODS:
+        url = params.get("url", "") if isinstance(params, dict) else None
+        if not isinstance(url, str):
+            return f"{method} with a non-string url is blocked by BH_CDP_DENY=tokens"
+        scheme = _url_scheme(url)
+        if scheme in _DENY_SCHEMES:
+            return f"{method} to {scheme}: URLs is blocked by BH_CDP_DENY=tokens (browser tokens are active)"
+    return None
+
+
 def _devtools_port_live(base):
     """True when something is listening on the profile's DevToolsActivePort port.
 
@@ -423,6 +469,7 @@ class _PatientCDPClient(CDPClient):
 
 class Daemon:
     def __init__(self):
+        self.deny = cdp_deny_mode()
         self.cdp = None
         self.session = None
         self.target_id = None
@@ -762,6 +809,8 @@ class Daemon:
 
         method = req["method"]
         params = req.get("params") or {}
+        if self.deny and (denied := cdp_denied(method, params)):
+            return {"error": denied}
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)

@@ -845,3 +845,111 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+# BH_CDP_DENY=tokens: opt-in deny list for browser tokens.
+
+_TOKENS_DENIED = [
+    ("Fetch.enable", {"patterns": [{"urlPattern": "*"}]}),
+    ("Fetch.continueRequest", {"requestId": "1"}),
+    ("Tracing.start", {}),
+    ("Target.attachToBrowserTarget", {}),
+    ("Target.exposeDevToolsProtocol", {"targetId": "t"}),
+    ("Target.sendMessageToTarget", {"message": '{"id":1,"method":"Fetch.enable"}', "sessionId": "s"}),
+    ("Network.setRequestInterception", {"patterns": [{"urlPattern": "*"}]}),
+    ("Page.navigate", {"url": "chrome://net-export"}),
+    ("Page.navigate", {"url": "FILE:///etc/passwd"}),
+    ("Page.navigate", {"url": " \tchr\tome://settings"}),
+    ("Page.navigate", {"url": "devtools://devtools/bundled/inspector.html"}),
+    ("Page.navigate", {"url": "view-source:file:///etc/passwd"}),
+    ("Page.navigate", {"url": "chrome-untrusted://print"}),
+    ("Page.navigate", {"url": "edge://net-export"}),
+    ("Page.navigate", {"url": ["chrome://net-export"]}),
+    ("Target.createTarget", {"url": "chrome://net-internals"}),
+    ("Target.createTarget", {"url": "file:///tmp/x.html", "background": True}),
+]
+
+_TOKENS_ALLOWED = [
+    ("Page.navigate", {"url": "https://shop.example.com/checkout"}),
+    ("Page.navigate", {"url": "about:blank"}),
+    ("Page.navigate", {"url": "https://example.com/?next=chrome://settings"}),
+    ("Target.createTarget", {"url": "about:blank", "background": True}),
+    ("Target.getTargets", {}),
+    ("Target.attachToTarget", {"targetId": "t", "flatten": True}),
+    ("Runtime.evaluate", {"expression": "1"}),
+    ("Network.enable", {}),
+    ("Input.insertText", {"text": "4242 4242 4242 4242"}),
+]
+
+
+def _deny_daemon(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("BH_CDP_DENY", raising=False)
+    else:
+        monkeypatch.setenv("BH_CDP_DENY", value)
+    d = _fresh_daemon()
+    d.session = "page-session"
+    return d
+
+
+@pytest.mark.parametrize("method,params", _TOKENS_DENIED)
+def test_cdp_deny_unset_passes_every_call_through(monkeypatch, method, params):
+    d = _deny_daemon(monkeypatch, None)
+
+    result = asyncio.run(d.handle({"method": method, "params": params}))
+
+    assert result == {"result": {}}
+    assert [call[0] for call in d.cdp.calls] == [method]
+
+
+@pytest.mark.parametrize("method,params", _TOKENS_DENIED)
+def test_cdp_deny_tokens_refuses_without_reaching_chrome(monkeypatch, method, params):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = asyncio.run(d.handle({"method": method, "params": params}))
+
+    assert "BH_CDP_DENY=tokens" in result["error"]
+    assert method in result["error"]
+    assert d.cdp.calls == []
+
+
+@pytest.mark.parametrize("method,params", _TOKENS_ALLOWED)
+def test_cdp_deny_tokens_keeps_normal_calls_working(monkeypatch, method, params):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = asyncio.run(d.handle({"method": method, "params": params}))
+
+    assert result == {"result": {}}
+    assert [call[0] for call in d.cdp.calls] == [method]
+
+
+def test_cdp_deny_tokens_ignores_explicit_session(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = asyncio.run(d.handle({"method": "Fetch.enable", "session_id": "iframe-session"}))
+
+    assert "Fetch.enable is blocked" in result["error"]
+    assert d.cdp.calls == []
+
+
+def test_cdp_deny_tokens_error_names_scheme_not_full_url(monkeypatch):
+    d = _deny_daemon(monkeypatch, "tokens")
+
+    result = asyncio.run(d.handle({"method": "Page.navigate", "params": {"url": "file:///home/u/secret.txt"}}))
+
+    assert result == {"error": "Page.navigate to file: URLs is blocked by BH_CDP_DENY=tokens (browser tokens are active)"}
+
+
+@pytest.mark.parametrize("value", ["", "  ", "Tokens", " TOKENS "])
+def test_cdp_deny_mode_accepts_unset_or_tokens(monkeypatch, value):
+    monkeypatch.setenv("BH_CDP_DENY", value)
+
+    assert daemon.cdp_deny_mode() == ("tokens" if value.strip() else None)
+
+
+@pytest.mark.parametrize("value", ["token", "1", "on", "fetch"])
+def test_cdp_deny_unknown_value_fails_daemon_start(monkeypatch, value):
+    monkeypatch.setenv("BH_CDP_DENY", value)
+
+    with pytest.raises(ValueError, match="BH_CDP_DENY"):
+        daemon.Daemon()
