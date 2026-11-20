@@ -742,8 +742,9 @@ def test_js_keeps_base_exception_from_evaluation_when_detach_also_raises():
 
 # --- trusted pointer input ---
 
-def _mouse_calls(fn, pointer=(100, 100), js_value=None):
-    """Run fn with cdp/_send/js faked; returns (method, kwargs) for every cdp call."""
+def _mouse_calls(fn, pointer=(100, 100), js_value=None, state=None):
+    """Run fn with cdp/_send/js faked; returns (method, kwargs) for every cdp call, and every
+    meta=mouse event as a ("mouse", event) call. state=None fakes a daemon without meta=mouse."""
     calls = []
 
     def fake_cdp(method, **kwargs):
@@ -751,9 +752,12 @@ def _mouse_calls(fn, pointer=(100, 100), js_value=None):
         return {}
 
     def fake_send(req, **_):
+        if req.get("meta") == "mouse":
+            calls.extend(("mouse", e) for e in req["events"])
+            return {"sent": len(req["events"]), "late": 0}
         if isinstance(pointer, Exception):
             raise pointer
-        return {"pointer": pointer}
+        return {"pointer": pointer, **(state or {})}
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers._send", side_effect=fake_send), \
@@ -764,13 +768,13 @@ def _mouse_calls(fn, pointer=(100, 100), js_value=None):
 
 
 def _mouse(calls):
-    return [(kw["type"], kw.get("x"), kw.get("y")) for m, kw in calls if m == "Input.dispatchMouseEvent"]
+    return [(kw["type"], kw.get("x"), kw.get("y")) for m, kw in calls if m in ("Input.dispatchMouseEvent", "mouse")]
 
 
 def test_click_at_xy_travels_from_the_last_pointer_before_pressing():
     events = _mouse(_mouse_calls(lambda: helpers.click_at_xy(400, 300)))
     moves = [e for e in events if e[0] == "mouseMoved"]
-    assert 10 <= len(moves) <= 20
+    assert 25 <= len(moves) <= 45
     assert [e[0] for e in events[-2:]] == ["mousePressed", "mouseReleased"]
     assert events[:len(moves)] == moves  # every move comes before the press
     assert moves[-1][1:] == (400, 300) and events[-1][1:] == (400, 300)
@@ -778,11 +782,45 @@ def test_click_at_xy_travels_from_the_last_pointer_before_pressing():
     assert abs(moves[0][1] - 100) + abs(moves[0][2] - 100) < abs(moves[0][1] - 400) + abs(moves[0][2] - 300)
 
 
+def test_click_at_xy_sends_the_whole_click_as_one_daemon_request():
+    calls = _mouse_calls(lambda: helpers.click_at_xy(900, 600), state={"viewport": [1280, 720]})
+    assert not [c for c in calls if c[0] == "Input.dispatchMouseEvent"]  # no round trip per event
+    events = [kw for m, kw in calls if m == "mouse"]
+    assert [e["type"] for e in events[-2:]] == ["mousePressed", "mouseReleased"]
+    times = [e["at"] for e in events]
+    assert times == sorted(times) and times[-1] < 1.2  # the travel's own time, plus press and hold
+    assert all(0 <= e["x"] <= 1280 and 0 <= e["y"] <= 720 for e in events)
+    assert (events[-1]["x"], events[-1]["y"]) == (900, 600)
+
+
 def test_click_at_xy_still_moves_when_the_daemon_has_no_pointer():
     for pointer in (None, RuntimeError("'method'")):  # fresh daemon, daemon from before this change
         events = _mouse(_mouse_calls(lambda: helpers.click_at_xy(50, 60), pointer=pointer))
-        assert sum(e[0] == "mouseMoved" for e in events) >= 10
+        assert sum(e[0] == "mouseMoved" for e in events) >= 25
         assert events[-1] == ("mouseReleased", 50, 60)
+
+
+def test_click_at_xy_on_the_pointer_presses_without_travel():
+    events = _mouse(_mouse_calls(lambda: helpers.click_at_xy(100, 100), state={"viewport": [800, 600]}))
+    assert [e[0] for e in events] == ["mousePressed", "mouseReleased"]
+
+
+def test_click_at_xy_retries_once_after_the_daemon_reattaches_a_stale_tab():
+    sends = []
+
+    def fake_send(req, **_):
+        sends.append(req.get("meta"))
+        if req.get("meta") == "pointer":
+            return {"pointer": (10, 10), "viewport": [800, 600]}
+        if sends.count("mouse") == 1:
+            raise RuntimeError("Session with given id not found")
+        return {"sent": 1, "late": 0}
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp") as cdp:
+        helpers.click_at_xy(300, 300)
+    assert sends == ["pointer", "mouse", "mouse"]
+    cdp.assert_called_once_with("Runtime.evaluate", expression="1")
 
 
 def test_fill_input_clicks_the_field_before_typing():

@@ -898,7 +898,63 @@ def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab():
     asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "params": {"type": "mouseMoved", "x": 12, "y": 34}}))
     asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "session_id": "iframe",
                           "params": {"type": "mouseMoved", "x": 1, "y": 1}}))
-    assert asyncio.run(d.handle({"meta": "pointer"})) == {"pointer": (12, 34)}
+    assert asyncio.run(d.handle({"meta": "pointer"})) == {"pointer": (12, 34), "viewport": None}
+
+
+class _SlowCDP:
+    """Answers every send_raw after `rtt` seconds, like a cloud browser; records when each was sent."""
+
+    def __init__(self, rtt):
+        self.rtt, self.sent = rtt, []
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.sent.append((time.monotonic(), method, dict(params or {}), session_id))
+        await asyncio.sleep(self.rtt)
+        return {"result": {"value": [1280, 720]}} if method == "Runtime.evaluate" else {}
+
+
+def test_mouse_sends_a_path_on_schedule_without_waiting_for_each_answer():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.2), "s1"
+    events = [{"at": 0.02 * i, "type": "mouseMoved", "x": 10 * i, "y": 5 * i} for i in range(1, 11)]
+    events += [{"at": 0.25, "type": "mousePressed", "x": 100, "y": 50, "button": "left", "clickCount": 1},
+               {"at": 0.3, "type": "mouseReleased", "x": 100, "y": 50, "button": "left", "clickCount": 1}]
+
+    async def run():
+        t0 = time.monotonic()
+        r = await d.handle({"meta": "mouse", "events": events})
+        return r, time.monotonic() - t0
+
+    r, wall = asyncio.run(run())
+    assert r == {"sent": 12, "late": 0}
+    # 12 events one round trip apart would take 2.4 s: pipelined, it is the schedule plus one round trip.
+    assert 0.5 <= wall < 0.9
+    mouse = [s for s in d.cdp.sent if s[1] == "Input.dispatchMouseEvent"]
+    assert [s[2]["type"] for s in mouse] == ["mouseMoved"] * 10 + ["mousePressed", "mouseReleased"]
+    assert all(s[3] == "s1" and "at" not in s[2] for s in mouse)
+    t0 = mouse[0][0]
+    assert mouse[-2][0] - t0 >= 0.22  # held to its time, not sent early
+    assert d.pointer == (100, 50)
+    assert d.viewport == {"s1": [1280, 720]}  # refreshed alongside, for the next path's bounds
+
+
+def test_mouse_returns_after_the_ack_limit_when_chrome_does_not_answer(monkeypatch):
+    monkeypatch.setattr(daemon, "MOUSE_ACK_S", 0.1)
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=5), "s1"  # a hidden tab answers mouse events only after ~5 s
+    t0 = time.monotonic()
+    r = asyncio.run(d.handle({"meta": "mouse", "events": [{"at": 0, "type": "mouseMoved", "x": 1, "y": 2}]}))
+    assert r == {"sent": 1, "late": 1} and time.monotonic() - t0 < 1
+
+
+def test_mouse_reports_a_failed_event():
+    class Failing(_SlowCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            raise RuntimeError("Session with given id not found")
+    d = daemon.Daemon()
+    d.cdp, d.session = Failing(0), "gone"
+    r = asyncio.run(d.handle({"meta": "mouse", "events": [{"at": 0, "type": "mouseMoved", "x": 1, "y": 2}]}))
+    assert r == {"error": "Session with given id not found"}
 
 
 def test_start_taps_events_before_attaching(monkeypatch):

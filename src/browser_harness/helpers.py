@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from . import _ipc as ipc
 from . import paths
+from . import pointer as _pointer
 
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -190,32 +191,57 @@ def click_at_xy(x, y, button="left", clicks=1):
         except Exception as e:
             print(f"[debug_click] overlay failed: {e}")
         _debug_click_counter += 1
-    move_mouse(x, y)
-    time.sleep(random.uniform(0.04, 0.12))
-    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
-    time.sleep(random.uniform(0.03, 0.09))
-    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
+    _mouse(x, y, press=(button, clicks))
 
 def move_mouse(x, y):
-    """Move the pointer to (x, y) along a short curve of 10-20 real mouseMoved events from where it last was.
+    """Move the pointer to (x, y) as a hand does, from where it last was: a straight spring hop for a
+    short move, a glide along a curve for a long one (pointer.py), as 25-45 real mouseMoved events.
 
-    click_at_xy() calls this first: Akamai only validates a session (_abck ~0~) that saw pointer travel,
-    and a click that teleports onto its target does not count."""
+    click_at_xy() travels the same way first: Akamai only validates a session (_abck ~0~) that saw
+    enough pointer travel, and a click that teleports onto its target does not count."""
+    _mouse(x, y)
+
+def _mouse(x, y, press=None):
+    """Travel to (x, y), then press and release when press=(button, clicks). The daemon sends the
+    events at their times without waiting for each answer, so a click costs its travel time plus one
+    round trip, not a round trip per event."""
     try:
-        start = _send({"meta": "pointer"}).get("pointer")  # the daemon remembers it across CLI calls
+        state = _send({"meta": "pointer"})  # the daemon remembers the pointer across CLI calls
     except Exception:
-        start = None  # daemon predates pointer tracking
-    x0, y0 = start or (x + random.uniform(-150, 150), y + random.uniform(-100, 100))
-    bend = 20 + math.hypot(x - x0, y - y0) / 4
-    cx, cy = (x0 + x) / 2 + random.uniform(-bend, bend), (y0 + y) / 2 + random.uniform(-bend, bend)
-    steps = random.randint(10, 20)
-    for i in range(1, steps + 1):
-        t = i / steps
-        t = t * t * (3 - 2 * t)  # ease in and out
-        px = (1 - t) ** 2 * x0 + 2 * (1 - t) * t * cx + t * t * x
-        py = (1 - t) ** 2 * y0 + 2 * (1 - t) * t * cy + t * t * y
-        cdp("Input.dispatchMouseEvent", type="mouseMoved", x=max(0, px), y=max(0, py))
-        time.sleep(random.uniform(0.005, 0.02))
+        state = {}  # daemon predates pointer tracking
+    view = state.get("viewport")
+    if not view:
+        try: view = js("[innerWidth, innerHeight]")
+        except Exception: view = None
+    w, h = view if isinstance(view, list) and len(view) == 2 else (max(x, 800), max(y, 600))
+    bounds = (0.0, 0.0, max(float(w), x + 1.0), max(float(h), y + 1.0))
+    start = state.get("pointer") or (
+        _pointer.clamp(x + random.uniform(-150, 150), 0, bounds[2]), _pointer.clamp(y + random.uniform(-100, 100), 0, bounds[3]))
+    events = [{"at": t, "type": "mouseMoved", "x": px, "y": py} for t, px, py in _pointer.moves(tuple(start), (x, y), bounds)]
+    if press:
+        button, clicks = press
+        # Press on arrival, as macOS Harness does: the spring's soft landing is the pause before it.
+        t = (events[-1]["at"] if events else 0.0) + random.uniform(0.01, 0.03)
+        for kind, hold in (("mousePressed", random.uniform(0.03, 0.08)), ("mouseReleased", 0.0)):
+            events.append({"at": t, "type": kind, "x": x, "y": y, "button": button, "clickCount": clicks})
+            t += hold
+    if not events:
+        return
+    if "viewport" in state:  # daemon with meta=mouse
+        req = {"meta": "mouse", "events": events}
+        try:
+            _send(req, response_timeout=events[-1]["at"] + 10)
+        except RuntimeError as e:
+            if "Session with given id not found" not in str(e): raise
+            cdp("Runtime.evaluate", expression="1")  # the daemon re-attaches the tab; no event reached the old one
+            _send(req, response_timeout=events[-1]["at"] + 10)
+        return
+    t0 = time.time()  # older daemon: one call per event, on the same schedule
+    for e in events:
+        e = dict(e)
+        delay = t0 + e.pop("at") - time.time()
+        if delay > 0: time.sleep(delay)
+        cdp("Input.dispatchMouseEvent", **e)
 
 def type_text(text):
     cdp("Input.insertText", text=text)

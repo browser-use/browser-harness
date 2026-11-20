@@ -37,6 +37,8 @@ PID = str(ipc.pid_path(NAME))
 BUF = 500
 CAPTCHA_LOST_S = 150  # the cloud captcha solver gives up within 120 s: a solve open longer has no finish coming
 CAPTCHA_GRACE_S = 2.5  # the cloud solver starts up to ~1.7 s after the load event (measured): wait that long for it
+MOUSE_ACK_S = 3.0  # Chrome answers a mouse event to a hidden tab only after ~5 s: return without those answers
+VIEWPORT_JS = "[innerWidth, innerHeight]"
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -442,6 +444,7 @@ class Daemon:
         self.captcha_started = {}  # targetId -> monotonic start of a cloud captcha solve with no finish yet
         self.loaded_at = {}  # sessionId -> monotonic time of that tab's last load event
         self.pointer = None  # last (x, y) of Input.dispatchMouseEvent on the attached tab
+        self.viewport = {}  # sessionId -> [width, height], refreshed after each meta=mouse path
         self.stop = None  # asyncio.Event, set inside start()
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
@@ -674,6 +677,39 @@ class Daemon:
         self.cdp._event_registry.handle_event = tap
         await self.attach_first_page()
 
+    async def mouse(self, events):
+        """Dispatch Input.dispatchMouseEvent params on the attached tab, each at its "at" seconds from now,
+        without waiting for each answer: one at a time, every move waited a cloud round trip (~80 ms) and a
+        15-move click took ~1.8 s. Chrome queues them in order. Then wait for all answers (MOUSE_ACK_S at most)."""
+        if not events:
+            return {"sent": 0, "late": 0}
+        sid, loop = self.session, asyncio.get_running_loop()
+        t0, sent = loop.time(), []
+        for e in events:
+            e = dict(e)
+            delay = t0 + float(e.pop("at", 0.0)) - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            sent.append(asyncio.ensure_future(self.cdp.send_raw("Input.dispatchMouseEvent", e, session_id=sid)))
+            self.pointer = (e["x"], e.get("y", 0))
+        # Refresh the viewport for the next path's bounds, alongside the events (costs no wall time).
+        view = asyncio.ensure_future(self.cdp.send_raw(
+            "Runtime.evaluate", {"expression": VIEWPORT_JS, "returnByValue": True}, session_id=sid))
+
+        def keep_view(f):
+            try:
+                self.viewport[sid] = f.result()["result"]["value"]
+            except BaseException:
+                pass
+        view.add_done_callback(keep_view)
+        done, late = await asyncio.wait(sent, timeout=MOUSE_ACK_S)
+        for f in late:  # answered after we returned: retrieve it so it is not logged as unhandled
+            f.add_done_callback(lambda f: f.cancelled() or f.exception())
+        errors = [str(f.exception()) for f in done if f.exception()]
+        if errors:
+            return {"error": errors[0]}
+        return {"sent": len(sent), "late": len(late)}
+
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
         # connect and issue CDP commands. expected_token() is None on POSIX so
@@ -749,7 +785,8 @@ class Daemon:
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
-        if meta == "pointer": return {"pointer": self.pointer}
+        if meta == "pointer": return {"pointer": self.pointer, "viewport": self.viewport.get(self.session)}
+        if meta == "mouse": return await self.mouse(req.get("events") or [])
         if meta == "captcha_solving":  # seconds the attached tab's cloud captcha solve has run (or None),
             now = time.monotonic()      # and how much longer one may still start after the last load
             ages = [now - t for k, t in self.captcha_started.items()
