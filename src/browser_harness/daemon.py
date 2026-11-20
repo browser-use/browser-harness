@@ -652,6 +652,8 @@ class Daemon:
             for per_session in (self.loaded_at, self.viewport, self.drawn):
                 per_session.pop(gone, None)
             self._overlay_on.discard(gone)
+            if self._draw_tail and self._tail_end and self._tail_end[0] == gone:
+                self._draw_tail.cancel()  # its press pulse would draw on the gone session again
         elif method == "BrowserUse.captchaSolverStarted":
             self.captcha_started[str((params or {}).get("targetId", ""))] = time.monotonic()
         elif method == "BrowserUse.captchaSolverFinished":
@@ -725,7 +727,8 @@ class Daemon:
 
         def keep_view(f):
             try:
-                self.viewport[sid] = f.result()["result"]["value"]
+                if sid == self.session:  # not a session that detached or was switched away meanwhile
+                    self.viewport[sid] = f.result()["result"]["value"]
             except BaseException:
                 pass
         view.add_done_callback(keep_view)

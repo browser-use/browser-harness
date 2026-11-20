@@ -980,6 +980,22 @@ def test_a_detached_session_forgets_its_pointer_state():
     assert not (d.loaded_at or d.viewport or d.drawn or d._overlay_on)
 
 
+def test_a_tab_detached_during_its_press_pulse_gets_no_more_drawing():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.01), "s1"
+    events = [{"at": 0, "type": "mousePressed", "x": 3, "y": 3, "button": "left", "clickCount": 1, "quad": QUAD},
+              {"at": 0.01, "type": "mouseReleased", "x": 3, "y": 3, "button": "left", "clickCount": 1},
+              {"at": 0.2, "quad": QUAD}]
+
+    async def run():
+        await d.handle({"meta": "mouse", "events": events})
+        d._record_event("Target.detachedFromTarget", {"sessionId": "s1"})
+        n = len(d.cdp.sent)
+        await asyncio.sleep(0.3)
+        return d.cdp.sent[n:]
+    assert asyncio.run(run()) == [] and "s1" not in d.drawn and "s1" not in d.viewport
+
+
 def test_start_taps_events_before_attaching(monkeypatch):
     """A captcha solve that starts while the daemon attaches must be recorded."""
     class Registry:

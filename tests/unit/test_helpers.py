@@ -853,6 +853,36 @@ def test_fill_input_appending_moves_the_caret_to_the_end_after_the_click():
         assert "setSelectionRange" not in exprs[1]
 
 
+def test_fill_input_hit_test_lets_no_button_take_the_focus_click():
+    exprs = []
+    with patch("browser_harness.helpers.js", side_effect=lambda e, **_: exprs.append(e) or [10, 20, 100, True]), \
+         patch("browser_harness.helpers.click_at_xy"), patch("browser_harness.helpers.cdp", return_value={}):
+        helpers.fill_input("#inp", "x")
+    assert "elementFromPoint" in exprs[0] and "h.closest('a,button" in exprs[0]
+
+
+def test_fill_input_appending_presses_end_where_the_field_has_no_caret_api():
+    answers = iter([[10, 20, 100, True], False, None])  # box, setSelectionRange threw, events
+    keys = []
+    with patch("browser_harness.helpers.js", side_effect=lambda e, **_: next(answers)), \
+         patch("browser_harness.helpers.click_at_xy"), patch("browser_harness.helpers.cdp", return_value={}), \
+         patch("browser_harness.helpers.press_key", side_effect=keys.append):
+        helpers.fill_input("#email", "x", clear_first=False)
+    assert keys == ["End", "x"]
+
+
+def test_wait_for_captcha_solver_with_no_timeout_does_not_watch_the_page():
+    clock = _Clock()
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}] * 5)
+    js_answers = lambda expr, **_: False
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), \
+            patch("browser_harness.helpers.time.time", side_effect=clock.time), \
+            patch("browser_harness.helpers.time.sleep", side_effect=clock.sleep):
+        t0 = clock.now
+        helpers.wait_for_captcha_solver(timeout=0)
+    assert clock.now - t0 < 0.1
+
+
 # --- captcha solver wait ---
 
 def _solver(states, ready="complete"):

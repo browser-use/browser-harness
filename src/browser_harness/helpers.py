@@ -282,7 +282,7 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         f"(()=>{{const e={q};if(!e)return null;e.scrollIntoView({{block:'center',behavior:'instant'}});"
         f"const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,h=document.elementFromPoint(x,y);"
         f"const own=!!h&&(h===e||e.contains(h)||h.contains(e)||(h.closest('label')||{{}}).control===e"
-        f"||!!(e.parentElement&&e.parentElement.contains(h)));"
+        f"||!!(e.parentElement&&e.parentElement.contains(h)&&!h.closest('a,button,input,select,textarea,[role=button],[onclick]')));"
         f"return [x,y,r.width*r.height,own];}})()"
     )
     if not box:
@@ -291,8 +291,10 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         click_at_xy(box[0], box[1])  # trusted press: Akamai 403s a submit whose page never saw one
     # JS focus only if the click did not focus it. Appending (clear_first=False): put the caret at the
     # end, where focus() leaves it, not where the click landed (inputs like type=email have no caret API).
-    end = "" if clear_first else "try{const n=(e.value||'').length;e.setSelectionRange(n,n)}catch(_){}"
-    js(f"(()=>{{const e={q},a=document.activeElement;if(!e)return;if(a!==e&&!e.contains(a))e.focus();{end}}})()")
+    end = "return true" if clear_first else "try{const n=(e.value||'').length;e.setSelectionRange(n,n);return true}catch(_){return false}"
+    at_end = js(f"(()=>{{const e={q},a=document.activeElement;if(!e)return true;if(a!==e&&!e.contains(a))e.focus();{end}}})()")
+    if at_end is False:
+        press_key("End")  # type=email/number have no caret API: move it with the key a user would press
     if clear_first:
         # Dispatch select-all directly — NOT via press_key, which always emits a
         # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
@@ -596,7 +598,7 @@ def _captcha_wait(timeout):
             if not grace: return True, waited
             # Watch the page for a widget, polling only the page: go on once none showed for
             # CAPTCHA_ABSENT_S (or the rest of the grace). A widget keeps the wait for its solve.
-            watch_end = time.time() + min(grace, CAPTCHA_ABSENT_S)
+            watch_end = min(time.time() + min(grace, CAPTCHA_ABSENT_S), deadline)
             while True:
                 try: marked = bool(js(_CAPTCHA_MARKERS))
                 except RuntimeError: marked = True  # page mid-navigation: assume it may have one
