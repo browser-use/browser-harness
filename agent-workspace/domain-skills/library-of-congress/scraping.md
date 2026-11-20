@@ -9,7 +9,7 @@ robots.txt (checked 2026-11-19/20, curl, the cloud browser and `urllib.robotpars
 ## Quick summary
 
 - **No scraping.** `GET https://www.loc.gov/photos/?q=wright%20brothers&fo=json&c=5&fa=online-format:image|access-restricted:false&at=results,pagination` -> `{"pagination": {"of": 414, "next": "...&sp=2", ...}, "results": [{"url": "https://www.loc.gov/item/2001696291/", "title": "[Group including the Wright brothers]", "date": "1900-01-01", "image_url": ["...00495v.jpg#h=828&w=1024", ...], "item": {"rights_advisory": "No known restrictions.", ...}}, ...]}`. `/maps/`, `/books/` and `/collections/<slug>/` take the same `q`, `fo=json`, `c` (per page), `sp` (page), `fa` (facet filter) and `at` (which top-level parts to return). Then `GET /item/<id>/?fo=json&at=item` for the item's rights and image list. JSON, `Access-Control-Allow-Origin: *`, no key.
-- **Answers (block 1, 2026-11-20 00:20 UTC):** photos "wright brothers": **414 online images**; the first is **"[Group including the Wright brothers]", [1900 Dec. 27]**, 1024 px JPEG https://tile.loc.gov/storage-services/service/pnp/ppprs/00400/00495v.jpg, rights "No known restrictions.". Maps "yellowstone national park": **30 online images**; the first is **"Yellowstone National Park", 190?**, rights "The content of the Library of Congress Geography and Map Division digitized collections is free to use and reuse unless a Rights Advisory statement is present that indicates otherwise."
+- **Answers (block 1, 2026-11-20 00:20 UTC; rights as printed in the 02:00 UTC re-run):** photos "wright brothers": **414 online images**; the first is **"[Group including the Wright brothers]", [1900 Dec. 27]**, 1024 px JPEG https://tile.loc.gov/storage-services/service/pnp/ppprs/00400/00495v.jpg, rights "No known restrictions." plus the collection statement ("The Library of Congress does not own rights to material in its collections. ..."). Maps "yellowstone national park": **30 online images**; the first is **"Yellowstone National Park", 190?**, rights "The content of the Library of Congress Geography and Map Division digitized collections is free to use and reuse unless a Rights Advisory statement is present that indicates otherwise."
 - **Keep `/item/` results only.** Without a filter the first photo result for "wright brothers" is the collection "Wright Brothers Negatives" (`url` .../collections/wright-brothers-negatives/about-this-collection/). `fa=online-format:image|access-restricted:false` keeps images that can be viewed off-site (469 -> 414 results); the blocks also drop any result whose `url` has no `/item/`.
 - **Rights live in the item record.** Photo search results carry `item.rights_advisory`; map search results carry no rights field at all. One `/item/<id>/?fo=json&at=item` call per item gives `rights_advisory` (photos) and `rights` (both). All 18 image item records read here had a `rights` statement, but the book record `/item/0000000000/` had `rights: []` and no `rights_advisory`; the blocks print "none in the record" in that case.
 - **Rate limit: 10 requests per minute in total** (legal page, "regardless of the number of machines"); the JSON API blocks for 1 hour above 20 per minute; robots.txt `Crawl-Delay: 5`. All blocks wait 6.5 s after every request, serial. One search plus N items costs N + 1 requests, so 3 items for 2 topics took about a minute. A 429 or a non-JSON answer (CAPTCHA, Cloudflare "Just a moment...") stops the run; a 5xx or a cut connection waits 30 s and retries once.
@@ -98,16 +98,19 @@ def biggest_jpeg(urls):
     return best[1]
 
 def rights_note(it):
-    """Short rights note: rights_advisory, else the rights text without HTML; None when the record has neither."""
-    if it.get("rights_advisory"):
-        return it["rights_advisory"].strip()
+    """Rights note: rights_advisory (photos) | the collection's rights text without HTML (whole sentences up to about
+    260 characters, plus its "Credit Line:" sentence if that was cut). None when the record has neither."""
     txt = " ".join(re.sub(r"<[^>]+>", " ", html.unescape(x)) for x in (it.get("rights") or []) if x)
+    sents = re.split(r"(?<=[.!?])\s+", " ".join(txt.split()))
     out = ""
-    for sent in re.split(r"(?<=[.!?])\s+", " ".join(txt.split())):  # whole sentences, up to about 260 characters
+    for sent in sents:
         if out and len(out) + len(sent) > 260:
-            return out + " ..."
+            credit = next((x for x in sents if x.startswith("Credit Line:") and x not in out), "")
+            out = f"{out} {credit} ...".replace("  ", " ")
+            break
         out = (out + " " + sent).strip()
-    return out or None
+    parts = [x for x in ((it.get("rights_advisory") or "").strip(), out) if x]
+    return " | ".join(parts) or None
 
 on_loc_tab()
 now = datetime.now(timezone.utc)
@@ -135,24 +138,24 @@ print(f"Source: Library of Congress, {SITE}, accessed {now:%d %B %Y} UTC. The Li
       "to its collection items: check each item's rights before reuse.")
 ```
 
-Output (from the run on 2026-11-20, 00:20 UTC; the first run at 00:04 took 0.6-27.9 s per request, uncached, with the same items):
+Output (from the re-run on 2026-11-20, 02:00 UTC in a new cloud browser, after `rights_note()` started printing the advisory and the collection statement together; the runs at 00:04 and 00:20 UTC listed the same items, the 00:04 one uncached at 0.6-27.9 s per request):
 
 ```text
-Library of Congress loc.gov JSON API, checked 2026-11-20 00:20 UTC
+Library of Congress loc.gov JSON API, checked 2026-11-20 02:00 UTC
 
 photos 'wright brothers': 414 online images; first 3 items
   [Group including the Wright brothers]
     date [1900 Dec. 27] | https://www.loc.gov/item/2001696291/
     image https://tile.loc.gov/storage-services/service/pnp/ppprs/00400/00495v.jpg
-    rights 'No known restrictions.'
+    rights 'No known restrictions. | The Library of Congress does not own rights to material in its collections. Therefore, it does not license or charge permission fees for use of such material and cannot grant or deny permission to publish or otherwise distribute the material. ...'
   Wright brothers aeroplane - patented plans, 1908
     date 1908 | https://www.loc.gov/item/2001695572/
     image https://tile.loc.gov/storage-services/service/pnp/cph/3c20000/3c27000/3c27700/3c27779v.jpg
-    rights 'No known restrictions on publication.'
+    rights 'No known restrictions on publication. | The Library of Congress does not own rights to material in its collections. Therefore, it does not license or charge permission fees for use of such material and cannot grant or deny permission to publish or otherwise distribute the material. ...'
   [Helen Wright, age 12, niece of the Wright brothers, and Leontine Wright]
     date [1901 Jan.] | https://www.loc.gov/item/00653508/
     image https://tile.loc.gov/storage-services/service/pnp/ppprs/00400/00460v.jpg
-    rights 'No known restrictions.'
+    rights 'No known restrictions. | The Library of Congress does not own rights to material in its collections. Therefore, it does not license or charge permission fees for use of such material and cannot grant or deny permission to publish or otherwise distribute the material. ...'
 
 maps 'yellowstone national park': 30 online images; first 3 items
   Yellowstone National Park
@@ -168,7 +171,7 @@ maps 'yellowstone national park': 30 online images; first 3 items
     image https://tile.loc.gov/image-services/iiif/service:gmd:gmd426:g4262:g4262y:ye000005/full/pct:25/0/default.jpg
     rights 'The content of the Library of Congress Geography and Map Division digitized collections is free to use and reuse unless a Rights Advisory statement is present that indicates otherwise. Credit Line: Library of Congress, Geography and Map Division. ...'
 
-8 requests, HTTP [200], 0.1-0.2 s each
+8 requests, HTTP [200], 0.1-0.6 s each
 Source: Library of Congress, https://www.loc.gov, accessed 20 November 2026 UTC. The Library generally does not own rights to its collection items: check each item's rights before reuse.
 ```
 
@@ -452,8 +455,8 @@ Source: Library of Congress (https://www.loc.gov). Check each item's rights befo
 B=https://www.loc.gov
 UA='library-of-congress-skill-example/1.0 (+https://github.com/browser-use/browser-harness)'
 # loc.gov/legal: no more than 10 requests per minute; robots.txt Crawl-Delay 5. Every call below waits 7 s.
-T=$(mktemp); E=$(mktemp); P=$(mktemp)
-trap 'rm -f "$T" "$E" "$P"' EXIT
+T=$(mktemp); E=$(mktemp); P=$(mktemp); H=$(mktemp)
+trap 'rm -f "$T" "$E" "$P" "$H"' EXIT
 j() {  # GET -> JSON on stdout. A 5xx (a 525 and a 503 were seen) or a cut connection: wait 30 s, retry once.
        # 429 or a non-JSON page (CAPTCHA, Cloudflare "Just a moment..."): stop, the API blocks for 1 hour.
   for i in 1 2; do
@@ -474,9 +477,11 @@ d = json.load(sys.stdin); print("maps chesapeake bay:", d["pagination"]["of"], "
 for r in d["results"]: print(" ", r["url"], "|", r.get("date"), "|", r["title"][:60])' <<<"$d"
 sleep 7
 # headers: JSON, CORS open, cached a day; the X-Nearside-Cache header says MISS or HIT
-curl -sS -G -A "$UA" -D - -o /dev/null "$B/maps/" --data-urlencode 'q=chesapeake bay' -d fo=json -d c=3 -d at=results,pagination \
-  --data-urlencode 'fa=online-format:image|access-restricted:false' | tr -d '\r' \
-  | grep -iE '^(HTTP/|(content-type|access-control-allow-origin|cache-control|x-nearside-cache|cf-cache-status|retry-after|server):)'
+s=$(curl -sS -G -A "$UA" -D "$H" -o /dev/null -w '%{http_code} %{content_type}' "$B/maps/" --data-urlencode 'q=chesapeake bay' \
+  -d fo=json -d c=3 -d at=results,pagination --data-urlencode 'fa=online-format:image|access-restricted:false')
+tr -d '\r' <"$H" | grep -iE '^(HTTP/|(content-type|access-control-allow-origin|cache-control|x-nearside-cache|cf-cache-status|retry-after|server):)'
+# no retry here: anything but a 200 JSON final answer (a 429, 5xx or challenge page) ends the run before the next request
+case "$s" in "200 application/json"*) ;; *) echo "header probe: HTTP $s, not a 200 JSON answer: stop" >&2; exit 1 ;; esac
 sleep 7
 # one item record (at=item drops related items and facets): rights and image list live here
 d=$(j "$B/item/2017821363/" -d fo=json -d at=item) || exit 1
@@ -486,14 +491,16 @@ print("item:", it["title"], "|", it.get("created_published_date"), "| rights_adv
 print("  biggest image:", [u.split("#")[0] for u in it["image_url"] if ".jpg" in u][-1])' <<<"$d"
 sleep 7
 # mistakes: an unknown item is HTTP 404 with a JSON body; the HTML page (no fo=json) is a different answer
-curl -sS -A "$UA" -o "$E" -w 'unknown item -> HTTP %{http_code} %{content_type} ' "$B/item/not-a-real-item-zz9/?fo=json&at=item"
+s=$(curl -sS -A "$UA" -o "$E" -w '%{http_code} %{content_type}' "$B/item/not-a-real-item-zz9/?fo=json&at=item")
+printf 'unknown item -> HTTP %s ' "$s"
+case "$s" in "404 application/json"*) ;; *) echo; echo "expected a 404 JSON answer: stop" >&2; exit 1 ;; esac
 python3 -I -c 'import json, sys; print("exception:", json.load(open(sys.argv[1]))["exception"])' "$E"
 sleep 7
 curl -sS -A "$UA" -o "$P" -w 'no fo=json -> HTTP %{http_code} %{content_type} ' "$B/maps/?q=chesapeake%20bay&c=3"
 grep -o '<title>[^<]*</title>' "$P" | head -1 | tr -s ' \n' ' '; echo
 ```
 
-Output (from the run on 2026-11-20, 00:19 UTC; the first run at 00:17 got HTTP 525 on its first call and had no retry; re-run at 00:43 UTC after the temp files moved to `mktemp` and again at 00:57 UTC after the `|| exit 1` stops were added, same output):
+Output (from the run on 2026-11-20, 00:19 UTC; the first run at 00:17 got HTTP 525 on its first call and had no retry; re-run at 00:43 UTC after the temp files moved to `mktemp`, at 00:57 UTC after the `|| exit 1` stops were added and at 01:57 UTC after the header and 404 probes got the same stop rule, same output; with the header probe pointed at a 404 URL the run printed `header probe: HTTP 404 application/json, not a 200 JSON answer: stop`, exit 1, and made no further request):
 
 ```text
 maps chesapeake bay: 107 online images

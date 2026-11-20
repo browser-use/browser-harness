@@ -141,7 +141,7 @@ for k in ("1", "2", "3"):
     print(f"  {d['DateStamp']}          {d['R']['MinorProb']:>3}%  {d['R']['MajorProb']:>3}%  {d['S']['Prob']:>3}%   G{d['G']['Scale']}")
 
 rows = [dict(r, t=datetime.fromisoformat(r["time_tag"]).replace(tzinfo=UTC)) for r in kpf]
-seen = [r for r in rows if r["observed"] in ("observed", "estimated")]
+seen = [r for r in rows if r["observed"] in ("observed", "estimated") and r["t"] <= now]  # "estimated" can include later slots of today
 last = seen[-1]
 day = [r for r in seen if r["t"] > now - timedelta(hours=24)]
 top = max(day, key=lambda r: r["kp"])
@@ -188,7 +188,9 @@ if peak is None:
     print("verdict: no Kp slots cover tonight yet")
 else:
     g = g_level(peak["kp"])
-    print(f"verdict: geomagnetic storm (G1 or more) expected tonight: {'YES' if g or storm else 'NO'}: max Kp {peak['kp']:.2f} "
+    # a NO needs Kp slots up to the end of tonight; below G1 in a shorter forecast is not a NO
+    word = "YES" if g or storm else "NO" if pred_end >= end else f"NOT KNOWN YET (below G1 up to {pred_end:%m-%d %H:%M} UTC, where the JSON forecast stops)"
+    print(f"verdict: geomagnetic storm (G1 or more) expected tonight: {word}: max Kp {peak['kp']:.2f} "
           f"({peak['observed']}, {peak['t']:%H:%M} UTC) = {'G' + str(g) if g else 'below G1'}; "
           f"G1+ watches or K5+ warnings in effect: {len(storm)}")
 hms = lambda t: f"{t:%H:%M:%S}" if t else "unavailable"  # get() returns None when a file has no Last-Modified
@@ -196,7 +198,7 @@ print(f"\nfiles last modified (UTC): scales {hms(lm_s)}, Kp forecast {hms(lm_k)}
 print(f"Source: NOAA Space Weather Prediction Center (SWPC), {SITE}/products/, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-19, 23:36 UTC; re-run 2026-11-20 00:52 UTC in a new cloud browser after the Last-Modified fallback was added: same lines, live values moved with the clock):
+Output (from the run on 2026-11-19, 23:36 UTC; re-run 2026-11-20 00:52 UTC in a new cloud browser after the Last-Modified fallback was added, and 02:02 UTC after the latest-Kp row skipped not-yet-started `estimated` slots and a short forecast stopped giving NO: same lines, live values moved with the clock):
 
 ```text
 NOAA Space Weather Prediction Center (SWPC), checked 2026-11-19 23:36 UTC
@@ -489,20 +491,20 @@ print(f"  newest final value: {last['time_tag'][5:16]} UTC Kp {last['Kp']:.2f} f
 # 2. The full 3-day Kp forecast lives in the text product; the JSON forecast stops early (see Gotchas)
 txt = get("/text/3-day-forecast.txt", want="text")
 issued = re.search(r":Issued: (.+)", txt).group(1)
-head = re.search(r"NOAA Kp index breakdown (.+)", txt).group(1)
 cols = re.search(r"^\s+(\w{3} \d+)\s+(\w{3} \d+)\s+(\w{3} \d+)\s*$", txt[txt.index("Kp index breakdown"):], re.M).groups()
 grid = re.findall(r"^(\d\d)-(\d\d)UT\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)", txt, re.M)
 if len(grid) != 8:
     sys.exit(f"3-day forecast table changed ({len(grid)} rows): stop")
-year = int(re.search(r"(\d{4})$", head).group(1))
+# the columns are the 3 days after the issue date; a late-Dec forecast names Jan days of the next year
+issued_day = datetime.strptime(" ".join(issued.split()[:3]), "%Y %b %d").replace(tzinfo=UTC)  # "2026 Nov 19 2200 UTC"
 fc = get("/products/noaa-planetary-k-index-forecast.json")
 in_json = {r["time_tag"][:13] for r in fc if r["observed"] == "predicted"}
 print(f"\n3-day Kp forecast (text product issued {issued}), highest slot per UTC day:")
 missing = 0
 for i, c in enumerate(cols):
-    day = datetime.strptime(f"{c} {year}", "%b %d %Y").replace(tzinfo=UTC)
-    if day.month < now.month - 6:  # a Dec forecast that names Jan days
-        day = day.replace(year=year + 1)
+    day = datetime.strptime(f"{c} {issued_day.year}", "%b %d %Y").replace(tzinfo=UTC)
+    if day < issued_day - timedelta(days=1):  # Jan columns of a forecast issued in late Dec
+        day = day.replace(year=day.year + 1)
     vals = [(float(g[2 + i]), f"{g[0]}-{g[1]}") for g in grid]
     v, h = max(vals)
     missing += sum(f"{day:%Y-%m-%d}T{g[0]}" not in in_json for g in grid)
@@ -537,7 +539,7 @@ print(f"totals: {stats['net200']} downloads ({stats['bytes']:,} bytes), {stats['
 print(f"Source: NOAA Space Weather Prediction Center (SWPC), {SITE}, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-19, 23:43 UTC, empty cache):
+Output (from the run on 2026-11-19, 23:43 UTC, empty cache; re-run 2026-11-20 01:58 UTC, empty cache, after the forecast dates moved to the issue date's year: same 3 dates, live values moved):
 
 ```text
 https://services.swpc.noaa.gov/robots.txt: HTTP 404
@@ -598,8 +600,9 @@ for k in ("0", "-1"):
 sleep 1
 # latest observed/estimated Kp and the highest predicted Kp in the JSON forecast
 $C --fail "$B/products/noaa-planetary-k-index-forecast.json" | python3 -c 'import json, sys
-f = json.load(sys.stdin)
-now = [r for r in f if r["observed"] != "predicted"][-1]; p = max((r for r in f if r["observed"] == "predicted"), key=lambda r: r["kp"])
+from datetime import datetime, timezone
+f = json.load(sys.stdin); t = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+now = [r for r in f if r["observed"] != "predicted" and r["time_tag"] <= t][-1]; p = max((r for r in f if r["observed"] == "predicted"), key=lambda r: r["kp"])
 print("latest", now["time_tag"], now["kp"], now["observed"], "| max predicted", p["time_tag"], p["kp"])'
 sleep 1
 # newest 3 messages: product_id, issue time, headline (messages mix \r\n and \n)
@@ -629,7 +632,7 @@ rm -f "$H"
 echo "Source: NOAA Space Weather Prediction Center (SWPC), $B, accessed $(date -u '+%d %B %Y %H:%M') UTC."
 ```
 
-Output (from the re-run on 2026-11-19, 23:45 UTC):
+Output (from the re-run on 2026-11-19, 23:45 UTC; re-run 2026-11-20 02:02 UTC after the latest-Kp row skipped not-yet-started slots: same lines, live values moved):
 
 ```text
 0 2026-11-19 23:43:00 R0 S0 G0
@@ -665,7 +668,7 @@ Source: NOAA Space Weather Prediction Center (SWPC), https://services.swpc.noaa.
 | `R.Scale`, `S.Scale`, `G.Scale` | strings `"0"`-`"5"`, `Text` `"none"`, `"minor"`... | `null` on forecast days for R and S (only probabilities); G has a forecast level |
 | `R.MinorProb`, `R.MajorProb`, `S.Prob` | strings, percent (`"15"`, `"5"`, `"1"`) | matched the 3-day text forecast's "R1-R2 15%", "R3 or greater 5%" and "S1 or greater 1%" (all days were equal, so which text day matches which key was not checked) |
 | `/products/noaa-planetary-k-index.json` | list of `{time_tag, Kp, a_running, station_count}` | 63 rows = 7 days of 3-hour slots plus today so far; `time_tag` is the slot start, UTC, no zone suffix; `Kp` floats in thirds (0.33, 0.67, 1.0...) |
-| `/products/noaa-planetary-k-index-forecast.json` | list of `{time_tag, kp, observed, noaa_scale}` | 81 rows: 63 `observed`, 1 `estimated` (the running slot), 17 `predicted` (to day 3 00:00 UTC only); `noaa_scale` was `"G1"` on 1 observed row (Kp 5.00) and `null` on all others, predicted ones included |
+| `/products/noaa-planetary-k-index-forecast.json` | list of `{time_tag, kp, observed, noaa_scale}` | 81 rows: 63 `observed`, 1 `estimated` (the running slot), 17 `predicted` (to day 3 00:00 UTC only) at 2026-11-19 23:36 UTC; at 2026-11-20 02:01 UTC all 8 slots of the new UTC day were `estimated`, 7 of them not yet started; `noaa_scale` was `"G1"` on 1 observed row (Kp 5.00) and `null` on all others, predicted ones included |
 | `/products/alerts.json` | list of `{product_id, issue_datetime, message}`, newest first | about 30 days; `issue_datetime` `"2026-11-19 01:18:16.670"` is UTC without a zone; `message` is text with 686 `\r\n` and 341 bare `\n` breaks; ids seen: K04W/K05W/K06W (warnings), K04A/K05A/K06A (alerts), A20F (G1 watch), EF3A (electron flux), TIIA/TIVA (radio emission) |
 | `/text/3-day-forecast.txt` | plain text, `:Issued: 2026 Nov 19 2200 UTC` | Kp table "NOAA Kp index breakdown" for 3 UTC days x 8 slots, S1+ and R1-R2/R3+ probabilities, a rationale per section |
 | `/json/ovation_aurora_latest.json` | `{"Observation Time", "Forecast Time", "Data Format": "[Longitude, Latitude, Aurora]", "coordinates": [[lon, lat, value], ...]}` | 65,160 cells, lon 0-359, lat -90-90, 1-degree grid; values 0-25 at the time; about 923 KB (922,701 to 922,802 bytes in the 2026-11-19 runs), about 158 KB with `Accept-Encoding: gzip` |
@@ -678,6 +681,7 @@ Source: NOAA Space Weather Prediction Center (SWPC), https://services.swpc.noaa.
 - **Day `"1"` is today, not tomorrow.** Its `DateStamp` was 2026-11-19 at 23:36 UTC, while the text forecast issued at 22:00 UTC already covered Nov 20-22. Print the `DateStamp` with every forecast line.
 - **Kp to G.** Use whole Kp values per the SWPC table; 9- (8.67) is listed under G4, so this skill reads 5- (4.67) as below G1. Where `noaa_scale` is set it is SWPC's own label; it was `null` on every predicted row.
 - **No "in effect" field.** Messages stay in `alerts.json` after they expire (K04W expired at 09:00 UTC and was still first at 23:45 UTC). Warnings carry `Valid To:` or, for an extension, `Now Valid Until:`; alerts (`...A` ids) report a threshold reached and have no end; watches list levels by day without a year (block 1 adds it, also across New Year). No cancellation message was in the 30 days on file; block 1 classes a headline starting with "CANCEL" as kind `cancel`, does not count it as in effect, and does not remove the warning it refers to, so read such a message yourself.
+- **`estimated` is not "already happened".** Just after 00:00 UTC on 2026-11-20 every slot of that UTC day, 00:00 to 21:00, was labelled `estimated`, so the last non-`predicted` row was 21:00, a slot 19 hours away. For the latest Kp take the newest row whose `time_tag` is not in the future (blocks 1 and 4 do).
 - **Times are UTC without a zone suffix** in `time_tag`, `issue_datetime` and `DateStamp`/`TimeStamp`; the aurora file uses `Z`. Attach UTC before comparing with local time.
 - **Files are rewritten about every minute.** `Last-Modified` and `ETag` changed between two requests 70 s apart even when the bytes were the same (`/text/3-day-forecast.txt`: 23:38:56, then 23:40:05, 1,962 bytes both times), so conditional GETs often return a full 200. Cache for 60 s, ask for gzip, and poll no faster than the data changes (Kp comes in 3-hour slots; check the `:Issued:` line of the text forecast before re-reading it).
 - **Mistakes are HTML.** A misspelled file name is an Apache HTML 404 (`text/html; charset=iso-8859-1`), and `/products/` and `/json/` are HTML directory listings. Check the status and `content-type` before `json.loads`.
