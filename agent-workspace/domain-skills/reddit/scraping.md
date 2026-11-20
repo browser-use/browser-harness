@@ -29,6 +29,32 @@ Fails on:
 - Private / quarantined subreddits (401)
 - NSFW posts without an authenticated session
 - Anti-scraping 429s under load — back off or switch to the browser path
+- **Blanket 403 walls (observed June 2026):** reddit.com can 403 *every* anonymous `.json` request from a network it dislikes (datacenter/VPN IPs), browser User-Agent or not. The response is an HTML challenge page, not JSON. When this happens, Path 1 is dead for the whole session — don't retry/back off, switch to Path 1.5.
+
+## Path 1.5: JSON endpoints through the browser (beats IP blocks)
+
+The `.json` endpoints render as plain text in a real tab, and requests from the user's Chrome carry their cookies + real TLS fingerprint, so they pass where `http_get` 403s. No DOM scraping needed — navigate and parse `document.body.innerText`:
+
+```python
+import json
+ensure_real_tab()
+goto_url("https://www.reddit.com/r/Bogleheads/search.json?q=tax%20loss%20harvesting&restrict_sr=on&sort=top&t=month&limit=15&raw_json=1")
+wait_for_load()
+data = json.loads(js("document.body.innerText"))
+posts = [c["data"] for c in data["data"]["children"]]
+# fields: title, selftext, score, num_comments, permalink, created_utc
+```
+
+Useful JSON endpoints beyond single posts:
+
+- **Subreddit search:** `/r/<sub>/search.json?q=<query>&restrict_sr=on&sort=top&t=month&limit=25&raw_json=1` — `q` supports quoted phrases and `OR` (`q=tax efficient OR "tax loss harvesting"`, URL-encoded). `t` ∈ hour/day/week/month/year/all.
+- **Thread + top comments:** `/r/<sub>/comments/<id>.json?limit=10&sort=top&depth=1&raw_json=1` — `data[1]["data"]["children"]` are top-level comments (`body`, `score`, `author`); filter out `stickied`.
+- `raw_json=1` stops Reddit HTML-escaping `&`, `<`, `>` in text fields.
+
+Gotchas for this path:
+
+- **Loop over many URLs with retry.** Mid-loop `Runtime.evaluate timed out; expression: document.readyState` means the tab session went stale; calling `ensure_real_tab()` again and re-navigating recovers it. Wrap each fetch in a 2-3 attempt retry rather than failing the whole sweep.
+- Single quotes inside f-strings break `browser-harness -c '...'` shell quoting — use `.format()` / double quotes, or pass the script via `"$(cat file.py)"`.
 
 ## Path 2: Browser DOM extraction (logged-in)
 
