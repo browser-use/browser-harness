@@ -49,6 +49,13 @@ class _IPCResponseTimeout(TimeoutError):
     pass
 
 
+class DaemonError(RuntimeError):
+    """Daemon error reply. `cls` is its wire class (see daemon.error_class), "unknown" if absent."""
+    def __init__(self, msg, cls="unknown"):
+        super().__init__(msg)
+        self.cls = cls
+
+
 def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
     c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
     try:
@@ -65,7 +72,7 @@ def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
             ) from e
     finally:
         c.close()
-    if "error" in r: raise RuntimeError(r["error"])
+    if "error" in r: raise DaemonError(r["error"], r.get("class", "unknown"))
     return r
 
 
