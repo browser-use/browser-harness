@@ -566,32 +566,45 @@ def wait_for_load(timeout=15.0):
     is mid-solve on this tab, also wait for the solve (wait_for_captcha_solver, up to 60 s on top of
     timeout: a solve outlasts a page load) and poll the reloaded page again within timeout."""
     if not _page_ready(timeout): return False
-    if wait_for_captcha_solver(timeout=0): return True  # nothing solving: one IPC call
-    return wait_for_captcha_solver() and _page_ready(timeout)
+    done, solved = _captcha_wait(60.0)
+    return done and (not solved or _page_ready(timeout))
 
 # Captcha widgets and challenge scripts the cloud solver handles (reCAPTCHA, hCaptcha, DataDome,
 # AWS WAF, Cloudflare, Arkose, PerimeterX). Only pages with one wait for a solve that has not started yet.
 _CAPTCHA_MARKERS = "!!document.querySelector('[src*=captcha],[src*=\"challenges.cloudflare.com\"],[src*=arkoselabs],#px-captcha')"
+# Right after a load, how long a page must show no captcha widget before the solver start grace is
+# skipped: a widget a framework renders late still makes the wait. Every cloud wait_for_load pays it.
+CAPTCHA_ABSENT_S = 0.5
 
 def wait_for_captcha_solver(timeout=60.0):
     """Wait while Browser Use Cloud's captcha solver is mid-solve on this tab (its
     BrowserUse.captchaSolverStarted event has no Finished yet), or may still start one: on a page
     with a captcha it starts up to ~2 s after the load. Don't click, type or navigate meanwhile.
     True once no solve runs (at once on local Chrome), False if one still runs after timeout."""
-    deadline, unmarked_since = time.time() + timeout, None
+    return _captcha_wait(timeout)[0]
+
+def _captcha_wait(timeout):
+    """(no solve runs now, a solve ran or a widget showed while waiting)."""
+    deadline, waited = time.time() + timeout, False
     while True:
         try:
             state = _send({"meta": "captcha_solving"})
         except RuntimeError:
-            return True  # daemon predates solver tracking: browser-harness --reload
+            return True, waited  # daemon predates solver tracking: browser-harness --reload
         if state.get("seconds") is None:
-            if not state.get("grace"): return True
-            try: marked = bool(js(_CAPTCHA_MARKERS))
-            except RuntimeError: marked = True  # page mid-navigation: assume it may have one
-            # A widget can be injected after the load: recheck, and go on once it stayed absent for 1 s.
-            unmarked_since = None if marked else unmarked_since or time.time()
-            if unmarked_since and time.time() - unmarked_since >= 1.0: return True
-        if time.time() >= deadline: return False
+            grace = state.get("grace") or 0.0
+            if not grace: return True, waited
+            # Watch the page for a widget, polling only the page: go on once none showed for
+            # CAPTCHA_ABSENT_S (or the rest of the grace). A widget keeps the wait for its solve.
+            watch_end = time.time() + min(grace, CAPTCHA_ABSENT_S)
+            while True:
+                try: marked = bool(js(_CAPTCHA_MARKERS))
+                except RuntimeError: marked = True  # page mid-navigation: assume it may have one
+                if marked or time.time() >= watch_end: break
+                time.sleep(0.05)
+            if not marked: return True, waited
+        waited = True
+        if time.time() >= deadline: return False, waited
         time.sleep(0.25)
 
 def wait_for_element(selector, timeout=10.0, visible=False):

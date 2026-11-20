@@ -901,20 +901,23 @@ class _Clock:
     def sleep(self, s): self.now += s
 
 
-def test_wait_for_load_ends_the_start_grace_once_no_captcha_showed_for_a_second():
+def test_wait_for_load_ends_the_start_grace_once_no_captcha_showed_for_half_a_second():
     clock = _Clock()
     sends, *patches = _solver([{"seconds": None, "grace": 2.0}] * 20)
-    js_answers = lambda expr, **_: False if expr == helpers._CAPTCHA_MARKERS else "complete"
+    marker_checks = []
+    js_answers = lambda expr, **_: marker_checks.append(clock.now) or False if expr == helpers._CAPTCHA_MARKERS else "complete"
     with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), \
             patch("browser_harness.helpers.time.time", side_effect=clock.time), \
             patch("browser_harness.helpers.time.sleep", side_effect=clock.sleep):
+        t0 = clock.now
         assert helpers.wait_for_load() is True
-    assert 4 <= len(sends) <= 6  # ~1 s of 0.25 s polls, not the whole grace
+    assert len(sends) == 1  # one daemon call, then only page checks
+    assert 0.5 <= clock.now - t0 < 0.6 and len(marker_checks) >= 10  # not the whole 2 s grace
 
 
 def test_wait_for_load_waits_for_a_captcha_injected_after_the_load():
     clock = _Clock()
-    marks = iter([False, False, True, True, True, True, True, True, True, True])
+    marks = iter([False, False, True] + [True] * 10)
     sends, *patches = _solver([{"seconds": None, "grace": 2.0}] * 3 + [{"seconds": 0.5, "grace": 1.0}] * 3
                               + [{"seconds": None, "grace": 0.0}])
     js_answers = lambda expr, **_: next(marks) if expr == helpers._CAPTCHA_MARKERS else "complete"
