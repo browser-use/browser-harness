@@ -219,7 +219,7 @@ def _mouse(x, y, press=None):
         _pointer.clamp(x + random.uniform(-150, 150), 0, bounds[2]), _pointer.clamp(y + random.uniform(-100, 100), 0, bounds[3]))
     # Draw the macOS Harness arrow on the page's DevTools overlay (live view, not the DOM): default on cloud.
     draw = "browser_kind" in state and os.environ.get(
-        "BH_POINTER", "1" if state["browser_kind"] == "cloud" else "0").lower() not in ("0", "false", "no", "off")
+        "BH_POINTER", "1" if state["browser_kind"] == "cloud" else "0").strip().lower() not in ("0", "false", "no", "off")
     events = [{"at": t, "type": "mouseMoved", "x": px, "y": py, **({"quad": _pointer.arrow(px, py, shape, dpr=dpr)} if draw else {})}
               for t, px, py, shape in _pointer.samples(tuple(start), (x, y), bounds)]
     if press:

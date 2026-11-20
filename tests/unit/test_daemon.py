@@ -892,7 +892,8 @@ def test_captcha_start_grace_follows_the_attached_tab(monkeypatch):
     assert asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] > 0
 
 
-def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab():
+def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab(monkeypatch):
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
     d = _fresh_daemon()
     d.session = "s1"
     asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "params": {"type": "mouseMoved", "x": 12, "y": 34}}))
@@ -955,6 +956,28 @@ def test_mouse_reports_a_failed_event():
     d.cdp, d.session = Failing(0), "gone"
     r = asyncio.run(d.handle({"meta": "mouse", "events": [{"at": 0, "type": "mouseMoved", "x": 1, "y": 2}]}))
     assert r == {"error": "Session with given id not found"}
+
+
+def test_mouse_stops_sending_once_an_event_failed():
+    class Failing(_SlowCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.sent.append((time.monotonic(), method, dict(params or {}), session_id))
+            raise RuntimeError("Session with given id not found")
+    d = daemon.Daemon()
+    d.cdp, d.session = Failing(0), "gone"
+    events = [{"at": 0.05 * i, "type": "mouseMoved", "x": i, "y": i} for i in range(20)]  # a 1 s schedule
+    t0 = time.monotonic()
+    r = asyncio.run(d.handle({"meta": "mouse", "events": events}))
+    assert r == {"error": "Session with given id not found"}
+    assert time.monotonic() - t0 < 0.3 and len(d.cdp.sent) <= 3
+
+
+def test_a_detached_session_forgets_its_pointer_state():
+    d = daemon.Daemon()
+    d.loaded_at["s1"], d.viewport["s1"], d.drawn["s1"] = 1.0, [800, 600, 1], QUAD
+    d._overlay_on.add("s1")
+    d._record_event("Target.detachedFromTarget", {"sessionId": "s1", "targetId": "t1"})
+    assert not (d.loaded_at or d.viewport or d.drawn or d._overlay_on)
 
 
 def test_start_taps_events_before_attaching(monkeypatch):

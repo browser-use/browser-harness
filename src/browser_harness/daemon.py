@@ -647,6 +647,11 @@ class Daemon:
             self._schedule_tab_marker(self.session)
             if method == "Page.loadEventFired" and session_id:
                 self.loaded_at[session_id] = time.monotonic()
+        elif method == "Target.detachedFromTarget":  # tab closed or session dropped: forget its state
+            gone = (params or {}).get("sessionId")
+            for per_session in (self.loaded_at, self.viewport, self.drawn):
+                per_session.pop(gone, None)
+            self._overlay_on.discard(gone)
         elif method == "BrowserUse.captchaSolverStarted":
             self.captcha_started[str((params or {}).get("targetId", ""))] = time.monotonic()
         elif method == "BrowserUse.captchaSolverFinished":
@@ -697,6 +702,8 @@ class Daemon:
         # the last input (the press pulse) run on after this returns: they must not slow the click.
         last = max((i for i, e in enumerate(events) if "type" in e), default=-1)
         for e in events[:last + 1]:
+            if any(f.done() and not f.cancelled() and f.exception() for f in sent):
+                break  # an event failed (say the tab's session went stale): fail now, not after the schedule
             e = dict(e)
             delay = t0 + float(e.pop("at", 0.0)) - loop.time()
             if delay > 0:
