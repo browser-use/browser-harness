@@ -73,6 +73,27 @@ def test_screenshot_timeout_has_context(tmp_path):
             helpers.capture_screenshot(str(tmp_path / "shot.png"))
 
 
+def test_goto_url_uses_navigation_response_timeout_without_forwarding_it_to_cdp():
+    with patch("browser_harness.helpers._send", return_value={"result": {"frameId": "F"}}) as send:
+        helpers.goto_url("https://example.com")
+
+    assert send.call_args.args[0] == {
+        "method": "Page.navigate",
+        "params": {"url": "https://example.com"},
+        "session_id": None,
+    }
+    assert send.call_args.kwargs == {
+        "response_timeout": helpers.NAVIGATE_IPC_RESPONSE_TIMEOUT_SECONDS
+    }
+    assert helpers.NAVIGATE_IPC_RESPONSE_TIMEOUT_SECONDS > helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS
+
+
+def test_goto_url_timeout_has_context():
+    with patch("browser_harness.helpers._send", side_effect=helpers._IPCResponseTimeout):
+        with pytest.raises(RuntimeError, match="Page.navigate timed out after 30s"):
+            helpers.goto_url("https://example.com")
+
+
 def _seed_skill(tmp_path):
     site = tmp_path / "domain-skills" / "example"
     site.mkdir(parents=True)

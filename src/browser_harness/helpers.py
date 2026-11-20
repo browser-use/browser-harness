@@ -43,6 +43,10 @@ DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
 # Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
 # their IPC socket alive within the caller's existing 90-second process budget.
 SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
+# Page.navigate only returns once the remote browser commits the navigation, so
+# a heavy page on a cloud browser outruns the 5s default and reports a daemon
+# timeout while the navigation still succeeds. Same reasoning as screenshots.
+NAVIGATE_IPC_RESPONSE_TIMEOUT_SECONDS = 30.0
 
 
 class _IPCResponseTimeout(TimeoutError):
@@ -150,7 +154,12 @@ def _is_illegal_return_error(exc):
 
 # --- navigation / page ---
 def goto_url(url):
-    r = cdp("Page.navigate", url=url)
+    try:
+        r = cdp("Page.navigate", url=url, _response_timeout=NAVIGATE_IPC_RESPONSE_TIMEOUT_SECONDS)
+    except _IPCResponseTimeout as e:
+        raise RuntimeError(
+            f"Page.navigate timed out after {NAVIGATE_IPC_RESPONSE_TIMEOUT_SECONDS:g}s"
+        ) from e
     if os.environ.get("BH_DOMAIN_SKILLS") != "1":
         return r
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
