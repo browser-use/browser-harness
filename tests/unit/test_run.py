@@ -299,3 +299,49 @@ def test_cli_update_forwards_yes_flag(flag, expected_yes):
             run.main()
     assert ei.value.code == 0
     m.assert_called_once_with(yes=expected_yes)
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ('start_remote_daemon("a")', True),
+        ('r = start_remote_daemon("a", profileId="p")\nprint(r)', True),
+        ('import os\n# comment\nstop_remote_daemon("a")', True),
+        ('"""doc"""\nstart_remote_daemon("a")', True),
+        ('new_tab("https://x")\nstart_remote_daemon("a")', False),
+        ("print('hi')", False),
+        ("start_remote_daemon(", True),  # syntax error falls back to the prefix rule
+    ],
+)
+def test_is_cloud_admin(code, expected):
+    assert run._is_cloud_admin(code) is expected
+
+
+def test_assigned_start_remote_daemon_skips_local_daemon(monkeypatch):
+    monkeypatch.delenv("BH_REQUIRE_EXISTING_DAEMON", raising=False)
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO('r = start_remote_daemon("a")')), \
+         patch("browser_harness.run.start_remote_daemon") as mock_start, \
+         patch("browser_harness.run.ensure_daemon") as mock_ensure, \
+         patch("browser_harness.run.print_update_banner"):
+        run.main()
+
+    mock_ensure.assert_not_called()
+    mock_start.assert_called_once_with("a")
+
+
+def test_headless_failure_points_to_start_remote_daemon(monkeypatch, capsys):
+    monkeypatch.delenv("BH_REQUIRE_EXISTING_DAEMON", raising=False)
+    monkeypatch.delenv("BU_AUTOSPAWN", raising=False)
+    with patch.object(sys, "argv", ["browser-harness"]), \
+         patch("sys.stdin", StringIO('new_tab("https://x")')), \
+         patch("browser_harness.run.ensure_daemon", side_effect=RuntimeError("chrome-not-running")), \
+         patch("browser_harness.run.daemon_alive", return_value=False), \
+         patch("browser_harness.run._local_chrome_listening", return_value=False), \
+         patch("browser_harness.run._explicit_cdp_configured", return_value=False), \
+         patch("browser_harness.run._cloud_auth_configured", return_value=True), \
+         patch("browser_harness.run.print_update_banner"), \
+         pytest.raises(SystemExit):
+        run.main()
+
+    assert "start_remote_daemon" in capsys.readouterr().err
