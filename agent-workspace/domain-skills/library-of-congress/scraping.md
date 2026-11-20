@@ -477,11 +477,11 @@ d = json.load(sys.stdin); print("maps chesapeake bay:", d["pagination"]["of"], "
 for r in d["results"]: print(" ", r["url"], "|", r.get("date"), "|", r["title"][:60])' <<<"$d"
 sleep 7
 # headers: JSON, CORS open, cached a day; the X-Nearside-Cache header says MISS or HIT
-curl -sS -G -A "$UA" -D "$H" -o /dev/null "$B/maps/" --data-urlencode 'q=chesapeake bay' -d fo=json -d c=3 -d at=results,pagination \
-  --data-urlencode 'fa=online-format:image|access-restricted:false'
+s=$(curl -sS -G -A "$UA" -D "$H" -o /dev/null -w '%{http_code} %{content_type}' "$B/maps/" --data-urlencode 'q=chesapeake bay' \
+  -d fo=json -d c=3 -d at=results,pagination --data-urlencode 'fa=online-format:image|access-restricted:false')
 tr -d '\r' <"$H" | grep -iE '^(HTTP/|(content-type|access-control-allow-origin|cache-control|x-nearside-cache|cf-cache-status|retry-after|server):)'
-# same stop rule as j(): anything but a 200 JSON answer (a 429, 5xx or challenge page) ends the run here
-head -1 "$H" | grep -q ' 200' && grep -qi '^content-type: application/json' "$H" || { echo "header probe: not a 200 JSON answer: stop" >&2; exit 1; }
+# no retry here: anything but a 200 JSON final answer (a 429, 5xx or challenge page) ends the run before the next request
+case "$s" in "200 application/json"*) ;; *) echo "header probe: HTTP $s, not a 200 JSON answer: stop" >&2; exit 1 ;; esac
 sleep 7
 # one item record (at=item drops related items and facets): rights and image list live here
 d=$(j "$B/item/2017821363/" -d fo=json -d at=item) || exit 1
@@ -500,7 +500,7 @@ curl -sS -A "$UA" -o "$P" -w 'no fo=json -> HTTP %{http_code} %{content_type} ' 
 grep -o '<title>[^<]*</title>' "$P" | head -1 | tr -s ' \n' ' '; echo
 ```
 
-Output (from the run on 2026-11-20, 00:19 UTC; the first run at 00:17 got HTTP 525 on its first call and had no retry; re-run at 00:43 UTC after the temp files moved to `mktemp`, at 00:57 UTC after the `|| exit 1` stops were added and at 01:57 UTC after the header and 404 probes got the same stop rule, same output; with the header probe pointed at a 404 URL the run printed `header probe: not a 200 JSON answer: stop`, exit 1, and made no further request):
+Output (from the run on 2026-11-20, 00:19 UTC; the first run at 00:17 got HTTP 525 on its first call and had no retry; re-run at 00:43 UTC after the temp files moved to `mktemp`, at 00:57 UTC after the `|| exit 1` stops were added and at 01:57 UTC after the header and 404 probes got the same stop rule, same output; with the header probe pointed at a 404 URL the run printed `header probe: HTTP 404 application/json, not a 200 JSON answer: stop`, exit 1, and made no further request):
 
 ```text
 maps chesapeake bay: 107 online images
