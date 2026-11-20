@@ -577,10 +577,11 @@ for kind, text, n in WANT:
         rows.append({"id": a["id"], "accession_number": a["accession_number"], "title": a["title"], "date": a["creation_date"],
                      "creator": creator_text(a), "credit_line": a["creditline"], "license": a["share_license_status"],
                      "page": a["url"], "image_url": im["url"], "file": im["filename"], "bytes": len(data),
-                     "sha256": hashlib.sha256(data).hexdigest()[:16]})
+                     "sha256": hashlib.sha256(data).hexdigest()[:16], "checked_utc": f"{now:%Y-%m-%d %H:%M}"})
 
 CREDITS = os.path.join(OUT, "credits.csv")
-COLS = ["id", "accession_number", "title", "date", "creator", "credit_line", "license", "page", "image_url", "file", "bytes", "sha256"]
+COLS = ["id", "accession_number", "title", "date", "creator", "credit_line", "license", "page", "image_url", "file", "bytes", "sha256",
+        "checked_utc"]  # when this row's license was read; rows kept from earlier runs keep their own date
 old = {}
 if os.path.exists(CREDITS):  # keep the rows of images from earlier runs; this run's rows replace same-file rows
     with open(CREDITS, newline="", encoding="utf-8") as f:
@@ -594,7 +595,7 @@ print(f"\n{got} downloaded, {kept} already on disk, {len(merged)} rows in {OUT}/
 print(f"Source: Cleveland Museum of Art Open Access, CC0 (attribution optional), accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-20, 00:09 UTC, empty folder; re-run 00:53 UTC after credits.csv started keeping earlier rows: same output except the time, and a later run that picked only 1958.39 still left 6 rows):
+Output (from the run on 2026-11-20, 00:09 UTC, empty folder; re-run 01:03 UTC after credits.csv started keeping earlier rows with a `checked_utc` column: same output except the time; a later run that picked only 1958.39 left 6 rows, 5 with their earlier `checked_utc`):
 
 ```text
 robots https://openaccess-api.clevelandart.org/api/artworks/                  HTTP 200; allowed for 11 of 12 agents, disallowed: Amazonbot

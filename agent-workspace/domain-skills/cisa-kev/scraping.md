@@ -13,7 +13,7 @@ robots.txt (checked 2026-11-19 in the cloud browser and with `urllib.robotparser
 - **Answer (run 2026-11-19, 23:39 UTC, catalog 2026.11.18):** 18 entries were added in the last 14 days (`dateAdded` 2026-11-05 to 2026-11-18), none with ransomware use "Known"; the newest are CVE-2026-90436 (Apache Axis) and CVE-2026-90817 (REDCap), CVE-2026-40217 (LiteLLM) and CVE-2024-10441 (Synology DSM), all added 2026-11-18, three due 2026-11-21. Fortinet has **32 entries, 14 with ransomware use "Known"**, the newest CVE-2025-61624 (Multiple Products, added 2026-10-16, due 2026-10-19); FortiOS alone has 15, 12 "Known".
 - **`knownRansomwareCampaignUse` is "Known" or "Unknown"** (361 and 1,425 of 1,786). The schema: "'Unknown' if CISA lacks confirmation", so "Unknown" is not "no".
 - **Silent failures:** a wrong query string is ignored (full file, HTTP 200); `feeds/known_exploited_vulnerabilities.csv` does not exist (HTTP 404 in a browser, 403 to curl); `If-None-Match` with the ETag still sends the full 1.86 MB. Use `If-Modified-Since` (HTTP 304, 0 bytes), check `count` against the rows, and check the required fields (blocks 1 and 3).
-- **Rate limit:** none is published on the license, catalog, "Reducing the Significant Risk" or mirror README pages. The file changes when CISA adds or updates entries ("typically ... weekdays during normal US Eastern business hours", mirror README); `Cache-Control: max-age` on the JSON was 434-1352 s and counts down between requests (941, 694, 503, 434 from 23:39 to 23:47 UTC). The blocks make one download per run and a conditional GET after that; block 3 waits `Retry-After` once on 429/5xx (default 60 s) and stops above 120 s; block 4 uses curl's `--retry 1`. Poll at most hourly.
+- **Rate limit:** none is published on the license, catalog, "Reducing the Significant Risk" or mirror README pages. The file changes when CISA adds or updates entries ("typically ... weekdays during normal US Eastern business hours", mirror README); `Cache-Control: max-age` on the JSON was 434-2947 s and counts down between requests (941, 694, 503, 434 from 23:39 to 23:47 UTC; 2947 at 00:53 UTC on 2026-11-20). The blocks make one download per run and a conditional GET after that; block 3 waits `Retry-After` once on 429/5xx (default 60 s) and stops above 120 s; block 4 uses curl's `--retry 1`. Poll at most hourly.
 
 ## What works
 
@@ -515,13 +515,13 @@ rm -r "$(dirname "$K")"
 echo "Source: CISA Known Exploited Vulnerabilities (KEV) catalog, $F, accessed $(date -u '+%d %B %Y %H:%M') UTC."
 ```
 
-Output (from the verifier's re-run on 2026-11-19, 23:47 UTC, after the mirror URL moved to `develop`; re-run 2026-11-20 00:53 UTC after the 7-day window switched to the UTC date: same entries, `dateAdded >= 2026-11-13`, `max-age=2947`):
+Output (from the re-run on 2026-11-20, 00:53 UTC, after the 7-day window switched to the UTC date; the verifier's run at 2026-11-19 23:47 UTC listed the same entries with `max-age=434`):
 
 ```text
-HTTP 200, 204849 bytes on the wire, 0.125729 s
+HTTP 200, 204849 bytes on the wire, 0.130151 s
 again: HTTP 304, 0 bytes
 file: 1863915 bytes, mtime 2026-11-18 19:17
-catalogVersion 2026.11.18, count 1786; dateAdded >= 2026-11-12:
+catalogVersion 2026.11.18, count 1786; dateAdded >= 2026-11-13:
   2026-11-18 due 2026-11-21 CVE-2024-10441 Synology / DiskStation Manager (DSM) ransomware Unknown
   2026-11-18 due 2026-12-02 CVE-2026-40217 BerriAI / LiteLLM ransomware Unknown
   2026-11-18 due 2026-11-21 CVE-2026-90817 Vanderbilt University / Research Electronic Data Capture (REDCap) ransomware Unknown
@@ -535,11 +535,11 @@ content-type: application/json
 last-modified: Wed, 18 Nov 2026 19:17:40 GMT
 etag: "1c70eb-66091dd613278"
 content-encoding: gzip
-cache-control: max-age=434
+cache-control: max-age=2947
 CSV: 1786 rows, columns cveID,vendorProject,product,vulnerabilityName,dateAdded,shortDescription,requiredAction,dueDate,knownRansomwareCampaignUse,forensicTriage,notes,cwes
 feeds/known_exploited_vulnerabilities.csv: HTTP 403
 mirror catalogVersion 2026.11.18 count 1786
-Source: CISA Known Exploited Vulnerabilities (KEV) catalog, https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json, accessed 19 November 2026 23:47 UTC.
+Source: CISA Known Exploited Vulnerabilities (KEV) catalog, https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json, accessed 20 November 2026 00:53 UTC.
 ```
 
 ## Fields (`known_exploited_vulnerabilities.json`)
@@ -559,7 +559,7 @@ Source: CISA Known Exploited Vulnerabilities (KEV) catalog, https://www.cisa.gov
 | `forensicTriage` | `Yes` / `No` | "if this vulnerability requires forensic triage per BOD 26-04"; 108 `Yes` |
 | `notes` | text | vendor advisory URLs and an NVD link joined by ` ; ` (every row had an nvd.nist.gov link) |
 | `cwes` | list, e.g. `["CWE-178", "CWE-287"]` | 175 rows have `[]`; in the CSV it is one string `"CWE-178, CWE-287"` |
-| response headers | `content-type: application/json`, `last-modified`, `etag`, `cache-control: max-age=434..1352` (counts down; the CSV showed 0 and 1811), `content-encoding: gzip` when asked, `vary: Accept-Encoding` | no rate-limit headers seen |
+| response headers | `content-type: application/json`, `last-modified`, `etag`, `cache-control: max-age=434..2947` (counts down; the CSV showed 0 and 1811), `content-encoding: gzip` when asked, `vary: Accept-Encoding` | no rate-limit headers seen |
 
 ## Gotchas
 
