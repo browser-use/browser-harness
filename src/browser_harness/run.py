@@ -237,6 +237,35 @@ def _telemetry_browser(task):
         return None
 
 
+_CLOUD_ADMIN_CALLS = ("start_remote_daemon", "stop_remote_daemon")
+
+
+def _is_cloud_admin(code):
+    """True when the script's first real statement starts or stops a cloud daemon.
+
+    Accepts `r = start_remote_daemon(...)` and leading imports/comments, not just a
+    script whose text begins with the call; those need no local daemon first.
+    """
+    import ast
+
+    try:
+        body = ast.parse(code).body
+    except SyntaxError:
+        return code.lstrip().startswith(tuple(f"{n}(" for n in _CLOUD_ADMIN_CALLS))
+    for stmt in body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue  # docstring
+        value = stmt.value if isinstance(stmt, (ast.Expr, ast.Assign, ast.AnnAssign)) else None
+        if isinstance(value, ast.Call):
+            fn = value.func
+            name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else None
+            return name in _CLOUD_ADMIN_CALLS
+        return False
+    return False
+
+
 def main():
     global _helper_call_count
     args = sys.argv[1:]
@@ -385,7 +414,7 @@ def _run(args):
     # is not enough, since the key is commonly set for unrelated reasons (profile sync,
     # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
     # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
-    cloud_admin = code.lstrip().startswith(("start_remote_daemon(", "stop_remote_daemon("))
+    cloud_admin = _is_cloud_admin(code)
     if not cloud_admin:
         require_existing = os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
         try:
@@ -404,6 +433,18 @@ def _run(args):
         except RuntimeError as e:
             # Setup/permission errors are instructions for calling agent
             print(f"browser-harness: {e}", file=sys.stderr)
+            if (
+                not require_existing
+                and not _local_chrome_listening()
+                and not _explicit_cdp_configured()
+                and _cloud_auth_configured()
+            ):
+                print(
+                    "browser-harness: no local Chrome here, but Browser Use cloud auth is set. "
+                    'Start a cloud browser first: start_remote_daemon("<name>") as its own call, '
+                    "then run your code with BU_NAME=<name>.",
+                    file=sys.stderr,
+                )
             sys.exit(1)
     _install_helper_trace()
     exec(code, globals())
