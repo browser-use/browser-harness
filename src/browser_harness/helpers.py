@@ -354,6 +354,28 @@ def capture_screenshot(path=None, full=False, max_dim=None):
 
 
 # --- tabs ---
+_OPENED_TABS = set()
+_REUSED_BLANK_TABS = {}
+_KEEP_OPENED_TABS = False
+_RETURN_TAB_ID = None
+
+
+def _reset_tab_ownership():
+    """Reset process-local ownership before and after one CLI invocation."""
+    global _KEEP_OPENED_TABS, _RETURN_TAB_ID
+    _OPENED_TABS.clear()
+    _REUSED_BLANK_TABS.clear()
+    _KEEP_OPENED_TABS = False
+    _RETURN_TAB_ID = None
+
+
+def _blank_restore_url(url):
+    url = str(url or "")
+    if url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")):
+        return "about:blank"
+    return url or "about:blank"
+
+
 def _is_agent_startup_placeholder(title, url):
     url = str(url or "")
     return str(title or "").startswith("Starting agent ") and (
@@ -426,37 +448,250 @@ def switch_tab(target, activate=False):
     _mark_tab()
     return sid
 
+
+DEFAULT_MAX_TABS = 15
+_TAB_CAP_SKIP = (
+    "chrome://",
+    "chrome-untrusted://",
+    "edge://",
+    "devtools://",
+    "chrome-extension://",
+)
+
+
+def _reap_tabs(keep_id):
+    """Keep automation browsers bounded by closing their oldest work tabs."""
+    global _RETURN_TAB_ID
+    try:
+        max_tabs = int(os.environ.get("BH_MAX_TABS", str(DEFAULT_MAX_TABS)))
+    except ValueError:
+        max_tabs = DEFAULT_MAX_TABS
+    if max_tabs <= 0:
+        return
+
+    try:
+        endpoint = _send({"meta": "http_endpoint"}).get("endpoint")
+        if not endpoint:
+            return
+        with urllib.request.urlopen(f"{endpoint.rstrip('/')}/json/list", timeout=2) as response:
+            pages = [
+                target
+                for target in json.loads(response.read())
+                if target.get("type") == "page"
+                and not target.get("url", "").startswith(_TAB_CAP_SKIP)
+            ]
+    except Exception:
+        return
+
+    excess = len(pages) - max_tabs
+    if excess <= 0:
+        return
+    for target in reversed(pages):
+        target_id = target.get("id")
+        if excess <= 0:
+            break
+        if not target_id or target_id == keep_id:
+            continue
+        if _close_target_with_retry(target_id) is not None:
+            continue
+        _OPENED_TABS.discard(target_id)
+        _REUSED_BLANK_TABS.pop(target_id, None)
+        if _RETURN_TAB_ID == target_id:
+            _RETURN_TAB_ID = None
+        excess -= 1
+
+
 def new_tab(url="about:blank"):
+    global _RETURN_TAB_ID
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
-        try:
-            cur = current_tab()
-            cur_url = cur.get("url") or ""
+    cur = None
+    try:
+        cur = current_tab()
+        cur_url = cur.get("url") or ""
+        if url != "about:blank":
             # Reuse attached tab when it's blank
             if (
                 cur_url in ("", "about:blank", "data:text/html,")
                 or cur_url.startswith("about:blank#")
                 or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
             ):
+                target_id = cur.get("targetId") or cur.get("target_id")
+                _REUSED_BLANK_TABS.setdefault(target_id, _blank_restore_url(cur_url))
+                _reap_tabs(target_id)
                 goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
-        except Exception:
-            pass
+                return target_id
+    except Exception:
+        pass
+    if cur:
+        current_id = cur.get("targetId") or cur.get("target_id")
+        if current_id and current_id not in _OPENED_TABS and _RETURN_TAB_ID is None:
+            _RETURN_TAB_ID = current_id
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+    _OPENED_TABS.add(tid)
     switch_tab(tid)
+    _reap_tabs(tid)
     if url != "about:blank":
         goto_url(url)
     return tid
 
+
+def opened_tabs():
+    """Return target IDs created by new_tab() in this CLI process."""
+    return list(_OPENED_TABS)
+
+
+def keep_opened_tabs(keep=True):
+    """Opt out of automatic cleanup for tabs owned by this CLI process."""
+    global _KEEP_OPENED_TABS
+    _KEEP_OPENED_TABS = keep
+
+
+def _restore_reused_blank_tabs():
+    restored = []
+    failures = []
+    for target_id, original_url in list(_REUSED_BLANK_TABS.items()):
+        try:
+            switch_tab(target_id)
+            goto_url(original_url or "about:blank")
+            restored.append(target_id)
+            _REUSED_BLANK_TABS.pop(target_id, None)
+        except Exception as exc:
+            failures.append((target_id, exc))
+    return restored, failures
+
+
+def _move_to_keeper(target_ids):
+    """Move off an owned target before it closes; return protected IDs and failures."""
+    try:
+        current_id = current_tab()["targetId"]
+    except Exception as exc:
+        # Without the active target ID, any owned target could be the daemon's
+        # current session. Fail closed instead of risking a stale attachment.
+        return set(target_ids), [("current target", exc)]
+    if current_id not in target_ids:
+        return set(), []
+
+    if _RETURN_TAB_ID and _RETURN_TAB_ID not in target_ids:
+        try:
+            switch_tab(_RETURN_TAB_ID)
+            return set(), []
+        except Exception:
+            # The original tab may have been closed while the task was running.
+            # Fall back to a fresh neutral target before closing the owned one.
+            pass
+
+    keeper_id = None
+    try:
+        keeper_id = cdp("Target.createTarget", url="about:blank")["targetId"]
+        switch_tab(keeper_id)
+        # The keeper becomes the daemon's neutral anchor. It is intentionally
+        # not owned by this invocation and can be reused by the next new_tab().
+    except Exception as exc:
+        failures = [("keeper handoff", exc)]
+        # switch_tab() can fail after the daemon accepted set_session. Read the
+        # daemon's acknowledged target before deciding whether the keeper is
+        # safe to close; ambiguity fails closed and leaves the neutral page.
+        keeper_attached = None
+        if keeper_id:
+            try:
+                keeper_attached = current_tab()["targetId"] == keeper_id
+            except Exception:
+                pass
+        if keeper_id and keeper_attached is False:
+            close_error = _close_target_with_retry(keeper_id)
+            if close_error is not None:
+                failures.append((keeper_id, close_error))
+        return {current_id}, failures
+    return set(), []
+
+
+def _cleanup_error_message(failures):
+    details = ", ".join(f"{target}: {error}" for target, error in failures)
+    return f"tab cleanup incomplete ({details})"
+
+
+def _close_target_with_retry(target_id):
+    last_error = None
+    for _ in range(2):
+        try:
+            result = cdp("Target.closeTarget", targetId=target_id)
+            if result.get("success", True):
+                return None
+            last_error = RuntimeError("Target.closeTarget returned false")
+        except Exception as exc:
+            last_error = exc
+    return last_error
+
+
+def close_opened_tabs(force=False):
+    """Close created tabs and restore blank tabs reused by this CLI process."""
+    global _RETURN_TAB_ID
+    if _KEEP_OPENED_TABS and not force:
+        # Keeping means hands off every tab this invocation touched, not just
+        # ones it created via Target.createTarget. new_tab() usually reuses
+        # the current blank tab instead of creating a new one (the daemon is
+        # commonly parked on a blank keeper between invocations), so most
+        # "kept" tabs in practice are reused-blank ones. Restoring them to
+        # blank here would silently defeat keep_opened_tabs() for exactly the
+        # common case a caller relies on it for.
+        _OPENED_TABS.clear()
+        _REUSED_BLANK_TABS.clear()
+        _RETURN_TAB_ID = None
+        return []
+
+    _, failures = _restore_reused_blank_tabs()
+
+    target_ids = set(_OPENED_TABS)
+    if not target_ids:
+        if failures:
+            raise RuntimeError(_cleanup_error_message(failures))
+        _RETURN_TAB_ID = None
+        return []
+
+    protected_ids, handoff_failures = _move_to_keeper(target_ids)
+    failures.extend(handoff_failures)
+    target_ids.difference_update(protected_ids)
+
+    closed = []
+    for target_id in list(target_ids):
+        last_error = _close_target_with_retry(target_id)
+        if last_error is None:
+            closed.append(target_id)
+            _OPENED_TABS.discard(target_id)
+        else:
+            failures.append((target_id, last_error))
+
+    if closed:
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            try:
+                remaining = {tab["targetId"] for tab in list_tabs(include_chrome=True)}
+            except Exception:
+                break
+            if not remaining.intersection(closed):
+                break
+            time.sleep(0.05)
+    if failures:
+        raise RuntimeError(_cleanup_error_message(failures))
+    _RETURN_TAB_ID = None
+    return closed
+
 def close_tab(target=None):
     """Close a tab. If `target` is omitted, closes the currently attached tab.
     Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
+    global _RETURN_TAB_ID
     target_id = _target_id(target)
     if target_id is None:
         target_id = current_tab()["targetId"]
-    cdp("Target.closeTarget", targetId=target_id)
+    result = cdp("Target.closeTarget", targetId=target_id)
+    if not result.get("success", True):
+        raise RuntimeError("Target.closeTarget returned false")
+    _OPENED_TABS.discard(target_id)
+    _REUSED_BLANK_TABS.pop(target_id, None)
+    if _RETURN_TAB_ID == target_id:
+        _RETURN_TAB_ID = None
 
 
 def ensure_real_tab():
