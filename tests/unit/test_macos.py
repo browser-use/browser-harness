@@ -51,6 +51,37 @@ def test_mac_approve_runs_osascript_only_after_checkbox_is_enabled(monkeypatch):
     assert "activate" not in calls[0][1]["input"]
 
 
+def test_mac_approve_script_has_locale_independent_fallback(monkeypatch):
+    # The Allow sheet is localized (e.g. Russian "Разрешить удалённую
+    # отладку?" / "Разрешить"), so matching only the English sheet name and
+    # button title can never find it. The script must keep the English fast
+    # path and add a structural fallback that does not depend on UI language.
+    monkeypatch.setattr(macos.platform, "system", lambda: "Darwin")
+    _no_ready_daemon(monkeypatch)
+    _enable_chrome_toggle(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        macos.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or SimpleNamespace(returncode=0, stdout="ready\n", stderr=""),
+    )
+
+    status, detail = macos.approve_remote_debugging()
+
+    assert (status, detail) == ("ready", None)
+    script = calls[0][1]["input"]
+    assert "Allow remote debugging?" in script
+    assert "entire contents" in script
+    assert "position of" in script
+    # The fallback branch itself: reached for non-English sheets, guarded by
+    # the three-button + URL-copy identification, and it presses the button.
+    assert "else if my clickRightmostButton(s)" in script
+    assert "buttonCount is 3" in script
+    assert "mentionsUrl" in script
+    assert 'perform action "AXPress" of bestRef' in script
+
+
 def test_mac_approve_returns_not_found_without_a_prompt(monkeypatch):
     monkeypatch.setattr(macos.platform, "system", lambda: "Darwin")
     _no_ready_daemon(monkeypatch)
