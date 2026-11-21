@@ -1,25 +1,129 @@
 from browser_harness import _ipc as ipc
 
 
-def test_runtime_stem_uses_name_in_shared_runtime_dir(monkeypatch):
-    monkeypatch.setattr(ipc, "BH_RUNTIME_DIR", "/tmp/browser-harness")
-    monkeypatch.setattr(ipc, "BH_RUNTIME_DIR_SHARED", True)
+import asyncio
+import json
+import shutil
+import tempfile
+from pathlib import Path
 
-    assert ipc._runtime_stem("work") == "bu-work"
+import pytest
 
-
-def test_runtime_stem_uses_bare_name_in_isolated_runtime_dir(monkeypatch):
-    monkeypatch.setattr(ipc, "BH_RUNTIME_DIR", "/tmp/browser-harness-work")
-    monkeypatch.setattr(ipc, "BH_RUNTIME_DIR_SHARED", False)
-
-    assert ipc._runtime_stem("work") == "bu"
+from browser_harness import daemon
 
 
-def test_tmp_stem_uses_name_in_shared_tmp_dir(monkeypatch):
-    monkeypatch.setattr(ipc, "BH_TMP_DIR", "/tmp/browser-harness")
-    monkeypatch.setattr(ipc, "BH_TMP_DIR_SHARED", True)
+def test_daemons_sharing_a_runtime_dir_never_share_files(monkeypatch):
+    """BH_RUNTIME_DIR used to give every daemon the same bu.sock/bu.pid/bu.log
+    unless BH_RUNTIME_DIR_SHARED=1 was also set, so parallel daemons cross-wired."""
+    monkeypatch.setattr(ipc, "BH_RUNTIME_DIR", "/tmp/bh")
+    monkeypatch.setattr(ipc, "BH_TMP_DIR", "/tmp/bh")
 
-    assert ipc._tmp_stem("work") == "bu-work"
+    for path in (ipc._sock_path, ipc.pid_path, ipc.log_path, ipc.port_path):
+        assert path("a") != path("b")
+        assert path("a").name.startswith("bu-a.")
+
+
+@pytest.fixture
+def short_runtime(monkeypatch):
+    # AF_UNIX paths are capped at 104 bytes on macOS; pytest's tmp_path can be longer.
+    runtime = Path(tempfile.mkdtemp(prefix="bh"))
+    monkeypatch.setattr(ipc, "_RUNTIME", runtime)
+    yield runtime
+    shutil.rmtree(runtime, ignore_errors=True)
+
+
+@pytest.mark.skipif(ipc.IS_WINDOWS, reason="AF_UNIX")
+def test_two_daemons_in_one_runtime_dir_answer_separately(short_runtime):
+
+    def handler_for(name):
+        async def handler(reader, writer):
+            await reader.readline()
+            writer.write((json.dumps({"pong": True, "who": name}) + "\n").encode())
+            await writer.drain()
+            writer.close()
+        return handler
+
+    async def main():
+        servers = [asyncio.create_task(ipc.serve(n, handler_for(n))) for n in ("a", "b")]
+        await asyncio.sleep(0.1)
+        try:
+            def ask(name):
+                c, token = ipc.connect(name)
+                try:
+                    return ipc.request(c, token, {"meta": "ping"})["who"]
+                finally:
+                    c.close()
+            return await asyncio.to_thread(ask, "a"), await asyncio.to_thread(ask, "b")
+        finally:
+            for t in servers:
+                t.cancel()
+
+    assert asyncio.run(main()) == ("a", "b")
+
+
+class _EchoDaemon:
+    async def handle(self, req):
+        return {"result": {"length": len(req["params"]["expression"])}}
+
+
+def _roundtrip(monkeypatch, payload_bytes):
+    """Send one request of payload_bytes through the daemon's real IPC handler."""
+    monkeypatch.setattr(daemon, "log", lambda msg: None)
+
+    async def main():
+        server = asyncio.create_task(ipc.serve("big", daemon._ipc_handler(_EchoDaemon())))
+        await asyncio.sleep(0.1)
+        try:
+            def send():
+                c, token = ipc.connect("big", timeout=30)
+                try:
+                    return ipc.request(c, token, {"method": "Runtime.evaluate", "params": {"expression": "x" * payload_bytes}})
+                finally:
+                    c.close()
+            return await asyncio.to_thread(send)
+        finally:
+            server.cancel()
+
+    return asyncio.run(main())
+
+
+@pytest.mark.skipif(ipc.IS_WINDOWS, reason="AF_UNIX")
+def test_ipc_accepts_a_10mb_upload_sized_request(short_runtime, monkeypatch):
+    """A 10 MB file as base64 is ~14 MB. asyncio's default 64 KiB line limit
+    broke every cloud upload over ~48 KB."""
+    size = 10 * 1024 * 1024 * 4 // 3 + 1024
+    assert _roundtrip(monkeypatch, size) == {"result": {"length": size}}
+
+
+@pytest.mark.skipif(ipc.IS_WINDOWS, reason="AF_UNIX")
+def test_oversized_ipc_request_gets_a_clear_error_not_a_broken_pipe(short_runtime, monkeypatch):
+    monkeypatch.setattr(ipc, "MAX_REQUEST_BYTES", 1 << 20)
+
+    resp = _roundtrip(monkeypatch, 3 << 20)
+
+    assert "over the 1 MiB limit" in resp["error"]
+
+
+@pytest.mark.skipif(ipc.IS_WINDOWS, reason="AF_UNIX")
+def test_too_long_socket_path_names_the_fix(short_runtime, monkeypatch):
+    runtime = short_runtime / ("d" * 120)
+    runtime.mkdir()
+    monkeypatch.setattr(ipc, "_RUNTIME", runtime)
+
+    async def handler(reader, writer):
+        writer.close()
+
+    with pytest.raises(RuntimeError, match="BH_RUNTIME_DIR"):
+        asyncio.run(ipc.serve("x", handler))
+
+
+def test_remote_marker_roundtrip(short_runtime):
+
+    assert ipc.read_remote_marker("w") is None
+    ipc.write_remote_marker("w", "cloud", "b-1")
+    assert ipc.read_remote_marker("w") == {"kind": "cloud", "browser_id": "b-1"}
+    ipc.clear_remote_marker("w")
+    assert ipc.read_remote_marker("w") is None
 
 
 # --- identify(): ping payload sanitation ---

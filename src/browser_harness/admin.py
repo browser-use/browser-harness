@@ -390,13 +390,7 @@ def daemon_browser_kind(name=None):
 
 
 def _daemon_endpoint_names():
-    # BH_RUNTIME_DIR isolates one daemon per dir → no filename-prefix discovery,
-    # just check whether our local endpoint exists. Without BH_RUNTIME_DIR, or
-    # with BH_RUNTIME_DIR_SHARED=1, _RUNTIME is shared and we glob `bu-*.<suffix>`
-    # to find every daemon in that runtime dir.
     suffix = ".port" if ipc.IS_WINDOWS else ".sock"
-    if ipc.BH_RUNTIME_DIR and not ipc.BH_RUNTIME_DIR_SHARED:
-        return [NAME] if (ipc._RUNTIME / f"bu{suffix}").exists() else []
     names = []
     for p in sorted(ipc._RUNTIME.glob(f"bu-*{suffix}")):
         raw = p.name[3:-len(suffix)]
@@ -524,7 +518,10 @@ def run_doctor_fix_snap():
 
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
-    Chrome, and missing Allow on chrome://inspect."""
+    Chrome, and missing Allow on chrome://inspect. Never replaces a name bound
+    to a remote browser with a local Chrome daemon."""
+    daemon_name = name or NAME
+    local = _is_local_chrome_mode(env)
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
@@ -539,6 +536,7 @@ def ensure_daemon(wait=None, name=None, env=None):
                 pass
             if not last: time.sleep(0.5)
         browser_kind = daemon_browser_kind(name)
+        prior = ipc.read_remote_marker(daemon_name) or {}
         if browser_kind in {"cloud", None}:
             # A stale Cloud daemon still owns a billable browser. Its shutdown
             # handler stops that browser before acknowledging, and stays alive
@@ -546,12 +544,24 @@ def ensure_daemon(wait=None, name=None, env=None):
             # an unknown kind the same way: the health failure that made the
             # daemon stale may also prevent classification, and replacing an
             # unclassified daemon best-effort could orphan a Cloud browser.
-            stop_remote_daemon(name or NAME)
+            stop_remote_daemon(daemon_name)
         else:
             restart_daemon(name)
+        if local and browser_kind != "local":
+            # Stopping cleared the marker; keep the name bound so this and every
+            # later local-mode call fails closed instead of using local Chrome.
+            ipc.write_remote_marker(daemon_name, browser_kind or "unknown", prior.get("browser_id"))
+    if local and (marker := ipc.read_remote_marker(daemon_name)) is not None:
+        what = " ".join(str(v) for v in (marker.get("kind"), marker.get("browser_id")) if v) or "unknown"
+        raise RuntimeError(
+            f"remote-browser-ended: daemon {daemon_name!r} was attached to a remote browser ({what}) "
+            "that is gone (cloud timeout, browser stopped, or daemon exited). browser-harness will not "
+            "fall back to local Chrome under this name. Start a new one with "
+            f"start_remote_daemon({daemon_name!r}), or run restart_daemon({daemon_name!r}) "
+            f"(CLI: BU_NAME={daemon_name} browser-harness --reload) to use local Chrome under this name."
+        )
 
     import subprocess, sys
-    local = _is_local_chrome_mode(env)
     startup_wait, approval_wait = _daemon_wait_windows(wait, local)
     # Remote/CDP daemons retain the normal 60s startup bound. Only a local
     # Chrome handshake displaying the per-connection approval sheet removes a
@@ -741,6 +751,13 @@ def stop_remote_daemon(name="remote"):
     # restarts anything on its own; a follow-up `browser-harness`
     # call would auto-spawn a fresh one via ensure_daemon(). That
     # "run-it-again-to-restart" workflow is why it was named that way.
+    marker = ipc.read_remote_marker(name)
+    if marker and marker.get("browser_id") and not ipc.ping(name, timeout=1.0):
+        # The daemon died without stopping its browser (e.g. SIGKILL); the
+        # marker still knows which browser to stop.
+        _stop_cloud_browser(marker["browser_id"], strict=True)
+        restart_daemon(name)
+        return
     restart_daemon(name, require_clean=True)
 
 
@@ -877,6 +894,7 @@ def restart_daemon(name=None, require_clean=False):
                     pass
 
     ipc.cleanup_endpoint(name)
+    ipc.clear_remote_marker(name)
     try:
         os.unlink(pid_path)
     except FileNotFoundError:
@@ -1012,6 +1030,12 @@ def start_remote_daemon(name="remote", profileName=None, **create_kwargs):
     show_live_view = _should_show_remote_live_view()
     if daemon_alive(name):
         raise RuntimeError(f"daemon {name!r} already alive -- restart_daemon({name!r}) first")
+    stale = ipc.read_remote_marker(name) or {}
+    if stale.get("browser_id"):
+        # Its daemon died without stopping it (e.g. SIGKILL). The new daemon's
+        # marker would overwrite the only record of it, so stop it first.
+        _stop_cloud_browser(stale["browser_id"], strict=True)
+        ipc.clear_remote_marker(name)
     if profileName:
         if "profileId" in create_kwargs:
             raise RuntimeError("pass profileName OR profileId, not both")

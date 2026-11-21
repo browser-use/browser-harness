@@ -1,5 +1,5 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+import asyncio, json, os, platform, signal, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
 from pathlib import Path
@@ -221,12 +221,17 @@ def log(msg):
 
 
 def _safe_connection_label(url):
-    """Log only endpoint topology, never CDP credentials or provider session paths."""
+    """Log only endpoint topology, never CDP credentials, session paths or
+    per-session hostnames (cloud CDP hosts embed the browser session)."""
     try:
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.hostname:
             return "<redacted-cdp-endpoint>"
-        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        elif not host.replace(".", "").isdigit() and host.count(".") > 1:
+            host = "*." + ".".join(host.split(".")[-2:])
         port = f":{parsed.port}" if parsed.port else ""
         return f"{parsed.scheme}://{host}{port}"
     except (TypeError, ValueError):
@@ -656,6 +661,8 @@ class Daemon:
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
         await self.attach_first_page()
+        if BROWSER_KIND != "local":
+            ipc.write_remote_marker(NAME, BROWSER_KIND, REMOTE_ID)
         orig = self.cdp._event_registry.handle_event
         async def tap(method, params, session_id=None):
             self._record_event(method, params, session_id)
@@ -757,6 +764,7 @@ class Daemon:
                 async with self._session_state_lock:
                     self._shutting_down = False
                 return {"error": str(e)}
+            ipc.clear_remote_marker(NAME)  # explicit stop: the name is free again
             self.stop.set()
             return {"ok": True}
 
@@ -808,10 +816,10 @@ class Daemon:
             return {"error": msg}
 
 
-async def serve(d):
+def _ipc_handler(d):
     async def handler(reader, writer):
         try:
-            line = await reader.readline()
+            line = await ipc.read_request(reader)
             if not line: return
             resp = await d.handle(json.loads(line))
             writer.write((json.dumps(resp, default=str) + "\n").encode())
@@ -825,16 +833,23 @@ async def serve(d):
                 pass
         finally:
             writer.close()
+    return handler
 
-    serve_task = asyncio.create_task(ipc.serve(NAME, handler))
+
+async def serve(d):
+    serve_task = asyncio.create_task(ipc.serve(NAME, _ipc_handler(d)))
     stop_task = asyncio.create_task(d.stop.wait())
+    watchers = [asyncio.create_task(_watch_cdp(d))]
+    if owner := _owner_pid():
+        watchers.append(asyncio.create_task(_watch_owner(d, owner)))
+    _stop_on_signals(d)
     await asyncio.sleep(0.05)  # let serve() bind so sock_addr() resolves to the live endpoint
-    log(f"listening on {ipc.sock_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    log(f"listening on {ipc.sock_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'}, owner={owner or 'none'})")
     try:
         await asyncio.wait({serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
         if serve_task.done(): await serve_task  # surfaces a serve crash
     finally:
-        for t in (serve_task, stop_task):
+        for t in (serve_task, stop_task, *watchers):
             t.cancel()
             try: await t
             except (asyncio.CancelledError, Exception): pass
@@ -852,15 +867,94 @@ async def serve(d):
                 async with d._dedicated_target_lock:
                     if d.dedicated_target_id and d.cdp:
                         try:
-                            await d.cdp.send_raw(
+                            await asyncio.wait_for(d.cdp.send_raw(
                                 "Target.closeTarget", {"targetId": d.dedicated_target_id}
-                            )
+                            ), timeout=2)
                             d.dedicated_target_id = None
                         except Exception as e:
                             log(f"close dedicated tab on shutdown: {e}")
         else:
             log("skip dedicated-tab cleanup: stale-session recovery did not stop")
         ipc.cleanup_endpoint(NAME)
+
+
+def _owner_pid():
+    """BH_OWNER_PID (opt-in): exit when that process is gone. The daemon runs in
+    its own session, so it otherwise outlives an owner that was SIGKILLed."""
+    raw = os.environ.get("BH_OWNER_PID", "").strip()
+    if not raw:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        pid = 0
+    if pid <= 0:
+        log(f"ignoring BH_OWNER_PID={raw!r}: not a positive pid")
+        return None
+    return pid
+
+
+def _pid_alive(pid):
+    if ipc.IS_WINDOWS:  # os.kill(pid, 0) would terminate the process on Windows
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k.WaitForSingleObject.restype = wintypes.DWORD
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        h = k.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not h:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: exists, not ours
+        try:
+            return k.WaitForSingleObject(h, 0) == 0x102  # WAIT_TIMEOUT: still running
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+async def _watch_owner(d, pid, interval=1.0):
+    while _pid_alive(pid):
+        await asyncio.sleep(interval)
+    log(f"owner process {pid} exited; shutting down")
+    d.stop.set()
+
+
+async def _watch_cdp(d):
+    """The CDP websocket never reconnects, so its end (e.g. 1001 going away when
+    a cloud browser times out) ends the daemon instead of leaving it stale."""
+    task = d.cdp._message_handler_task
+    if task is None:
+        return
+    await asyncio.wait({task})  # never cancels the CDP reader itself
+    ws = d.cdp.ws
+    log(f"CDP connection closed (code={getattr(ws, 'close_code', None)} reason={getattr(ws, 'close_reason', None) or ''}); shutting down")
+    d.stop.set()
+
+
+def _stop_on_signals(d):
+    """SIGTERM/SIGHUP run the normal shutdown, so a cloud browser is stopped on
+    exit. A second signal uses the default action."""
+    loop = asyncio.get_running_loop()
+    def on_signal(sig):
+        log(f"received {signal.Signals(sig).name}; shutting down")
+        loop.remove_signal_handler(sig)
+        d.stop.set()
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, on_signal, sig)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass  # Windows event loops
 
 
 async def main():
