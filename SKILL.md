@@ -297,6 +297,12 @@ Missing: ..."
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
 
+## Saved Scripts
+
+- If `goto_url` or `browser-harness scripts list --host <host>` shows a saved script for this site and task, run it: `browser-harness scripts run <host>/<name> --param k=v`. If it prints `drifted: ...`, fix that file and rerun it.
+- After a repeatable task works, save it: `browser-harness scripts save <name> --from-last --param k=v` (saves your last successful script; read params as `PARAMS["k"]`, end with an `assert`, print the result as JSON).
+- The first successful replay that prints JSON records its output shape in the file's `# expect:` line. A later replay is `drifted:` when it prints no JSON, a key goes missing, a type changes, or a value that had data comes back null or empty. If that output is actually correct (e.g. a story with no comments), rerun with `--accept` instead of loosening the script's own checks.
+
 ## Domain Skills
 
 Only applies when `BH_DOMAIN_SKILLS=1`. Otherwise ignore domain skills.
