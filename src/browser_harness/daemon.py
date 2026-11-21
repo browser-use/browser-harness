@@ -1,7 +1,8 @@
 """CDP WS holder + IPC relay (Unix socket on POSIX, TCP loopback on Windows). One daemon per BU_NAME."""
-import asyncio, json, os, platform, socket, sys, time, urllib.error, urllib.request
+import asyncio, json, os, platform, re, socket, sys, time, urllib.error, urllib.request
 from urllib.parse import urlparse
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import _ipc as ipc
@@ -34,7 +35,9 @@ NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
 LOG = str(ipc.log_path(NAME))
 PID = str(ipc.pid_path(NAME))
+STATE = ipc.state_path(NAME)  # owner -> tabs, so tabs survive a daemon restart
 BUF = 500
+GUARDED = ("Target.attachToTarget", "Target.closeTarget", "Target.activateTarget")  # never on another owner's tab
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
@@ -124,15 +127,26 @@ LOCAL_HANDSHAKE_TIMEOUT = None
 # How long get_ws_url() keeps waiting for DevToolsActivePort before giving up
 NO_TOGGLE_GRACE = 3
 TOGGLE_BOOT_GRACE = 12
-# Cancellation should make an in-flight CDP call finish immediately. Keep the
-# drain bounded anyway so shutdown fails closed if a client ignores cancellation.
-RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
-TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
+OWNER_IDLE = float(os.environ.get("BH_OWNER_IDLE", 1800))  # seconds before an idle owner's tabs are released
+OWNER_FORGET = float(os.environ.get("BH_OWNER_FORGET", 86400))  # seconds before an idle owner's last tab is given back too
+IDLE_EXIT = float(os.environ.get("BH_IDLE_EXIT", 1800))  # seconds before an unused named local daemon exits (CDP: only if set)
+SWEEP_EVERY = min(60, OWNER_IDLE, OWNER_FORGET, IDLE_EXIT)
+GONE = {  # why an owner lost a tab -> (typed error, what happened)
+    "closed": ("tab-closed", "was closed"),
+    "taken": ("tab-released", "was taken by another agent while you were idle"),
+    "idle": ("tab-released", "was given back while you were idle; it is still open and switch_tab(tab) takes it again"),
+}
+MARKS = {"deliverable": "\U0001F4CC", "handoff": "✋"}  # pin: stays for the person; raised hand: person acts now
 
 
 def tab_marker_enabled():
     """Whether the cosmetic controlled-tab title marker should be added."""
     return os.environ.get("BH_TAB_MARKER", "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def tab_marker_js(prefix):
+    """Replace any earlier marker ("\U0001F434<label><mark> ") at the start of the title with `prefix`."""
+    return f"(p=>{{const t=document.title.replace(/^\\u{{1F434}}\\S* /u,'');if(document.title!==p+t)document.title=p+t}})({json.dumps(prefix)})"
 
 
 def _devtools_port_live(base):
@@ -376,13 +390,10 @@ def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
 
-def is_reusable_blank_page(t):
-    """A plain about:blank tab that is safe to attach to and navigate"""
-    url = t.get("url", "")
-    return (
-        t["type"] == "page"
-        and (url == "about:blank" or url.startswith("about:blank#"))
-        and not t.get("title", "").startswith("Starting agent ")
+def is_blank(url):
+    """An empty tab: safe to reuse instead of opening another one."""
+    return url in ("", "about:blank", "data:text/html,") or url.startswith(
+        ("about:blank#", "chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")
     )
 
 
@@ -400,13 +411,6 @@ def harness_opened_inspect():
         return False
 
 
-def is_reusable_new_tab_page(t):
-    """The browser's own New Tab Page, ex: from a fresh launch"""
-    return t["type"] == "page" and t.get("url", "").startswith(
-        ("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab")
-    )
-
-
 class _PatientCDPClient(CDPClient):
     """CDPClient whose local Chrome approval handshake has no deadline."""
 
@@ -421,113 +425,286 @@ class _PatientCDPClient(CDPClient):
         self._message_handler_task = asyncio.create_task(self._handle_messages())
 
 
+@dataclass
+class Owner:
+    """One agent: the tabs it may drive, its current tab, its events and dialog."""
+    tabs: dict = field(default_factory=dict)  # target_id -> session_id, None until first use
+    current: str | None = None
+    events: deque = field(default_factory=lambda: deque(maxlen=BUF))
+    dialog: dict | None = None
+    dialog_session: str | None = None  # the tab session showing `dialog`
+    gone: str | None = None  # typed error returned once on the owner's next command
+    seen: float = field(default_factory=time.time)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    name: str | None = None  # from name_session(), shown in the owner's tab titles
+    marks: dict = field(default_factory=dict)  # target_id -> "deliverable" | "handoff"
+    created: set = field(default_factory=set)  # tabs this owner opened; release_tabs() closes the unmarked ones
+    released: set = field(default_factory=set)  # tabs given back while it was idle, to explain them when it returns
+
+
 class Daemon:
+    """One browser connection shared by many owners. A tab has at most one owner."""
+
     def __init__(self):
         self.cdp = None
-        self.session = None
-        self.target_id = None
-        self.dedicated_target_id = None
-        self._dedicated_target_lock = asyncio.Lock()
-        self._session_state_lock = asyncio.Lock()
-        self._active_recoveries = 0
-        self._recovery_tasks = set()
-        self._recoveries_idle = asyncio.Event()
-        self._recoveries_idle.set()
-        self._shutting_down = False
-        self._session_replacements = {}
-        self.events = deque(maxlen=BUF)
-        self.dialog = None
-        self.stop = None  # asyncio.Event, set inside start()
+        self.owners = {}         # owner key -> Owner
+        self.tab_owner = {}      # target_id -> owner key
+        self.session_owner = {}  # session_id -> owner key
+        self.info = {}           # target_id -> latest targetInfo
+        self.downloads = {}      # download guid -> owner key, while the download runs
+        self.stop = None         # asyncio.Event, set inside start()
+        self.last = time.time()  # last request other than ping
+        self.keep = os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"  # provisioned: never idle-exit
 
-    async def attach_first_page(self, replaces_session=None, enable_domains=True):
-        """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
-        targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-        # Named daemons (BU_NAME != "default") share one browser with other
-        # daemons — attaching to the first page makes parallel daemons fight
-        # over a single tab (navigations clobber each other). Give each named
-        # daemon its own dedicated tab instead. REMOTE_ID (cloud) browsers are
-        # already exclusive to this daemon, so first-page attach stays.
-        if NAME != "default" and not REMOTE_ID:
-            # The permission recovery flow can leave chrome://inspect open.
-            # Clean it up before returning from this early path as well.
-            if BROWSER_KIND == "local":
-                await self._close_inspect_tabs(targets)
-            pages_by_id = {t["targetId"]: t for t in targets if t["type"] == "page"}
-            # A stale CDP session does not necessarily mean its tab disappeared.
-            # Reattach to the current tab first, then the daemon's dedicated tab.
-            page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
-            if page is None:
-                # Two stale IPC requests can recover concurrently. Recheck
-                # inside a narrow lock so they share one replacement tab.
-                async with self._dedicated_target_lock:
-                    refreshed = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
-                    pages_by_id = {t["targetId"]: t for t in refreshed if t["type"] == "page"}
-                    page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
-                    if page is None:
-                        tid = (await self.cdp.send_raw(
-                            "Target.createTarget", {"url": "about:blank", "background": True}
-                        ))["targetId"]
-                        self.dedicated_target_id = tid
-                        log(f"named daemon {NAME}: created dedicated tab ({tid})")
-                        page = {"targetId": tid, "url": "about:blank", "type": "page"}
-            tid = page["targetId"]
-            self.session = (await self.cdp.send_raw(
-                "Target.attachToTarget", {"targetId": tid, "flatten": True}
-            ))["sessionId"]
-            self._record_session_replacement(replaces_session, self.session)
-            self.target_id = tid
-            log(f"attached {tid} ({page.get('url','')[:80]}) session={self.session}")
-            if enable_domains:
-                await self._enable_default_domains(self.session)
-            return page
+    def owner(self, key):
+        o = self.owners.setdefault(key, Owner())
+        o.seen = time.time()
+        return o
 
-        pages = [t for t in targets if is_real_page(t)]
-        if not pages:
-            # Fresh browser (ex: BU cloud) starts w about:blank; reuse it
-            pages = [t for t in targets if is_reusable_blank_page(t)]
-        if not pages:
-            # Freshly launched browser (ex: harness relaunching closed Chrome)
-            # starts with just the New Tab Page. Reuse it — creating about:blank
-            pages = [t for t in targets if is_reusable_new_tab_page(t)]
-        take_over = None
-        if not pages and harness_opened_inspect():
-            # After perms granted, only tab is often chrome://inspect
-            # Attach to it instead of creating a new about:blank
-            inspect_tabs = [t for t in targets if is_inspect_tab(t)]
-            if inspect_tabs:
-                pages = [inspect_tabs[0]]
-                take_over = inspect_tabs[0]["targetId"]
-        if not pages:
-            # No usable pages - create one instead of attaching to omnibox popup.
-            tid = (await self.cdp.send_raw(
-                "Target.createTarget", {"url": "about:blank", "background": True}
-            ))["targetId"]
-            log(f"no real pages found, created about:blank ({tid})")
-            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
-        self.session = (await self.cdp.send_raw(
-            "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
-        ))["sessionId"]
-        self._record_session_replacement(replaces_session, self.session)
-        self.target_id = pages[0]["targetId"]
-        log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
-        if take_over:
-            try:
-                await self.cdp.send_raw("Page.navigate", {"url": "about:blank"}, session_id=self.session)
-                log(f"took over inspect tab {take_over} -> about:blank")
-            except Exception as e:
-                log(f"take over inspect tab {take_over}: {e}")
-        if BROWSER_KIND == "local":
-            await self._close_inspect_tabs(targets)
-        if enable_domains:
-            await self._enable_default_domains(self.session)
-        return pages[0]
+    def _yours(self, o):
+        tabs = ", ".join(f"{t} {self.info.get(t, {}).get('url', '')}".strip() for t in o.tabs)
+        return f"Your tabs: {tabs or 'none'}."
+
+    def _root(self, tid):
+        """The outermost known frame above a target: its tab when Chrome reports every parent."""
+        for _ in range(16):
+            parent = self.info.get(tid, {}).get("parentFrameId")
+            if not parent:
+                break
+            tid = parent
+        return tid
+
+    def _holder(self, tid):
+        """Who holds the tab now; an iframe or worker counts as its tab. A tab whose owner has
+        been idle for OWNER_IDLE is free to take."""
+        key = self.tab_owner.get(self._root(tid))
+        return key if key and time.time() - self.owners[key].seen <= OWNER_IDLE else None
+
+    def _visible(self, key, info):
+        """Target info as this owner may see it. Another agent's tab, and any iframe not known
+        to sit in one of this owner's tabs, keeps its keys but shows an empty url and title."""
+        tid = info.get("targetId")
+        if info.get("type") == "iframe":
+            hidden = self.tab_owner.get(self._root(tid)) != key
+        else:
+            hidden = self._holder(tid) not in (None, key)
+        return {**info, "url": "", "title": ""} if hidden else info
+
+    async def _frame_tab(self, key, o, tid):
+        """The tab of this owner that an iframe target sits in, or None when that cannot be shown."""
+        tid = self._root(tid)
+        if tid in self.tab_owner:
+            return tid if self.tab_owner[tid] == key else None
+        # No tab above it is known: its parent is a same-process frame, or Chrome sent no parent.
+        # The owner's current tab can still vouch for a frame that one of its iframe elements owns.
+        sid = o.tabs.get(o.current)
+        try:
+            return o.current if sid and await self.cdp.send_raw("DOM.getFrameOwner", {"frameId": tid}, session_id=sid) else None
+        except Exception:
+            return None
+
+    async def _take(self, key, tid, **how):
+        """Own a free tab. If an idle owner still held it, that owner learns it on its next
+        command and its session on the tab is detached, so it cannot keep driving the tab."""
+        old = self.tab_owner.get(tid, key)
+        sid = self.owners[old].tabs.get(tid) if old != key else None
+        if old != key:
+            self._drop(tid, "taken")
+        self._own(key, tid, **how)
+        if sid:
+            await _silent(self.cdp.send_raw("Target.detachFromTarget", {"sessionId": sid}))
+
+    def _taken(self, o, tid, what="tab"):
+        return {"error": f"tab-taken: {what} {tid} is driven by another agent. Nothing was sent. {self._yours(o)}"}
+
+    def _closed(self, o, tid, why="closed"):
+        url = self.info.get(tid, {}).get("url", "")
+        kind, what = GONE[why]
+        return f"{kind}: your tab {tid}{' ' + url if url else ''} {what}. Nothing was sent. {self._yours(o)} Call new_tab(url) or switch_tab(tab)."
+
+    def _mine(self, key, o, tid):
+        """None when the owner holds tid, else the error to return."""
+        if self.tab_owner.get(tid) == key:
+            return None
+        if self._holder(tid):
+            return self._taken(o, tid)
+        if tid in o.released:
+            return {"error": self._closed(o, tid, "idle")}
+        return {"error": f"tab {tid} is not yours; switch_tab() to it first"}
+
+    def _own(self, key, tid, current=True, created=False):
+        o = self.owners[key]
+        self.tab_owner[tid] = key
+        o.tabs.setdefault(tid, None)
+        o.released.discard(tid)
+        if created:
+            o.created.add(tid)
+        if current:
+            o.current = tid
+        self._save()
+
+    def _drop(self, tid, why="closed"):
+        """Forget a tab. If it was the owner's current tab, its next command learns it once."""
+        key = self.tab_owner.pop(tid, None)
+        if key is None:
+            return
+        o = self.owners[key]
+        sid = o.tabs.pop(tid, None)
+        self.session_owner.pop(sid, None)
+        if sid and sid == o.dialog_session:
+            o.dialog = None  # its dialog went with it
+        o.marks.pop(tid, None)
+        o.created.discard(tid)
+        if o.current == tid:
+            o.current, o.gone = None, self._closed(o, tid, why)
+        self._save()
+
+    def _save(self):
+        state = {k: {"tabs": list(o.tabs), "current": o.current, "name": o.name, "marks": o.marks,
+                     "created": sorted(o.created)} for k, o in self.owners.items() if o.tabs}
+        try:  # best effort: a full disk must not take the daemon down
+            tmp = STATE.with_name(f"{STATE.name}.tmp")
+            tmp.write_text(json.dumps(state))
+            os.replace(tmp, STATE)
+        except OSError as e:
+            log(f"save owners: {e}")
+
+    def _load(self, pages):
+        """Owners keep their tabs, names and marks across daemon restarts."""
+        try:
+            state = json.loads(STATE.read_text())
+            for key, saved in state.items():
+                o = self.owner(key)
+                o.name = saved.get("name")
+                for tid in saved.get("tabs", []):
+                    if tid in pages:
+                        self._own(key, tid, current=tid == saved.get("current"), created=tid in saved.get("created", []))
+                        if saved.get("marks", {}).get(tid) in MARKS:
+                            o.marks[tid] = saved["marks"][tid]
+        except FileNotFoundError:
+            pass
+        except Exception as e:  # a damaged file must never keep the daemon from starting
+            log(f"load owners: {e!r}")
+
+    async def _current(self, key, o):
+        """The owner's current tab. A fresh owner gets its own background tab, never the person's."""
+        async with o.lock:
+            if o.current is None:
+                spare = [t for t, i in self.info.items() if REMOTE_ID and t not in self.tab_owner
+                         and i.get("type") == "page" and is_blank(i.get("url", ""))]
+                tid = spare[0] if spare else (await self.cdp.send_raw(
+                    "Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
+                self._own(key, tid, created=not spare)
+            return o.current
+
+    async def _session(self, key, o, tid):
+        """The owner's session on its tab, attached once on first use. A gone tab raises tab-closed."""
+        async with o.lock:
+            sid = o.tabs.get(tid)
+            if tid in o.tabs and sid is None:
+                try:
+                    sid = (await self.cdp.send_raw("Target.attachToTarget", {"targetId": tid, "flatten": True}))["sessionId"]
+                except RuntimeError as e:
+                    if "No target with given id" not in str(e):
+                        raise
+                    self._drop(tid)  # closed after it was taken, before first use
+                if tid in o.tabs:  # not closed while attaching
+                    o.tabs[tid], self.session_owner[sid] = sid, key
+                    await self._enable_default_domains(sid)
+                    self._mark(key, tid)
+            if tid not in o.tabs:
+                o.gone = None
+                raise RuntimeError(self._closed(o, tid))
+            return sid  # never None: a command without a session would run at browser level
+
+    async def _switch(self, key, o, tid):
+        """Attach tid if needed and make it the owner's current tab, in one round of calls.
+        Only the current tab streams Network events, so a busy background tab cannot push the
+        current tab's events out of the owner's ring. The current tab moves only on success."""
+        old = o.tabs.get(o.current) if o.current != tid else None
+
+        async def network(verb, sid):
+            if sid:
+                await _silent(asyncio.wait_for(self.cdp.send_raw(f"Network.{verb}", session_id=sid), timeout=2))
+        sid, *_ = await asyncio.gather(self._session(key, o, tid), network("disable", old),
+                                       network("enable", old and o.tabs.get(tid)), return_exceptions=True)
+        if isinstance(sid, BaseException):
+            await network("enable", old)
+            raise sid
+        o.current = tid
+        self._save()
+        return sid
+
+    def _mark(self, key, tid, prefix=None):
+        """Show in the tab title which agent holds it and its mark, off the synchronous IPC path."""
+        o = self.owners[key]
+        if not tab_marker_enabled() or not o.tabs.get(tid):
+            return None
+        if prefix is None:
+            # A session id is no name: it would put id fragments into titles, history and page JS.
+            label = o.name or ("" if key == "default" or re.fullmatch(r"[0-9a-fA-F-]{16,}", key) else re.sub(r"\W", "", key)[:12])
+            prefix = f"\U0001F434{label}{MARKS.get(o.marks.get(tid), '')} "
+        return asyncio.create_task(_silent(asyncio.wait_for(
+            self.cdp.send_raw("Runtime.evaluate", {"expression": tab_marker_js(prefix)}, session_id=o.tabs[tid]),
+            timeout=2,
+        )))
+
+    async def _release(self, key, o, how="idle"):
+        """idle (OWNER_IDLE): the owner's current tab is left alone; its other tabs are given
+        back, detached and left open, unmarked ones with a clean title.
+        forget (OWNER_FORGET): the current tab is given back the same way.
+        done (release_tabs): everything is given back, and the unmarked tabs the owner opened
+        itself are closed, never the browser's last real page. BH_CLOSE_IDLE_TABS=1 closes
+        those on idle too, except the current tab."""
+        for tid, sid in list(o.tabs.items()):
+            if tid == o.current and how == "idle":
+                continue
+            close = how == "done" or (os.environ.get("BH_CLOSE_IDLE_TABS") == "1" and tid != o.current)
+            last = sum(i.get("type") == "page" and is_real_page(i) for i in self.info.values()) <= 1
+            closed = close and tid in o.created and tid not in o.marks and not last
+            if closed:
+                await _silent(self.cdp.send_raw("Target.closeTarget", {"targetId": tid}))
+                self.info.pop(tid, None)
+            elif sid:
+                if tid not in o.marks and (task := self._mark(key, tid, prefix="")):
+                    await task  # a marked tab keeps its title for the person
+                await _silent(self.cdp.send_raw("Target.detachFromTarget", {"sessionId": sid}))
+            self._drop(tid, "idle")
+            if not closed and how != "done":
+                o.released.add(tid)
+        if how == "done":
+            o.gone = None  # it gave its current tab back itself
+
+    async def sweep(self):
+        """Release owners idle longer than OWNER_IDLE, and their last tab after OWNER_FORGET;
+        forget idle owners that hold nothing.
+        Then an unused named local daemon exits after IDLE_EXIT without requests; a CDP daemon
+        only if BH_IDLE_EXIT is set for it (its starter may come back hours later). Never the
+        default local one (Chrome would ask to Allow again), never a Cloud one (exit stops
+        the browser), never one a client requires to exist."""
+        for key, o in list(self.owners.items()):
+            idle = time.time() - o.seen
+            if idle <= OWNER_IDLE:
+                continue
+            if not o.tabs:
+                if not o.gone or idle > 2 * OWNER_FORGET:  # keep what a late returner must be told
+                    del self.owners[key]
+                continue
+            async with o.lock:  # never under a command that is attaching or opening a tab
+                idle = time.time() - o.seen  # the owner may have come back meanwhile
+                if idle > OWNER_IDLE:
+                    await self._release(key, o, "forget" if idle > OWNER_FORGET else "idle")
+        may_exit = (BROWSER_KIND == "local" and NAME != "default") or (BROWSER_KIND == "cdp" and "BH_IDLE_EXIT" in os.environ)
+        if may_exit and not self.keep and time.time() - self.last > IDLE_EXIT:
+            log(f"idle for {IDLE_EXIT:g}s, exiting")
+            self.stop.set()
 
     async def _close_inspect_tabs(self, targets):
         """Close chrome://inspect tabs left open by the permission recovery flow"""
         if not harness_opened_inspect():
             return
         for t in targets:
-            if t["targetId"] != self.target_id and is_inspect_tab(t):
+            if is_inspect_tab(t):
                 try:
                     await self.cdp.send_raw("Target.closeTarget", {"targetId": t["targetId"]})
                     log(f"closed leftover chrome://inspect tab {t['targetId']}")
@@ -539,98 +716,67 @@ class Daemon:
             pass
 
     async def _enable_default_domains(self, session_id):
-        """Enable Page/DOM/Runtime/Network on a CDP session.
+        """Enable Page/DOM/Runtime/Network on a CDP session, in parallel, each bounded.
 
-        Used by both initial attach and set_session (called after switch_tab/
-        new_tab). Without this, helpers that depend on Network.* events —
-        notably wait_for_network_idle() — silently stop receiving events
-        after a tab switch, because each fresh CDP session starts with all
-        domains disabled.
-
-        Runs the four enables in parallel via gather so the worst-case time is
-        bounded by a single CDP round trip rather than four sequential ones —
-        important on the set_session path, where the helper's IPC socket has
-        a 5s read timeout.
-        """
+        Each fresh session starts with all domains disabled; without Network,
+        wait_for_network_idle() silently sees no events."""
         async def enable_one(d):
             try:
-                await asyncio.wait_for(
-                    self.cdp.send_raw(f"{d}.enable", session_id=session_id),
-                    timeout=4,
-                )
+                await asyncio.wait_for(self.cdp.send_raw(f"{d}.enable", session_id=session_id), timeout=4)
             except Exception as e:
                 log(f"enable {d} on {session_id}: {e}")
         await asyncio.gather(*(enable_one(d) for d in ("Page", "DOM", "Runtime", "Network")))
 
-    def _record_session_replacement(self, stale_session, replacement_session):
-        """Remember which recovered session still controls the same tab."""
-        if not stale_session or not replacement_session or stale_session == replacement_session:
-            return
-        # Preserve chains so requests delayed across multiple recoveries still
-        # land on their original tab, never whichever tab is current now.
-        for source, replacement in list(self._session_replacements.items()):
-            if replacement == stale_session:
-                self._session_replacements[source] = replacement_session
-        self._session_replacements[stale_session] = replacement_session
-        while len(self._session_replacements) > 32:
-            self._session_replacements.pop(next(iter(self._session_replacements)))
-
-    def _begin_recovery(self):
-        """Register the current IPC handler unless shutdown has started."""
-        if self._shutting_down:
-            return None
-        task = asyncio.current_task()
-        if task is None:
-            return None
-        self._recovery_tasks.add(task)
-        self._active_recoveries += 1
-        self._recoveries_idle.clear()
-        return task
-
-    def _finish_recovery(self, task):
-        self._recovery_tasks.discard(task)
-        self._active_recoveries -= 1
-        if self._active_recoveries == 0:
-            self._recoveries_idle.set()
-
-    async def _cancel_and_drain_recoveries(self):
-        """Cancel active stale-session handlers and wait a bounded time."""
-        current = asyncio.current_task()
-        tasks = [
-            task for task in self._recovery_tasks
-            if task is not current and not task.done()
-        ]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            _done, pending = await asyncio.wait(
-                tasks, timeout=RECOVERY_CANCEL_DRAIN_TIMEOUT
-            )
-            if pending:
-                return False
-        return self._recoveries_idle.is_set()
-
-    def _schedule_tab_marker(self, session_id):
-        """Mark the controlled tab without extending the synchronous IPC path."""
-        if not tab_marker_enabled():
-            return None
-        return asyncio.create_task(_silent(asyncio.wait_for(
-            self.cdp.send_raw(
-                "Runtime.evaluate",
-                {"expression": TAB_MARKER_JS},
-                session_id=session_id,
-            ),
-            timeout=2,
-        )))
-
     def _record_event(self, method, params, session_id=None):
-        self.events.append({"method": method, "params": params, "session_id": session_id})
+        try:  # an error here would end the websocket reader and with it the daemon
+            self._route_event(method, params, session_id)
+        except Exception as e:
+            log(f"event {method}: {e!r}")
+
+    def _route_event(self, method, params, session_id=None):
+        key = self.session_owner.get(session_id)
+        if method == "Target.attachedToTarget" and key:
+            self.session_owner[params["sessionId"]] = key  # auto-attached iframes and workers
+        if method.startswith("Target.") and not session_id:
+            return self._target_event(method, params)
+        if not session_id:  # browser-level, such as downloads: only for the owner of the tab it came from
+            key = self.tab_owner.get(params.get("frameId")) or self.downloads.get(params.get("guid"))
+            if key and "guid" in params:
+                self.downloads[params["guid"]] = key
+                if params.get("state") in ("completed", "canceled"):
+                    del self.downloads[params["guid"]]
+        if key not in self.owners:  # unknown session, or its owner was forgotten
+            return
+        o = self.owners[key]
+        o.events.append({"method": method, "params": params, "session_id": session_id})
         if method == "Page.javascriptDialogOpening":
-            self.dialog = params
+            o.dialog, o.dialog_session = params, session_id
         elif method == "Page.javascriptDialogClosed":
-            self.dialog = None
+            o.dialog = None
         elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-            self._schedule_tab_marker(self.session)
+            for tid, sid in o.tabs.items():
+                if sid == session_id:
+                    self._mark(key, tid)
+
+    def _target_event(self, method, p):
+        info = p.get("targetInfo") or {}
+        tid = info.get("targetId") or p.get("targetId")
+        if method in ("Target.targetCreated", "Target.targetInfoChanged"):
+            self.info[tid] = info
+            opener = self.tab_owner.get(info.get("openerId"))
+            if method == "Target.targetCreated" and opener and info.get("type") == "page":
+                self._own(opener, tid, current=False)  # a popup belongs to its opener's owner; the person may have opened it
+        elif method == "Target.targetDestroyed":
+            self._drop(tid)
+            self.info.pop(tid, None)
+        elif method == "Target.targetCrashed" and (key := self.tab_owner.get(tid)):
+            o = self.owners[key]
+            if o.current == tid:
+                o.gone = f"tab-crashed: your tab {tid} {self.info.get(tid, {}).get('url', '')} crashed. Nothing was sent. Call goto_url(url) to reload it or new_tab(url)."
+        elif method == "Target.detachedFromTarget":
+            o = self.owners.get(self.session_owner.pop(p.get("sessionId"), None))
+            if o and o.tabs.get(tid) == p.get("sessionId"):
+                o.tabs[tid] = None  # reattached on next use
 
     async def start(self):
         self.stop = asyncio.Event()
@@ -655,12 +801,18 @@ class Daemon:
                     "browser-harness did not retry or create another connection"
                 )
             raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
-        await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
         async def tap(method, params, session_id=None):
             self._record_event(method, params, session_id)
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
+        targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        self.info = {t["targetId"]: t for t in targets}
+        if BROWSER_KIND == "local":
+            await self._close_inspect_tabs(targets)
+        await self.cdp.send_raw("Target.setDiscoverTargets", {"discover": True})
+        self._load({t["targetId"] for t in targets if t["type"] == "page"})
+        log("connected")
 
     async def handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
@@ -674,138 +826,157 @@ class Daemon:
         # daemon and not an unrelated process that reused our port post-crash.
         # `pid` lets restart_daemon() verify the live daemon's identity before
         # signaling — protects against SIGTERM-by-stale-pid-file after PID reuse.
-        if meta == "ping":        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND}
-        if meta == "drain_events":
-            out = list(self.events); self.events.clear()
-            return {"events": out}
-        if meta == "session":     return {"session_id": self.session}
-        if meta == "current_tab":
-            # Resolve the attached page's target info server-side. Helpers can't
-            # send Target.getTargetInfo themselves: daemon strips session_id for
-            # any Target.* method (browser-level call), and without a targetId
-            # Chrome silently returns the *browser* target.
-            if not self.target_id:
-                return {"error": "not_attached"}
-            try:
-                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
-            except Exception:
-                return {"error": "cdp_disconnected"}
-            return {"targetId": info.get("targetId"), "url": info.get("url", ""), "title": info.get("title", "")}
-        if meta == "connection_status":
-            if not self.target_id:
-                return {"error": "not_attached"}
-            try:
-                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": self.target_id}))["targetInfo"]
-            except Exception:
-                return {"error": "cdp_disconnected"}
-            page = None
-            if is_real_page(info):
-                page = {
-                    "targetId": info.get("targetId"),
-                    "title": info.get("title") or "(untitled)",
-                    "url": info.get("url") or "",
-                }
-            return {"target_id": self.target_id, "session_id": self.session, "page": page}
-        if meta == "set_session":
-            async with self._session_state_lock:
-                old_session = self.session
-                self.session = req.get("session_id")
-                self.target_id = req.get("target_id") or self.target_id
-                new_session = self.session
-            # Run the old-session Network.disable (defense in depth — keeps
-            # background-tab traffic out of the global event buffer; the
-            # consumer-side filter in wait_for_network_idle is the actual
-            # correctness gate) in parallel with the four enables on the new
-            # session. Different sessions, independent CDP requests. Keeps
-            # the synchronous reply under the helper's 5s IPC read timeout
-            # even on a remote daemon — sequentially these would have stacked
-            # to ~22s worst case.
-            tasks = []
-            if old_session and old_session != new_session:
-                async def disable_old():
-                    try:
-                        await asyncio.wait_for(
-                            self.cdp.send_raw("Network.disable", session_id=old_session),
-                            timeout=2,
-                        )
-                    except Exception: pass
-                tasks.append(disable_old())
-            tasks.append(self._enable_default_domains(new_session))
-            await asyncio.gather(*tasks)
-            # 🐴 tab-marker title prefix is purely cosmetic — fire-and-forget so
-            # it doesn't add to the synchronous IPC budget.
-            self._schedule_tab_marker(new_session)
-            return {"session_id": new_session}
-        if meta == "pending_dialog": return {"dialog": self.dialog}
+        if meta == "ping":
+            self.keep = self.keep or bool(req.get("keep"))
+            # `active` counts the other owners still using the daemon, so a protocol bump never restarts it under them.
+            active = sum(k != req.get("owner") and bool(o.tabs) and time.time() - o.seen < OWNER_IDLE for k, o in self.owners.items())
+            return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND, "endpoint": ipc.endpoint_label(),
+                    "protocol": ipc.PROTOCOL, "active": active}
+        self.last = time.time()
         if meta == "shutdown":
-            # Flip the barrier synchronously with recovery registration, then
-            # cancel/drain existing handlers. In particular, a CDP replay that
-            # never answers must not prevent Cloud cleanup from being attempted.
-            if self._shutting_down:
-                return {"error": "shutdown already in progress"}
-            self._shutting_down = True
-            if not await self._cancel_and_drain_recoveries():
-                # Preserve the daemon as a retryable cleanup authority. The
-                # strict caller will leave its endpoint and PID file intact.
-                self._shutting_down = False
-                return {"error": "stale-session recovery did not stop"}
             try:
-                stop_remote(strict=True)
+                stop_remote(strict=True)  # a failed Cloud stop keeps the daemon so a retry can stop billing
             except Exception as e:
-                # A failed Cloud stop must leave the daemon usable so a later
-                # shutdown request can retry the billable-browser cleanup.
-                async with self._session_state_lock:
-                    self._shutting_down = False
                 return {"error": str(e)}
             self.stop.set()
             return {"ok": True}
+        key = req.get("owner") or "default"
+        o = self.owner(key)
+        try:
+            return await (self._meta(key, o, meta, req) if meta else self._send(key, o, req))
+        except Exception as e:
+            return {"error": str(e)}
 
-        method = req["method"]
-        params = req.get("params") or {}
-        # Browser-level Target.* calls must not use a session (stale or otherwise).
-        # For everything else, explicit session in req wins; else default.
-        sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
+    async def _meta(self, key, o, meta, req):
+        if meta == "drain_events":
+            out = list(o.events)
+            o.events.clear()
+            return {"events": out}
+        if meta == "pending_dialog":
+            return {"dialog": o.dialog}
+        if meta == "tabs":
+            pages = [t for t in (await self.cdp.send_raw("Target.getTargets"))["targetInfos"] if t["type"] == "page"]
+            return {"tabs": [{**self._visible(key, t), "owner": "you" if self.tab_owner.get(t["targetId"]) == key else "taken" if self._holder(t["targetId"]) else None,
+                              "mark": o.marks.get(t["targetId"])} for t in pages]}
+        if meta == "iframe_target":
+            for tid, info in list(self.info.items()):
+                if info.get("type") == "iframe" and req["url"] in info.get("url", "") \
+                        and o.current and await self._frame_tab(key, o, tid) == o.current:
+                    return {"target_id": tid}
+            return {"target_id": None}
+        if meta == "release_tabs":
+            async with o.lock:
+                await self._release(key, o, "done")
+            return {"released": True}
+        if meta == "name_session":
+            o.name = re.sub(r"\s+", "-", str(req.get("name") or "").strip())[:16] or None
+            for tid in o.tabs:
+                self._mark(key, tid)
+            self._save()
+            return {"name": o.name}
+        if meta == "mark_tab":
+            tid, mark = req.get("target_id") or o.current, req.get("mark")
+            if mark not in (None, *MARKS):
+                return {"error": f"mark_tab: mark must be one of {sorted(MARKS)} or None, not {mark!r}"}
+            if err := self._mine(key, o, tid):
+                return err
+            if mark:
+                o.marks[tid] = mark
+            else:
+                o.marks.pop(tid, None)
+            self._mark(key, tid)
+            self._save()
+            return {"target_id": tid, "mark": mark}
+        if meta == "connection_status":
+            await self.cdp.send_raw("Browser.getVersion")  # raises when the browser connection is dead
+            page = None
+            if o.current:
+                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": o.current}))["targetInfo"]
+                if is_real_page(info):
+                    page = {"targetId": o.current, "title": info.get("title") or "(untitled)", "url": info.get("url") or ""}
+            return {"target_id": o.current, "session_id": o.tabs.get(o.current), "page": page}
+        if meta == "close_tab":
+            tid = req.get("target_id") or o.current
+            if tid is None:
+                return {"error": f"close_tab: you have no current tab. {self._yours(o)}"}
+            if err := self._mine(key, o, tid):
+                return err
+            await self.cdp.send_raw("Target.closeTarget", {"targetId": tid})
+            self._drop(tid)
+            return {"closed": tid}
+        if meta == "switch_tab":
+            tid = req["target_id"]
+            try:
+                info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": tid}))["targetInfo"]
+            except Exception:
+                return {"error": f"tab-closed: tab {tid} does not exist. Nothing was sent. {self._yours(o)} Call list_tabs()."}
+            if self._holder(tid) not in (None, key):
+                return self._taken(o, tid)
+            if req.get("url") and info.get("url") != req["url"] and self.tab_owner.get(tid) != key:
+                return {"error": f"tab-changed: tab {tid} now shows {info.get('url')}, not {req['url']}. Nothing was sent. Call list_tabs() and pick again."}
+            o.gone = None
+            await self._take(key, tid, current=False)
+            sid = await self._switch(key, o, tid)
+            if req.get("activate"):
+                await self.cdp.send_raw("Target.activateTarget", {"targetId": tid})
+            return {"target_id": tid, "session_id": sid}
+        if meta == "new_tab":
+            o.gone = None
+            reuse = req.get("reuse") and o.current and is_blank(self.info.get(o.current, {}).get("url", "-"))
+            tid = o.current if reuse else (await self.cdp.send_raw(
+                "Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
+            self._own(key, tid, current=False, created=not reuse)
+            return {"target_id": tid, "session_id": await self._switch(key, o, tid)}
+        if meta not in ("session", "current_tab"):
+            return {"error": f"unknown request {meta!r}: this daemon speaks protocol {ipc.PROTOCOL}; update browser-harness"}
+        if o.gone:
+            gone, o.gone = o.gone, None
+            return {"error": gone}
+        tid = await self._current(key, o)
+        if meta == "session":
+            return {"session_id": await self._session(key, o, tid)}
+        info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": tid}))["targetInfo"]
+        return {"targetId": tid, "url": info.get("url", ""), "title": info.get("title", "")}
+
+    async def _send(self, key, o, req):
+        method, params, sid = req["method"], req.get("params") or {}, req.get("session_id")
+        if method.startswith("Target."):  # browser-level; never routed through a tab session
+            if method in GUARDED and self._holder(params.get("targetId")) not in (None, key):
+                return self._taken(o, params.get("targetId"))
+            if method == "Target.attachToTarget" and self.info.get(params.get("targetId"), {}).get("type") == "iframe" \
+                    and await self._frame_tab(key, o, params["targetId"]) is None:
+                return {"error": f"frame-not-yours: iframe {params['targetId']} is not known to be inside a tab you hold. "
+                                 "Nothing was sent. switch_tab() to its tab, then use iframe_target(url)."}
+            result = await self.cdp.send_raw(method, params)
+            if method == "Target.attachToTarget":
+                self.session_owner.setdefault(result["sessionId"], key)
+                if self.info.get(params.get("targetId"), {}).get("type") == "page":
+                    await self._take(key, params["targetId"], current=False)  # a raw attach takes the tab like switch_tab
+            elif method == "Target.getTargets":
+                result = {**result, "targetInfos": [self._visible(key, t) for t in result.get("targetInfos", [])]}
+            elif method == "Target.getTargetInfo":
+                result = {**result, "targetInfo": self._visible(key, result.get("targetInfo", {}))}
+            return {"result": result}
+        if sid:  # an explicit session gets exactly that session, never a redirect
+            if self.session_owner.get(sid, key) != key:
+                return self._taken(o, sid, "session")
+            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+        if o.gone:
+            gone, o.gone = o.gone, None
+            return {"error": gone}
+        tid = await self._current(key, o)
+        sid = await self._session(key, o, tid)
         try:
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         except Exception as e:
-            msg = str(e)
-            if "Session with given id not found" in msg and sid:
-                # Explicit session callers asked for that exact session; do not
-                # silently redirect them to the daemon's current tab.
-                if req.get("session_id"):
-                    return {"error": msg}
-                recovery_task = self._begin_recovery()
-                if recovery_task is None:
-                    return {"error": "daemon is shutting down"}
-                try:
-                    recovered_here = False
-                    async with self._session_state_lock:
-                        if self._shutting_down:
-                            return {"error": "daemon is shutting down"}
-                        replacement_session = self._session_replacements.get(sid)
-                        if replacement_session is None and sid == self.session:
-                            log(f"stale session {sid}, re-attaching")
-                            if not await self.attach_first_page(
-                                replaces_session=sid, enable_domains=False
-                            ):
-                                return {"error": msg}
-                            replacement_session = self._session_replacements.get(sid)
-                            recovered_here = replacement_session is not None
-                    if recovered_here:
-                        await self._enable_default_domains(replacement_session)
-                    # Retry only on a session known to replace this exact stale
-                    # session. self.session may instead have changed because the
-                    # user deliberately switched tabs while this request waited.
-                    if replacement_session:
-                        try:
-                            return {"result": await self.cdp.send_raw(
-                                method, params, session_id=replacement_session
-                            )}
-                        except Exception as retry_error:
-                            return {"error": str(retry_error)}
-                finally:
-                    self._finish_recovery(recovery_task)
-            return {"error": msg}
+            if "Session with given id not found" not in str(e):
+                raise
+        log(f"stale session {sid}, re-attaching {tid}")  # the same tab once, never another tab
+        async with o.lock:
+            if o.tabs.get(tid) == sid:
+                o.tabs[tid] = None
+        sid = await self._session(key, o, tid)  # raises tab-closed when the tab is gone
+        return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
 
 
 async def serve(d):
@@ -826,40 +997,25 @@ async def serve(d):
         finally:
             writer.close()
 
-    serve_task = asyncio.create_task(ipc.serve(NAME, handler))
-    stop_task = asyncio.create_task(d.stop.wait())
+    async def sweeper():
+        while True:
+            await asyncio.sleep(SWEEP_EVERY)
+            await _silent(d.sweep())
+
+    tasks = {asyncio.create_task(ipc.serve(NAME, handler)), asyncio.create_task(d.stop.wait()), asyncio.create_task(sweeper())}
+    if reader := getattr(d.cdp, "_message_handler_task", None):
+        tasks.add(reader)  # the browser connection closed: exit instead of serving a dead browser
     await asyncio.sleep(0.05)  # let serve() bind so sock_addr() resolves to the live endpoint
     log(f"listening on {ipc.sock_addr(NAME)} (name={NAME}, remote={REMOTE_ID or 'local'})")
     try:
-        await asyncio.wait({serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
-        if serve_task.done(): await serve_task  # surfaces a serve crash
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in done:
+            t.result()  # surfaces a serve crash
     finally:
-        for t in (serve_task, stop_task):
+        for t in tasks:
             t.cancel()
             try: await t
             except (asyncio.CancelledError, Exception): pass
-        # A server crash/cancellation does not pass through meta=shutdown.
-        # Establish the same recovery barrier before touching owned targets.
-        d._shutting_down = True
-        recoveries_drained = await d._cancel_and_drain_recoveries()
-        # Named non-cloud daemons create one dedicated background tab. Shutdown
-        # has blocked new recovery and drained active recovery before setting
-        # d.stop (or finalization established the barrier after a server crash).
-        # Take the same locks, in the same order as recovery, so cleanup closes
-        # exactly the final daemon-owned target and never races creation.
-        if recoveries_drained:
-            async with d._session_state_lock:
-                async with d._dedicated_target_lock:
-                    if d.dedicated_target_id and d.cdp:
-                        try:
-                            await d.cdp.send_raw(
-                                "Target.closeTarget", {"targetId": d.dedicated_target_id}
-                            )
-                            d.dedicated_target_id = None
-                        except Exception as e:
-                            log(f"close dedicated tab on shutdown: {e}")
-        else:
-            log("skip dedicated-tab cleanup: stale-session recovery did not stop")
         ipc.cleanup_endpoint(NAME)
 
 
