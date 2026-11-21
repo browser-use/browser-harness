@@ -12,7 +12,7 @@ robots.txt (checked 2026-11-20, curl, the cloud browser and `urllib.robotparser`
 - **Answer (run 2026-11-20, 23:33 UTC):** population of Norway on 1 January **2026**: **5,627,400** (table 10211, the 22 rows of 10-year age groups by sex sum to the same number as the whole-country cell of table 07459). CPI **October 2026** (table 14700, updated 2026-11-10): **12-month rate 3.6 per cent**, index **104.3** (2025=100). Unemployment rate (Labour Force Survey) **September 2026**, seasonally adjusted, 15-74 years: **5.0 per cent**, **156,000** persons (table 13760, updated 2026-10-22).
 - **Read `/metadata` first.** Variable codes stay Norwegian with `lang=en` (`Region`, `Kjonn`, `Alder`, `Justering`, `ContentsCode`, `Tid`) and value codes are SSB's own (`Kjonn` `1` = Males, `2` = Females, `0` = Both sexes; `Justering` `S` = Seasonally adjusted). The English text is only in the labels. Blocks 1 and 3 pick by label and send codes.
 - **Search returns more than you want.** `query=population sex age` ranked a labour-force table (14077) first and the plain population table (10211) third, and default search hides closed series (21 CPI tables, 53 with `includeDiscontinued=true`). Block 1 keeps the first hit with exactly the variables you name and a label containing your words.
-- **Rate limit:** the user guide says 30 queries per minute per IP address and 800,000 cells per extract; every response carried `x-ratelimit-policy: 40;w=60s` and `x-ratelimit-limit: 40`, and `x-ratelimit-remaining` stayed at 39 or 38 through every run (38 on all 9 calls of block 1 in the verifier's re-run), so it is not a usable countdown. The blocks run serially at one call every 2.1 s (under 30 a minute), wait 60 s once on 429 (or `Retry-After`), 5xx or a network error, and stop after that. The guide also asks you to avoid 07:55-08:15 on release days and says tables are unavailable during the metadata updates at 05:00 and 11:30.
+- **Rate limit:** the user guide says 30 queries per minute per IP address and 800,000 cells per extract; every response carried `x-ratelimit-policy: 40;w=60s` and `x-ratelimit-limit: 40`, and `x-ratelimit-remaining` stayed at 39 or 38 through every run (38 on all 9 calls of block 1 in the verifier's re-run), so it is not a usable countdown. The blocks run serially at one call every 2.1 s (under 30 a minute), wait once on 429, 5xx or a network error (`Retry-After` seconds or date, else 60 s; over 120 s they stop), and stop after that. The guide also asks you to avoid 07:55-08:15 on release days and says tables are unavailable during the metadata updates at 05:00 and 11:30.
 
 ## What works
 
@@ -21,7 +21,7 @@ robots.txt (checked 2026-11-20, curl, the cloud browser and `urllib.robotparser`
 `on_ssb_tab()` opens one logged-out data.ssb.no API answer so `fetch()` runs same-origin (the API sends no `Access-Control-Allow-Origin`). `get()` returns parsed JSON on HTTP 200, waits 60 s once on 429/500/502/503/504 or a network error and otherwise raises. 9 `fetch()` calls: per topic one search, one `/metadata`, one `/data`. Add a topic by naming its search words, the exact variable labels, a label fragment and the values you want.
 
 ```python
-import json, time
+import email.utils, json, time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
@@ -69,6 +69,16 @@ START_JS = """(() => { window.__u = window.__u || {}; const id = String(Math.ran
   return id; })()"""
 POLL_JS = """(() => { const v = window.__u[%s]; if (v) delete window.__u[%s]; return v; })()"""
 
+def retry_wait(value, default):
+    """Retry-After is seconds or an HTTP date -> seconds to wait; `default` when it is absent or unreadable."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 calls = []
 def fetch(url):
     rid = json.dumps(js(START_JS % json.dumps(url)))
@@ -82,13 +92,17 @@ def fetch(url):
     return r
 
 def get(path, **params):
-    """GET API + path -> parsed JSON. Waits 60 s once on 429/5xx or a network error (the limit is per minute;
-    tables are also briefly unavailable during the 05:00 and 11:30 metadata updates); raises on anything else."""
+    """GET API + path -> parsed JSON. Waits once on 429/5xx or a network error: Retry-After seconds or date, else
+    60 s (the limit is per minute; tables are also briefly unavailable during the 05:00 and 11:30 metadata
+    updates); over 120 s stops. Raises on anything else."""
     url = API + path + "?" + urlencode(params)
     for attempt in range(2):
         r = fetch(url)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            time.sleep(60)
+            wait = retry_wait(r["headers"].get("retry-after"), 60)
+            if wait > 120:
+                raise RuntimeError(f"{url}: server asks to wait {wait} s: stopping")
+            time.sleep(wait)
             continue
         break
     if r["status"] != 200 or "json" not in r["headers"].get("content-type", ""):
@@ -384,7 +398,7 @@ csv: HTTP 200 text/csv; charset=iso-8859-1: ['"VareTjenesteGrp","Tolvmanedersend
 Sends a descriptive User-Agent and asks for gzip (`/metadata` for 07459 is 50,502 bytes plain, 15,922 gzipped). The API sends no `ETag` or `Last-Modified`, so the cache keeps each table's `/metadata` on disk and re-downloads it only when the table's `updated` stamp in `/tables/{id}` (one small call) has changed.
 
 ```python
-import gzip, json, os, sys, time, urllib.error, urllib.request, urllib.robotparser
+import email.utils, gzip, json, os, sys, time, urllib.error, urllib.request, urllib.robotparser
 from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -399,11 +413,20 @@ PAUSE = 2.1   # "the number of queries is currently 30 per minute", per IP addre
 UTC = timezone.utc
 stats = Counter()
 
+def retry_wait(value, default):
+    """Retry-After is seconds or an HTTP date -> seconds to wait; `default` when it is absent or unreadable."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def get(path, **params):
-    """GET API + path -> parsed JSON. Serial, 2.1 s apart, gzip. On 429 waits Retry-After seconds (else 60 s; over
-    120 s exits) once, on
-    5xx or a network error 60 s once (tables are briefly unavailable during the 05:00 and 11:30 metadata
-    updates); exits on anything else, printing SSB's error title."""
+    """GET API + path -> parsed JSON. Serial, 2.1 s apart, gzip. On 429 or 5xx waits Retry-After (seconds or a
+    date, else 60 s; over 120 s exits) once, on a network error 60 s once (tables are briefly unavailable during
+    the 05:00 and 11:30 metadata updates); exits on anything else, printing SSB's error title."""
     url = API + path + ("?" + urlencode(params) if params else "")
     for attempt in range(2):
         time.sleep(PAUSE)
@@ -419,8 +442,7 @@ def get(path, **params):
                 return json.loads(body)
         except urllib.error.HTTPError as e:
             if attempt == 0 and e.code in (429, 500, 502, 503, 504):
-                ra = e.headers.get("Retry-After") or ""   # seconds, or an HTTP date (then 60 s)
-                wait = int(ra) if e.code == 429 and ra.isdigit() else 60
+                wait = retry_wait(e.headers.get("Retry-After"), 60)
                 if wait > 120:
                     sys.exit(f"{url}: server asks to wait {wait} s: stopping")
                 time.sleep(wait)

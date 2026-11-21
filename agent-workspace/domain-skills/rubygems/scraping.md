@@ -19,7 +19,7 @@ robots.txt (checked 2026-11-20, curl, the cloud browser and block 3's own matche
 `on_rubygems_tab()` opens the logged-out Acceptable Use page and `fetch()` runs same-origin. `get()` returns parsed JSON on HTTP 200, `None` on 404 (a `text/plain` "This rubygem could not be found."), waits once on 429/5xx and otherwise raises. The reverse-dependencies HTML page is parsed inside the page with `DOMParser`, so only its 30 table rows come back (sending the 75 KB page to Python broke the harness in the first run). 5 `fetch()` calls per gem (record, latest.json, 2 dependent lists, the dependents page), 2 more for a name in the wrong case, 2 in all for an unknown name, 1 for the search: 25 in all.
 
 ```python
-import json, time, urllib.parse
+import email.utils, json, time, urllib.parse
 from datetime import datetime, timezone
 
 GEMS = ["rails", "nokogiri", "rspec", "redcloth", "rails-jason"]  # names as a person types them
@@ -68,13 +68,23 @@ def fetch(url, rows=False):
     time.sleep(PAUSE)
     return r
 
+def retry_wait(value, default):
+    """Retry-After is seconds or an HTTP date -> seconds to wait; `default` when it is absent or unreadable."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def get(url, want="json", rows=False):
     """-> parsed JSON (or HTML text), or None on 404 (a text/plain "This rubygem could not be found."). Waits once
-    on 429/5xx or a network error (Retry-After seconds, else 30 s; over 120 s stops). Raises on anything else."""
+    on 429/5xx or a network error (Retry-After seconds or date, else 30 s; over 120 s stops). Raises on anything else."""
     for attempt in range(2):
         r = fetch(url, rows)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            wait = float(r["retry"]) if (r["retry"] or "").isdigit() else 30
+            wait = retry_wait(r["retry"], 30)
             if wait > 120:
                 raise RuntimeError(f"{url}: server asks to wait {wait:.0f} s: stopping")
             time.sleep(wait)
@@ -342,7 +352,7 @@ autocomplete                        HTTP 200 application/json 621 chars list of 
 Two calls per gem: the record (latest version, licences, downloads) and the versions list (every version and platform, 1.47 MB for nokogiri, 129 KB with gzip). The versions list has no `yanked` field: a yanked version is simply missing, so a locked version that is not listed was yanked or never existed. Version order follows Gem::Version (any letter makes a pre-release; `4.0.0.beta1` < `4.0.0`). Run with an empty cache; the last pass shows the versions lists coming back as HTTP 304 (the gem records came back 200 every time: their gzip answers carry no ETag, see Gotchas).
 
 ```python
-import collections, gzip, hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
+import collections, email.utils, gzip, hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
 from datetime import datetime, timezone
 
 LOCK = {"rails": "7.1.3", "nokogiri": "1.16.0", "rspec": "3.13.0", "puma": "6.4.2", "sidekiq": "7.2.1",
@@ -361,9 +371,19 @@ CACHE = os.path.expanduser(CACHE_DIR)
 PAUSE = 0.5  # "API and website: 10 requests per second"; serial and well under it
 calls = collections.Counter()
 
+def retry_wait(value, default):
+    """Retry-After is seconds or an HTTP date -> seconds to wait; `default` when it is absent or unreadable."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def http(url, headers=None):
     """GET with gzip -> (status, headers, body bytes). 304 and 404 are returned, not raised. Waits once on 429/5xx or
-    a network error (Retry-After seconds, else 30 s; over 120 s exits); exits on any other error."""
+    a network error (Retry-After seconds or date, else 30 s; over 120 s exits); exits on any other error."""
     for attempt in range(2):
         time.sleep(PAUSE)
         req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Encoding": "gzip", **(headers or {})})
@@ -377,8 +397,7 @@ def http(url, headers=None):
             if e.code in (304, 404):
                 return e.code, e.headers, b""
             if e.code in (429, 500, 502, 503, 504) and attempt == 0:
-                ra = e.headers.get("Retry-After") or ""
-                wait = int(ra) if ra.isdigit() else 30
+                wait = retry_wait(e.headers.get("Retry-After"), 30)
                 if wait > 120:
                     sys.exit(f"{url}: server asks to wait {wait} s: stopping")
                 time.sleep(wait)

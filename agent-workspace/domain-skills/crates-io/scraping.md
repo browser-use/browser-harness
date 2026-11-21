@@ -19,7 +19,7 @@ robots.txt (checked 2026-11-20, curl, the cloud browser and `urllib.robotparser`
 `on_crates_tab()` opens the logged-out Data Access Policy page (a JavaScript app, so it waits for the text) and `fetch()` runs same-origin. The browser sends its own User-Agent, as the crates.io web app does; for scripted use, send your own (blocks 3 and 4). `get()` returns parsed JSON on HTTP 200, `None` on 404 (a JSON `errors` body), waits once on 429/5xx and otherwise raises. 3 `fetch()` calls per crate (record, versions, dependents), 2 for an unknown name, 1 for the search: 15 in all.
 
 ```python
-import json, re, time, urllib.parse
+import email.utils, json, re, time, urllib.parse
 from datetime import datetime, timezone
 
 CRATES = ["serde", "tokio", "rustls", "Serde-JSON", "serde-jason"]  # names as a person types them
@@ -64,13 +64,23 @@ def fetch(url):
     time.sleep(PAUSE)
     return r
 
+def retry_wait(value, default):
+    """Retry-After is seconds or an HTTP date -> seconds to wait; `default` when it is absent or unreadable."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def get(path):
     """-> parsed JSON, or None on 404 (a JSON {"errors": ...} body). Waits once on 429/5xx or a network error
-    (Retry-After seconds, else 30 s; over 120 s stops). Raises on anything else, e.g. 400 or 403."""
+    (Retry-After seconds or date, else 30 s; over 120 s stops). Raises on anything else, e.g. 400 or 403."""
     for attempt in range(2):
         r = fetch(API + path)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            wait = float(r["retry"]) if (r["retry"] or "").isdigit() else 30
+            wait = retry_wait(r["retry"], 30)
             if wait > 120:
                 raise RuntimeError(f"{path}: server asks to wait {wait:.0f} s: stopping")
             time.sleep(wait)
@@ -87,9 +97,10 @@ def stable(num):
     return "-" not in num.split("+")[0]
 
 def versions(name):
-    """-> (highest non-yanked stable version, highest version overall), semver order, up to 3 pages of 20."""
+    """-> (highest non-yanked stable version, highest version overall), semver order, 20 per page, paging on
+    until a stable version shows up or the list ends."""
     q, top = f"/crates/{name}/versions?sort=semver&per_page=20", None
-    for _ in range(3):
+    while True:
         d = get(q)
         top = top or (d["versions"] or [None])[0]
         for v in d["versions"]:
@@ -349,11 +360,11 @@ index.crates.io/se/rd/serde page load HTTP 200: 316 lines, last line vers '1.0.2
 The index gives every version with `yanked` and `pubtime`, so the latest stable, the newest pre-release and what a caret requirement (`"1.38"` means `^1.38`) resolves to are computed locally. The API adds downloads and the repository (1 call per crate, 1.1 s apart). `/crates/<name>/downloads` gives 90 days of daily counts: per version for the top versions (5 for serde), plus `meta.extra_downloads` for all the others. Run with an empty cache; the last pass shows every index file coming back as HTTP 304.
 
 ```python
-import collections, hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
+import collections, email.utils, hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
 from datetime import datetime, timedelta, timezone
 
 DEPS = {"serde": "1.0.200", "tokio": "1.38", "rustls": "0.23.12", "reqwest": "0.11.27", "clap": "4.5.4",
-        "serde-json": "1.0.120", "libc": "0.2.155", "rand": "0.8.5"}  # [dependencies] from a Cargo.toml
+        "serde-json": "1.0.120", "libc": "0.2.155", "rand": "0.8.5"}  # [dependencies] from a Cargo.toml (bare or ^ only)
 DOWNLOADS_FOR = ["tokio", "reqwest"]  # also show the last 7 complete days of downloads for these
 
 UA = "crates-io-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"  # identify yourself (policy)
@@ -367,9 +378,19 @@ API_PAUSE = 1.1    # Data Access Policy: at most 1 request per second to the API
 INDEX_PAUSE = 0.2  # "No rate limits are required" for the sparse index; still serial and gentle
 calls = collections.Counter()
 
+def retry_wait(value, default):
+    """Retry-After is seconds or an HTTP date -> seconds to wait; `default` when it is absent or unreadable."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def http(url, headers=None, pause=API_PAUSE):
     """GET -> (status, headers, body bytes). 304 and 404 are returned, not raised. Waits once on 429/5xx or a
-    network error (Retry-After seconds, else 30 s; over 120 s exits); exits on any other error."""
+    network error (Retry-After seconds or date, else 30 s; over 120 s exits); exits on any other error."""
     for attempt in range(2):
         time.sleep(pause)
         try:
@@ -380,8 +401,7 @@ def http(url, headers=None, pause=API_PAUSE):
             if e.code in (304, 404):
                 return e.code, e.headers, e.read()
             if e.code in (429, 500, 502, 503, 504) and attempt == 0:
-                ra = e.headers.get("Retry-After") or ""
-                wait = int(ra) if ra.isdigit() else 30
+                wait = retry_wait(e.headers.get("Retry-After"), 30)
                 if wait > 120:
                     sys.exit(f"{url}: server asks to wait {wait} s: stopping")
                 time.sleep(wait)
@@ -451,6 +471,10 @@ for host, path in (("https://crates.io", "/api/v1/crates/serde"), (INDEX, "/se/r
 now = datetime.now(timezone.utc)
 print(f"\nCargo.toml check against crates.io, {now:%Y-%m-%d %H:%M} UTC")
 for typed, req in DEPS.items():
+    if not re.fullmatch(r"\^?\d+(\.\d+){0,2}", req.strip()):  # ~1.2, >=1.2, <2, 1.*, =1.2.3 need a full parser
+        print(f"  {typed:<11} {req:<9} skipped: only bare or ^ requirements are handled here")
+        continue
+    req = req.strip().lstrip("^")
     name, vers = index_versions(typed)
     if vers is None:
         print(f"  {typed:<11} {req:<9} not in the index (HTTP 404 for every spelling tried)")

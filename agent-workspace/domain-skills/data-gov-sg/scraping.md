@@ -12,7 +12,7 @@ robots.txt (checked 2026-11-20, curl, the cloud browser and `urllib.robotparser`
 - **Answer (block 1, 2026-11-21 08:05 SGT; block 3 at 08:07 shows the same PSI and PM2.5):** **Tampines**: 2-hour forecast **Light Rain** (7.30-9.30 am), **27.4 deg C** at Paya Lebar Meteorological Station (4.6 km away, 07:58), **0 mm** in the 5 minutes to 07:55 at Tampines Avenue 5 (0.1 km), east region **24-hr PSI 38**, **1-hr PM2.5 9 µg/m3** (08:00). **Jurong West**: Cloudy, 26.8 deg C at Nanyang Avenue (2.7 km), 0 mm, west PSI 55, PM2.5 7. **Marina Bay** (1.2834, 103.8607 -> area "City"): Cloudy, 27.1 deg C at Scotts Road (4.0 km), 0 mm at Marina Barrage, south PSI 43, PM2.5 3. All five regions were in NEA's "0 - 100 Good to Moderate" PSI band and PM2.5 "Band 1 (Normal)".
 - **Two naming styles.** `two-hr-forecast` is snake_case (`area_metadata`, `label_location`, `update_timestamp`, `valid_period`); every other endpoint here is camelCase (`regionMetadata`, `labelLocation`, `updatedTimestamp`, `stationId`, `readingType`, `validPeriod`). The PSI and PM2.5 API notes on data.gov.sg say `region_metadata`; the response (and the schema on the same page) says `regionMetadata`.
 - **Nearest, not "in".** Station readings come as a station list plus values keyed by `stationId`; there are about 17 temperature stations (one answer at 08:14 SGT listed 16) and 87 rain gauges, so the nearest thermometer can be several km away (Tampines -> Paya Lebar, 4.6 km). PSI and PM2.5 come for 5 regions (north, south, east, west, central) with one label point each and no boundaries; the blocks take the nearest label and print the distance. There is no national value.
-- **Rate limit: 6 calls per 10 s without a key** ("The rate limits are reset every 10 seconds", 429 when exceeded; 12 with a dev key, 30 with a prod key; guide.data.gov.sg API Rate Limits). No rate-limit headers and no `Cache-Control` or `ETag` came back. Blocks 1 and 2 wait 2.1 s after each call; block 3 allows at most 5 calls in any 10 s and keeps a 60 s disk cache. All wait 10 s once on 429, 5xx or a network error and stop after that. Send a User-Agent: Python's default one gets HTTP 403.
+- **Rate limit: 6 calls per 10 s without a key** ("The rate limits are reset every 10 seconds", 429 when exceeded; 12 with a dev key, 30 with a prod key; guide.data.gov.sg API Rate Limits). No rate-limit headers and no `Cache-Control` or `ETag` came back. Blocks 1 and 2 wait 2.1 s after each call; block 3 allows at most 5 calls in any 10 s and keeps a 60 s disk cache. All wait once on 429, 5xx or a network error (10 s; block 3 honours `Retry-After`, seconds or date, and stops above 120 s) and stop after that. Send a User-Agent: Python's default one gets HTTP 403.
 
 ## What works
 
@@ -152,7 +152,7 @@ for place in PLACES:
     reg = min(regions, key=lambda r: km(at, regions[r]))
     v, w = p["readings"]["psi_twenty_four_hourly"][reg], q["readings"]["pm25_one_hourly"][reg]
     print(f"  region {reg:<10} 24-hr PSI {v} {psi_band(v)}, 1-hr PM2.5 {w} µg/m3 {pm25_band(w)}; "
-          f"hour {ts(p['timestamp']):%H:%M}, nearest of {len(regions)} region labels ({km(at, regions[reg]):.1f} km)")
+          f"PSI hour {ts(p['timestamp']):%H:%M}, PM2.5 hour {ts(q['timestamp']):%H:%M}, nearest of {len(regions)} region labels ({km(at, regions[reg]):.1f} km)")
 
 hr = p["readings"]["psi_twenty_four_hourly"]
 print(f"\nall regions, 24-hr PSI at {ts(p['timestamp']):%H:%M}: " + ", ".join(f"{r} {hr[r]}" for r in sorted(hr))
@@ -161,7 +161,7 @@ print(f"Contains information from {', '.join(DATASETS.values())} accessed on {no
       f"available under the terms of the Singapore Open Data Licence version 1.0 {LICENCE}")
 ```
 
-Output (from the second run on 2026-11-21, 08:05 SGT, 00:05 UTC; the first run at 07:57 SGT gave the same areas, stations and regions with the 07:00 PSI hour):
+Output (from the second run on 2026-11-21, 08:05 SGT, 00:05 UTC; the first run at 07:57 SGT gave the same areas, stations and regions with the 07:00 PSI hour). The region lines show the PSI and PM2.5 hours separately since a review fix; that run's hours were both 08:00, and a re-run at 08:44 SGT printed the same areas, stations, regions and PSI and PM2.5 values with readings from 08:35-08:38:
 
 ```text
 data.gov.sg real-time weather and air quality, checked 2026-11-21 08:05 SGT (00:05 UTC)
@@ -171,13 +171,13 @@ data.gov.sg real-time weather and air quality, checked 2026-11-21 08:05 SGT (00:
   2-hour forecast   Light Rain
   air temperature   27.4 deg C at Paya Lebar Meteorological Station (S06, 4.6 km), 07:58
   rainfall          0 mm in 5 min at Tampines Avenue 5 (S84, 0.1 km), 07:55
-  region east       24-hr PSI 38 Good to Moderate, 1-hr PM2.5 9 µg/m3 Band 1 (Normal); hour 08:00, nearest of 5 region labels (1.4 km)
+  region east       24-hr PSI 38 Good to Moderate, 1-hr PM2.5 9 µg/m3 Band 1 (Normal); PSI hour 08:00, PM2.5 hour 08:00, nearest of 5 region labels (1.4 km)
 
 'jurong west' -> Jurong West (area label 1.340, 103.705)
   2-hour forecast   Cloudy
   air temperature   26.8 deg C at Nanyang Avenue (S44, 2.7 km), 07:58
   rainfall          0 mm in 5 min at Jurong West Street 73 (S228, 0.9 km), 07:55
-  region west       24-hr PSI 55 Good to Moderate, 1-hr PM2.5 7 µg/m3 Band 1 (Normal); hour 08:00, nearest of 5 region labels (2.0 km)
+  region west       24-hr PSI 55 Good to Moderate, 1-hr PM2.5 7 µg/m3 Band 1 (Normal); PSI hour 08:00, PM2.5 hour 08:00, nearest of 5 region labels (2.0 km)
 
 'Toa Payo': not a 2-hour forecast area; closest names ['Toa Payoh']
 
@@ -185,7 +185,7 @@ data.gov.sg real-time weather and air quality, checked 2026-11-21 08:05 SGT (00:
   2-hour forecast   Cloudy
   air temperature   27.1 deg C at Scotts Road (S111, 4.0 km), 07:58
   rainfall          0 mm in 5 min at Marina Barrage (S108, 1.1 km), 07:55
-  region south      24-hr PSI 43 Good to Moderate, 1-hr PM2.5 3 µg/m3 Band 1 (Normal); hour 08:00, nearest of 5 region labels (4.7 km)
+  region south      24-hr PSI 43 Good to Moderate, 1-hr PM2.5 3 µg/m3 Band 1 (Normal); PSI hour 08:00, PM2.5 hour 08:00, nearest of 5 region labels (4.7 km)
 
 all regions, 24-hr PSI at 08:00: central 45, east 38, north 38, south 43, west 55; 1-hr PM2.5 at 08:00: central 14, east 9, north 9, south 3, west 7
 Contains information from 2-hour Weather Forecast, Air Temperature across Singapore, Rainfall across Singapore, Pollutant Standards Index (PSI), PM2.5 accessed on 21 November 2026 from data.gov.sg which is made available under the terms of the Singapore Open Data Licence version 1.0 https://data.gov.sg/open-data-licence
@@ -196,7 +196,7 @@ Contains information from 2-hour Weather Forecast, Air Temperature across Singap
 11 page loads and 16 in-page `fetch()` calls (about 34 s of API pacing) in the same tab. The API notes on the dataset pages sit in the page's embedded JSON and a panel that `innerText` skipped, so the block reads `textContent` and matches the notes as written there (with backticks).
 
 ```python
-import json, re, time
+import json, re, time, urllib.parse
 from datetime import datetime, timedelta, timezone
 
 API = "https://api-open.data.gov.sg/v2/real-time/api/"
@@ -316,7 +316,7 @@ y = (today - timedelta(days=1)).strftime("%Y-%m-%d")
 t1 = json.loads(raw(f"air-temperature?date={y}")["text"])["data"]
 ts1 = [x["timestamp"][11:16] for x in t1["readings"]]
 print(f"air-temperature?date={y}: page 1 has {len(ts1)} readings {ts1[0]}..{ts1[-1]}, paginationToken {len(t1.get('paginationToken') or '')} chars")
-t2 = json.loads(raw(f"air-temperature?date={y}&paginationToken={t1['paginationToken']}")["text"])["data"]
+t2 = json.loads(raw(f"air-temperature?date={y}&paginationToken={urllib.parse.quote(t1['paginationToken'], safe='')}")["text"])["data"]
 ts2 = [x["timestamp"][11:16] for x in t2["readings"]]
 print(f"  page 2 has {len(ts2)} readings {ts2[0]}..{ts2[-1]}; minutes per reading step {sorted({int(a[3:]) - int(b[3:]) for a, b in zip(ts1, ts1[1:]) if a[:2] == b[:2]})}")
 at = (today - timedelta(hours=3)).strftime("%Y-%m-%dT%H:00:00")
@@ -327,9 +327,13 @@ for label, path in (("date=21-11-2026      ", "two-hr-forecast?date=21-11-2026")
                     ("v1 path on v2 host   ", "environment/air-temperature")):
     r = raw(path)
     print(f"{label} HTTP {r['status']} {r['headers'].get('content-type')}: {' '.join(r['text'].split())[:150]}")
+print(f"\nContains information from 2-hour Weather Forecast, 24-hour Weather Forecast, Air Temperature across Singapore, "
+      f"Rainfall across Singapore, Relative Humidity across Singapore, Wind Speed across Singapore, Ultraviolet Index (UVI), "
+      f"Pollutant Standards Index (PSI), PM2.5 accessed on {today:%d %B %Y} from data.gov.sg which is made available under "
+      f"the terms of the Singapore Open Data Licence version 1.0 https://data.gov.sg/open-data-licence")
 ```
 
-Output (from the fourth run on 2026-11-21, 08:04 SGT; the first three runs found the same endpoint shapes and errors and were used to fix the page needles):
+Output (from the fourth run on 2026-11-21, 08:04 SGT; the first three runs found the same endpoint shapes and errors and were used to fix the page needles; the credit line at the end was added after review and printed by a re-run at 08:44 SGT, which matched the rest apart from sizes and the forecast values of the hour (only Cloudy by then)):
 
 ```text
 data.gov.sg/robots.txt           HTTP 200: user-agent lines ['User-agent: *'], Disallow [], other lines []
@@ -389,6 +393,8 @@ two-hr-forecast?date=2026-11-21T05:00:00: 1 item, valid '5.00 am to 7.00 am', up
 date=21-11-2026       HTTP 400 application/json; charset=utf-8: {"code":4,"name":"ERROR_PARAMS","data":null,"errorMsg":"Invalid date format. Date format must be YYYY-MM-DD (2024-06-01) or YYYY-MM-DDTHH:mm:ss (2024-
 misspelled endpoint   HTTP 404 application/json; charset=utf-8: {"code":28,"name":"NOT_FOUND","data":null,"errorMsg":"Route not found"}
 v1 path on v2 host    HTTP 404 application/json; charset=utf-8: {"code":28,"name":"NOT_FOUND","data":null,"errorMsg":"Route not found"}
+
+Contains information from 2-hour Weather Forecast, 24-hour Weather Forecast, Air Temperature across Singapore, Rainfall across Singapore, Relative Humidity across Singapore, Wind Speed across Singapore, Ultraviolet Index (UVI), Pollutant Standards Index (PSI), PM2.5 accessed on 21 November 2026 from data.gov.sg which is made available under the terms of the Singapore Open Data Licence version 1.0 https://data.gov.sg/open-data-licence
 ```
 
 In a browser, `fetch()` only sees the response headers that CORS exposes (here `content-type`); block 4 shows the full set.
@@ -398,7 +404,7 @@ In a browser, `fetch()` only sees the response headers that CORS exposes (here `
 Sends a descriptive User-Agent (the API ToS: do not mask your client's identity). An API key is optional: put it in `DATA_GOV_SG_API_KEY` and it goes out as `x-api-key`; the block never prints it. 7 API calls on an empty cache; 8.8 s in all went to waiting for the 10 s window.
 
 ```python
-import hashlib, json, math, os, sys, time, urllib.error, urllib.request, urllib.robotparser
+import email.utils, hashlib, json, math, os, sys, time, urllib.error, urllib.request, urllib.robotparser
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -416,9 +422,20 @@ SGT = timezone(timedelta(hours=8))
 LICENCE = "https://data.gov.sg/open-data-licence"
 calls, stats = [], {"net": 0, "cache": 0, "bytes": 0, "waited": 0.0}
 
+def retry_wait(value, default):
+    """Retry-After is seconds or an HTTP date -> seconds to wait; `default` when it is absent or unreadable."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def get(path):
-    """API + path -> the "data" object. Disk copy reused for 60 s. At most 5 calls in any 10 s. Waits 10 s once on
-    429/5xx or a network error (the limit window resets every 10 s); exits on anything else or a non-zero "code"."""
+    """API + path -> the "data" object. Disk copy reused for 60 s. At most 5 calls in any 10 s. Waits once on
+    429/5xx (Retry-After seconds or date, else 10 s, as the limit window resets every 10 s; over 120 s exits) or
+    a network error (10 s); exits on anything else or a non-zero "code"."""
     f = os.path.join(CACHE, hashlib.sha256(path.encode()).hexdigest())
     try:
         if time.time() - os.path.getmtime(f) < FRESH:
@@ -449,7 +466,10 @@ def get(path):
         except urllib.error.HTTPError as e:
             msg = " ".join(e.read().decode(errors="replace").split())[:150]
             if e.code in (429, 500, 502, 503, 504) and attempt == 0:
-                time.sleep(10)
+                wait = retry_wait(e.headers.get("Retry-After"), 10)
+                if wait > 120:
+                    sys.exit(f"{path}: server asks to wait {wait} s: stopping")
+                time.sleep(wait)
                 continue
             sys.exit(f"HTTP {e.code} {path}: {msg}")
         except OSError as e:   # DNS, refused connection, timeout, reset
