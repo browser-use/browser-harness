@@ -237,6 +237,19 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         cdp("Input.dispatchKeyEvent", type="keyUp",
             **{k: v for k, v in select_all.items() if k != "commands"})
         press_key("Backspace")
+    else:
+        # Append semantics: a first focus() parks the caret at 0, so typed text
+        # would land before the existing value. Move it to the end.
+        js(
+            f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
+            f"if(!e)return;"
+            f"if('value'in e&&e.setSelectionRange)"
+            f"{{try{{e.setSelectionRange(e.value.length,e.value.length)}}catch(_){{}}return}}"
+            # contenteditable has no setSelectionRange; collapse a Range to the end
+            # instead, or the caret stays at 0 and 'append' prepends.
+            f"const r=document.createRange();r.selectNodeContents(e);r.collapse(false);"
+            f"const s=document.getSelection();s.removeAllRanges();s.addRange(r);}})()"
+        )
     for ch in text:
         press_key(ch)
     js(
