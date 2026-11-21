@@ -133,7 +133,7 @@ def test_fill_input_focuses_types_and_fires_events():
 
     def fake_js(expr, **kwargs):
         js_calls.append(expr)
-        return True  # focus call must return True (element found)
+        return [10, 20, 100]  # element box: found, visible
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):
@@ -147,7 +147,7 @@ def test_fill_input_focuses_types_and_fires_events():
 
 def test_fill_input_raises_when_element_not_found():
     def fake_js(expr, **kwargs):
-        return False  # element not found
+        return None  # element not found
 
     with patch("browser_harness.helpers.js", side_effect=fake_js):
         with pytest.raises(RuntimeError, match="element not found"):
@@ -168,7 +168,7 @@ def _fill_input_cdp_calls(monkeypatch, user_agent, texts=("x",)):
         return {"userAgent": user_agent} if method == "Browser.getVersion" and user_agent is not None else {}
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
-         patch("browser_harness.helpers.js", return_value=True):  # element found
+         patch("browser_harness.helpers.js", return_value=[10, 20, 100]):  # element found
         for text in texts:
             helpers.fill_input("#inp", text, clear_first=True)
     return calls
@@ -227,7 +227,7 @@ def test_fill_input_no_clear_skips_ctrl_a():
         return {}
 
     def fake_js(expr, **kwargs):
-        return True  # element found
+        return [10, 20, 100]  # element found
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
          patch("browser_harness.helpers.js", side_effect=fake_js):
@@ -616,7 +616,7 @@ def test_fill_input_types_each_character_as_a_real_key():
         return {}
 
     with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
-         patch("browser_harness.helpers.js", side_effect=lambda *_a, **_k: True):
+         patch("browser_harness.helpers.js", side_effect=lambda *_a, **_k: [10, 20, 100]):
         helpers.fill_input("#inp", "Hi!", clear_first=False)
 
     typed = [(e["key"], e["code"], e["windowsVirtualKeyCode"], bool(e["modifiers"] & 8))
@@ -738,3 +738,263 @@ def test_js_keeps_base_exception_from_evaluation_when_detach_also_raises():
         KeyboardInterrupt, match="evaluation interrupted"
     ):
         helpers.js("7", target_id="iframe-target")
+
+
+# --- trusted pointer input ---
+
+def _mouse_calls(fn, pointer=(100, 100), js_value=None, state=None):
+    """Run fn with cdp/_send/js faked; returns (method, kwargs) for every cdp call, and every
+    meta=mouse event as a ("mouse", event) call. state=None fakes a daemon without meta=mouse."""
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {}
+
+    def fake_send(req, **_):
+        if req.get("meta") == "mouse":
+            calls.extend(("mouse", e) for e in req["events"])
+            return {"sent": len(req["events"]), "late": 0}
+        if isinstance(pointer, Exception):
+            raise pointer
+        return {"pointer": pointer, **(state or {})}
+
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.js", return_value=js_value), \
+         patch("browser_harness.helpers.time.sleep"):
+        fn()
+    return calls
+
+
+def _mouse(calls):
+    return [(kw["type"], kw.get("x"), kw.get("y")) for m, kw in calls if m in ("Input.dispatchMouseEvent", "mouse")]
+
+
+def test_click_at_xy_travels_from_the_last_pointer_before_pressing():
+    events = _mouse(_mouse_calls(lambda: helpers.click_at_xy(400, 300)))
+    moves = [e for e in events if e[0] == "mouseMoved"]
+    assert 25 <= len(moves) <= 45
+    assert [e[0] for e in events[-2:]] == ["mousePressed", "mouseReleased"]
+    assert events[:len(moves)] == moves  # every move comes before the press
+    assert moves[-1][1:] == (400, 300) and events[-1][1:] == (400, 300)
+    # The path starts near the remembered pointer, not on the target.
+    assert abs(moves[0][1] - 100) + abs(moves[0][2] - 100) < abs(moves[0][1] - 400) + abs(moves[0][2] - 300)
+
+
+def test_click_at_xy_sends_the_whole_click_as_one_daemon_request():
+    calls = _mouse_calls(lambda: helpers.click_at_xy(900, 600), state={"viewport": [1280, 720]})
+    assert not [c for c in calls if c[0] == "Input.dispatchMouseEvent"]  # no round trip per event
+    events = [kw for m, kw in calls if m == "mouse"]
+    assert [e["type"] for e in events[-2:]] == ["mousePressed", "mouseReleased"]
+    times = [e["at"] for e in events]
+    assert times == sorted(times) and times[-1] < 1.2  # the travel's own time, plus press and hold
+    assert all(0 <= e["x"] <= 1280 and 0 <= e["y"] <= 720 for e in events)
+    assert (events[-1]["x"], events[-1]["y"]) == (900, 600)
+
+
+def test_click_at_xy_still_moves_when_the_daemon_has_no_pointer():
+    for pointer in (None, RuntimeError("'method'")):  # fresh daemon, daemon from before this change
+        events = _mouse(_mouse_calls(lambda: helpers.click_at_xy(50, 60), pointer=pointer))
+        assert sum(e[0] == "mouseMoved" for e in events) >= 25
+        assert events[-1] == ("mouseReleased", 50, 60)
+
+
+def test_click_at_xy_on_the_pointer_presses_without_travel():
+    events = _mouse(_mouse_calls(lambda: helpers.click_at_xy(100, 100), state={"viewport": [800, 600]}))
+    assert [e[0] for e in events] == ["mousePressed", "mouseReleased"]
+
+
+def test_click_at_xy_retries_once_after_the_daemon_reattaches_a_stale_tab():
+    sends = []
+
+    def fake_send(req, **_):
+        sends.append(req.get("meta"))
+        if req.get("meta") == "pointer":
+            return {"pointer": (10, 10), "viewport": [800, 600]}
+        if sends.count("mouse") == 1:
+            raise RuntimeError("Session with given id not found")
+        return {"sent": 1, "late": 0}
+
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp") as cdp:
+        helpers.click_at_xy(300, 300)
+    assert sends == ["pointer", "mouse", "mouse"]
+    cdp.assert_called_once_with("Runtime.evaluate", expression="1")
+
+
+def test_fill_input_clicks_the_field_before_typing():
+    calls = _mouse_calls(lambda: helpers.fill_input("#inp", "x", clear_first=False), js_value=[10, 20, 100])
+    methods = [m for m, kw in calls if m == "Input.dispatchKeyEvent" or kw.get("type") == "mousePressed"]
+    assert methods[0] == "Input.dispatchMouseEvent"
+    assert ("mousePressed", 10, 20) in _mouse(calls)
+
+
+def test_fill_input_skips_the_click_for_a_zero_size_field():
+    calls = _mouse_calls(lambda: helpers.fill_input("#inp", "x", clear_first=False), js_value=[10, 20, 0])
+    assert not _mouse(calls)
+
+
+def test_fill_input_does_not_click_what_covers_the_field():
+    """A cookie banner over the field gets no click (it could press a button); JS focus instead."""
+    calls = _mouse_calls(lambda: helpers.fill_input("#inp", "x", clear_first=False), js_value=[10, 20, 100, False])
+    assert not _mouse(calls)
+    assert [m for m, _ in calls if m == "Input.dispatchKeyEvent"]
+
+
+def test_fill_input_appending_moves_the_caret_to_the_end_after_the_click():
+    exprs = []
+    with patch("browser_harness.helpers.js", side_effect=lambda e, **_: exprs.append(e) or [10, 20, 100, True]), \
+         patch("browser_harness.helpers.click_at_xy"), patch("browser_harness.helpers.cdp", return_value={}):
+        helpers.fill_input("#inp", "x", clear_first=False)
+        assert "setSelectionRange" in exprs[1]
+        exprs.clear()
+        helpers.fill_input("#inp", "x", clear_first=True)
+        assert "setSelectionRange" not in exprs[1]
+
+
+def test_fill_input_hit_test_lets_no_button_take_the_focus_click():
+    exprs = []
+    with patch("browser_harness.helpers.js", side_effect=lambda e, **_: exprs.append(e) or [10, 20, 100, True]), \
+         patch("browser_harness.helpers.click_at_xy"), patch("browser_harness.helpers.cdp", return_value={}):
+        helpers.fill_input("#inp", "x")
+    assert "elementFromPoint" in exprs[0] and "h.closest('a,button" in exprs[0]
+
+
+def test_fill_input_appending_presses_end_where_the_field_has_no_caret_api():
+    answers = iter([[10, 20, 100, True], False, None])  # box, setSelectionRange threw, events
+    keys = []
+    with patch("browser_harness.helpers.js", side_effect=lambda e, **_: next(answers)), \
+         patch("browser_harness.helpers.click_at_xy"), patch("browser_harness.helpers.cdp", return_value={}), \
+         patch("browser_harness.helpers.press_key", side_effect=keys.append):
+        helpers.fill_input("#email", "x", clear_first=False)
+    assert keys == ["End", "x"]
+
+
+def test_wait_for_captcha_solver_with_no_timeout_does_not_watch_the_page():
+    clock = _Clock()
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}] * 5)
+    js_answers = lambda expr, **_: False
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), \
+            patch("browser_harness.helpers.time.time", side_effect=clock.time), \
+            patch("browser_harness.helpers.time.sleep", side_effect=clock.sleep):
+        t0 = clock.now
+        helpers.wait_for_captcha_solver(timeout=0)
+    assert clock.now - t0 < 0.1
+
+
+# --- captcha solver wait ---
+
+def _solver(states, ready="complete"):
+    """Fake daemon answering captcha_solving with successive `seconds` values."""
+    seq = iter(states)
+    sends = []
+
+    def fake_send(req, **_):
+        sends.append(req)
+        v = next(seq)
+        if isinstance(v, Exception):
+            raise v
+        return v if isinstance(v, dict) else {"seconds": v, "grace": 0.0}
+
+    return sends, patch("browser_harness.helpers._send", side_effect=fake_send), \
+        patch("browser_harness.helpers.js", return_value=ready), patch("browser_harness.helpers.time.sleep")
+
+
+def test_wait_for_load_costs_one_ipc_call_when_nothing_is_solving():
+    sends, *patches = _solver([None])
+    with patches[0], patches[1], patches[2]:
+        assert helpers.wait_for_load() is True
+    assert sends == [{"meta": "captcha_solving"}]
+
+
+def test_wait_for_load_waits_for_an_in_flight_solve():
+    sends, *patches = _solver([3.0, 3.5, 4.0, None])
+    with patches[0], patches[1], patches[2]:
+        assert helpers.wait_for_load() is True
+    assert len(sends) == 4
+
+
+def test_wait_for_load_waits_out_the_start_grace_on_a_captcha_page():
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}, {"seconds": None, "grace": 1.0},
+                               {"seconds": 0.1, "grace": 0.5}, {"seconds": None, "grace": 0.0}])
+    js_answers = lambda expr, **_: True if expr == helpers._CAPTCHA_MARKERS else "complete"
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), patches[2]:
+        assert helpers.wait_for_load() is True
+    assert len(sends) == 4
+
+
+class _Clock:
+    """time.time that advances only when the code under test sleeps."""
+    def __init__(self): self.now = 1000.0
+    def time(self): return self.now
+    def sleep(self, s): self.now += s
+
+
+def test_wait_for_load_ends_the_start_grace_once_no_captcha_showed_for_half_a_second():
+    clock = _Clock()
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}] * 20)
+    marker_checks = []
+    js_answers = lambda expr, **_: marker_checks.append(clock.now) or False if expr == helpers._CAPTCHA_MARKERS else "complete"
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), \
+            patch("browser_harness.helpers.time.time", side_effect=clock.time), \
+            patch("browser_harness.helpers.time.sleep", side_effect=clock.sleep):
+        t0 = clock.now
+        assert helpers.wait_for_load() is True
+    assert len(sends) == 1  # one daemon call, then only page checks
+    assert 0.5 <= clock.now - t0 < 0.6 and len(marker_checks) >= 10  # not the whole 2 s grace
+
+
+def test_wait_for_load_waits_for_a_captcha_injected_after_the_load():
+    clock = _Clock()
+    marks = iter([False, False, True] + [True] * 10)
+    sends, *patches = _solver([{"seconds": None, "grace": 2.0}] * 3 + [{"seconds": 0.5, "grace": 1.0}] * 3
+                              + [{"seconds": None, "grace": 0.0}])
+    js_answers = lambda expr, **_: next(marks) if expr == helpers._CAPTCHA_MARKERS else "complete"
+    with patches[0], patch("browser_harness.helpers.js", side_effect=js_answers), \
+            patch("browser_harness.helpers.time.time", side_effect=clock.time), \
+            patch("browser_harness.helpers.time.sleep", side_effect=clock.sleep):
+        assert helpers.wait_for_load() is True
+    assert len(sends) == 7  # waited through the solve that started after the widget appeared
+
+
+def test_wait_for_captcha_solver_returns_false_while_still_solving():
+    sends, *patches = _solver([5.0] * 10)
+    with patches[0], patches[1], patches[2]:
+        assert helpers.wait_for_captcha_solver(timeout=0) is False
+
+
+def test_wait_for_captcha_solver_passes_on_a_daemon_without_tracking():
+    sends, *patches = _solver([RuntimeError("'method'")])
+    with patches[0], patches[1], patches[2]:
+        assert helpers.wait_for_captcha_solver() is True
+
+
+def _quads(env, kind, viewport=(1280, 720, 2)):
+    with patch.dict(os.environ, {"BH_POINTER": env} if env is not None else {}, clear=False):
+        if env is None:
+            os.environ.pop("BH_POINTER", None)
+        calls = _mouse_calls(lambda: helpers.click_at_xy(900, 600),
+                             state={"viewport": list(viewport), "browser_kind": kind})
+    return [kw for m, kw in calls if m == "mouse"]
+
+
+def test_click_at_xy_draws_the_arrow_on_cloud_browsers_by_default():
+    events = _quads(None, "cloud")
+    moves = [e for e in events if e.get("type") == "mouseMoved"]
+    assert moves and all(len(e["quad"]) == 8 for e in moves)
+    # drawn where the move goes, in quad units of CSS px / devicePixelRatio
+    assert all(abs(e["quad"][0] * 2 - e["x"]) < 30 and abs(e["quad"][1] * 2 - e["y"]) < 30 for e in moves)
+    assert moves[-1]["quad"] == helpers._pointer.arrow(900, 600, dpr=2)  # lands at rest on the target
+    # the press pulse: draw-only events after the press, ending back at full size
+    press = next(e["at"] for e in events if e.get("type") == "mousePressed")
+    pulse = [e for e in events if "type" not in e]
+    assert len(pulse) == len(helpers._pointer.PRESS) - 1 and all(e["at"] > press for e in pulse)
+    assert pulse[-1]["quad"] == helpers._pointer.arrow(900, 600, dpr=2)
+    assert [e["at"] for e in events] == sorted(e["at"] for e in events)
+
+
+def test_bh_pointer_turns_the_drawn_arrow_off_on_cloud_and_on_elsewhere():
+    assert not any("quad" in e for e in _quads("0", "cloud"))
+    assert not any("quad" in e for e in _quads(None, "local"))
+    assert any("quad" in e for e in _quads("1", "local"))

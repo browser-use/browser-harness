@@ -48,6 +48,9 @@ PY
   another Allow prompt.
 - Set `BH_TAB_MARKER=0` before starting the daemon to leave page titles unchanged.
   The horse marker remains enabled by default.
+- On cloud browsers `click_at_xy` and `move_mouse` also draw the macOS Harness arrow where the mouse goes, so people
+  watching the live view see it glide and pulse on a press. It is drawn on Chrome's DevTools overlay, not in the page,
+  and left out of `capture_screenshot`. `BH_POINTER=0` turns it off; `BH_POINTER=1` turns it on for other browsers.
 - A timeout or page that pauses while hidden is not permission to foreground
   Chrome. Keep using background CDP operations. For a focus-gated page,
   temporarily call `cdp("Emulation.setFocusEmulationEnabled", enabled=True)`,
@@ -186,8 +189,9 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 
 - Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree")["nodes"]` has every element's role, name, and `backendDOMNodeId` — filter in Python before printing (it is thousands of nodes). Coordinates: `q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
+- Never click, submit or focus with JS (`el.click()`, `form.submit()`, `focus()`) on real sites: those events are untrusted and Akamai 403s the request. Use `click_at_xy` (it moves the mouse there first) and `fill_input` (it clicks the field).
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
-- After navigation, call `wait_for_load()`.
+- After navigation, call `wait_for_load()`. On cloud browsers it also waits while the captcha solver is mid-solve (`wait_for_captcha_solver()`); `False` means still loading or still solving: do not act on the challenge page.
 - If the current tab is stale or internal, call `ensure_real_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 
 import pytest
 
@@ -845,3 +846,259 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_captcha_solving_tracks_the_attached_tab_until_finished():
+    d = _fresh_daemon()
+    d.target_id = "page-1"
+    solving = lambda: asyncio.run(d.handle({"meta": "captcha_solving"}))["seconds"]
+    assert solving() is None
+    d._record_event("BrowserUse.captchaSolverStarted", {"targetId": "other-tab", "vendor": "recaptcha"})
+    assert solving() is None  # another tab's solve does not hold this one
+    d._record_event("BrowserUse.captchaSolverStarted", {"targetId": "page-1", "vendor": "recaptcha"})
+    assert solving() >= 0
+    d._record_event("BrowserUse.captchaSolverFinished", {"targetId": "page-1", "success": True})
+    assert solving() is None
+
+
+def test_captcha_solving_drops_a_solve_with_no_finish_after_the_solver_limit():
+    d = _fresh_daemon()
+    d.target_id = "page-1"
+    d.captcha_started["page-1"] = time.monotonic() - daemon.CAPTCHA_LOST_S - 1
+    assert asyncio.run(d.handle({"meta": "captcha_solving"}))["seconds"] is None
+
+
+@pytest.mark.parametrize("kind,grace", [("cloud", True), ("local", False)])
+def test_captcha_solving_reports_a_start_grace_after_load_on_cloud_browsers(monkeypatch, kind, grace):
+    monkeypatch.setattr(daemon, "BROWSER_KIND", kind)
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+    d = _fresh_daemon()
+    d.session = "s1"
+    d._record_event("Page.loadEventFired", {}, "s1")
+    assert (asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] > 0) is grace
+    d.loaded_at["s1"] -= daemon.CAPTCHA_GRACE_S
+    assert asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] == 0
+
+
+def test_captcha_start_grace_follows_the_attached_tab(monkeypatch):
+    """A load on another tab must not give (or take) the attached tab's solver-start grace."""
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cloud")
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+    d = _fresh_daemon()
+    d.session = "s1"
+    d._record_event("Page.loadEventFired", {}, "s2")
+    assert asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] == 0
+    d.session = "s2"
+    assert asyncio.run(d.handle({"meta": "captcha_solving"}))["grace"] > 0
+
+
+def test_daemon_remembers_the_last_pointer_position_of_the_attached_tab(monkeypatch):
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
+    d = _fresh_daemon()
+    d.session = "s1"
+    asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "params": {"type": "mouseMoved", "x": 12, "y": 34}}))
+    asyncio.run(d.handle({"method": "Input.dispatchMouseEvent", "session_id": "iframe",
+                          "params": {"type": "mouseMoved", "x": 1, "y": 1}}))
+    assert asyncio.run(d.handle({"meta": "pointer"})) == {"pointer": (12, 34), "viewport": None, "browser_kind": "local", "drawn": False}
+
+
+class _SlowCDP:
+    """Answers every send_raw after `rtt` seconds, like a cloud browser; records when each was sent."""
+
+    def __init__(self, rtt):
+        self.rtt, self.sent = rtt, []
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.sent.append((time.monotonic(), method, dict(params or {}), session_id))
+        await asyncio.sleep(self.rtt)
+        return {"result": {"value": [1280, 720]}} if method == "Runtime.evaluate" else {}
+
+
+def test_mouse_sends_a_path_on_schedule_without_waiting_for_each_answer():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.2), "s1"
+    events = [{"at": 0.02 * i, "type": "mouseMoved", "x": 10 * i, "y": 5 * i} for i in range(1, 11)]
+    events += [{"at": 0.25, "type": "mousePressed", "x": 100, "y": 50, "button": "left", "clickCount": 1},
+               {"at": 0.3, "type": "mouseReleased", "x": 100, "y": 50, "button": "left", "clickCount": 1}]
+
+    async def run():
+        t0 = time.monotonic()
+        r = await d.handle({"meta": "mouse", "events": events})
+        return r, time.monotonic() - t0
+
+    r, wall = asyncio.run(run())
+    assert r == {"sent": 12, "late": 0}
+    # 12 events one round trip apart would take 2.4 s: pipelined, it is the schedule plus one round trip.
+    assert 0.5 <= wall < 0.9
+    mouse = [s for s in d.cdp.sent if s[1] == "Input.dispatchMouseEvent"]
+    assert [s[2]["type"] for s in mouse] == ["mouseMoved"] * 10 + ["mousePressed", "mouseReleased"]
+    assert all(s[3] == "s1" and "at" not in s[2] for s in mouse)
+    t0 = mouse[0][0]
+    assert mouse[-2][0] - t0 >= 0.22  # held to its time, not sent early
+    assert d.pointer == (100, 50)
+    assert d.viewport == {"s1": [1280, 720]}  # refreshed alongside, for the next path's bounds
+
+
+def test_mouse_returns_after_the_ack_limit_when_chrome_does_not_answer(monkeypatch):
+    monkeypatch.setattr(daemon, "MOUSE_ACK_S", 0.1)
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=5), "s1"  # a hidden tab answers mouse events only after ~5 s
+    t0 = time.monotonic()
+    r = asyncio.run(d.handle({"meta": "mouse", "events": [{"at": 0, "type": "mouseMoved", "x": 1, "y": 2}]}))
+    assert r == {"sent": 1, "late": 1} and time.monotonic() - t0 < 1
+
+
+def test_mouse_reports_a_failed_event():
+    class Failing(_SlowCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            raise RuntimeError("Session with given id not found")
+    d = daemon.Daemon()
+    d.cdp, d.session = Failing(0), "gone"
+    r = asyncio.run(d.handle({"meta": "mouse", "events": [{"at": 0, "type": "mouseMoved", "x": 1, "y": 2}]}))
+    assert r == {"error": "Session with given id not found"}
+
+
+def test_mouse_stops_sending_once_an_event_failed():
+    class Failing(_SlowCDP):
+        async def send_raw(self, method, params=None, session_id=None):
+            self.sent.append((time.monotonic(), method, dict(params or {}), session_id))
+            raise RuntimeError("Session with given id not found")
+    d = daemon.Daemon()
+    d.cdp, d.session = Failing(0), "gone"
+    events = [{"at": 0.05 * i, "type": "mouseMoved", "x": i, "y": i} for i in range(20)]  # a 1 s schedule
+    t0 = time.monotonic()
+    r = asyncio.run(d.handle({"meta": "mouse", "events": events}))
+    assert r == {"error": "Session with given id not found"}
+    assert time.monotonic() - t0 < 0.3 and len(d.cdp.sent) <= 3
+
+
+def test_a_detached_session_forgets_its_pointer_state():
+    d = daemon.Daemon()
+    d.loaded_at["s1"], d.viewport["s1"], d.drawn["s1"] = 1.0, [800, 600, 1], QUAD
+    d._overlay_on.add("s1")
+    d._record_event("Target.detachedFromTarget", {"sessionId": "s1", "targetId": "t1"})
+    assert not (d.loaded_at or d.viewport or d.drawn or d._overlay_on)
+
+
+def test_a_tab_detached_during_its_press_pulse_gets_no_more_drawing():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.01), "s1"
+    events = [{"at": 0, "type": "mousePressed", "x": 3, "y": 3, "button": "left", "clickCount": 1, "quad": QUAD},
+              {"at": 0.01, "type": "mouseReleased", "x": 3, "y": 3, "button": "left", "clickCount": 1},
+              {"at": 0.2, "quad": QUAD}]
+
+    async def run():
+        await d.handle({"meta": "mouse", "events": events})
+        d._record_event("Target.detachedFromTarget", {"sessionId": "s1"})
+        n = len(d.cdp.sent)
+        await asyncio.sleep(0.3)
+        return d.cdp.sent[n:]
+    assert asyncio.run(run()) == [] and "s1" not in d.drawn and "s1" not in d.viewport
+
+
+def test_start_taps_events_before_attaching(monkeypatch):
+    """A captcha solve that starts while the daemon attaches must be recorded."""
+    class Registry:
+        async def handle_event(self, method, params, session_id=None):
+            return None
+
+    class FakeCDP:
+        def __init__(self, url):
+            self._event_registry = Registry()
+        async def start(self):
+            return None
+
+    d = _fresh_daemon()
+    seen = []
+
+    async def attach_first_page(*a, **k):
+        await d.cdp._event_registry.handle_event("BrowserUse.captchaSolverStarted", {"targetId": "t1"})
+        seen.append(dict(d.captcha_started))
+
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cloud")
+    monkeypatch.setattr(daemon, "CDPClient", FakeCDP)
+    monkeypatch.setattr(daemon, "get_ws_url", lambda: "ws://127.0.0.1:1/devtools/browser/x")
+    monkeypatch.setattr(d, "attach_first_page", attach_first_page)
+    asyncio.run(d.start())
+    assert "t1" in seen[0]
+
+
+QUAD = [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_mouse_draws_the_arrow_on_the_overlay_and_pulses_after_returning():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.05), "s1"
+    events = [{"at": 0.01 * i, "type": "mouseMoved", "x": i, "y": i, "quad": QUAD} for i in range(1, 4)]
+    events += [{"at": 0.05, "type": "mousePressed", "x": 3, "y": 3, "button": "left", "clickCount": 1},
+               {"at": 0.08, "type": "mouseReleased", "x": 3, "y": 3, "button": "left", "clickCount": 1}]
+    events += [{"at": 0.05 + k / 10, "quad": QUAD} for k in range(1, 4)]  # pulse, ends at 0.35 s
+
+    async def run():
+        t0 = time.monotonic()
+        r = await d.handle({"meta": "mouse", "events": events})
+        wall = time.monotonic() - t0
+        before = [s[1] for s in d.cdp.sent]
+        await asyncio.sleep(0.4)
+        return r, wall, before, [s[1] for s in d.cdp.sent]
+
+    r, wall, before, after = asyncio.run(run())
+    assert r == {"sent": 5, "late": 0} and wall < 0.25  # the pulse does not hold up the click
+    assert before.count("Overlay.enable") == 1 and before.index("Overlay.enable") < before.index("Overlay.highlightQuad")
+    assert after.count("Overlay.highlightQuad") == 6  # 3 moves, then 3 pulse frames after returning
+    quads = [s for s in d.cdp.sent if s[1] == "Overlay.highlightQuad"]
+    assert all(s[2]["quad"] == QUAD and s[3] == "s1" for s in quads)
+    assert all("quad" not in s[2] for s in d.cdp.sent if s[1] == "Input.dispatchMouseEvent")
+    assert d.drawn == {"s1": QUAD}
+
+
+def test_mouse_with_only_drawing_returns_at_once():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.05), "s1"
+    r = asyncio.run(d.handle({"meta": "mouse", "events": [{"at": 0, "quad": QUAD}]}))
+    assert r == {"sent": 0, "late": 0}
+
+
+def test_screenshots_leave_the_drawn_arrow_out_and_draw_it_again():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.01), "s1"
+
+    async def run():
+        d.drawn["s1"] = QUAD
+        await d.handle({"method": "Page.captureScreenshot", "params": {"format": "png"}})
+        await asyncio.sleep(0.05)
+    asyncio.run(run())
+    assert [s[1] for s in d.cdp.sent] == ["Overlay.hideHighlight", "Page.captureScreenshot", "Overlay.highlightQuad"]
+
+
+def test_a_screenshot_during_the_press_pulse_stops_the_pulse_and_leaves_the_arrow_out():
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.01), "s1"
+    rest = [9] * 8
+    events = [{"at": 0, "type": "mousePressed", "x": 3, "y": 3, "button": "left", "clickCount": 1, "quad": QUAD},
+              {"at": 0.01, "type": "mouseReleased", "x": 3, "y": 3, "button": "left", "clickCount": 1}]
+    events += [{"at": 0.2, "quad": QUAD}, {"at": 0.3, "quad": rest}]
+
+    async def run():
+        await d.handle({"meta": "mouse", "events": events})
+        n = len(d.cdp.sent)
+        await d.handle({"method": "Page.captureScreenshot", "params": {}})
+        await asyncio.sleep(0.4)
+        return [(s[1], s[2].get("quad")) for s in d.cdp.sent[n:]]
+    sent = asyncio.run(run())
+    # no pulse frame lands during or after the capture; the arrow comes back at its rest shape
+    assert sent == [("Overlay.hideHighlight", None), ("Page.captureScreenshot", None), ("Overlay.highlightQuad", rest)]
+    assert d.drawn == {"s1": rest}
+
+
+def test_the_drawn_arrow_hides_when_idle(monkeypatch):
+    monkeypatch.setattr(daemon._pointer, "IDLE", 0.05)
+    d = daemon.Daemon()
+    d.cdp, d.session = _SlowCDP(rtt=0.01), "s1"
+
+    async def run():
+        d.draw("s1", QUAD)
+        await asyncio.sleep(0.15)
+    asyncio.run(run())
+    assert [s[1] for s in d.cdp.sent] == ["Overlay.enable", "Overlay.highlightQuad", "Overlay.hideHighlight"]
+    assert d.drawn == {}

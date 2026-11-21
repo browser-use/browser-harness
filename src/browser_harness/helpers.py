@@ -3,12 +3,13 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, time, urllib.request
+import base64, importlib.util, json, math, os, random, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
 from . import _ipc as ipc
 from . import paths
+from . import pointer as _pointer
 
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -190,8 +191,63 @@ def click_at_xy(x, y, button="left", clicks=1):
         except Exception as e:
             print(f"[debug_click] overlay failed: {e}")
         _debug_click_counter += 1
-    cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
-    cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
+    _mouse(x, y, press=(button, clicks))
+
+def move_mouse(x, y):
+    """Move the pointer to (x, y) as a hand does, from where it last was: a straight spring hop for a
+    short move, a glide along a curve for a long one (pointer.py), as 25-45 real mouseMoved events.
+
+    click_at_xy() travels the same way first: Akamai only validates a session (_abck ~0~) that saw
+    enough pointer travel, and a click that teleports onto its target does not count."""
+    _mouse(x, y)
+
+def _mouse(x, y, press=None):
+    """Travel to (x, y), then press and release when press=(button, clicks). The daemon sends the
+    events at their times without waiting for each answer, so a click costs its travel time plus one
+    round trip, not a round trip per event."""
+    try:
+        state = _send({"meta": "pointer"})  # the daemon remembers the pointer across CLI calls
+    except Exception:
+        state = {}  # daemon predates pointer tracking
+    view = state.get("viewport")
+    if not view:
+        try: view = js("[innerWidth, innerHeight, devicePixelRatio]")
+        except Exception: view = None
+    w, h, dpr = (view + [1])[:3] if isinstance(view, list) and len(view) >= 2 else (max(x, 800), max(y, 600), 1)
+    bounds = (0.0, 0.0, max(float(w), x + 1.0), max(float(h), y + 1.0))
+    start = state.get("pointer") or (
+        _pointer.clamp(x + random.uniform(-150, 150), 0, bounds[2]), _pointer.clamp(y + random.uniform(-100, 100), 0, bounds[3]))
+    # Draw the macOS Harness arrow on the page's DevTools overlay (live view, not the DOM): default on cloud.
+    draw = "browser_kind" in state and os.environ.get(
+        "BH_POINTER", "1" if state["browser_kind"] == "cloud" else "0").strip().lower() not in ("0", "false", "no", "off")
+    events = [{"at": t, "type": "mouseMoved", "x": px, "y": py, **({"quad": _pointer.arrow(px, py, shape, dpr=dpr)} if draw else {})}
+              for t, px, py, shape in _pointer.samples(tuple(start), (x, y), bounds)]
+    if press:
+        button, clicks = press
+        # Press on arrival, as macOS Harness does: the spring's soft landing is the pause before it.
+        t = (events[-1]["at"] if events else 0.0) + random.uniform(0.01, 0.03)
+        pulse = [{"at": t + dt, "quad": _pointer.arrow(x, y, press=k, dpr=dpr)} for dt, k in _pointer.PRESS[1:]] if draw else []
+        for kind, hold in (("mousePressed", random.uniform(0.03, 0.08)), ("mouseReleased", 0.0)):
+            events.append({"at": t, "type": kind, "x": x, "y": y, "button": button, "clickCount": clicks})
+            t += hold
+        events = sorted(events + pulse, key=lambda e: e["at"])
+    if not events:
+        return
+    if "viewport" in state:  # daemon with meta=mouse
+        req = {"meta": "mouse", "events": events}
+        try:
+            _send(req, response_timeout=events[-1]["at"] + 10)
+        except RuntimeError as e:
+            if "Session with given id not found" not in str(e): raise
+            cdp("Runtime.evaluate", expression="1")  # the daemon re-attaches the tab; no event reached the old one
+            _send(req, response_timeout=events[-1]["at"] + 10)
+        return
+    t0 = time.time()  # older daemon: one call per event, on the same schedule
+    for e in (e for e in events if "type" in e):
+        e = {k: v for k, v in e.items() if k != "quad"}
+        delay = t0 + e.pop("at") - time.time()
+        if delay > 0: time.sleep(delay)
+        cdp("Input.dispatchMouseEvent", **e)
 
 def type_text(text):
     cdp("Input.insertText", text=text)
@@ -209,8 +265,9 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
     """Fill a framework-managed input (React controlled, Vue v-model, Ember tracked).
 
     type_text() uses Input.insertText which bypasses framework event listeners and leaves
-    submit buttons disabled. This helper focuses the element, clears it, types via real
-    key events, then fires synthetic input+change events so the framework sees the update.
+    submit buttons disabled. This helper focuses the element with a real click (click_at_xy),
+    clears it, types via real key events, then fires synthetic input+change events so the
+    framework sees the update. JS focus() is only the fallback when the click did not focus it.
 
     Raises RuntimeError if the element is not found. Pass timeout>0 to wait for
     late-rendered elements (e.g. after a route change) before typing.
@@ -218,12 +275,26 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
     if timeout > 0:
         if not wait_for_element(selector, timeout=timeout):
             raise RuntimeError(f"fill_input: element not found: {selector!r}")
-    focused = js(
-        f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
-        f"if(!e)return false;e.focus();return true;}})()"
+    q = f"document.querySelector({json.dumps(selector)})"
+    # The field's centre, and whether a click there lands on the field (or its own label or wrapper),
+    # not on a cookie banner or modal covering it: clicking that could press a button on it.
+    box = js(
+        f"(()=>{{const e={q};if(!e)return null;e.scrollIntoView({{block:'center',behavior:'instant'}});"
+        f"const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,h=document.elementFromPoint(x,y);"
+        f"const own=!!h&&(h===e||e.contains(h)||h.contains(e)||(h.closest('label')||{{}}).control===e"
+        f"||!!(e.parentElement&&e.parentElement.contains(h)&&!h.closest('a,button,input,select,textarea,[role=button],[onclick]')));"
+        f"return [x,y,r.width*r.height,own];}})()"
     )
-    if not focused:
+    if not box:
         raise RuntimeError(f"fill_input: element not found: {selector!r}")
+    if box[2] and (len(box) < 4 or box[3]):
+        click_at_xy(box[0], box[1])  # trusted press: Akamai 403s a submit whose page never saw one
+    # JS focus only if the click did not focus it. Appending (clear_first=False): put the caret at the
+    # end, where focus() leaves it, not where the click landed (inputs like type=email have no caret API).
+    end = "return true" if clear_first else "try{const n=(e.value||'').length;e.setSelectionRange(n,n);return true}catch(_){return false}"
+    at_end = js(f"(()=>{{const e={q},a=document.activeElement;if(!e)return true;if(a!==e&&!e.contains(a))e.focus();{end}}})()")
+    if at_end is False:
+        press_key("End")  # type=email/number have no caret API: move it with the key a user would press
     if clear_first:
         # Dispatch select-all directly — NOT via press_key, which always emits a
         # `char` event for single-char keys. With Ctrl/Cmd held, that `char`
@@ -485,13 +556,58 @@ def iframe_target(url_substr):
 def wait(seconds=1.0):
     time.sleep(seconds)
 
-def wait_for_load(timeout=15.0):
-    """Poll document.readyState == 'complete' or timeout."""
+def _page_ready(timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if js("document.readyState") == "complete": return True
         time.sleep(0.3)
     return False
+
+def wait_for_load(timeout=15.0):
+    """Poll document.readyState == 'complete' or timeout. On a cloud browser whose captcha solver
+    is mid-solve on this tab, also wait for the solve (wait_for_captcha_solver, up to 60 s on top of
+    timeout: a solve outlasts a page load) and poll the reloaded page again within timeout."""
+    if not _page_ready(timeout): return False
+    done, solved = _captcha_wait(60.0)
+    return done and (not solved or _page_ready(timeout))
+
+# Captcha widgets and challenge scripts the cloud solver handles (reCAPTCHA, hCaptcha, DataDome,
+# AWS WAF, Cloudflare, Arkose, PerimeterX). Only pages with one wait for a solve that has not started yet.
+_CAPTCHA_MARKERS = "!!document.querySelector('[src*=captcha],[src*=\"challenges.cloudflare.com\"],[src*=arkoselabs],#px-captcha')"
+# Right after a load, how long a page must show no captcha widget before the solver start grace is
+# skipped: a widget a framework renders late still makes the wait. Every cloud wait_for_load pays it.
+CAPTCHA_ABSENT_S = 0.5
+
+def wait_for_captcha_solver(timeout=60.0):
+    """Wait while Browser Use Cloud's captcha solver is mid-solve on this tab (its
+    BrowserUse.captchaSolverStarted event has no Finished yet), or may still start one: on a page
+    with a captcha it starts up to ~2 s after the load. Don't click, type or navigate meanwhile.
+    True once no solve runs (at once on local Chrome), False if one still runs after timeout."""
+    return _captcha_wait(timeout)[0]
+
+def _captcha_wait(timeout):
+    """(no solve runs now, a solve ran or a widget showed while waiting)."""
+    deadline, waited = time.time() + timeout, False
+    while True:
+        try:
+            state = _send({"meta": "captcha_solving"})
+        except RuntimeError:
+            return True, waited  # daemon predates solver tracking: browser-harness --reload
+        if state.get("seconds") is None:
+            grace = state.get("grace") or 0.0
+            if not grace: return True, waited
+            # Watch the page for a widget, polling only the page: go on once none showed for
+            # CAPTCHA_ABSENT_S (or the rest of the grace). A widget keeps the wait for its solve.
+            watch_end = min(time.time() + min(grace, CAPTCHA_ABSENT_S), deadline)
+            while True:
+                try: marked = bool(js(_CAPTCHA_MARKERS))
+                except RuntimeError: marked = True  # page mid-navigation: assume it may have one
+                if marked or time.time() >= watch_end: break
+                time.sleep(0.05)
+            if not marked: return True, waited
+        waited = True
+        if time.time() >= deadline: return False, waited
+        time.sleep(0.25)
 
 def wait_for_element(selector, timeout=10.0, visible=False):
     """Poll until querySelector(selector) exists in the DOM, or timeout.
