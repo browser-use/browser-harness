@@ -447,6 +447,25 @@ class _AttachCDP(_FakeCDP):
         return {}
 
 
+@pytest.mark.parametrize("name", ["default", "worker-a"])
+def test_closed_popup_recovers_its_attached_opener(monkeypatch, name):
+    monkeypatch.setattr(daemon, "NAME", name)
+    monkeypatch.setattr(daemon, "REMOTE_ID", None)
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cdp")
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP([
+        {"targetId": tid, "url": f"https://example.com/{tid}", "type": "page"}
+        for tid in ("decoy", "opener")
+    ])
+    d.dedicated_target_id = "decoy"
+    d.target_id = "opener"
+    asyncio.run(d.handle({"meta": "set_session", "session_id": "popup-session",
+                          "target_id": "popup", "opener_id": "opener"}))
+    page = asyncio.run(d.attach_first_page(replaces_session="popup-session"))
+    assert page["targetId"] == "opener"
+
+
 def test_named_daemon_creates_dedicated_tab(monkeypatch):
     """Named local/CDP daemons must not fight over the first existing tab."""
     monkeypatch.setattr(daemon, "NAME", "worker-a")
