@@ -666,6 +666,7 @@ def test_shutdown_closes_only_the_daemon_owned_tab(monkeypatch):
         d.target_id = "user-selected-tab"
         d.stop = asyncio.Event()
         d.stop.set()
+        d.cdp._message_handler_task = asyncio.get_running_loop().create_future()
 
     async def wait_forever(*_args):
         await asyncio.Event().wait()
@@ -682,6 +683,32 @@ def test_shutdown_closes_only_the_daemon_owned_tab(monkeypatch):
     assert d.cdp.closed == ["daemon-tab"]
     assert d.dedicated_target_id is None
     assert d.target_id == "user-selected-tab"
+
+
+def test_daemon_exits_when_browser_connection_closes(monkeypatch):
+    """No shutdown request arrives once the browser is gone; the daemon must stop itself."""
+    d = daemon.Daemon()
+    d.cdp = _AttachCDP()
+
+    async def start():
+        d.dedicated_target_id = "daemon-tab"
+        d.stop = asyncio.Event()
+        d.cdp._message_handler_task = asyncio.get_running_loop().create_future()
+        d.cdp._message_handler_task.set_result(None)
+
+    async def wait_forever(*_args):
+        await asyncio.Event().wait()
+
+    d.start = start
+    monkeypatch.setattr(daemon, "Daemon", lambda: d)
+    monkeypatch.setattr(daemon.ipc, "serve", wait_forever)
+    monkeypatch.setattr(daemon.ipc, "sock_addr", lambda _name: "test-socket")
+    monkeypatch.setattr(daemon.ipc, "cleanup_endpoint", lambda _name: None)
+    monkeypatch.setattr(daemon, "log", lambda _message: None)
+
+    asyncio.run(asyncio.wait_for(daemon.main(), timeout=2))
+
+    assert d.cdp.calls == []
 
 
 def test_delayed_stale_request_follows_recovery_during_domain_enable(monkeypatch):
