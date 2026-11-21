@@ -49,6 +49,23 @@ def test_send_keeps_connect_timeout_short_and_sets_response_budget():
     assert socket.timeouts == [60.0]
 
 
+def test_send_gives_large_requests_one_second_per_mib():
+    """A 10 MB cloud upload timed out at the fixed 5 s budget while its 14 MB
+    request was still crossing to the remote browser."""
+    class FakeSocket:
+        def __init__(self): self.timeouts = []
+        def settimeout(self, value): self.timeouts.append(value)
+        def close(self): pass
+
+    socket = FakeSocket()
+    with patch("browser_harness.helpers.ipc.connect", return_value=(socket, None)), \
+         patch("browser_harness.helpers.ipc.request", return_value={}):
+        helpers._send({"method": "Runtime.evaluate", "params": {"expression": "x" * (14 << 20)}})
+        helpers._send({"meta": "ping"})
+
+    assert socket.timeouts == [helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS + 14, helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS]
+
+
 def test_screenshot_uses_long_response_timeout_without_forwarding_it_to_cdp(fake_png, tmp_path):
     with patch(
         "browser_harness.helpers._send",
@@ -119,6 +136,118 @@ def test_page_info_raises_clear_error_on_js_exception():
          patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
         with pytest.raises(RuntimeError, match="ReferenceError"):
             helpers.page_info()
+
+
+def _page_info_fakes(values, dialogs=()):
+    """cdp returns each of values in turn as Runtime.evaluate's value; _send each of dialogs as the pending dialog."""
+    values, dialogs = list(values), list(dialogs)
+    evaluated = []
+
+    def fake_send(req):
+        return {"dialog": dialogs.pop(0) if dialogs else None}
+
+    def fake_cdp(method, **kwargs):
+        evaluated.append(kwargs["expression"])
+        return {"result": {"type": "string", "value": values.pop(0)}}
+
+    return fake_send, fake_cdp, evaluated
+
+
+def test_page_info_waits_for_new_documents_html_element():
+    """new_tab(url); page_info(): the document has committed but has no <html> yet (null), then has one."""
+    info = '{"url":"https://example.com/","title":"","w":800,"h":600,"sx":0,"sy":0,"pw":800,"ph":1200}'
+    fake_send, fake_cdp, evaluated = _page_info_fakes([None, None, info])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.time.sleep"):
+        assert helpers.page_info()["ph"] == 1200
+    assert len(evaluated) == 3
+
+
+def test_page_info_returns_a_dialog_opened_while_it_waits():
+    fake_send, fake_cdp, _ = _page_info_fakes([None], dialogs=[None, {"type": "alert", "message": "hi"}])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp), \
+         patch("browser_harness.helpers.time.sleep"):
+        assert helpers.page_info() == {"dialog": {"type": "alert", "message": "hi"}}
+
+
+def test_page_info_raises_clearly_when_html_never_arrives(monkeypatch):
+    monkeypatch.setattr(helpers, "PAGE_INFO_ROOT_WAIT_S", 0)
+    fake_send, fake_cdp, _ = _page_info_fakes([None])
+    with patch("browser_harness.helpers._send", side_effect=fake_send), \
+         patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        with pytest.raises(RuntimeError, match="no <html> element.*call page_info\\(\\) again"):
+            helpers.page_info()
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body, gzip_encoded=False):
+        import gzip
+        self._body = gzip.compress(body) if gzip_encoded else body
+        self.headers = {"Content-Encoding": "gzip"} if gzip_encoded else {}
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_http_get_returns_bytes_for_a_binary_body(monkeypatch):
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+    zip_head = b"PK\x03\x04\x14\x00\x00\x00\x08\x00\xff\xfe"
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse(zip_head)):
+        assert helpers.http_get("https://example.com/a.zip") == zip_head
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse("héllo".encode(), gzip_encoded=True)):
+        assert helpers.http_get("https://example.com/") == "héllo"
+
+
+@pytest.mark.parametrize(
+    "url,headers,proxied",
+    [
+        ("https://example.com/", None, True),
+        ("http://localhost:8000/", None, False),
+        ("http://127.0.0.1:8000/", None, False),
+        ("http://[::1]/", None, False),
+        ("http://10.0.0.5/", None, False),
+        ("http://192.168.1.2/", None, False),
+        ("http://intranet/", None, False),
+        ("http://printer.local/", None, False),
+        ("http://app.localhost/", None, False),
+        ("http://svc.internal/", None, False),
+        ("https://8.8.8.8/", None, True),
+        ("https://api.example.com/", {"Authorization": "Bearer x"}, False),
+        ("https://example.com/", {"cookie": "a=b"}, False),
+        ("https://example.com/", {"Accept": "text/html"}, True),
+    ],
+)
+def test_http_get_uses_fetch_use_only_for_public_hosts_without_credentials(monkeypatch, url, headers, proxied):
+    import sys
+    import types
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "k")
+    fetched = []
+    fake = types.ModuleType("fetch_use")
+    fake.fetch_sync = lambda u, **kw: fetched.append(u) or types.SimpleNamespace(text="proxied", is_binary=False)
+    monkeypatch.setitem(sys.modules, "fetch_use", fake)
+    with patch("browser_harness.helpers.urllib.request.urlopen", return_value=_FakeHTTPResponse(b"local")):
+        assert helpers.http_get(url, headers=headers) == ("proxied" if proxied else "local")
+    assert fetched == ([url] if proxied else [])
+
+
+def test_http_get_via_fetch_use_returns_bytes_for_a_binary_body(monkeypatch):
+    import sys
+    import types
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "k")
+    fake = types.ModuleType("fetch_use")
+    fake.fetch_sync = lambda u, **kw: types.SimpleNamespace(text="", content=b"%PDF\xff", is_binary=True)
+    monkeypatch.setitem(sys.modules, "fetch_use", fake)
+    assert helpers.http_get("https://example.com/a.pdf") == b"%PDF\xff"
+    fake.fetch_sync = lambda u, **kw: types.SimpleNamespace(text="", content="héllo".encode(), is_binary=True)
+    assert helpers.http_get("https://example.com/a.txt") == "héllo"  # UTF-8 flagged binary: str, as the local path
 
 
 # --- fill_input ---
@@ -424,91 +553,181 @@ def test_wait_for_network_idle_filters_events_to_active_session():
     )
 
 
-@pytest.mark.parametrize("value", ["0", "false", "NO", "off"])
-def test_mark_tab_can_be_disabled(monkeypatch, value):
-    calls = []
-    monkeypatch.setenv("BH_TAB_MARKER", value)
-    monkeypatch.setattr(
-        helpers,
-        "cdp",
-        lambda method, **kwargs: calls.append((method, kwargs)),
-    )
-
-    helpers._mark_tab()
-
-    assert calls == []
+def _daemon_replies(monkeypatch, reply):
+    sent = []
+    monkeypatch.setattr(helpers, "_send", lambda request: sent.append(request) or reply)
+    monkeypatch.setattr(helpers, "goto_url", lambda url: sent.append({"goto_url": url}))
+    return sent
 
 
-def test_switch_tab_keeps_visible_tab_unchanged_by_default(monkeypatch):
-    calls = []
+def test_switch_tab_is_one_daemon_command_that_does_not_activate_by_default(monkeypatch):
+    sent = _daemon_replies(monkeypatch, {"session_id": "session-new"})
 
-    def fake_cdp(method, **kwargs):
-        calls.append((method, kwargs))
-        if method == "Target.attachToTarget":
-            return {"sessionId": "session-new"}
-        return {}
-
-    monkeypatch.setattr(helpers, "cdp", fake_cdp)
-    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
-    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
-
-    assert helpers.switch_tab({"target_id": "target-new"}) == "session-new"
-    assert not any(method == "Target.activateTarget" for method, _ in calls)
+    assert helpers.switch_tab("target-new") == "session-new"
+    assert sent == [{"meta": "switch_tab", "target_id": "target-new", "activate": False}]
 
 
-def test_switch_tab_can_explicitly_activate_visible_tab(monkeypatch):
-    calls = []
+def test_switch_tab_activates_when_asked_and_checks_a_tab_dicts_url(monkeypatch):
+    sent = _daemon_replies(monkeypatch, {"session_id": "session-new"})
 
-    def fake_cdp(method, **kwargs):
-        calls.append((method, kwargs))
-        if method == "Target.attachToTarget":
-            return {"sessionId": "session-new"}
-        return {}
+    helpers.switch_tab({"target_id": "target-new", "url": "https://a.example/"}, activate=True)
 
-    monkeypatch.setattr(helpers, "cdp", fake_cdp)
-    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
-    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
-
-    assert helpers.switch_tab("target-new", activate=True) == "session-new"
-    assert ("Target.activateTarget", {"targetId": "target-new"}) in calls
+    assert sent == [{"meta": "switch_tab", "target_id": "target-new", "activate": True, "url": "https://a.example/"}]
 
 
-def test_new_tab_creates_and_attaches_in_background(monkeypatch):
-    calls = []
-
-    def fake_cdp(method, **kwargs):
-        calls.append((method, kwargs))
-        if method == "Target.createTarget":
-            return {"targetId": "target-new"}
-        if method == "Target.attachToTarget":
-            return {"sessionId": "session-new"}
-        return {}
-
-    monkeypatch.setattr(helpers, "cdp", fake_cdp)
-    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
-    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+def test_new_tab_reuses_an_empty_tab_only_for_a_url(monkeypatch):
+    sent = _daemon_replies(monkeypatch, {"target_id": "target-new"})
 
     assert helpers.new_tab() == "target-new"
-    assert ("Target.createTarget", {"url": "about:blank", "background": True}) in calls
-    assert not any(method == "Target.activateTarget" for method, _ in calls)
+    assert helpers.new_tab("https://example.com") == "target-new"
+    assert sent == [
+        {"meta": "new_tab", "reuse": False},
+        {"meta": "new_tab", "reuse": True},
+        {"goto_url": "https://example.com"},
+    ]
 
 
-def test_new_tab_reuses_an_empty_data_document(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        helpers,
-        "current_tab",
-        lambda: {"targetId": "target-placeholder", "url": "data:text/html,"},
-    )
-    monkeypatch.setattr(helpers, "goto_url", lambda url: calls.append(("goto_url", url)))
-    monkeypatch.setattr(
-        helpers,
-        "cdp",
-        lambda method, **kwargs: calls.append((method, kwargs)) or {},
-    )
+def test_list_tabs_hides_other_agents_tabs(monkeypatch):
+    _daemon_replies(monkeypatch, {"tabs": [
+        {"targetId": "mine", "title": "Mine", "url": "https://a.example/", "owner": "you", "mark": "handoff"},
+        {"targetId": "theirs", "title": "Secret", "url": "https://b.example/", "owner": "taken", "mark": None},
+        {"targetId": "persons", "title": "Mail", "url": "chrome://settings", "owner": None, "mark": None},
+    ]})
 
-    assert helpers.new_tab("https://example.com") == "target-placeholder"
-    assert calls == [("goto_url", "https://example.com")]
+    assert helpers.list_tabs(include_chrome=False) == [
+        {"targetId": "mine", "target_id": "mine", "owner": "you", "title": "Mine", "url": "https://a.example/", "mark": "handoff"},
+        {"targetId": "theirs", "target_id": "theirs", "owner": "taken", "title": "", "url": ""},
+    ]
+
+
+def _browsers(monkeypatch, running):
+    from browser_harness import admin
+    monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default", "rig", "stale"])
+    monkeypatch.setattr(admin, "_ping", lambda name=None: running.get(name, {}))
+
+
+def test_list_browsers_shows_live_daemons(monkeypatch):
+    _browsers(monkeypatch, {"default": {"pong": True, "browser_kind": "local", "endpoint": "local"},
+                            "rig": {"pong": True, "browser_kind": "cdp", "endpoint": "127.0.0.1:9555"}})
+    monkeypatch.setattr(helpers, "NAME", "rig")
+
+    assert helpers.list_browsers() == [
+        {"name": "default", "kind": "local", "endpoint": "local", "current": False},
+        {"name": "rig", "kind": "cdp", "endpoint": "127.0.0.1:9555", "current": True},
+    ]
+
+
+@pytest.mark.parametrize("name", ["stale", "nope", "../x", 7])
+def test_use_browser_never_falls_back(monkeypatch, name):
+    _browsers(monkeypatch, {"default": {"pong": True}})
+    monkeypatch.setattr(helpers, "NAME", "default")
+
+    with pytest.raises(RuntimeError, match=r"browser-not-found: no browser .* is running; running: default\. Nothing was sent\."):
+        helpers.use_browser(name)
+    assert helpers.NAME == "default"
+
+
+def test_use_browser_routes_the_next_commands(monkeypatch):
+    _browsers(monkeypatch, {"rig": {"pong": True}})
+    monkeypatch.setattr(helpers, "NAME", "default")
+    seen = []
+    monkeypatch.setattr(helpers.ipc, "connect", lambda name, timeout: seen.append(name) or (type("S", (), {"settimeout": lambda s, t: None, "close": lambda s: None})(), None))
+    monkeypatch.setattr(helpers.ipc, "request", lambda c, t, req: {})
+
+    helpers.use_browser("rig")
+    helpers._send({"meta": "tabs"})
+
+    assert seen == ["rig"]
+
+
+def test_iframe_target_is_a_daemon_command(monkeypatch):
+    sent = _daemon_replies(monkeypatch, {"target_id": "frame-1"})
+
+    assert helpers.iframe_target("pay.example") == "frame-1"
+    assert sent == [{"meta": "iframe_target", "url": "pay.example"}]
+
+
+def test_use_browser_says_it_lasts_one_call():
+    """The next CLI call is back on BU_NAME; the docs must not promise more."""
+    from pathlib import Path
+    skill = (Path(helpers.__file__).parent / "SKILL.md").read_text(encoding="utf-8")
+    assert "BU_NAME=<name>" in helpers.use_browser.__doc__ and "does not last" in helpers.use_browser.__doc__
+    assert "`use_browser(name)` switches for the rest of one call only, so use `BU_NAME=<name>` for later calls" in skill
+
+
+def test_mark_tab_and_name_session_are_daemon_commands(monkeypatch):
+    sent = _daemon_replies(monkeypatch, {"mark": "deliverable", "name": "shop"})
+
+    helpers.mark_tab({"targetId": "t1"}, "deliverable")
+    helpers.mark_tab(None, None)
+    helpers.name_session("shop")
+    helpers.release_tabs()
+
+    assert sent == [{"meta": "mark_tab", "target_id": "t1", "mark": "deliverable"},
+                    {"meta": "mark_tab", "target_id": None, "mark": None},
+                    {"meta": "name_session", "name": "shop"}, {"meta": "release_tabs"}]
+
+
+def test_send_carries_the_owner(monkeypatch):
+    seen = []
+    monkeypatch.setattr(helpers, "OWNER", "agent-7")
+    with patch("browser_harness.helpers.ipc.connect", return_value=(type("S", (), {"settimeout": lambda s, t: None, "close": lambda s: None})(), None)), \
+         patch("browser_harness.helpers.ipc.request", side_effect=lambda c, t, req: seen.append(req) or {}):
+        helpers._send({"meta": "tabs"})
+
+    assert seen == [{"meta": "tabs", "owner": "agent-7"}]
+
+
+@pytest.mark.parametrize(("env", "owner"), [
+    ({"BH_OWNER": "b", "CLAUDE_CODE_SESSION_ID": "s", "CODEX_THREAD_ID": "t"}, "b"),
+    ({"CLAUDE_CODE_SESSION_ID": "s", "CODEX_THREAD_ID": "t"}, "s"),
+    ({"CODEX_THREAD_ID": "t"}, "t"),
+    ({}, "default"),
+])
+def test_owner_key_order(monkeypatch, env, owner):
+    import importlib
+    for k in ("BH_OWNER", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    try:
+        assert importlib.reload(helpers).OWNER == owner
+    finally:
+        monkeypatch.undo()
+        importlib.reload(helpers)
+
+
+def test_a_sub_agent_without_bh_owner_cannot_close_or_release_its_parents_tabs(monkeypatch):
+    """It shares the parent's owner, so "I am done" would close the tab the parent is working in."""
+    sent = _daemon_replies(monkeypatch, {"closed": "t1"})
+    monkeypatch.delenv("BH_OWNER", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+
+    for call in (helpers.release_tabs, helpers.close_tab):
+        with pytest.raises(RuntimeError, match="owner-shared: .* refused.* Nothing was sent. Set BH_OWNER=<name>"):
+            call()
+    assert sent == []
+
+    monkeypatch.setenv("BH_OWNER", "child")
+    helpers.close_tab()
+    helpers.release_tabs()
+    assert sent == [{"meta": "close_tab", "target_id": None}, {"meta": "release_tabs"}]
+
+
+def test_every_sub_agent_call_without_bh_owner_is_warned(monkeypatch, capsys):
+    """Sub-agents share the parent's session id, so a once-per-id flag warned only one of them."""
+    monkeypatch.delenv("BH_OWNER", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+
+    helpers._warn_shared_owner()
+    helpers._warn_shared_owner()
+    monkeypatch.setenv("BH_OWNER", "child")
+    helpers._warn_shared_owner()
+    monkeypatch.delenv("BH_OWNER")
+    monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION")
+    helpers._warn_shared_owner()
+
+    assert capsys.readouterr().err.count("sub-agent without BH_OWNER") == 2
 
 
 # --- press_key physical key identity (#685) ---
@@ -738,3 +957,46 @@ def test_js_keeps_base_exception_from_evaluation_when_detach_also_raises():
         KeyboardInterrupt, match="evaluation interrupted"
     ):
         helpers.js("7", target_id="iframe-target")
+
+
+def _upload(tmp_path, set_files_error=None, target="input[type=file]"):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "DOM.getDocument":
+            return {"root": {"nodeId": 1}}
+        if method == "DOM.querySelector":
+            return {"nodeId": 7}
+        if method == "DOM.setFileInputFiles" and set_files_error:
+            raise RuntimeError(set_files_error)
+        if method == "DOM.resolveNode":
+            return {"object": {"objectId": "obj-1"}}
+        return {}
+
+    path = tmp_path / "cv.txt"
+    path.write_bytes(b"text")
+    with patch("browser_harness.helpers.cdp", side_effect=fake_cdp):
+        helpers.upload_file(target, str(path))
+    return calls
+
+
+def test_upload_file_sets_paths_when_the_browser_takes_them(tmp_path):
+    calls = _upload(tmp_path)
+    assert calls[-1] == ("DOM.setFileInputFiles", {"files": [str(tmp_path / "cv.txt")], "nodeId": 7})
+
+
+def test_upload_file_sends_bytes_through_the_page_when_the_browser_rejects_the_path(tmp_path):
+    calls = _upload(tmp_path, "{'code': -32602, 'message': 'Files must exist in the downloads directory'}", target=42)
+    assert calls[0] == ("DOM.setFileInputFiles", {"files": [str(tmp_path / "cv.txt")], "backendNodeId": 42})
+    assert calls[1] == ("DOM.resolveNode", {"backendNodeId": 42})
+    method, kwargs = calls[2]
+    assert method == "Runtime.callFunctionOn" and kwargs["objectId"] == "obj-1"
+    assert kwargs["arguments"] == [{"value": [["cv.txt", "dGV4dA==", "text/plain"]]}]
+    assert kwargs["_response_timeout"] == helpers.UPLOAD_IPC_RESPONSE_TIMEOUT_SECONDS
+    assert "new File([Uint8Array.from(atob(b),c=>c.charCodeAt(0))],n,{type:t})" in kwargs["functionDeclaration"]
+
+
+def test_upload_file_keeps_other_errors(tmp_path):
+    with pytest.raises(RuntimeError, match="No node"):
+        _upload(tmp_path, "No node with given id")

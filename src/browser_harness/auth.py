@@ -24,6 +24,7 @@ import urllib.request
 import webbrowser
 
 from . import paths
+from .naming import cli_name
 
 
 AUTH_BASE = "https://api.browser-use.com"
@@ -36,7 +37,7 @@ AUTH_TIMEOUT_SECONDS = 600
 
 class CloudAuthRequired(RuntimeError):
     def __init__(self):
-        super().__init__("cloud-auth-required: run `browser-harness auth login`")
+        super().__init__(f"cloud-auth-required: run `{cli_name()} auth login`")
 
 
 class AuthError(RuntimeError):
@@ -531,7 +532,7 @@ def _stored_success_output() -> dict:
 
 
 def run_auth_cli(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="browser-harness auth")
+    parser = argparse.ArgumentParser(prog=f"{cli_name()} auth")
     sub = parser.add_subparsers(dest="command", required=True)
     login = sub.add_parser("login")
     login_mode = login.add_mutually_exclusive_group()

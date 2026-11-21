@@ -9,6 +9,9 @@ Run:
 The server starts on stdio and exposes one MCP tool per browser-harness
 helper. Each tool ensures the daemon is running, calls the existing helper,
 and returns JSON text. Helper failures use MCP's tool-error channel.
+On a Browser Use Cloud browser, every result carries the captcha solver's
+'[Captcha solver ...]' lines (a second text block) while a solve runs and once
+when one finishes.
 """
 import functools
 import json
@@ -27,6 +30,7 @@ from PIL import Image
 
 from browser_harness.admin import ensure_daemon
 from browser_harness.helpers import (
+    captcha_note,
     capture_screenshot,
     cdp,
     click_at_xy,
@@ -38,10 +42,14 @@ from browser_harness.helpers import (
     http_get,
     js,
     list_tabs,
+    mark_tab,
+    name_session,
     new_tab,
     page_info,
     press_key,
+    release_tabs,
     scroll,
+    solve_captcha,
     start_recording,
     stop_recording,
     switch_tab,
@@ -113,13 +121,26 @@ def _stderr_stdout():
         sys.stdout = saved
 
 
+def _with_captcha_note(text: str) -> str:
+    note = captcha_note()
+    return f"{text}\n{note}" if note else text
+
+
+def _json_then_captcha_note(text: str) -> str | list[str]:
+    """The JSON alone, or the JSON and the captcha note as a second text block, so a client that parses the first
+    block as JSON still can."""
+    note = captcha_note()
+    return [text, note] if note else text
+
+
 def _tool(fn):
     """Wrap a helper so it is exposed as an MCP tool and returns JSON text.
 
     Ensures the daemon is up, runs the helper, and converts operational failures
-    (including daemon startup failures) into MCP tool errors. Tool name and
-    description are taken from the wrapped function so the schema matches the
-    parameter annotations.
+    (including daemon startup failures) into MCP tool errors. The captcha note
+    (solves running, finishes not shown yet) is a second text block after the
+    JSON (or ends the error text), so the agent waits instead of reloading. Tool name and description are taken
+    from the wrapped function so the schema matches the parameter annotations.
     """
 
     @functools.wraps(fn)
@@ -128,9 +149,9 @@ def _tool(fn):
             ensure_daemon()
             with _stderr_stdout():
                 result = fn(*args, **kwargs)
-            return _dump(result)
+            return _json_then_captcha_note(_dump(result))
         except Exception as exc:  # noqa: BLE001 -- browser failures must reach the MCP client.
-            raise ToolError(str(exc)) from exc
+            raise ToolError(_with_captcha_note(str(exc))) from exc
 
     return SERVER.tool(name=fn.__name__, description=fn.__doc__ or "")(wrapper)
 
@@ -202,7 +223,7 @@ def browser_screenshot(
 
 @_tool
 def browser_list_tabs():
-    """List open page tabs."""
+    """List open tabs with their owner: "you", null (the person's) or "taken" (another agent's)."""
     return list_tabs()
 
 
@@ -214,21 +235,41 @@ def browser_current_tab():
 
 @_tool
 def browser_switch_tab(target: str):
-    """Switch to tab by `targetId` or URL substring. Returns the sessionId."""
+    """Take a tab by `targetId` and make it your current one. Returns the sessionId."""
     return {"sessionId": switch_tab(target)}
 
 
 @_tool
 def browser_close_tab(target: str | None = None):
-    """Close a tab. Without `target`, closes the active tab."""
+    """Close one of your tabs. Without `target`, closes your current tab."""
     close_tab(target)
     return {"ok": True}
 
 
 @_tool
 def browser_ensure_real_tab():
-    """Switch to a real (non-internal) tab if the current one is chrome:// or stale."""
+    """Return your current tab, opening your own background tab if you have none."""
     return ensure_real_tab()
+
+
+@_tool
+def browser_mark_tab(mark: str | None, target: str | None = None):
+    """Mark one of your tabs (default: the current one). "deliverable": it stays open for
+    the person when you are done. "handoff": the person should act in it now. null clears."""
+    return {"mark": mark_tab(target, mark)}
+
+
+@_tool
+def browser_release_tabs():
+    """Call when done: closes the unmarked tabs you opened, gives back tabs you took, keeps marked tabs open."""
+    release_tabs()
+    return {"ok": True}
+
+
+@_tool
+def browser_name_session(name: str):
+    """Name your session; your tabs' titles show it to the person."""
+    return {"name": name_session(name)}
 
 
 @_tool
@@ -277,6 +318,15 @@ def browser_http_get(url: str, timeout: float = 20.0, headers: dict | None = Non
     """HTTP GET `url` (browser-less). Returns the response body. Optional
     `headers` dict for authentication or custom request headers."""
     return {"text": http_get(url, headers=headers, timeout=timeout)}
+
+
+@_tool
+def browser_solve_captcha(start_timeout: float = 20.0, timeout: float = 75.0):
+    """Captcha or challenge on screen: wait for Browser Use Cloud's automatic solver on the current tab.
+    Do not reload, navigate or switch tabs meanwhile. Returns {solved, detail, seconds} (+ vendor, url).
+    detail 'still solving': call again. 'solved': re-check the page, another challenge can follow.
+    'solver unavailable': a local browser (no solver), so handle the captcha yourself."""
+    return solve_captcha(start_timeout=start_timeout, timeout=timeout)
 
 
 @_tool

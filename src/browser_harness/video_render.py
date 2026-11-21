@@ -18,6 +18,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from . import video
+from .naming import cli_name
 
 
 TEMPLATE = Path(__file__).with_name("video-template.html")
@@ -418,7 +419,7 @@ def export(recording: Path, output_name: str, reviewed: bool) -> int:
         raise RuntimeError("ffmpeg and ffprobe are required")
     review_path = recording / "renderer-review.json"
     if not review_path.is_file():
-        raise RuntimeError("run browser-harness video review first")
+        raise RuntimeError(f"run {cli_name()} video review first")
     review_report = json.loads(review_path.read_text(encoding="utf-8"))
     if review_report.get("errors"):
         raise RuntimeError("renderer review has blocking errors")

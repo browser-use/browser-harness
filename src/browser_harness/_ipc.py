@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, json, os, re, secrets, socket, subprocess, sys, time
 from pathlib import Path
 
 from . import paths
@@ -12,18 +12,28 @@ IS_WINDOWS = sys.platform == "win32"
 #       then to the browser-harness runtime dir.
 #   BH_TMP_DIR — screenshots, debug overlays, daemon log. No path-length
 #       sensitivity; caller can use a deep persistent path.
-# By default, a caller-supplied dir is treated as per-instance and files use
-# bare "bu" stems. Set BH_RUNTIME_DIR_SHARED=1 or BH_TMP_DIR_SHARED=1 when the
-# dir is shared by multiple BU_NAME values and the filename must carry the name.
+# Every per-daemon file is named bu-<BU_NAME>.*, so daemons sharing a dir never
+# share a socket, pid file or log.
 BH_TMP_DIR = os.environ.get("BH_TMP_DIR")
 BH_RUNTIME_DIR = os.environ.get("BH_RUNTIME_DIR") or BH_TMP_DIR
-BH_RUNTIME_DIR_SHARED = os.environ.get("BH_RUNTIME_DIR_SHARED") == "1"
-BH_TMP_DIR_SHARED = os.environ.get("BH_TMP_DIR_SHARED") == "1"
 _TMP = paths.tmp_dir()
 _RUNTIME = paths.ensure_private_dir(Path(BH_RUNTIME_DIR).expanduser().resolve()) if BH_RUNTIME_DIR else paths.runtime_dir()
 _TMP.mkdir(parents=True, exist_ok=True)
 _RUNTIME.mkdir(parents=True, exist_ok=True)
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+# One request is one JSON line. 32 MiB fits a 10 MB file sent as base64 inside
+# a js() expression (10 MB * 4/3 = 13.3 MiB, plus JSON framing) with 2x headroom.
+# asyncio's default line limit is 64 KiB.
+MAX_REQUEST_BYTES = 32 << 20
+# Bump only when the client/daemon request format changes. A client with the
+# same protocol uses the running daemon as is, whatever its package version.
+PROTOCOL = 2
+
+
+def owner():
+    """Which agent is calling: BH_OWNER, else the host agent's session id, else default.
+    Sub-agents inherit their parent's session id, so they need their own BH_OWNER."""
+    return os.environ.get("BH_OWNER") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or "default"
 
 # Set by serve() on Windows. Daemon's handle() requires every request to carry
 # this token (TCP loopback has no chmod-equivalent so any local process could
@@ -38,20 +48,53 @@ def _check(name):  # path-traversal guard for BU_NAME
     return name
 
 
-def _runtime_stem(name):  # "bu" when BH_RUNTIME_DIR isolates us, else "bu-<NAME>"
-    _check(name)
-    return "bu" if BH_RUNTIME_DIR and not BH_RUNTIME_DIR_SHARED else f"bu-{name}"
+def _stem(name):
+    return f"bu-{_check(name)}"
 
 
-def _tmp_stem(name):  # "bu" when BH_TMP_DIR isolates us, else "bu-<NAME>"
-    _check(name)
-    return "bu" if BH_TMP_DIR and not BH_TMP_DIR_SHARED else f"bu-{name}"
+def log_path(name):   return _TMP / f"{_stem(name)}.log"
+def pid_path(name):   return _RUNTIME / f"{_stem(name)}.pid"
+def port_path(name):  return _RUNTIME / f"{_stem(name)}.port"  # Windows-only: holds {"port","token"} JSON
+def _sock_path(name): return _RUNTIME / f"{_stem(name)}.sock"
+# Present while a name is bound to a remote browser ({"kind", "browser_id"}).
+# The daemon writes it on connect and removes it on an explicit shutdown, so a
+# remote daemon that died or lost its browser leaves it behind and the name
+# never silently falls back to local Chrome.
+def remote_marker_path(name): return _RUNTIME / f"{_stem(name)}.remote"
 
 
-def log_path(name):   return _TMP / f"{_tmp_stem(name)}.log"
-def pid_path(name):   return _RUNTIME / f"{_runtime_stem(name)}.pid"
-def port_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.port"  # Windows-only: holds {"port","token"} JSON
-def _sock_path(name): return _RUNTIME / f"{_runtime_stem(name)}.sock"
+def state_path(name): return _RUNTIME / f"{_stem(name)}.owners.json"
+
+
+def read_remote_marker(name):
+    try:
+        d = json.loads(remote_marker_path(name).read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {}
+
+
+def write_remote_marker(name, kind, browser_id=None):
+    p = remote_marker_path(name)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"kind": kind, "browser_id": browser_id}), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def clear_remote_marker(name):
+    try: remote_marker_path(name).unlink()
+    except FileNotFoundError: pass
+
+
+def endpoint_label(env=os.environ):
+    """Which browser an env points at: "local" or the CDP host:port, never credentials."""
+    url = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
+    if not url: return "local"
+    from urllib.parse import urlparse
+    p = urlparse(url)
+    return f"{'127.0.0.1' if p.hostname == 'localhost' else p.hostname}:{p.port or ''}"
 
 
 def _read_port_file(name):
@@ -66,7 +109,7 @@ def _read_port_file(name):
 def sock_addr(name):  # display-only, used in log lines
     if not IS_WINDOWS: return str(_sock_path(name))
     port, _ = _read_port_file(name)
-    return f"127.0.0.1:{port}" if port else f"tcp:{_runtime_stem(name)}"
+    return f"127.0.0.1:{port}" if port else f"tcp:{_stem(name)}"
 
 
 def spawn_kwargs():  # subprocess.Popen flags so the daemon detaches from this terminal
@@ -162,6 +205,28 @@ def identify(name, timeout=1.0):
         except OSError: pass
 
 
+class RequestTooLarge(ValueError):
+    pass
+
+
+async def read_request(reader):
+    """One request line. An oversized request is drained to its newline before
+    RequestTooLarge is raised, so the client finishes sending and can read the
+    error reply instead of hitting a broken pipe."""
+    try:
+        return await reader.readuntil(b"\n")
+    except asyncio.IncompleteReadError as e:
+        return e.partial
+    except asyncio.LimitOverrunError:
+        size = 0
+        while chunk := await reader.read(1 << 20):
+            size += len(chunk)
+            if b"\n" in chunk: break
+        raise RequestTooLarge(
+            f"IPC request is {size / (1 << 20):.1f} MiB, over the {MAX_REQUEST_BYTES >> 20} MiB limit"
+        )
+
+
 async def serve(name, handler):
     """Run the server until cancelled. handler(reader, writer) sees the same interface either way."""
     global _server_token
@@ -170,12 +235,17 @@ async def serve(name, handler):
         if os.path.exists(path): os.unlink(path)
         # umask 0o077 makes bind() create the socket as 0600 — no TOCTOU window before chmod.
         old_umask = os.umask(0o077)
-        try: server = await asyncio.start_unix_server(handler, path=path)
+        try: server = await asyncio.start_unix_server(handler, path=path, limit=MAX_REQUEST_BYTES)
+        except OSError as e:
+            if "too long" not in str(e): raise
+            raise RuntimeError(
+                f"socket path {path} is {len(path.encode())} bytes, over the AF_UNIX limit -- set BH_RUNTIME_DIR to a shorter directory"
+            ) from None
         finally: os.umask(old_umask)
         _server_token = None
         async with server: await asyncio.Event().wait()
         return
-    server = await asyncio.start_server(handler, "127.0.0.1", 0)
+    server = await asyncio.start_server(handler, "127.0.0.1", 0, limit=MAX_REQUEST_BYTES)
     port = server.sockets[0].getsockname()[1]
     _server_token = secrets.token_hex(32)
     pf = port_path(name)
@@ -193,6 +263,23 @@ async def serve(name, handler):
 def expected_token():
     """The token the running daemon will accept, or None on POSIX."""
     return _server_token
+
+
+def sweep_dead_endpoints(min_age=60):
+    """Remove sockets nobody listens on, left behind by daemons that died without cleanup."""
+    if IS_WINDOWS: return
+    for p in _RUNTIME.glob("bu*.sock"):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.2)
+        try:
+            if time.time() - p.stat().st_mtime > min_age:
+                s.connect(str(p))
+        except ConnectionRefusedError:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+        finally:
+            s.close()
 
 
 def cleanup_endpoint(name):  # best-effort; silent if already gone

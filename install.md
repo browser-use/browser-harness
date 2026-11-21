@@ -45,7 +45,14 @@ run `browser-harness recordings disable`. Preserve an existing `(config)` or
 
 ## If Chrome Blocks It
 
-In Chrome:
+If Chrome is closed, skip this: the harness ticks the checkbox below in Chrome's
+Local State and launches Chrome in the background (`open -g`). Only the one
+"Allow remote debugging?" dialog remains, once per Chrome run. Chrome itself
+brings its window forward for that dialog; `mac-approve` clicks it and adds no
+focus change of its own. Set `BH_PRESET_INSPECT_TOGGLE=0`
+to keep the harness from editing Local State.
+
+If Chrome is already running, in Chrome:
 
 1. Open `chrome://inspect/#remote-debugging`.
 2. Tick "Allow remote debugging for this browser instance".
@@ -63,7 +70,11 @@ printed instruction. The first checkbox is intentionally a one-time manual
 Chrome setup step; it is not exposed to the harness until CDP is available.
 
 The helper requires Accessibility permission for the app launching the CLI
-(for example Terminal, iTerm, Codex, or an IDE) in System Settings.
+(for example Terminal, iTerm, Codex, or an IDE) in System Settings. It checks
+that first and returns `accessibility-required` at once instead of waiting on
+macOS's consent prompt. It matches the sheet in any Chromium-family browser
+(Chrome, Canary, Beta, Dev, Chromium, Brave, Edge), including Chrome 153+ where
+the sheet carries its title in a heading instead of a name.
 
 ## Cloud Browsers
 
@@ -102,6 +113,7 @@ Use the output:
 - `chrome running` FAIL: ask the user to open Chrome, or use isolated/cloud browser.
 - `daemon alive` FAIL: Chrome remote debugging permission is missing, Chrome is closed, or the CDP endpoint is not reachable.
 - update available: run `browser-harness --update -y` when you decide to upgrade.
+- `browser-use` CLI says `remote-debugging-setup: no browser here has remote debugging on, and there is no display`: upgrade browser-use to 1.0.3 or newer (`uv tool install browser-use@latest`, or `pip install -U browser-use`). From 1.0.3 the CLI starts its own Chromium on a machine with no display or no debuggable Chrome.
 
 For a machine-readable health check, an orchestrator can set `BU_NAME` to an
 already-provisioned daemon and run:
@@ -123,3 +135,5 @@ browser-harness telemetry disable
 ```
 
 State lives under `${XDG_CONFIG_HOME:-~/.config}/browser-harness` by default: auth, telemetry id, agent workspace, runtime sockets, logs, screenshots, and temp files. Override with `BH_HOME` or `BROWSER_HARNESS_HOME`.
+
+Long-running hosts: set `BH_IDLE_TIMEOUT=<seconds>` so idle daemons exit; a daemon spawned with `BH_OWNS_BROWSER=1` and `BU_CDP_WS` for a browser you launched defaults to 30 min and closes that browser. On a user's Chrome, each idle exit means another Allow popup on the next call.
