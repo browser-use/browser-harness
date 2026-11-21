@@ -111,7 +111,13 @@ def profile_dirs(system=None):
 
 PROFILES = profile_dirs()
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
-BU_API = "https://api.browser-use.com/api/v3"
+def _cloud_api_base():
+    """Browser Use cloud API root; override for the EU deployment."""
+    return (os.environ.get("BROWSER_USE_CLOUD_API_BASE")
+            or "https://api.browser-use.com/api/v3").rstrip("/")
+
+
+BU_API = _cloud_api_base()
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 _REMOTE_STOPPED = False
 BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
