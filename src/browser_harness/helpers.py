@@ -648,6 +648,8 @@ def http_get(url, headers=None, timeout=20.0):
 # Imported at the bottom so recorder's own `from . import helpers` sees a
 # fully-defined module. Exposes the recording helpers via `from .helpers import *`.
 from .recorder import start_recording, stop_recording, recording_dir
+# report_run(success, ...) at the end of a task; report_issue(message) for a harness bug (report.py).
+from .report import report_issue, report_run
 
 
 def _load_agent_helpers():

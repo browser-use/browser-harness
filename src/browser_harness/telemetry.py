@@ -186,9 +186,9 @@ except Exception:
 """
 
 
-def _send_detached(payload: dict) -> None:
+def _send_detached(payload: dict, host: str | None = None) -> None:
     """Hand the event to a detached helper process so the CLI never blocks."""
-    host = os.environ.get("BH_POSTHOG_HOST", POSTHOG_HOST).rstrip("/")
+    host = (host or os.environ.get("BH_POSTHOG_HOST", POSTHOG_HOST)).rstrip("/")
     job = {
         "url": f"{host}/i/v0/e/",
         "timeout": float(os.environ.get("BH_TELEMETRY_TIMEOUT", "5")),
