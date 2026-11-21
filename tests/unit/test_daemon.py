@@ -845,3 +845,237 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_start_offloads_get_ws_url_to_worker_thread_without_blocking_event_loop(monkeypatch):
+    """Regression for issue #893: Daemon.start() must offload the synchronous
+    get_ws_url() call via asyncio.to_thread so the asyncio event loop is not
+    frozen while polling the CDP endpoint."""
+    import threading
+    from types import SimpleNamespace
+
+    main_thread = threading.get_ident()
+    ws_thread_ids = []
+    poller_entered = threading.Event()
+    release_poller = threading.Event()
+
+    def slow_get_ws_url():
+        ws_thread_ids.append(threading.get_ident())
+        poller_entered.set()
+        release_poller.wait(timeout=2.0)
+        return "ws://127.0.0.1:9222/devtools/browser/test"
+
+    class _DummyCDPClient:
+        def __init__(self, url):
+            self.url = url
+            self._event_registry = SimpleNamespace(handle_event=self._noop_handle)
+
+        async def _noop_handle(self, method, params, session_id=None):
+            return None
+
+        async def start(self):
+            return None
+
+    monkeypatch.setattr(daemon, "get_ws_url", slow_get_ws_url)
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cdp")
+    monkeypatch.setattr(daemon, "CDPClient", _DummyCDPClient)
+    monkeypatch.setattr(daemon, "log", lambda _msg: None)
+
+    async def run():
+        d = daemon.Daemon()
+
+        async def fake_attach_first_page():
+            return None
+
+        d.attach_first_page = fake_attach_first_page
+        start_task = asyncio.create_task(d.start())
+
+        ticks_while_polling = 0
+        for _ in range(100):
+            await asyncio.sleep(0.005)
+            if poller_entered.is_set():
+                ticks_while_polling += 1
+                if ticks_while_polling >= 3:
+                    break
+
+        release_poller.set()
+        await start_task
+        return d, ticks_while_polling
+
+    d, ticks_while_polling = asyncio.run(run())
+
+    assert ticks_while_polling >= 3, "event loop was blocked while get_ws_url() polled"
+    assert ws_thread_ids and ws_thread_ids[0] != main_thread
+    assert d.cdp.url == "ws://127.0.0.1:9222/devtools/browser/test"
+
+
+def test_start_forwards_explicit_wait_to_get_ws_url(monkeypatch):
+    """Daemon.start(wait=...) forwards the wait window to get_ws_url(wait)."""
+    from types import SimpleNamespace
+
+    received_waits = []
+
+    def fake_get_ws_url(wait=30):
+        received_waits.append(wait)
+        return "ws://127.0.0.1:9222/devtools/browser/test"
+
+    class _DummyCDPClient:
+        def __init__(self, url):
+            self.url = url
+            self._event_registry = SimpleNamespace(handle_event=self._noop_handle)
+
+        async def _noop_handle(self, method, params, session_id=None):
+            return None
+
+        async def start(self):
+            return None
+
+    monkeypatch.setattr(daemon, "get_ws_url", fake_get_ws_url)
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cdp")
+    monkeypatch.setattr(daemon, "CDPClient", _DummyCDPClient)
+    monkeypatch.setattr(daemon, "log", lambda _msg: None)
+
+    d = daemon.Daemon()
+
+    async def fake_attach():
+        return None
+
+    d.attach_first_page = fake_attach
+    asyncio.run(d.start(wait=7))
+
+    assert received_waits == [7]
+
+
+def test_get_ws_url_bu_cdp_url_caps_request_timeout_and_retry_sleep_by_remaining_wait(monkeypatch):
+    """BU_CDP_URL polling must cap socket timeouts and retry sleeps to the
+    remaining time before `deadline` so `wait` acts as a true upper bound."""
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
+
+    now = [100.0]
+    timeouts = []
+    sleeps = []
+
+    def fake_time():
+        return now[0]
+
+    def fake_sleep(seconds):
+        sleeps.append(round(seconds, 6))
+        now[0] += seconds
+
+    def fake_urlopen(_url, timeout=5):
+        timeouts.append(round(timeout, 6))
+        now[0] += 1.2
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(daemon.time, "time", fake_time)
+    monkeypatch.setattr(daemon.time, "sleep", fake_sleep)
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="unreachable after 1.5s"):
+        daemon.get_ws_url(wait=1.5)
+
+    assert timeouts == [1.5]
+    assert sleeps == [0.3]
+    assert round(now[0] - 100.0, 6) == 1.5
+
+
+def test_get_ws_url_local_profile_honors_larger_wait_beyond_default_window(monkeypatch, tmp_path):
+    """When a caller passes an explicit wait (e.g. wait=60 or wait=20), the
+    local profile polling loop must honor the full configured window rather
+    than breaking early at the default grace cutoff (~3-12s or 30+grace)."""
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setattr(daemon, "PROFILES", [tmp_path])
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", lambda: [])
+
+    now = [100.0]
+
+    def fake_time():
+        return now[0]
+
+    def fake_sleep(seconds):
+        now[0] += seconds
+        if now[0] >= 145.0 and not (tmp_path / "DevToolsActivePort").exists():
+            (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/late-boot\n")
+
+    class _FakeResp:
+        def read(self):
+            return b'{"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/late-boot"}'
+
+    monkeypatch.setattr(daemon.time, "time", fake_time)
+    monkeypatch.setattr(daemon.time, "sleep", fake_sleep)
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda _url, timeout=1: _FakeResp())
+
+    assert daemon.get_ws_url(wait=60) == "ws://127.0.0.1:9222/devtools/browser/late-boot"
+    assert now[0] >= 145.0
+
+    # Also verify an explicit wait=20 (> grace, < 30) polls past the 3s/12s grace window
+    (tmp_path / "DevToolsActivePort").unlink()
+    now[0] = 200.0
+
+    def fake_sleep_20(seconds):
+        now[0] += seconds
+        if now[0] >= 215.0 and not (tmp_path / "DevToolsActivePort").exists():
+            (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/mid-boot\n")
+
+    class _FakeResp20:
+        def read(self):
+            return b'{"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/mid-boot"}'
+
+    monkeypatch.setattr(daemon.time, "sleep", fake_sleep_20)
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda _url, timeout=1: _FakeResp20())
+
+    assert daemon.get_ws_url(wait=20) == "ws://127.0.0.1:9222/devtools/browser/mid-boot"
+    assert now[0] >= 215.0
+
+
+def test_get_ws_url_local_profile_caps_probes_and_skips_fallbacks_after_deadline(monkeypatch, tmp_path):
+    """Explicit local waits must cap profile HTTP probes and retry sleeps to the
+    remaining budget and skip additional profile/fallback probes once the
+    deadline expires."""
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    p1 = tmp_path / "profile1"
+    p2 = tmp_path / "profile2"
+    p1.mkdir()
+    p2.mkdir()
+    (p1 / "DevToolsActivePort").write_text("9224\n/devtools/browser/stale-1\n")
+    (p2 / "DevToolsActivePort").write_text("9225\n/devtools/browser/stale-2\n")
+    monkeypatch.setattr(daemon, "PROFILES", [p1, p2])
+    monkeypatch.setattr(daemon, "supported_browser_running", lambda: True)
+    monkeypatch.setattr(daemon, "remote_debugging_toggle_profiles", lambda: [])
+    monkeypatch.setattr(daemon, "remote_debugging_user_enabled", lambda: True)
+
+    now = [100.0]
+    calls = []
+    sleeps = []
+
+    def fake_time():
+        return now[0]
+
+    def fake_sleep(seconds):
+        sleeps.append(round(seconds, 6))
+        now[0] += seconds
+
+    def fake_urlopen(url, timeout=1):
+        calls.append((url, round(timeout, 6)))
+        now[0] += timeout
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(daemon.time, "time", fake_time)
+    monkeypatch.setattr(daemon.time, "sleep", fake_sleep)
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="DevToolsActivePort not found"):
+        daemon.get_ws_url(wait=1.3)
+
+    assert calls == [
+        ("http://127.0.0.1:9224/json/version", 1.0),
+        ("http://127.0.0.1:9225/json/version", 0.3),
+    ]
+    assert sleeps == []
+    assert round(now[0] - 100.0, 6) == 1.3
+
+
