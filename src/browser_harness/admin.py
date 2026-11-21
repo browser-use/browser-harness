@@ -522,6 +522,23 @@ def run_doctor_fix_snap():
     return 0
 
 
+def _daemon_env(name, env):
+    # The daemon starts in its runtime dir to avoid pinning the caller's cwd on Windows.
+    # Keep relative path overrides anchored to the caller despite that cwd change.
+    e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+    for key in (
+        "BH_HOME", "BROWSER_HARNESS_HOME", "XDG_CONFIG_HOME", "BH_CONFIG_DIR",
+        "BH_RUNTIME_DIR", "BH_TMP_DIR", "BH_AGENT_WORKSPACE", "BH_AUTH_PATH",
+    ):
+        if e.get(key):
+            e[key] = str(Path(e[key]).expanduser().absolute())
+    if "PYTHONPATH" in e:
+        e["PYTHONPATH"] = os.pathsep.join(
+            str(Path(p or ".").absolute()) for p in e["PYTHONPATH"].split(os.pathsep)
+        )
+    return e
+
+
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
     Chrome, and missing Allow on chrome://inspect."""
@@ -559,7 +576,7 @@ def ensure_daemon(wait=None, name=None, env=None):
     launched_browser = None
     opened_inspect = False
     for _ in range(3):
-        e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+        e = _daemon_env(name, env)
         try:
             stderr_sink = open(ipc.log_path(name or NAME), "ab")
         except OSError:
@@ -578,14 +595,14 @@ def ensure_daemon(wait=None, name=None, env=None):
                 else:
                     p = subprocess.Popen(
                         [sys.executable, "-m", "browser_harness.daemon"],
-                        env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
+                        cwd=ipc._RUNTIME, env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
                     )
                     _publish_pid(ipc.pid_path(name or NAME), p.pid)
                     pending_pid = p.pid
         else:
             p = subprocess.Popen(
                 [sys.executable, "-m", "browser_harness.daemon"],
-                env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
+                cwd=ipc._RUNTIME, env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),
             )
         if stderr_sink is not subprocess.DEVNULL:
             stderr_sink.close()
