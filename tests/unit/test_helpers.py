@@ -473,6 +473,61 @@ def test_switch_tab_can_explicitly_activate_visible_tab(monkeypatch):
     assert ("Target.activateTarget", {"targetId": "target-new"}) in calls
 
 
+
+def test_switch_tab_reuses_the_live_session_on_the_same_target(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        return {}
+
+    def fake_send(request):
+        calls.append(("ipc", request))
+        if request.get("meta") == "connection_status":
+            return {"target_id": "target-1", "session_id": "session-1"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", fake_send)
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    assert helpers.switch_tab("target-1") == "session-1"
+    assert not any(method == "Target.attachToTarget" for method, _ in calls)
+    # Re-pointing the daemon covers a switch elsewhere between the check and the probe.
+    assert ("ipc", {"meta": "set_session", "session_id": "session-1", "target_id": "target-1"}) in calls
+
+
+@pytest.mark.parametrize(
+    ("status", "probe_fails"),
+    [
+        ({"target_id": "target-other", "session_id": "session-1"}, False),
+        ({"target_id": "target-1", "session_id": "session-1"}, True),
+    ],
+)
+def test_switch_tab_attaches_when_the_current_session_is_elsewhere_or_dead(
+    monkeypatch, status, probe_fails
+):
+    calls = []
+
+    def fake_cdp(method, session_id=None, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-new"}
+        if probe_fails and session_id == "session-1":
+            raise RuntimeError("Session with given id not found")
+        return {}
+
+    def fake_send(request):
+        calls.append(("ipc", request))
+        return status if request.get("meta") == "connection_status" else {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", fake_send)
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+
+    assert helpers.switch_tab("target-1") == "session-new"
+    assert ("ipc", {"meta": "set_session", "session_id": "session-new", "target_id": "target-1"}) in calls
+
 def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     calls = []
 
