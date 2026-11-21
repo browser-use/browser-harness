@@ -126,3 +126,127 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
         assert ipc.ping("default", timeout=0.0) is False, (
             f"ping() should require pong is exactly True; got: {resp!r}"
         )
+
+
+# --- best_effort_unlink(): Windows-style transient PermissionError retry (#893) ---
+
+
+def test_best_effort_unlink_retries_transient_permission_error(monkeypatch, tmp_path):
+    """On Windows a just-SIGTERM'd daemon can still hold the endpoint file
+    handle, so unlink() raises PermissionError (WinError 5). The helper must
+    retry and eventually succeed instead of letting it kill restart_daemon."""
+    from pathlib import Path
+
+    p = tmp_path / "bu-default.port"
+    p.write_text("{}")
+    attempts = {"n": 0}
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(ipc.time, "sleep", lambda s: None)
+
+    ipc.best_effort_unlink(p, tries=5, delay=0.1)
+    assert attempts["n"] == 3
+    assert not p.exists()
+
+
+def test_best_effort_unlink_silent_when_handle_never_releases(monkeypatch, tmp_path):
+    """Best-effort stays best-effort: if the handle never releases, return
+    quietly instead of raising into the caller."""
+    from pathlib import Path
+
+    p = tmp_path / "bu-default.port"
+    p.write_text("{}")
+    monkeypatch.setattr(
+        Path, "unlink",
+        lambda self: (_ for _ in ()).throw(PermissionError(13, "Permission denied")),
+    )
+    monkeypatch.setattr(ipc.time, "sleep", lambda s: None)
+
+    ipc.best_effort_unlink(p, tries=3, delay=0.1)  # must not raise
+    assert p.exists()
+
+
+def test_best_effort_unlink_silent_when_missing(tmp_path):
+    ipc.best_effort_unlink(tmp_path / "nope.port")  # must not raise
+
+
+def test_best_effort_unlink_leaves_successor_endpoint_alone(monkeypatch, tmp_path):
+    """A concurrent ensure_daemon() may publish a successor's endpoint at the
+    same path while unlink retries on a transient PermissionError (Windows
+    stale handle). The retry must not delete the successor's live file."""
+    import os
+    from pathlib import Path
+
+    p = tmp_path / "bu-default.port"
+    p.write_text('{"port": 1111}')
+    identity = ipc.file_identity(p)
+    attempts = {"n": 0}
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self)
+
+    def publish_successor(s):
+        # Successor publication is atomic (os.replace -> new inode), the same
+        # identity change a fresh bind produces on POSIX.
+        new = tmp_path / "bu-default.port.new"
+        new.write_text('{"port": 2222}')
+        os.replace(new, p)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(ipc.time, "sleep", publish_successor)
+
+    ipc.best_effort_unlink(p, tries=5, delay=0.1, identity=identity)
+
+    # Only one unlink attempt ran: the second attempt's identity check fired
+    # first, so the successor's file was never touched.
+    assert attempts["n"] == 1
+    assert p.read_text() == '{"port": 2222}', (
+        "best_effort_unlink deleted a successor endpoint published mid-retry"
+    )
+
+
+def test_best_effort_unlink_identity_guard_allows_stale_cleanup(monkeypatch, tmp_path):
+    """The identity guard must not block legitimate cleanup: when the file is
+    unchanged between attempts, retries proceed exactly as before."""
+    from pathlib import Path
+
+    p = tmp_path / "bu-default.port"
+    p.write_text("{}")
+    identity = ipc.file_identity(p)
+    attempts = {"n": 0}
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(ipc.time, "sleep", lambda s: None)
+
+    ipc.best_effort_unlink(p, tries=5, delay=0.1, identity=identity)
+
+    assert attempts["n"] == 3
+    assert not p.exists()
+
+
+def test_cleanup_endpoint_routes_through_best_effort_unlink(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ipc, "best_effort_unlink", lambda p, **kwargs: seen.setdefault("path", p))
+    ipc.cleanup_endpoint("default")
+    # cleanup_endpoint() targets the socket file on POSIX but the port file
+    # on Windows; assert the platform-appropriate path.
+    expected = ipc.port_path("default") if ipc.IS_WINDOWS else ipc._sock_path("default")
+    assert seen["path"] == expected

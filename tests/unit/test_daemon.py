@@ -674,7 +674,7 @@ def test_shutdown_closes_only_the_daemon_owned_tab(monkeypatch):
     monkeypatch.setattr(daemon, "Daemon", lambda: d)
     monkeypatch.setattr(daemon.ipc, "serve", wait_forever)
     monkeypatch.setattr(daemon.ipc, "sock_addr", lambda _name: "test-socket")
-    monkeypatch.setattr(daemon.ipc, "cleanup_endpoint", lambda _name: None)
+    monkeypatch.setattr(daemon.ipc, "cleanup_endpoint", lambda _name, **kwargs: None)
     monkeypatch.setattr(daemon, "log", lambda _message: None)
 
     asyncio.run(daemon.main())
@@ -845,3 +845,128 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+def test_start_resolves_ws_url_off_event_loop(monkeypatch, tmp_path):
+    """Regression for #893 P0: async start() called the blocking get_ws_url()
+    (up to 30s of 1s sleeps) directly, freezing every concurrent IPC request
+    for the whole wait window. The lookup must run in a worker thread while
+    the loop keeps ticking."""
+    import threading
+    import time as _time
+
+    monkeypatch.setattr(daemon, "LOG", str(tmp_path / "daemon.log"))
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "remote")
+
+    loop_thread = threading.current_thread()
+    seen = {}
+
+    def slow_get_ws_url(timeout=daemon.WS_URL_STARTUP_TIMEOUT_SECONDS, stop=None):
+        seen["thread"] = threading.current_thread()
+        seen["timeout"] = timeout
+        seen["stop"] = stop
+        _time.sleep(0.2)  # simulate a slow endpoint wait
+        return "ws://127.0.0.1:9999/devtools/browser/x"
+
+    monkeypatch.setattr(daemon, "get_ws_url", slow_get_ws_url)
+
+    class FakeCDP:
+        def __init__(self, url):
+            self.url = url
+            self._event_registry = type("R", (), {"handle_event": lambda *a, **k: None})()
+
+        async def start(self):
+            pass
+
+    monkeypatch.setattr(daemon, "CDPClient", FakeCDP)
+
+    async def noop_attach(self, replaces_session=None, enable_domains=True):
+        pass
+
+    monkeypatch.setattr(daemon.Daemon, "attach_first_page", noop_attach)
+
+    async def main():
+        ticks = []
+
+        async def ticker():
+            for _ in range(20):
+                ticks.append(1)
+                await asyncio.sleep(0.05)
+
+        d = daemon.Daemon()
+        ticker_task = asyncio.ensure_future(ticker())
+        await d.start()
+        # The 0.2s lookup must not have stalled the loop: ticks must already
+        # have happened while start() was awaiting the worker thread. (Awaiting
+        # ticker_task only after start() returns would let all 20 ticks land
+        # afterwards even with the loop frozen, so count-before-await is the
+        # assertion that actually detects the regression.)
+        ticks_during_lookup = len(ticks)
+        await ticker_task
+        return ticks, ticks_during_lookup
+
+    import asyncio as _asyncio
+
+    ticks, ticks_during_lookup = _asyncio.run(main())
+
+    assert seen["timeout"] == daemon.WS_URL_STARTUP_TIMEOUT_SECONDS
+    assert seen["thread"] is not loop_thread, "get_ws_url() ran on the event loop thread"
+    assert ticks_during_lookup > 0, (
+        "event loop was blocked during the endpoint lookup: "
+        f"{ticks_during_lookup} ticks ran while start() awaited it"
+    )
+    assert len(ticks) == 20
+
+
+def test_get_ws_url_aborts_promptly_when_stop_set(monkeypatch):
+    """The ws_url poll must be cooperatively cancellable: with an unreachable
+    BU_CDP_URL the poll would otherwise sleep out the full timeout even after
+    the caller gave up. Setting the stop event must abort it promptly."""
+    import threading
+    import time as _time
+
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:1")  # refused fast; the 1s sleeps dominate
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+
+    stop = threading.Event()
+    timer = threading.Timer(0.5, stop.set)
+    timer.start()
+    try:
+        t0 = _time.monotonic()
+        with pytest.raises(RuntimeError, match="cancelled"):
+            daemon.get_ws_url(timeout=60, stop=stop)
+        elapsed = _time.monotonic() - t0
+    finally:
+        timer.cancel()
+    assert elapsed < 5, f"poll ignored the stop signal for {elapsed:.1f}s"
+
+
+def test_start_cancellation_releases_asyncio_run_promptly(monkeypatch, tmp_path):
+    """Cancelling Daemon.start() during the ws_url poll must signal the worker
+    thread: asyncio.run() must not wait out the remaining startup timeout
+    before returning (Ctrl-C latency with an unreachable BU_CDP_URL)."""
+    import time as _time
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(daemon, "LOG", str(tmp_path / "daemon.log"))
+    monkeypatch.setattr(daemon, "WS_URL_STARTUP_TIMEOUT_SECONDS", 8)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:1")
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+
+    async def main():
+        d = daemon.Daemon()
+        task = _asyncio.ensure_future(d.start())
+        await _asyncio.sleep(0.5)
+        task.cancel()
+        try:
+            await task
+        except _asyncio.CancelledError:
+            pass
+
+    t0 = _time.monotonic()
+    _asyncio.run(main())
+    elapsed = _time.monotonic() - t0
+    assert elapsed < 6, (
+        f"asyncio.run() blocked {elapsed:.1f}s after start() was cancelled — "
+        "the ws_url worker thread kept polling"
+    )

@@ -1,5 +1,5 @@
 """Daemon IPC plumbing. AF_UNIX socket on POSIX, TCP loopback on Windows."""
-import asyncio, json, os, re, secrets, socket, subprocess, sys
+import asyncio, json, os, re, secrets, socket, subprocess, sys, time
 from pathlib import Path
 
 from . import paths
@@ -195,7 +195,66 @@ def expected_token():
     return _server_token
 
 
-def cleanup_endpoint(name):  # best-effort; silent if already gone
-    p = _sock_path(name) if not IS_WINDOWS else port_path(name)
-    try: p.unlink()
-    except FileNotFoundError: pass
+def endpoint_path(name):
+    """Filesystem path of the IPC endpoint: socket file on POSIX, .port file
+    on Windows."""
+    return _sock_path(name) if not IS_WINDOWS else port_path(name)
+
+
+def file_identity(p):
+    """(st_dev, st_ino, st_mtime_ns) snapshot of *p*, or None if absent.
+
+    Used to detect that an endpoint file was replaced by a successor's
+    publication — an atomic os.replace or a fresh bind both change the
+    identity — between cleanup attempts (#893)."""
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns)
+
+
+def _identity_changed(p, identity):
+    current = file_identity(p)
+    return current is not None and current != identity
+
+
+_UNSET = object()  # sentinel: "no identity guard" vs "guard with None"
+
+
+def best_effort_unlink(p, tries=10, delay=0.1, identity=None):
+    """Remove *p* best-effort: silent if already gone, retry on transient
+    errors. On Windows a just-SIGTERM'd daemon can still hold the endpoint
+    file handle, so the first unlink() raises PermissionError (WinError 5)
+    instead of deleting — retry briefly before giving up (#893).
+
+    When *identity* (a file_identity() snapshot) is given, every attempt
+    re-checks it first: if a concurrent ensure_daemon() published a
+    successor's endpoint at the same path while we slept, the path no longer
+    belongs to the stale daemon and the successor's live file is left alone.
+    """
+    for attempt in range(tries):
+        if identity is not None and _identity_changed(p, identity):
+            return
+        try:
+            p.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:  # transient: handle not yet released
+            if attempt < tries - 1:  # no sleep after the final attempt
+                time.sleep(delay)
+        except OSError:
+            return  # not transient; retrying cannot help
+
+
+def cleanup_endpoint(name, identity=_UNSET):  # best-effort; silent if already gone
+    """Unlink the IPC endpoint for *name*. When *identity* (a
+    file_identity() snapshot taken before the shutdown wait) is given, skip
+    the cleanup if the path now belongs to a newly published successor
+    endpoint — the endpoint is what keeps the successor discoverable, so the
+    ownership guard that protects the pid record applies here too (#893)."""
+    p = endpoint_path(name)
+    if identity is not _UNSET and _identity_changed(p, identity):
+        return
+    best_effort_unlink(p, identity=None if identity is _UNSET else identity)
