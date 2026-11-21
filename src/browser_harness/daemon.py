@@ -426,6 +426,7 @@ class Daemon:
         self.cdp = None
         self.session = None
         self.target_id = None
+        self._popup_parents = []
         self.dedicated_target_id = None
         self._dedicated_target_lock = asyncio.Lock()
         self._session_state_lock = asyncio.Lock()
@@ -442,6 +443,12 @@ class Daemon:
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        popup_page = None
+        if replaces_session and self._popup_parents:
+            pages_by_id = {t["targetId"]: t for t in targets if t["type"] == "page"}
+            popup_page = pages_by_id.get(self.target_id)
+            while popup_page is None and self._popup_parents:
+                popup_page = pages_by_id.get(self._popup_parents.pop())
         # Named daemons (BU_NAME != "default") share one browser with other
         # daemons — attaching to the first page makes parallel daemons fight
         # over a single tab (navigations clobber each other). Give each named
@@ -455,7 +462,7 @@ class Daemon:
             pages_by_id = {t["targetId"]: t for t in targets if t["type"] == "page"}
             # A stale CDP session does not necessarily mean its tab disappeared.
             # Reattach to the current tab first, then the daemon's dedicated tab.
-            page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
+            page = popup_page or pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
             if page is None:
                 # Two stale IPC requests can recover concurrently. Recheck
                 # inside a narrow lock so they share one replacement tab.
@@ -481,7 +488,7 @@ class Daemon:
                 await self._enable_default_domains(self.session)
             return page
 
-        pages = [t for t in targets if is_real_page(t)]
+        pages = [popup_page] if popup_page else [t for t in targets if is_real_page(t)]
         if not pages:
             # Fresh browser (ex: BU cloud) starts w about:blank; reuse it
             pages = [t for t in targets if is_reusable_blank_page(t)]
@@ -709,8 +716,14 @@ class Daemon:
         if meta == "set_session":
             async with self._session_state_lock:
                 old_session = self.session
+                next_target = req.get("target_id") or self.target_id
+                if next_target != self.target_id:
+                    if self.target_id and req.get("opener_id") == self.target_id:
+                        self._popup_parents.append(self.target_id)
+                    else:
+                        self._popup_parents.clear()
                 self.session = req.get("session_id")
-                self.target_id = req.get("target_id") or self.target_id
+                self.target_id = next_target
                 new_session = self.session
             # Run the old-session Network.disable (defense in depth — keeps
             # background-tab traffic out of the global event buffer; the
