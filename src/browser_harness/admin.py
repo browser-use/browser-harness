@@ -1527,20 +1527,23 @@ def run_update(yes=False):
 
     Exit 0 on success, non-zero on failure."""
     import subprocess, sys
+    mode = _install_mode()
     cur, latest, newer = check_for_update()
-    # Only short-circuit as "up to date" when we actually know the installed
-    # version. Otherwise `newer=False` just means "couldn't compare" — proceed.
-    if cur and latest and not newer:
+    # A git checkout follows its branch, not PyPI releases, so always pull it.
+    # Otherwise only short-circuit as "up to date" when we actually know the
+    # installed version. `newer=False` can also mean "couldn't compare" — proceed.
+    if mode != "git" and cur and latest and not newer:
         print(f"browser-harness is up to date ({cur}).")
         return 0
-    if cur and latest:
-        print(f"updating browser-harness: {cur} -> {latest}")
-    elif latest:
-        print(f"installed version unknown; will try to update to {latest}.")
-    else:
-        print("could not reach PyPI; will try to update anyway.")
+    # The git branch announces its pull below, once the working tree is clean.
+    if mode != "git":
+        if newer:
+            print(f"updating browser-harness: {cur} -> {latest}")
+        elif latest:
+            print(f"installed version unknown; will try to update to {latest}.")
+        else:
+            print("could not reach PyPI; will try to update anyway.")
 
-    mode = _install_mode()
     if mode == "git":
         repo = _repo_dir()
         status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
@@ -1551,6 +1554,7 @@ def run_update(yes=False):
             print(f"refusing to update: uncommitted changes in {repo}", file=sys.stderr)
             print("commit or stash them first, or run `git -C %s pull` yourself." % repo, file=sys.stderr)
             return 1
+        print("pulling the latest commits.")
         r = subprocess.run(["git", "-C", str(repo), "pull", "--ff-only"])
         if r.returncode != 0:
             return r.returncode
