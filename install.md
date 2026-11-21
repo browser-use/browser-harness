@@ -45,7 +45,14 @@ run `browser-harness recordings disable`. Preserve an existing `(config)` or
 
 ## If Chrome Blocks It
 
-In Chrome:
+If Chrome is closed, skip this: the harness ticks the checkbox below in Chrome's
+Local State and launches Chrome in the background (`open -g`). Only the one
+"Allow remote debugging?" dialog remains, once per Chrome run. Chrome itself
+brings its window forward for that dialog; `mac-approve` clicks it and adds no
+focus change of its own. Set `BH_PRESET_INSPECT_TOGGLE=0`
+to keep the harness from editing Local State.
+
+If Chrome is already running, in Chrome:
 
 1. Open `chrome://inspect/#remote-debugging`.
 2. Tick "Allow remote debugging for this browser instance".
@@ -63,7 +70,11 @@ printed instruction. The first checkbox is intentionally a one-time manual
 Chrome setup step; it is not exposed to the harness until CDP is available.
 
 The helper requires Accessibility permission for the app launching the CLI
-(for example Terminal, iTerm, Codex, or an IDE) in System Settings.
+(for example Terminal, iTerm, Codex, or an IDE) in System Settings. It checks
+that first and returns `accessibility-required` at once instead of waiting on
+macOS's consent prompt. It matches the sheet in any Chromium-family browser
+(Chrome, Canary, Beta, Dev, Chromium, Brave, Edge), including Chrome 153+ where
+the sheet carries its title in a heading instead of a name.
 
 ## Cloud Browsers
 
