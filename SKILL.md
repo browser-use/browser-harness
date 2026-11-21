@@ -191,6 +191,11 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - If the current tab is stale or internal, call `ensure_real_tab()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - When entering unusually long text, avoid slow per-character typing: find a faster page-appropriate input method, then verify the page kept the exact value.
+- Captcha or challenge on screen: cloud browsers solve supported ones automatically. Call `solve_captcha()` and wait;
+  do not reload, navigate, or switch tabs meanwhile. `still solving` -> call it again. `solved` -> re-check the page:
+  a new challenge (another vendor) can follow, and the result's `url` names the page that was solved. Take over only when the solver
+  failed or no solve started. `solver unavailable` means a local browser. Script output ends with
+  `[Captcha solver ...]` lines while a solve runs and once when one finishes.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
 - Raw CDP is available with `cdp("Domain.method", ...)`.
   Pass CDP parameters as keywords: `cdp("Input.insertText", text="hello")`.
