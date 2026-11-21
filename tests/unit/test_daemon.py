@@ -845,3 +845,149 @@ def test_explicit_stale_session_is_not_redirected():
     assert d.cdp.calls == [
         ("Runtime.evaluate", {"expression": "1"}, "explicit-stale-session")
     ]
+
+
+class _OwnedCDP(_FakeCDP):
+    """Replies to the owned begin sequence; fails one method on demand."""
+
+    def __init__(self, fail=None):
+        super().__init__()
+        self.fail = fail or {}
+
+    async def send_raw(self, method, params=None, session_id=None):
+        self.calls.append((method, params, session_id))
+        if method in self.fail:
+            raise RuntimeError(self.fail[method])
+        return {
+            "Target.createBrowserContext": {"browserContextId": "owned-ctx"},
+            "Target.createTarget": {"targetId": "owned-target"},
+            "Target.attachToTarget": {"sessionId": "owned-session"},
+        }.get(method, {})
+
+
+def _daemon_with_owned_scope(fail=None):
+    d = daemon.Daemon()
+    d.cdp = _OwnedCDP(fail)
+    d.session, d.target_id, d.dedicated_target_id = "user-session", "user-tab", "daemon-tab"
+    scope = asyncio.run(d.handle({"meta": "begin_owned_target"}))["owned_target"]["scope_id"]
+    d.cdp.calls.clear()
+    return d, scope
+
+
+def test_ping_advertises_owned_target_capability(monkeypatch):
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
+
+    assert asyncio.run(daemon.Daemon().handle({"meta": "ping"})) == {
+        "pong": True, "pid": os.getpid(), "browser_kind": "local", "capabilities": ["owned_target"],
+    }
+
+
+def test_begin_owned_target_never_enumerates_or_touches_daemon_attachment():
+    d = daemon.Daemon()
+    d.cdp = _OwnedCDP()
+    d.session, d.target_id, d.dedicated_target_id = "user-session", "user-tab", "daemon-tab"
+
+    reply = asyncio.run(d.handle({"meta": "begin_owned_target"}))
+
+    assert reply["owned_target"]["target_id"] == "owned-target"
+    assert [m for m, _, _ in d.cdp.calls][:3] == [
+        "Target.createBrowserContext", "Target.createTarget", "Target.attachToTarget",
+    ]
+    assert "Target.getTargets" not in [m for m, _, _ in d.cdp.calls]
+    assert (d.session, d.target_id, d.dedicated_target_id) == ("user-session", "user-tab", "daemon-tab")
+
+
+def test_begin_owned_target_refused_while_shutting_down():
+    d = daemon.Daemon()
+    d.cdp = _OwnedCDP()
+    d._shutting_down = True
+
+    assert asyncio.run(d.handle({"meta": "begin_owned_target"})) == {"error": "daemon is shutting down"}
+    assert d.cdp.calls == []
+
+
+def test_scoped_requests_refuse_enumeration_and_set_session_without_global_change():
+    d, scope = _daemon_with_owned_scope()
+
+    replies = [asyncio.run(d.handle({"scope": scope, **req})) for req in (
+        {"method": "Target.getTargets", "params": {}},
+        {"meta": "set_session", "session_id": "owned-session", "target_id": "owned-target"},
+        {"meta": "session"},
+    )]
+
+    assert replies == [
+        {"error": "owned-scope: enumeration"},
+        {"error": "owned-scope: lifecycle"},
+        {"session_id": "owned-session"},
+    ]
+    assert d.cdp.calls == []
+    assert (d.session, d.target_id, d.dedicated_target_id) == ("user-session", "user-tab", "daemon-tab")
+
+
+def test_scoped_stale_session_never_recovers_via_attach_first_page():
+    d, scope = _daemon_with_owned_scope(fail={"Runtime.evaluate": "Session with given id not found."})
+    attached = []
+
+    async def attach_first_page(**_kwargs):
+        attached.append(True)
+
+    d.attach_first_page = attach_first_page
+
+    reply = asyncio.run(d.handle({"scope": scope, "method": "Runtime.evaluate", "params": {"expression": "1"}}))
+
+    assert reply == {"error": "owned-scope: stale-session"}
+    assert attached == []
+    assert d.cdp.calls == [("Runtime.evaluate", {"expression": "1"}, "owned-session")]
+    assert d.session == "user-session"
+
+
+def test_owned_page_events_skip_global_buffer_dialog_and_tab_marker(monkeypatch):
+    monkeypatch.delenv("BH_TAB_MARKER", raising=False)
+    d, scope = _daemon_with_owned_scope()
+
+    async def run():
+        d._record_event("Page.loadEventFired", {}, "owned-session")
+        d._record_event("Page.javascriptDialogOpening", {"message": "owned"}, "owned-session")
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    drained = asyncio.run(d.handle({"scope": scope, "meta": "drain_events"}))
+
+    assert list(d.events) == []
+    assert d.dialog is None
+    assert d.cdp.calls == []
+    assert [e["method"] for e in drained["events"]] == ["Page.loadEventFired", "Page.javascriptDialogOpening"]
+
+
+def test_unscoped_events_still_reach_global_buffer():
+    d, _scope = _daemon_with_owned_scope()
+
+    d._record_event("Network.requestWillBeSent", {"requestId": "u1"}, "user-session")
+
+    assert list(d.events) == [
+        {"method": "Network.requestWillBeSent", "params": {"requestId": "u1"}, "session_id": "user-session"},
+    ]
+
+
+def test_shutdown_disposes_open_owned_scopes(monkeypatch):
+    d, _scope = _daemon_with_owned_scope()
+    d.dedicated_target_id = None
+
+    async def start():
+        d.stop = asyncio.Event()
+        d.stop.set()
+
+    async def wait_forever(*_args):
+        await asyncio.Event().wait()
+
+    d.start = start
+    monkeypatch.setattr(daemon, "Daemon", lambda: d)
+    monkeypatch.setattr(daemon.ipc, "serve", wait_forever)
+    monkeypatch.setattr(daemon.ipc, "sock_addr", lambda _name: "test-socket")
+    monkeypatch.setattr(daemon.ipc, "cleanup_endpoint", lambda _name: None)
+    monkeypatch.setattr(daemon, "log", lambda _message: None)
+
+    asyncio.run(daemon.main())
+
+    assert d.cdp.calls == [("Target.disposeBrowserContext", {"browserContextId": "owned-ctx"}, None)]
+    assert d.session == "user-session"
