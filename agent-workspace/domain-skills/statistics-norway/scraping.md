@@ -18,7 +18,7 @@ robots.txt (checked 2026-11-20, curl, the cloud browser and `urllib.robotparser`
 
 ### 1. Newest period for a topic: search, pick the table, read its variables, pull tidy rows (browser)
 
-`on_ssb_tab()` opens one logged-out data.ssb.no API answer so `fetch()` runs same-origin (the API sends no `Access-Control-Allow-Origin`). `get()` returns parsed JSON on HTTP 200, waits once on 429/500/502/503/504 or a network error (`Retry-After` seconds or date, else 60 s; above 120 s it stops) and otherwise raises. 9 `fetch()` calls: per topic one search, one `/metadata`, one `/data`. Add a topic by naming its search words, the exact variable labels, a label fragment and the values you want.
+`on_ssb_tab()` opens one logged-out data.ssb.no API answer so `fetch()` runs same-origin (the API sends no `Access-Control-Allow-Origin`). `get()` returns parsed JSON on HTTP 200, waits once on 429/500/502/503/504 or a network error (`Retry-After` seconds or date, else 60 s; above 120 s it stops) and otherwise raises. 9 `fetch()` calls when each search matches on its first page, as in the run below: per topic one search page, one `/metadata`, one `/data`. `find_table` reads one more search page of 40 hits for each page with no match, so a topic whose table is further down costs one call per extra page. Add a topic by naming its search words, the exact variable labels, a label fragment and the values you want.
 
 ```python
 import email.utils, json, time
@@ -111,15 +111,25 @@ def get(path, **params):
 
 def find_table(query, vars, label_has):
     """Search (newest tables only: discontinued ones are left out by default) and keep the first hit whose
-    variable names are exactly `vars` and whose label contains `label_has`. Prints the top of the hit list."""
-    res = get("/tables", query=query, lang="en", pageSize=40)
-    hits = res["tables"]
-    print(f"  search {query!r}: {res['page']['totalElements']} tables; top 3: "
-          + "; ".join(f"{t['id']} {t['label'].split(': ', 1)[1][:48]}" for t in hits[:3]))
-    for t in hits:
-        if set(t["variableNames"]) == vars and label_has.lower() in t["label"].lower() and not t.get("discontinued"):
-            return t
-    raise RuntimeError(f"no table for {query!r} with variables {sorted(vars)} and label {label_has!r}: read the hits")
+    variable names are exactly `vars` and whose label contains `label_has`. Prints the top of the hit list.
+    Reads the next page of 40 hits only while nothing matched (1 call per page)."""
+    page = 1
+    while True:
+        res = get("/tables", query=query, lang="en", pageSize=40, pageNumber=page)
+        hits = res["tables"]
+        if page == 1:
+            print(f"  search {query!r}: {res['page']['totalElements']} tables; top 3: "
+                  + "; ".join(f"{t['id']} {t['label'].split(': ', 1)[1][:48]}" for t in hits[:3]))
+        for t in hits:
+            if set(t["variableNames"]) == vars and label_has.lower() in t["label"].lower() and not t.get("discontinued"):
+                if page > 1:
+                    print(f"  match on page {page} of {res['page']['totalPages']}")
+                return t
+        if page >= res["page"]["totalPages"]:
+            break
+        page += 1
+    raise RuntimeError(f"no table for {query!r} with variables {sorted(vars)} and label {label_has!r} "
+                       f"in {res['page']['totalElements']} hits: read the hits")
 
 def tidy(ds):
     """json-stat2 -> list of dicts, one per cell. `value` is one flat list in the order of ds['id'] (last
@@ -197,7 +207,7 @@ for topic, t in TOPICS.items():
               + f"  {r['ContentsCode_label']}: {val} {u.get('base', '')}")
     if len(rows) > 8:
         print(f"    ... {len(rows) - 8} more rows ({len(rows)} in all)")
-    if topic == "population by age and sex":
+    if topic == "population by age and sex" and all(r["value"] is not None for r in rows):
         print(f"  sum of the {len(rows)} rows: {sum(r['value'] for r in rows):,} persons")
     if any(r["value"] is None for r in rows):
         print(f"  {sum(r['value'] is None for r in rows)} cells suppressed (null; symbol in status)")
