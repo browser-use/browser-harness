@@ -18,7 +18,7 @@ robots.txt (checked 2026-11-20, curl, the cloud browser and `urllib.robotparser`
 
 ### 1. Newest period for a topic: search, pick the table, read its variables, pull tidy rows (browser)
 
-`on_ssb_tab()` opens one logged-out data.ssb.no API answer so `fetch()` runs same-origin (the API sends no `Access-Control-Allow-Origin`). `get()` returns parsed JSON on HTTP 200, waits 60 s once on 429/500/502/503/504 or a network error and otherwise raises. 9 `fetch()` calls: per topic one search, one `/metadata`, one `/data`. Add a topic by naming its search words, the exact variable labels, a label fragment and the values you want.
+`on_ssb_tab()` opens one logged-out data.ssb.no API answer so `fetch()` runs same-origin (the API sends no `Access-Control-Allow-Origin`). `get()` returns parsed JSON on HTTP 200, waits once on 429/500/502/503/504 or a network error (`Retry-After` seconds or date, else 60 s; above 120 s it stops) and otherwise raises. 9 `fetch()` calls: per topic one search, one `/metadata`, one `/data`. Add a topic by naming its search words, the exact variable labels, a label fragment and the values you want.
 
 ```python
 import email.utils, json, time
