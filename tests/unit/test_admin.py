@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import sys
 import time
 import subprocess
 from pathlib import Path
@@ -1448,3 +1449,136 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+def test_daemon_stderr_rotates_before_child_writes(tmp_path, monkeypatch):
+    log_file = tmp_path / "daemon.log"
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: log_file)
+    log_file.write_text("previous crash\n")
+
+    with admin._daemon_stderr_sink(None) as sink:
+        subprocess.run(
+            [sys.executable, "-c", "import sys; sys.stderr.write('current crash\\n')"],
+            stderr=sink, check=True,
+        )
+
+    assert log_file.read_text() == "current crash\n"
+    assert log_file.with_suffix(".log.1").read_text() == "previous crash\n"
+
+
+def test_daemon_stderr_retains_three_generations(tmp_path, monkeypatch):
+    log_file = tmp_path / "daemon.log"
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: log_file)
+    log_file.write_text("old crash")
+    for attempt in range(1, 5):
+        with admin._daemon_stderr_sink(None) as sink:
+            sink.write(f"attempt {attempt}".encode())
+
+    assert log_file.read_text() == "attempt 4"
+    for generation in range(1, 4):
+        assert log_file.with_name(f"daemon.log.{generation}").read_text() == f"attempt {4 - generation}"
+    assert not log_file.with_name("daemon.log.4").exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_daemon_stderr_ignores_empty_or_missing_log(tmp_path, monkeypatch, existing):
+    log_file = tmp_path / "daemon.log"
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: log_file)
+    if existing:
+        log_file.touch()
+    backup = tmp_path / "daemon.log.1"
+    backup.write_text("previous crash")
+    with admin._daemon_stderr_sink(None):
+        pass
+    assert log_file.read_text() == ""
+    assert backup.read_text() == "previous crash"
+
+
+def test_daemon_stderr_reports_rotation_failure(tmp_path, monkeypatch, capsys):
+    log_file = tmp_path / "daemon.log"
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: log_file)
+    log_file.write_text("previous crash\n")
+
+    def fail_replace(*args):
+        raise PermissionError("rename blocked")
+
+    monkeypatch.setattr(admin.os, "replace", fail_replace)
+    with admin._daemon_stderr_sink(None) as sink:
+        sink.write(b"current crash\n")
+
+    assert "rotate log" in capsys.readouterr().err
+    assert "rename blocked" in log_file.read_text()
+    assert log_file.read_text().startswith("previous crash\n")
+    assert log_file.read_text().endswith("current crash\n")
+
+
+def test_ensure_daemon_rotates_each_failed_spawn(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    log_file = tmp_path / "daemon.log"
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: log_file)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
+    monkeypatch.setattr(admin.ipc, "spawn_kwargs", lambda: {})
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin, "_spawn_lock", lambda *args, **kwargs: nullcontext(SimpleNamespace(fd=1)))
+    monkeypatch.setattr(admin, "_parked_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_publish_pid", lambda *args: None)
+    attempts = []
+
+    class Failed:
+        pid = 4321
+        def poll(self): return 1
+
+    def spawn(*args, **kwargs):
+        attempt = len(attempts) + 1
+        attempts.append(attempt)
+        kwargs["stderr"].write(f"crash {attempt}\n".encode())
+        kwargs["stderr"].flush()
+        return Failed()
+
+    monkeypatch.setattr(admin.subprocess, "Popen", spawn)
+    with pytest.raises(RuntimeError):
+        admin.ensure_daemon(wait=0.1)
+
+    assert attempts == [1, 2, 3]
+    assert log_file.read_text() == "crash 3\n"
+    assert (tmp_path / "daemon.log.1").read_text() == "crash 2\n"
+    assert (tmp_path / "daemon.log.2").read_text() == "crash 1\n"
+
+
+def test_remote_spawn_keeps_log_of_starting_daemon(tmp_path, monkeypatch):
+    log_file = tmp_path / "daemon.log"
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: log_file)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
+    monkeypatch.setattr(admin.ipc, "spawn_kwargs", lambda: {})
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env: False)
+    monkeypatch.setattr(admin, "_publish_pid", lambda *args: None)
+    # Another caller's daemon is still starting and writing to the log.
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: 1234)
+    log_file.write_text("sibling startup\n")
+    lock_held = []
+
+    class Failed:
+        pid = 4321
+        def poll(self): return 1
+
+    def spawn(*args, **kwargs):
+        lock = admin._spawn_lock(None, timeout=0)
+        with lock:
+            lock_held.append(lock.fd is None)
+        kwargs["stderr"].write(b"crash\n")
+        kwargs["stderr"].flush()
+        return Failed()
+
+    monkeypatch.setattr(admin.subprocess, "Popen", spawn)
+    with pytest.raises(RuntimeError):
+        admin.ensure_daemon(wait=0.1)
+
+    # Spawning happened under the spawn lock, and the live log was not rotated.
+    assert lock_held == [True]
+    assert log_file.read_text().startswith("sibling startup\n")
+    assert not (tmp_path / "daemon.log.1").exists()
