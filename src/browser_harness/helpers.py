@@ -534,10 +534,19 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
     tab (e.g. a polling/SSE page the agent switched away from) keeps emitting
     Network events into the daemon's global event buffer; without this filter
     they would poison the idle check on the current tab.
+
+    Two kinds of request start on the tab but finish elsewhere, so they are not
+    waited for: a worker's script (CDP sends it with an empty loaderId, "fetched
+    from worker"; it finishes on the worker's target, or never if the worker
+    stops first), and an out-of-process iframe's requests while the iframe's
+    target is attached (the daemon auto-attaches them; targetId == frameId).
+    When the iframe comes back in process its target detaches and the tab
+    reports its requests again, so they are waited for again.
     """
     deadline = time.time() + timeout
     last_activity = time.time()
-    inflight = set()
+    inflight = {}  # requestId -> frameId
+    children = {}  # sessionId -> targetId of the tab's attached iframes (== their frameId) and workers
     active_session = _send({"meta": "session"}).get("session_id")
     while time.time() < deadline:
         for e in drain_events():
@@ -546,13 +555,20 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
             method = e.get("method", "")
             params = e.get("params", {})
             if method == "Network.requestWillBeSent":
-                inflight.add(params.get("requestId"))
+                if params.get("loaderId") != "" and params.get("frameId") not in children.values():
+                    inflight[params.get("requestId")] = params.get("frameId")
                 last_activity = time.time()
             elif method in ("Network.loadingFinished", "Network.loadingFailed"):
-                inflight.discard(params.get("requestId"))
+                inflight.pop(params.get("requestId"), None)
                 last_activity = time.time()
             elif method.startswith("Network."):
                 last_activity = time.time()
+            elif method == "Target.attachedToTarget":
+                child = params["targetInfo"]["targetId"]
+                children[params["sessionId"]] = child
+                inflight = {r: f for r, f in inflight.items() if f != child}
+            elif method == "Target.detachedFromTarget":
+                children.pop(params["sessionId"], None)
         if not inflight and (time.time() - last_activity) * 1000 >= idle_ms:
             return True
         time.sleep(0.1)
