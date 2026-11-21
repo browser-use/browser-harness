@@ -441,13 +441,17 @@ def new_tab(url="about:blank"):
                 or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
             ):
                 goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
+                tid = cur.get("targetId") or cur.get("target_id")
+                # Confirm visibly: agents that get empty output assume the call failed and retry.
+                print(f"new_tab: {tid} {url}")
+                return tid
         except Exception:
             pass
     tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
+    print(f"new_tab: {tid} {url}")
     return tid
 
 def close_tab(target=None):
