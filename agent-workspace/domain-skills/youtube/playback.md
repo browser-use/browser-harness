@@ -102,9 +102,43 @@ If `transcript` is empty, inspect the panel and retry before reporting a transcr
 
 Treat auto-generated captions as fallible, especially for names, dates, numbers, and technical terms. Preserve timestamps when a questionable claim needs to be checked against the audio.
 
+## Read on-screen content from video frames
+
+Use this when the needed text is shown in the video itself (slides, code, a prompt on screen) and is absent from the description and transcript.
+
+A tab opened with `new_tab()` stays in the background. In a background tab `document.visibilityState` is `hidden`, the player does not decode frames (`video.videoWidth` stays `0`, `readyState` stays `0`), and a screenshot shows only the poster thumbnail. Captions and the progress bar still advance, so the page looks alive. Make the tab visible before reading frames:
+
+```python
+switch_tab(tab, activate=True)
+```
+
+Then seek with the `<video>` element and screenshot each position. Pause first, and wait about 2.5 seconds after each seek so the frame is decoded at full quality.
+
+```python
+js("""(() => {
+  const v = document.querySelector("video");
+  v.muted = true;
+  // Captions cover on-screen text; turn them off.
+  const cc = document.querySelector(".ytp-subtitles-button");
+  if (cc && cc.getAttribute("aria-pressed") === "true") cc.click();
+  // Theater mode makes the frame larger in the screenshot.
+  document.querySelector(".ytp-size-button")?.click();
+})()""", target_id=tab)
+
+for seconds in (186, 192, 198):
+    js(f"""(() => {{ const v = document.querySelector("video"); v.pause(); v.currentTime = {seconds}; }})()""", target_id=tab)
+    wait(2.5)
+    capture_screenshot(f"/tmp/frame-{seconds}.png")
+```
+
+- Use the chapter list in `videoDetails.shortDescription` to pick the seek range.
+- A pre-roll advertisement can play first. While `.ad-showing` exists on the player, `video.duration` is `NaN` and seeks go to the advertisement. Poll until `.ad-showing` is gone, and click `.ytp-skip-ad-button` when it is present.
+- `&t=185s` in the URL sets the start position, but it does not make a background tab decode frames.
+
 ## Common failure modes
 
 - `Show transcript` is missing: expand the description first, then wait for the action row to render.
 - JavaScript returns metadata from the wrong video: pass the watch tab's `target_id` on every call.
 - A hidden duplicate receives the click: require `getClientRects().length` for both the expansion control and transcript text leaf.
 - The transcript panel is absent: the UI may be localized, captions may be unavailable, or the panel may still be loading. Inspect the screenshot before changing selectors.
+- A screenshot shows only the thumbnail and `video.videoWidth` is `0`: the tab is in the background. Activate it before reading frames.
