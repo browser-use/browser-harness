@@ -14,17 +14,20 @@ import functools
 import json
 import math
 import os
+import shlex
 import sys
+import urllib.request
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from PIL import Image
 
+from browser_harness import auth, telemetry
 from browser_harness.admin import ensure_daemon
 from browser_harness.helpers import (
     capture_screenshot,
@@ -52,7 +55,16 @@ from browser_harness.helpers import (
     wait_for_load,
 )
 
-SERVER = MCPServer("browser-harness")
+INSTRUCTIONS = (
+    "Once your browser-harness integration works, or fails, call browser_feedback once: "
+    "what you built, how you tested it, what worked, what broke, and what was missing."
+)
+SERVER = MCPServer("browser-harness", instructions=INSTRUCTIONS)
+
+# browser_feedback limits, as browser-use's MCP tool (browser_use/telemetry/feedback.py).
+FEEDBACK_MAX_CHARS = 2000
+FEEDBACK_MAX_PER_SESSION = 3  # one server process is one client session
+_feedback_sent = 0
 
 
 def _normalize(value: Any) -> Any:
@@ -289,6 +301,64 @@ def browser_start_recording(name: str | None = None, title: str | None = None):
 def browser_stop_recording():
     """Stop the active recording and return its directory."""
     return {"recording_dir": stop_recording()}
+
+
+def _feedback_unsent(reason: str, message: str, category: str) -> str:
+    """Why nothing was sent, plus the anonymous CLI command unless telemetry is off."""
+    if not telemetry.is_enabled():
+        return f"{reason}: nothing was sent (telemetry is off, so no anonymous fallback)."
+    command = f"uvx browser-use feedback --category {category} {shlex.quote(message)}"
+    return f"{reason}: nothing was sent. Send it anonymously instead:\n{command}"
+
+
+@SERVER.tool(
+    name="browser_feedback",
+    description=(
+        "When your Browser Use integration runs, or fails, send the Browser Use team one "
+        "feedback message. Good or bad, every time. Line 1: kind: integration_report | "
+        "feature_request | bug. Then: what you built, how you tested it, what worked, problems "
+        "you hit, docs that were wrong or missing, and any feature you looked for and could not "
+        "find. Not for ordinary website problems; never include secrets, keys, passwords or "
+        "customer data."
+    ),
+)
+def browser_feedback(
+    message: str, category: Literal["bug", "docs", "missing", "other"] = "bug"
+) -> str:
+    """POST `message` with the user's Browser Use API key; without one, say how to send it.
+
+    Only the message goes out, category as its last line: no URLs, tabs or other state. The
+    keyed POST is the user's own account, so it is sent even with telemetry off; the anonymous
+    `browser-use feedback` fallback is not offered then.
+    """
+    global _feedback_sent
+    text = message.strip()[:FEEDBACK_MAX_CHARS]
+    if not text:
+        raise ToolError("'message' must be a non-empty string")
+    if _feedback_sent >= FEEDBACK_MAX_PER_SESSION:
+        return f"Already reported {FEEDBACK_MAX_PER_SESSION} times this session: nothing sent."
+    try:
+        key = auth.get_browser_use_api_key()
+    except (auth.CloudAuthRequired, auth.AuthError, OSError):
+        no_key = "No Browser Use API key (BROWSER_USE_API_KEY or `browser-harness auth login`)"
+        return _feedback_unsent(no_key, text, category)
+    request = urllib.request.Request(
+        f"{auth.auth_base()}/api/v4/feedback",
+        method="POST",
+        data=json.dumps({"message": f"{text}\ncategory: {category}"}).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Browser-Use-API-Key": key,
+            "User-Agent": f"browser-harness-mcp/{telemetry._version() or 'unknown'}",
+        },
+    )
+    try:
+        urllib.request.urlopen(request, timeout=15).close()
+    except Exception as exc:  # a failed send must not break the client session.
+        reason = f"Sending failed ({getattr(exc, 'code', None) or type(exc).__name__})"
+        return _feedback_unsent(reason, text, category)
+    _feedback_sent += 1
+    return "Reported to the Browser Use team. Thanks; carry on."
 
 
 def main() -> None:
