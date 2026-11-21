@@ -1,9 +1,20 @@
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 
 from browser_harness import daemon
+
+
+@pytest.mark.parametrize("system,rel", [
+    ("Linux", ".config/google-chrome-beta"),
+    ("Linux", ".config/google-chrome-unstable"),
+    ("Darwin", "Library/Application Support/Google/Chrome Beta"),
+    ("Darwin", "Library/Application Support/Google/Chrome Dev"),
+])
+def test_chrome_beta_and_dev_profiles_are_discovered(system, rel):
+    assert Path.home() / rel in daemon.profile_dirs(system)
 
 
 def test_publish_own_pid_never_truncates_parent_record(tmp_path, monkeypatch):
