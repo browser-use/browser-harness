@@ -1,0 +1,51 @@
+name: GitHub Actions Security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: Audit GitHub Actions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        id: zizmor
+        continue-on-error: true
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          annotations: true
+          inputs: .
+          online-audits: true
+          persona: auditor
+          token: ${{ github.token }}
+          version: v1.30.1
+
+      - name: Summarize zizmor result
+        if: always()
+        env:
+          SCAN_OUTCOME: ${{ steps.zizmor.outcome }}
+        run: |
+          case "$SCAN_OUTCOME" in
+            success)
+              echo "Zizmor completed without findings at v1.30.1." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            failure)
+              echo "Zizmor produced findings or encountered an execution error. Review annotations and the complete action log; this advisory scan did not block the workflow." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "Zizmor did not complete. Review the job log; this advisory scan did not block the workflow." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
