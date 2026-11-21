@@ -522,6 +522,41 @@ def run_doctor_fix_snap():
     return 0
 
 
+def _check_cdp_endpoint(name, env):
+    """Raise when the caller names a BU_CDP_URL/WS that the live daemon is not attached to.
+
+    Without this, two callers sharing a BU_NAME (e.g. 'default') silently drive one
+    browser. No explicit endpoint, a cloud daemon (its BU_CDP_WS is internal, an exported
+    BU_CDP_URL is not a request for another browser), or an older daemon that does not
+    report its endpoint, attaches."""
+    m = {**os.environ, **(env or {})}  # same precedence as the daemon: merged env, WS before URL
+    want = m.get("BU_CDP_WS") or m.get("BU_CDP_URL")
+    if not want:
+        return
+    c = None
+    try:
+        c, token = ipc.connect(name or NAME, timeout=1.0)
+        resp = ipc.request(c, token, {"meta": "ping"})
+    except (OSError, ValueError):
+        return
+    finally:
+        if c:
+            c.close()
+    cdp = resp.get("cdp") if isinstance(resp, dict) and resp.get("browser_kind") != "cloud" else None
+    if not isinstance(cdp, dict) or not isinstance(cdp.get("keys"), list) or not cdp["keys"]:
+        return
+    from .daemon import _cdp_keys, _safe_connection_label
+    if _cdp_keys(want)[0] in cdp["keys"]:
+        return
+    n, have, asked = name or NAME, str(cdp.get("label") or "<unknown>"), _safe_connection_label(want)
+    if asked == have:
+        asked += " (different endpoint)"
+    raise RuntimeError(
+        f"cdp-mismatch: daemon {n!r} is attached to {have}, not {asked}; "
+        f"use another BU_NAME for this browser, or replace it with `BU_NAME={n} browser-harness --reload` / restart_daemon({n!r})"
+    )
+
+
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
     Chrome, and missing Allow on chrome://inspect."""
@@ -533,10 +568,12 @@ def ensure_daemon(wait=None, name=None, env=None):
         for last in (False, True):
             try:
                 s, token = ipc.connect(name or NAME, timeout=3.0)
-                resp = ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
-                if "result" in resp: return
+                healthy = "result" in ipc.request(s, token, {"method": "Target.getTargets", "params": {}})
             except Exception:
-                pass
+                healthy = False
+            if healthy:
+                _check_cdp_endpoint(name, env)
+                return
             if not last: time.sleep(0.5)
         browser_kind = daemon_browser_kind(name)
         if browser_kind in {"cloud", None}:
@@ -564,13 +601,16 @@ def ensure_daemon(wait=None, name=None, env=None):
             stderr_sink = open(ipc.log_path(name or NAME), "ab")
         except OSError:
             stderr_sink = subprocess.DEVNULL
-        if local:
+        # BU_CDP_URL/WS spawns take the lock too, so two cold callers asking one name for two
+        # browsers cannot both spawn and steal each other's socket; the loser gets cdp-mismatch.
+        if local or not e.get("BU_BROWSER_ID"):
             with _spawn_lock(name, timeout=startup_wait) as lock:
                 if lock.fd is None:
                     raise RuntimeError("daemon-starting: another browser-harness daemon is still starting; retry later")
                 if daemon_alive(name):
                     if stderr_sink is not subprocess.DEVNULL:
                         stderr_sink.close()
+                    _check_cdp_endpoint(name, env)
                     return
                 pending_pid = _parked_daemon_pid(name) or _starting_daemon_pid(name)
                 if pending_pid:
@@ -597,6 +637,7 @@ def ensure_daemon(wait=None, name=None, env=None):
         while deadline is None or time.monotonic() < deadline:
             if daemon_alive(name):
                 _cleanup_unattached_browser_launch(launched_browser)
+                _check_cdp_endpoint(name, env)  # a concurrent caller may have won the name with another browser
                 return
             if p is not None and p.poll() is not None:
                 pending_died = True
