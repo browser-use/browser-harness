@@ -111,15 +111,25 @@ def get(path, **params):
 
 def find_table(query, vars, label_has):
     """Search (newest tables only: discontinued ones are left out by default) and keep the first hit whose
-    variable names are exactly `vars` and whose label contains `label_has`. Prints the top of the hit list."""
-    res = get("/tables", query=query, lang="en", pageSize=40)
-    hits = res["tables"]
-    print(f"  search {query!r}: {res['page']['totalElements']} tables; top 3: "
-          + "; ".join(f"{t['id']} {t['label'].split(': ', 1)[1][:48]}" for t in hits[:3]))
-    for t in hits:
-        if set(t["variableNames"]) == vars and label_has.lower() in t["label"].lower() and not t.get("discontinued"):
-            return t
-    raise RuntimeError(f"no table for {query!r} with variables {sorted(vars)} and label {label_has!r}: read the hits")
+    variable names are exactly `vars` and whose label contains `label_has`. Prints the top of the hit list.
+    Reads the next page of 40 hits only while nothing matched (1 call per page)."""
+    page = 1
+    while True:
+        res = get("/tables", query=query, lang="en", pageSize=40, pageNumber=page)
+        hits = res["tables"]
+        if page == 1:
+            print(f"  search {query!r}: {res['page']['totalElements']} tables; top 3: "
+                  + "; ".join(f"{t['id']} {t['label'].split(': ', 1)[1][:48]}" for t in hits[:3]))
+        for t in hits:
+            if set(t["variableNames"]) == vars and label_has.lower() in t["label"].lower() and not t.get("discontinued"):
+                if page > 1:
+                    print(f"  match on page {page} of {res['page']['totalPages']}")
+                return t
+        if page >= res["page"]["totalPages"]:
+            break
+        page += 1
+    raise RuntimeError(f"no table for {query!r} with variables {sorted(vars)} and label {label_has!r} "
+                       f"in {res['page']['totalElements']} hits: read the hits")
 
 def tidy(ds):
     """json-stat2 -> list of dicts, one per cell. `value` is one flat list in the order of ds['id'] (last
@@ -197,7 +207,7 @@ for topic, t in TOPICS.items():
               + f"  {r['ContentsCode_label']}: {val} {u.get('base', '')}")
     if len(rows) > 8:
         print(f"    ... {len(rows) - 8} more rows ({len(rows)} in all)")
-    if topic == "population by age and sex":
+    if topic == "population by age and sex" and all(r["value"] is not None for r in rows):
         print(f"  sum of the {len(rows)} rows: {sum(r['value'] for r in rows):,} persons")
     if any(r["value"] is None for r in rows):
         print(f"  {sum(r['value'] is None for r in rows)} cells suppressed (null; symbol in status)")

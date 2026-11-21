@@ -448,11 +448,13 @@ def key(v):
     return nums, (0,) if pre else (1,), parts
 
 def caret_upper(req):
-    """Cargo's default requirement '1.38' means ^1.38: >= 1.38.0, < next left-most non-zero part."""
-    p = [int(x) for x in req.split(".")] + [0, 0]
-    if p[0] > 0:
+    """Cargo's default requirement '1.38' means ^1.38: >= 1.38.0, < next left-most non-zero part. A part left out
+    counts as unset, not zero: ^0 is < 1.0.0 and ^0.0 is < 0.1.0, while ^0.0.3 is < 0.0.4."""
+    given = [int(x) for x in req.split(".")]
+    p = given + [0, 0]
+    if p[0] > 0 or len(given) == 1:
         return (p[0] + 1, 0, 0)
-    if p[1] > 0:
+    if p[1] > 0 or len(given) == 2:
         return (0, p[1] + 1, 0)
     return (0, 0, p[2] + 1)
 
