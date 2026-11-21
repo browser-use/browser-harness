@@ -253,6 +253,7 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 
 - Coordinate clicks default. CDP mouse events pass through iframes/shadow/cross-origin at the compositor level.
 - Keep the connection model simple: use the default daemon, `BU_NAME`, `BU_CDP_URL`, `BU_CDP_WS`, or `start_remote_daemon(...)`.
+- `BH_IDLE_TIMEOUT=<seconds>` makes a daemon exit after that long with no request (0 = never). Default: 30 min when spawned with `BH_OWNS_BROWSER=1` for a `BU_CDP_*` browser you launched for it (that browser is closed too), never otherwise. A user's Chrome is never closed, but its next daemon asks for Allow again.
 - Trusted orchestrators can set `BH_OPEN_LIVE_URL=0` while provisioning a Cloud
   daemon to keep its interactive live-view URL from being printed or opened.
   The URL is still created and returned by `start_remote_daemon()`; callers must

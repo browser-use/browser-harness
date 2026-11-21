@@ -115,6 +115,10 @@ BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 _REMOTE_STOPPED = False
 BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
+# BH_OWNS_BROWSER=1: whoever spawned this daemon launched its BU_CDP_WS/BU_CDP_URL
+# browser for it, so an idle exit closes that browser. Never applies to a
+# user's Chrome found through DevToolsActivePort (BROWSER_KIND "local").
+OWNS_BROWSER = BROWSER_KIND == "cdp" and os.environ.get("BH_OWNS_BROWSER", "").strip().lower() in {"1", "true", "yes", "on"}
 # Chrome 144+ shows a per-connection popup, and the connection that raised it is
 # the only thing keeping it on screen. There is deliberately no approval
 # deadline: expiry would drop the sheet and make a later attempt create another
@@ -133,6 +137,23 @@ TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0
 def tab_marker_enabled():
     """Whether the cosmetic controlled-tab title marker should be added."""
     return os.environ.get("BH_TAB_MARKER", "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+REQUEST_HOLD = 120.0  # > the longest client wait (60 s screenshot)
+
+
+def idle_timeout():
+    """BH_IDLE_TIMEOUT seconds (0 = off). Default: 30 min for a browser this
+    daemon owns, off otherwise: a new daemon on a user's Chrome means another
+    Allow popup, and other callers keep daemons attached on purpose."""
+    raw = os.environ.get("BH_IDLE_TIMEOUT", "").strip()
+    if raw:
+        try:
+            seconds = float(raw)
+            return seconds if 0 < seconds < float("inf") else 0.0  # NaN too
+        except ValueError:
+            log(f"ignoring BH_IDLE_TIMEOUT={raw!r}: not a number of seconds")
+    return 1800.0 if OWNS_BROWSER else 0.0
 
 
 def _devtools_port_live(base):
@@ -438,6 +459,10 @@ class Daemon:
         self.events = deque(maxlen=BUF)
         self.dialog = None
         self.stop = None  # asyncio.Event, set inside start()
+        self._inflight = 0
+        self._last_start = self._last_request = time.monotonic()
+        self.idle_exit = False
+        self.own_targets = set()  # every targetId this daemon attached (Target.getTargets shows them attached)
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
@@ -476,6 +501,7 @@ class Daemon:
             ))["sessionId"]
             self._record_session_replacement(replaces_session, self.session)
             self.target_id = tid
+            self.own_targets.add(tid)
             log(f"attached {tid} ({page.get('url','')[:80]}) session={self.session}")
             if enable_domains:
                 await self._enable_default_domains(self.session)
@@ -509,6 +535,7 @@ class Daemon:
         ))["sessionId"]
         self._record_session_replacement(replaces_session, self.session)
         self.target_id = pages[0]["targetId"]
+        self.own_targets.add(self.target_id)
         log(f"attached {pages[0]['targetId']} ({pages[0].get('url','')[:80]}) session={self.session}")
         if take_over:
             try:
@@ -663,6 +690,38 @@ class Daemon:
         self.cdp._event_registry.handle_event = tap
 
     async def handle(self, req):
+        if req.get("meta") == "ping":  # health checks are not activity
+            return await self._handle(req)
+        # A request in flight holds the idle clock (a long screenshot or
+        # wait_for is never cut) for at most REQUEST_HOLD, so one that hangs
+        # after its client gave up cannot keep the daemon up forever.
+        self._inflight += 1
+        self._last_start = self._last_request = time.monotonic()
+        try:
+            return await self._handle(req)
+        finally:
+            self._inflight -= 1
+            self._last_request = time.monotonic()
+
+    async def exit_when_idle(self, timeout):
+        """No IPC request for `timeout` seconds -> the normal meta=shutdown path."""
+        self._last_request = time.monotonic()  # the clock starts once start() is done (Allow popup)
+        while True:
+            now = time.monotonic()
+            left = timeout - (now - self._last_request)
+            if left > 0 or (self._inflight and now - self._last_start < REQUEST_HOLD):
+                await asyncio.sleep(min(max(left, 1), 60))
+                continue
+            log(f"no request for {timeout:g}s (BH_IDLE_TIMEOUT); shutting down")
+            self.idle_exit = True  # set before shutdown runs, so shutdown can tell an idle exit from an explicit stop
+            resp = await self._handle({"meta": "shutdown", "token": ipc.expected_token()})
+            if resp.get("ok"):
+                return
+            self.idle_exit = False
+            log(f"idle shutdown failed, retrying after another idle period: {resp.get('error')}")
+            self._last_request = time.monotonic()
+
+    async def _handle(self, req):
         # Token guard for Windows TCP loopback: any local process can otherwise
         # connect and issue CDP commands. expected_token() is None on POSIX so
         # this check is a no-op there (AF_UNIX + chmod 600 is the boundary).
@@ -766,7 +825,10 @@ class Daemon:
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            result = await self.cdp.send_raw(method, params, session_id=sid)
+            if method == "Target.attachToTarget":
+                self.own_targets.add(params.get("targetId"))
+            return {"result": result}
         except Exception as e:
             msg = str(e)
             if "Session with given id not found" in msg and sid:
@@ -866,7 +928,21 @@ async def serve(d):
 async def main():
     d = Daemon()
     await d.start()
+    timeout = idle_timeout()
+    idle = asyncio.create_task(d.exit_when_idle(timeout)) if timeout else None
     await serve(d)
+    if idle:
+        idle.cancel()
+    if d.idle_exit and OWNS_BROWSER:
+        try:
+            targets = (await asyncio.wait_for(d.cdp.send_raw("Target.getTargets"), timeout=5))["targetInfos"]
+            if any(t.get("attached") and t.get("targetId") not in d.own_targets for t in targets):
+                log("owned browser still has other CDP clients attached; leaving it open")
+                return
+            await asyncio.wait_for(d.cdp.send_raw("Browser.close"), timeout=5)
+            log("closed the browser this daemon owns")
+        except Exception as e:
+            log(f"close owned browser on idle exit: {e}")
 
 
 def already_running():
