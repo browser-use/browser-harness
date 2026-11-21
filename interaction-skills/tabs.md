@@ -59,6 +59,41 @@ Typical tools:
 - `wmctrl`
 - desktop-environment scripting (`gdbus`, KWin, GNOME Shell extensions, etc.)
 
+## Background tab in a specific Chrome profile
+
+Each Chrome profile is a separate CDP `browserContextId` with its own cookies
+and logins. `new_tab()` and a plain `Target.createTarget` open the tab in the
+default context, which may have no session for the site.
+
+1. Find a tab that already belongs to the profile you need.
+2. Read its `browserContextId`.
+3. Create the new tab in that context with `background=True`.
+4. Attach with `switch_tab()`. Do not call `activate_tab()`.
+
+```python
+tabs = list_tabs(include_chrome=False)
+ref = next(t for t in tabs if "calendar.google.com" in t["url"])  # any tab of that profile
+ctx = cdp("Target.getTargetInfo", targetId=ref["targetId"])["targetInfo"]["browserContextId"]
+tid = cdp("Target.createTarget", url="about:blank", background=True,
+          browserContextId=ctx)["targetId"]
+switch_tab(tid)
+goto_url("https://example.com/")
+cdp("Emulation.setFocusEmulationEnabled", enabled=True)  # modals/inputs that wait for focus
+```
+
+Close the tab with `close_tab(tid)` when you finish.
+
+Traps:
+
+- CDP sees the tabs of a profile only while that profile has a window open.
+  If no tab of the profile shows up in `Target.getTargets`, ask the user to open one window of it.
+- `Target.getTargets` also returns `browserContextId`, so you can group tabs per profile without extra calls.
+- Do not launch the Chrome binary with `--profile-directory=...` to reach a profile.
+  When Chrome already runs, `open -g -a "Google Chrome" --args --profile-directory=...`
+  does nothing, and a direct binary launch with a URL opens a focused window.
+- Google sites accept `/u/<N>/` or `?authuser=<N>` to pick one of several accounts
+  in the same profile. `N` follows the sign-in order, so confirm the account email on the page.
+
 ## Rules that held up in practice
 
 - `switch_tab()` intentionally does **not** change Chrome's visible tab.
