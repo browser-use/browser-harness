@@ -426,6 +426,52 @@ def switch_tab(target, activate=False):
     _mark_tab()
     return sid
 
+def reconnect_tab(target_id, *, expected_url, expected_title=None, owned_marker=None):
+    """Reconnect to a previously owned tab without choosing a lookalike.
+
+    The saved target ID is authoritative while it exists. If that ID vanished,
+    allow recovery only with a caller-managed ownership marker in the page
+    title, an exact URL and exactly one match. This is a conservative workflow
+    guard, not an access-control or secure ownership proof: page titles can
+    change or be forged. Never uses activate_tab() or opens/closes a tab.
+    """
+    if not isinstance(target_id, str) or not target_id.strip():
+        raise ValueError("target_id must be a nonempty saved Chrome target ID")
+    if not isinstance(expected_url, str) or not expected_url.strip():
+        raise ValueError("expected_url must be a nonempty exact URL")
+    if expected_title is not None and (not isinstance(expected_title, str) or not expected_title.strip()):
+        raise ValueError("expected_title must be a nonempty title fragment")
+    if owned_marker is not None and (not isinstance(owned_marker, str) or not owned_marker.strip()
+                                     or owned_marker in ("🐴", "🐴 ")):
+        raise ValueError("owned_marker must be a nonempty caller-managed marker, not the harness horse")
+
+    def identity_matches(tab):
+        return (tab.get("url") == expected_url
+                and (expected_title is None or expected_title in tab.get("title", ""))
+                and (owned_marker is None or owned_marker in tab.get("title", "")))
+
+    tabs = list_tabs(include_chrome=False)
+    live = next((t for t in tabs if t["targetId"] == target_id), None)
+    if live is not None:
+        if not identity_matches(live):
+            raise RuntimeError("Tab identity changed for the saved target ID; refusing recovery")
+        selected = live
+    else:
+        if not owned_marker:
+            raise RuntimeError("Stale target ID: owned_marker required for safe rediscovery")
+        candidates = [t for t in tabs if identity_matches(t)]
+        if len(candidates) != 1:
+            raise RuntimeError(f"Tab recovery ambiguous or missing: {len(candidates)} matching owned tabs")
+        selected = candidates[0]
+
+    selected_id = selected["targetId"]
+    switch_tab(selected_id)  # Does not bring the browser tab to the foreground.
+    attached = current_tab()
+    if attached.get("targetId") != selected_id or not identity_matches(attached):
+        raise RuntimeError("Tab recovery verification failed after attachment; do not act on this tab")
+    return selected_id
+
+
 def new_tab(url="about:blank"):
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller

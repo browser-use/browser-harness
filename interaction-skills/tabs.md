@@ -25,6 +25,47 @@ What CDP is bad at:
 - matching the **left-to-right tab strip order** the user sees
 - telling whether the attached target is an omnibox popup / internal page without URL filtering
 
+## Resume a known task tab (fail closed)
+
+For tasks that span CLI invocations, save the **exact** `targetId`, URL, and a
+**caller-assigned, task-unique marker in the tab title** while the task owns
+the tab. The horse marker is a movable indicator of the attached tab, **not**
+proof that an agent owns it. If the tab still exists, use its exact ID; if its
+ID became stale, only recover when **exactly one** tab matches the expected
+URL **and** the caller's marker. Do not select the first of multiple
+lookalikes, switch visibly to another tab, or close an unowned tab.
+
+```python
+# On initial task setup, after creating a dedicated agent-owned tab:
+tid = new_tab("https://example.com/work")
+# The caller must add its own unique marker, e.g. "[task-4831]", to the
+# task page title before relying on stale-ID rediscovery.
+# Persist tid, expected URL and the marker as task state.
+
+# After a daemon/attachment disruption:
+tid = reconnect_tab(
+    tid,
+    expected_url="https://example.com/work",
+    owned_marker="[task-4831]",
+)
+# Work only after the returned ID has been verified.
+```
+
+`reconnect_tab()` lists real page targets, verifies URL/title before
+attaching, and re-checks the attached page afterwards. It does **not**
+activate/foreground the tab or open/close browser targets. It raises
+`RuntimeError` on missing, changed or ambiguous identity; the caller must
+then seek explicit user input or start a *new* authorized task-owned tab
+instead of guessing. A live ID may be used with an exact URL alone, optionally
+with `expected_title="..."`. Stale-ID recovery requires
+`owned_marker="..."` as well as the URL. The title marker is a cooperative
+convention, **not a cryptographic security or access-control boundary**;
+do not use this helper as multi-tenant authorization. Chrome target IDs can
+change after a tab/browser restart. Concurrent agents must still serialize
+actions on the shared daemon to avoid a switch-between-check-and-use race.
+The underlying `switch_tab()` retains its usual horse-title-marker behavior
+(unless `BH_TAB_MARKER=0`); it never requests visible tab activation.
+
 ## Visible order (platform UI)
 
 ### macOS
