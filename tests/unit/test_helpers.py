@@ -567,8 +567,8 @@ def test_press_key_sends_the_physical_key_a_real_keyboard_would(char, code, vk, 
     assert down["windowsVirtualKeyCode"] == vk
     assert down["nativeVirtualKeyCode"] == vk
     assert bool(down["modifiers"] & 8) is shift
-    # The character still reaches the page via the char event.
-    assert [e for e in events if e["type"] == "char"][0]["text"] == char
+    # The keyDown carries the character; no separate char event (masked inputs mistyped it).
+    assert down["text"] == char and not any(e["type"] == "char" for e in events)
 
 
 @pytest.mark.parametrize("char", ["\u00e9", "\u4e2d", "\U0001F600"])
@@ -579,7 +579,7 @@ def test_press_key_claims_no_physical_key_for_non_us_characters(char):
 
     assert down["code"] == ""
     assert down["windowsVirtualKeyCode"] == 0
-    assert [e for e in events if e["type"] == "char"][0]["text"] == char
+    assert down["text"] == char and not any(e["type"] == "char" for e in events)
 
 
 @pytest.mark.parametrize("modifiers", [1, 2, 4])

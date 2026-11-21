@@ -317,10 +317,12 @@ def press_key(key, modifiers=0):
         vk, code, text = 0, key, ""
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
     shortcut_modifiers = modifiers & (1 | 2 | 4)  # Alt/Ctrl/Meta turn single keys into shortcuts.
+    # One keyDown carrying the text, as a real keystroke: Chrome fires keydown, keypress and input from it. A
+    # separate char event (keyDown without text, then char) typed wrong values into masked inputs (jQuery inputmask:
+    # 4111111111111111 -> 4411 1111 1111 1111), and keyDown with text plus char typed every character twice.
     printable_char = len(key) == 1 and bool(text) and not shortcut_modifiers
-    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({} if printable_char or not text else {"text": text}))
-    if printable_char:
-        cdp("Input.dispatchKeyEvent", type="char", text=text, **{k: v for k, v in base.items() if k != "text"})
+    extra = {"text": text, "unmodifiedText": text} if printable_char else ({"text": text} if text else {})
+    cdp("Input.dispatchKeyEvent", type="keyDown", **base, **extra)
     cdp("Input.dispatchKeyEvent", type="keyUp", **base)
 
 def scroll(x, y, dy=-300, dx=0):
