@@ -237,8 +237,16 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         cdp("Input.dispatchKeyEvent", type="keyUp",
             **{k: v for k, v in select_all.items() if k != "commands"})
         press_key("Backspace")
+    # Newlines: a bare char event with text="\n" is ignored by Chrome, silently
+    # dropping every newline (observed: an 1185-char message lost all 11 LFs).
+    # Normalize CRLF/CR to LF and type each LF as a real Enter press - Enter's
+    # char text "\r" is what textareas convert into a value newline, matching a
+    # physical keystroke. In a single-line input Enter is submit semantics, so
+    # never feed newlines to single-line fields.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     for ch in text:
-        press_key(ch)
+        press_key("Enter" if ch == "\n" else ch)
+
     js(
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
         f"if(!e)return;"
