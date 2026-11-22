@@ -493,6 +493,36 @@ def test_new_tab_creates_and_attaches_in_background(monkeypatch):
     assert not any(method == "Target.activateTarget" for method, _ in calls)
 
 
+def test_new_tab_can_create_a_separate_background_window(monkeypatch):
+    calls = []
+
+    def fake_cdp(method, **kwargs):
+        calls.append((method, kwargs))
+        if method == "Target.createTarget":
+            return {"targetId": "target-window"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "session-window"}
+        return {}
+
+    monkeypatch.setattr(helpers, "cdp", fake_cdp)
+    monkeypatch.setattr(helpers, "_send", lambda request: calls.append(("ipc", request)) or {})
+    monkeypatch.setattr(helpers, "_mark_tab", lambda: None)
+    monkeypatch.setattr(helpers, "goto_url", lambda url: calls.append(("goto_url", url)))
+    monkeypatch.setattr(
+        helpers,
+        "current_tab",
+        lambda: {"targetId": "existing-tab", "url": "about:blank"},
+    )
+
+    assert helpers.new_tab("https://example.com", new_window=True) == "target-window"
+    assert (
+        "Target.createTarget",
+        {"url": "about:blank", "background": True, "newWindow": True},
+    ) in calls
+    assert ("goto_url", "https://example.com") in calls
+    assert not any(method == "Target.activateTarget" for method, _ in calls)
+
+
 def test_new_tab_reuses_an_empty_data_document(monkeypatch):
     calls = []
     monkeypatch.setattr(
