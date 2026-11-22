@@ -1,6 +1,6 @@
 # SMHI Open Data - Get the Next 48 Hours of Hourly Temperature, Wind and Precipitation for a Swedish Town by Coordinates, Plus the Active SMHI Weather Warnings That Cover It (Point Forecast, Observations and Impact-Based Warnings JSON APIs, no key)
 
-Field-tested against SMHI's open-data APIs on 2026-11-21 (US Pacific afternoon; 23:26-23:57 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:26-23:38 UTC) plus Python `urllib` and `curl` from a Linux machine. 44 browser page loads (19 while reading the docs site, 12 in each of block 2's two runs, 1 in block 1's first run) and 34 in-page `fetch()` calls (blocks 1 and 2 ran twice each), 47 curl calls (30 while exploring, 12 in block 4, 5 polls of `createdtime.json` five minutes apart) and 35 urllib calls (block 3 ran 5 times: twice with an empty cache, twice warm, once with its forecast entry expired by hand), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes below: HTTP 404 (robots.txt on all four opendata hosts, a point outside the forecast area, a coordinate with 7 decimals, the retired `pmp3g/version/2` forecast, a closed station's latest hour), HTTP 304 (conditional GETs on the warnings list) and eight in-browser `fetch()` calls (four in each block 2 run) that CORS blocked. curl timed 27 answers at 0.51-1.00 s. No 429, no challenge, no key, no login, no cookie. Block 1's output below is its second run (23:36 UTC), block 2's its second (23:37 UTC, after relabelling four probes), block 3's its fourth (empty cache, after a caching fix) and fifth (warm), block 4's its first. An independent verifier re-ran all four blocks verbatim on 2026-11-21 23:58 to 2026-11-22 00:06 UTC (a second fresh cloud browser, urllib, curl): every block ran; only the forecast run (created 23:49:46), its numbers and the Varnish error IDs changed. After review on 2026-11-22, the blocks gained small fixes (a closing source line in blocks 2 and 4, an exact 48-step check, a guard for an hour with no CORE reading, a fixed tie-break) and re-ran at 00:59-01:02 UTC (a new cloud browser, urllib, curl); the source lines in the outputs of blocks 2 and 4 come from those runs, and nothing else changed except the live forecast.
+Field-tested against SMHI's open-data APIs on 2026-11-21 (US Pacific afternoon; 23:26-23:57 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:26-23:38 UTC) plus Python `urllib` and `curl` from a Linux machine. 44 browser page loads (19 while reading the docs site, 12 in each of block 2's two runs, 1 in block 1's first run) and 34 in-page `fetch()` calls (blocks 1 and 2 ran twice each), 47 curl calls (30 while exploring, 12 in block 4, 5 polls of `createdtime.json` five minutes apart) and 35 urllib calls (block 3 ran 5 times: twice with an empty cache, twice warm, once with its forecast entry expired by hand), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes below: HTTP 404 (robots.txt on all four opendata hosts, a point outside the forecast area, a coordinate with 7 decimals, the retired `pmp3g/version/2` forecast, a closed station's latest hour), HTTP 304 (conditional GETs on the warnings list) and eight in-browser `fetch()` calls (four in each block 2 run) that CORS blocked. curl timed 27 answers at 0.51-1.00 s. No 429, no challenge, no key, no login, no cookie. Block 1's output below is its second run (23:36 UTC), block 2's its second (23:37 UTC, after relabelling four probes), block 3's its fourth (empty cache, after a caching fix) and fifth (warm), block 4's its first. An independent verifier re-ran all four blocks verbatim on 2026-11-21 23:58 to 2026-11-22 00:06 UTC (a second fresh cloud browser, urllib, curl): every block ran; only the forecast run (created 23:49:46), its numbers and the Varnish error IDs changed. After review on 2026-11-22, the blocks gained small fixes (a closing source line in blocks 2 and 4, an exact 48-step check, a guard for an hour with no CORE reading, a fixed tie-break) and re-ran at 00:59-01:02 UTC (a new cloud browser, urllib, curl); the source lines in the outputs of blocks 2 and 4 come from those runs, and nothing else changed except the live forecast. A second review (in the browser-use.com sync) made blocks 1 and 3 skip `parameter.json`'s `missingValue` 9999 (shown as `-`, `n/a` or an empty CSV cell, with a count of hours without a value) and say in every source line what was changed; block 1 re-ran at 01:57 UTC in a new cloud browser and block 3 at 01:53 UTC (urllib), the same output apart from the live forecast, and the source lines in the outputs of blocks 1 and 3 now read as those runs printed them. With 9999 put into some hours by hand, both printed the gaps instead of 9999.
 
 robots.txt (checked 2026-11-21, curl, the cloud browser and block 3): https://opendata-download-metfcst.smhi.se/robots.txt, https://opendata-download-metobs.smhi.se/robots.txt and https://opendata-download-warnings.smhi.se/robots.txt answer HTTP 404 (a Varnish error page), and https://opendata.smhi.se/robots.txt (the docs site) HTTP 404 too. RFC 9309 treats an unavailable (4xx) robots.txt as no restrictions, so every agent, including GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider, may fetch every path this skill uses (block 3 checks all 11 agents on every path on every run and stops if a host ever publishes rules that disallow one). https://www.smhi.se/robots.txt (the terms page's host) has only a `User-agent: *` group, which disallows image, bookmark and cart actions, printable pages, contact, state, session, profiling, PDF-properties and preview query URLs plus `/funktioner/*` and `/dokumentation/*`, not `/data/om-smhis-data/villkor-for-anvandning`; there are no named AI-agent groups on any SMHI host checked. Terms: "Villkor för användning av SMHIs öppna data" https://www.smhi.se/data/om-smhis-data/villkor-for-anvandning ("Uppdaterad 15 juni 2026"; the API docs say the API "is published under these Terms and conditions") say "Med våra öppna data följer licensvillkoren Creative commons Erkännande 4.0 SE" (Creative Commons Attribution 4.0 SE) and "Detta är tillåtet även för kommersiella ändamål. Du ska ange SMHI som källa och även ange om du har ändrat i licensmaterialet." (commercial use is allowed; name SMHI as the source and say if you changed the material). For impact-based warnings: "Användningen är även tillåten för kommersiella ändamål. Informationen får inte ändras och källan till informationen skall alltid anges." (commercial use allowed; the information must not be changed and the source must always be given). Usage rules on the same page: "Du ska endast använda dokumenterade API:er." (use only documented APIs), "Undvik t.ex. massnedladdning där man hämtar prognosdata för ett stort antal orter vid ett och samma tillfälle. Undvik även att hämta samma data fler gånger." (avoid mass downloads such as forecasts for many places at once, and avoid fetching the same data more than once), "Utnyttja möjligheten till tidsbegränsad cachning av data enligt våra metadata och eventuella klient-cache-direktiv." (use time-limited caching according to SMHI's metadata and cache directives) and "SMHI förbehåller sig rätten att blockera enskilda IP-adresser alternativt helt stänga av tjänster vid uppenbart missbruk." (SMHI may block IP addresses on obvious abuse). No AI/ML, scraping, crawling, robot or non-commercial wording on the page (block 2 checks the quotes and scans for the words). Services the docs mark as keyed and charged are out of scope; every endpoint here is keyless. Naming: this skill writes "SMHI" (Sveriges meteorologiska och hydrologiska institut, Swedish Meteorological and Hydrological Institute) in plain text and shows no SMHI logo; it is not affiliated with or endorsed by SMHI. Every block's output names SMHI as the source and says what was changed; warning text is printed exactly as SMHI publishes it.
 
@@ -36,6 +36,7 @@ PTYPE = {0: "-", 1: "rain", 2: "thunderstorm", 3: "freezing rain", 4: "mixed/ice
          7: "rain and snow", 8: "ice pellets", 9: "graupel", 10: "hail", 11: "drizzle", 12: "freezing drizzle"}
 PAUSE = 1.0  # SMHI: no unnecessary load, no mass downloads; one town at a time, serial
 LOCAL = ZoneInfo("Europe/Stockholm")
+MISSING = 9999  # parameter.json: missingValue of every snow1g parameter (no value for that hour)
 
 def on_docs_tab():
     """fetch() from a logged-out SMHI open-data docs page (the API hosts send Access-Control-Allow-Origin: *)."""
@@ -119,7 +120,15 @@ def mostly(wet):
     return max(dict.fromkeys(kinds), key=kinds.count) if kinds else "-"   # ties: the type seen first
 
 def compass(deg):
-    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][round(deg / 45) % 8]
+    return "-" if deg == MISSING else ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][round(deg / 45) % 8]
+
+def agg(rows, key, fn):
+    """fn over the hours that have a value ('n/a' when none has); missingValue 9999 is never a temperature."""
+    v = [x[key] for x in rows if x[key] != MISSING]
+    return format(fn(v), ".1f") if v else "n/a"
+
+def cell(v, width, spec=""):
+    return f"{'-':>{width}}" if v == MISSING else f"{v:>{width}{spec}}"
 
 on_docs_tab()
 now = datetime.now(timezone.utc)
@@ -136,26 +145,27 @@ for name, lat, lon in TOWNS:
     if steps != {1} or len(rows) != HOURS:  # the forecast is hourly for ~2.5 days, then 3, 6 and 12 h steps
         raise RuntimeError(f"{name}: {len(rows)} steps of {sorted(steps)} h inside {HOURS} h, not {HOURS} hourly ones; stopping")
     d = [t["data"] for t in rows]
-    temps = [x["air_temperature"] for x in d]
-    wet = [x for x in d if x["precipitation_amount_mean"] > 0]
+    wet = [x for x in d if 0 < x["precipitation_amount_mean"] != MISSING]
+    gaps = {k: n for k in PARAMS if (n := sum(x.get(k) == MISSING for x in d))}
     print(f"\n{name} ({lat}, {lon}) -> grid point ({glat}, {glon}); forecast created {f['createdTime']}, "
           f"{len(rows)} hourly steps {rows[0]['time'][5:16]} to {rows[-1]['time'][5:16]} UTC")
-    print(f"  temperature {min(temps):.1f} to {max(temps):.1f} C; wind up to {max(x['wind_speed'] for x in d):.1f} m/s, "
-          f"gusts {max(x['wind_speed_of_gust'] for x in d):.1f} m/s; precipitation {sum(x['precipitation_amount_mean'] for x in d):.1f} mm "
-          f"(ensemble mean) in {len(wet)} wet hours, mostly {mostly(wet)}")
+    print(f"  temperature {agg(d, 'air_temperature', min)} to {agg(d, 'air_temperature', max)} C; wind up to "
+          f"{agg(d, 'wind_speed', max)} m/s, gusts {agg(d, 'wind_speed_of_gust', max)} m/s; precipitation "
+          f"{agg(d, 'precipitation_amount_mean', sum)} mm (ensemble mean) in {len(wet)} wet hours, mostly {mostly(wet)}"
+          + (f"; hours without a value (9999, skipped): {gaps}" if gaps else ""))
     if name == HOURLY_FOR:
         print(f"  {'UTC':<11} {'local':<5} {'temp':>5} {'wind':>9} {'gust':>5} {'mm':>4} {'P%':>4}  type")
         for t, x in zip(rows, d):
-            print(f"  {t['time'][5:16].replace('T', ' ')} {utc(t['time']).astimezone(LOCAL):%H:%M} {x['air_temperature']:>5.1f} "
-                  f"{compass(x['wind_from_direction']):>2} {x['wind_speed']:>4.1f}  {x['wind_speed_of_gust']:>5.1f} "
-                  f"{x['precipitation_amount_mean']:>4.1f} {x['probability_of_precipitation']:>4}  "
+            print(f"  {t['time'][5:16].replace('T', ' ')} {utc(t['time']).astimezone(LOCAL):%H:%M} {cell(x['air_temperature'], 5, '.1f')} "
+                  f"{compass(x['wind_from_direction']):>2} {cell(x['wind_speed'], 4, '.1f')}  {cell(x['wind_speed_of_gust'], 5, '.1f')} "
+                  f"{cell(x['precipitation_amount_mean'], 4, '.1f')} {cell(x['probability_of_precipitation'], 4)}  "
                   f"{PTYPE.get(x['predominant_precipitation_type_at_surface'], '?')}")
     else:
         for i in range(0, len(rows), 6):
             b = d[i:i + 6]
-            print(f"  {rows[i]['time'][5:13].replace('T', ' ')}h+6: {min(x['air_temperature'] for x in b):>5.1f} to "
-                  f"{max(x['air_temperature'] for x in b):>5.1f} C, wind <= {max(x['wind_speed'] for x in b):>4.1f} m/s "
-                  f"(gust {max(x['wind_speed_of_gust'] for x in b):>4.1f}), {sum(x['precipitation_amount_mean'] for x in b):>4.1f} mm")
+            print(f"  {rows[i]['time'][5:13].replace('T', ' ')}h+6: {agg(b, 'air_temperature', min):>5} to "
+                  f"{agg(b, 'air_temperature', max):>5} C, wind <= {agg(b, 'wind_speed', max):>4} m/s "
+                  f"(gust {agg(b, 'wind_speed_of_gust', max):>4}), {agg(b, 'precipitation_amount_mean', sum):>4} mm")
 
 print(f"\nSMHI warnings: {warn['count']} warnings, {warn['areas']} warning areas in all; areas containing a town:")
 active = 0
@@ -179,7 +189,7 @@ none = [t[0] for i, t in enumerate(TOWNS) if not any(i in w["hits"] for w in war
 print(f"  {active} active warning areas; no warning area covers: {', '.join(none) or '-'}")
 print(f"\nSource: SMHI (Swedish Meteorological and Hydrological Institute) open data, CC BY 4.0 SE, accessed "
       f"{now:%d %B %Y %H:%M} UTC. Changes: forecast cut to {HOURS} hourly steps and {len(PARAMS)} parameters, summed "
-      f"and rounded, local time added. Warnings: SMHI's own English text, unaltered.")
+      f"and rounded, missing values (9999) skipped, local time added. Warnings: SMHI's own English text, unaltered.")
 ```
 
 Output (from the second run on 2026-11-21, 23:36 UTC; the forecast run is the 23:20 one from the first run at 23:31, see Gotchas on the browser cache):
@@ -294,7 +304,7 @@ At temperatures close to zero degrees, there is a risk of disturbances in electr
       Where?: Parts of eastern Svealand
   3 active warning areas; no warning area covers: Kiruna
 
-Source: SMHI (Swedish Meteorological and Hydrological Institute) open data, CC BY 4.0 SE, accessed 21 November 2026 23:36 UTC. Changes: forecast cut to 48 hourly steps and 8 parameters, summed and rounded, local time added. Warnings: SMHI's own English text, unaltered.
+Source: SMHI (Swedish Meteorological and Hydrological Institute) open data, CC BY 4.0 SE, accessed 21 November 2026 23:36 UTC. Changes: forecast cut to 48 hourly steps and 8 parameters, summed and rounded, missing values (9999) skipped, local time added. Warnings: SMHI's own English text, unaltered.
 ```
 
 ### 2. robots.txt, the terms quotes, the docs quotes, and what the APIs do with mistakes (browser)
@@ -475,6 +485,7 @@ CACHE_DIR = "~/.cache/smhi-skill"
 CACHE = os.path.expanduser(CACHE_DIR)
 OUT = f"smhi-{NAME.lower()}-48h.csv"  # in the current directory
 PAUSE = 1.0  # serial; SMHI asks for no unnecessary load
+MISSING = 9999  # parameter.json: missingValue of every snow1g parameter (no value for that hour)
 calls = []
 
 def retry_wait(value, default):
@@ -625,15 +636,22 @@ with open(OUT, "w", newline="") as fh:
     w.writerow(["time_utc", "air_temperature_c", "wind_speed_ms", "wind_gust_ms", "wind_from_deg", "precip_mm", "precip_probability_pct", "precip_type_code"])
     for t in rows:
         x = t["data"]
-        w.writerow([t["time"], x["air_temperature"], x["wind_speed"], x["wind_speed_of_gust"], x["wind_from_direction"],
-                    x["precipitation_amount_mean"], x["probability_of_precipitation"], x["predominant_precipitation_type_at_surface"]])
+        w.writerow([t["time"]] + ["" if v == MISSING else v for v in (
+            x["air_temperature"], x["wind_speed"], x["wind_speed_of_gust"], x["wind_from_direction"],
+            x["precipitation_amount_mean"], x["probability_of_precipitation"], x["predominant_precipitation_type_at_surface"])])
     w.writerow([f"# Source: SMHI open data (CC BY 4.0 SE), snow1g forecast created {f['createdTime']}, grid point {glat},{glon}. "
-                f"Changed: {len(rows)} hourly steps and 7 of 24 parameters kept; precipitation kg/m2 written as mm."])
+                f"Changed: {len(rows)} hourly steps and 7 of 24 parameters kept; precipitation kg/m2 written as mm; "
+                f"missing values (9999) left empty."])
 d = [t["data"] for t in rows]
+val = lambda k: [x[k] for x in d if x[k] != MISSING]   # hours that have a value
+span = lambda k, fn: fn(val(k)) if val(k) else "n/a"
+pr = val("precipitation_amount_mean")
+gaps = {k: n for k in PARAMS.split(",") if (n := sum(x[k] == MISSING for x in d))}
 print(f"  {len(rows)} hourly rows {rows[0]['time']} .. {rows[-1]['time']} -> {OUT}")
-print(f"  temperature {min(x['air_temperature'] for x in d)} .. {max(x['air_temperature'] for x in d)} C, "
-      f"max wind {max(x['wind_speed'] for x in d)} m/s (gust {max(x['wind_speed_of_gust'] for x in d)}), "
-      f"precipitation {sum(x['precipitation_amount_mean'] for x in d):.1f} mm in {sum(x['precipitation_amount_mean'] > 0 for x in d)} hours")
+print(f"  temperature {span('air_temperature', min)} .. {span('air_temperature', max)} C, "
+      f"max wind {span('wind_speed', max)} m/s (gust {span('wind_speed_of_gust', max)}), "
+      + (f"precipitation {sum(pr):.1f} mm in {sum(v > 0 for v in pr)} hours" if pr else "precipitation n/a")
+      + (f"; hours without a value (9999, skipped): {gaps}" if gaps else ""))
 
 # 3) latest observation from the nearest CORE station per parameter (one call for all stations; max-age=600)
 print("  latest observations (nearest CORE station with a value):")
@@ -668,7 +686,9 @@ for wn, a in hits:
     print(f"  {a['warningLevel']['code']:<8} {a['eventDescription']['en']} | {a.get('areaName', {}).get('en') or a.get('areaName', {}).get('sv')}"
           f" | {a['approximateStart']} -> {a.get('approximateEnd') or 'until further notice'} | id {wn['id']}/{a['id']}")
 print(f"\ncalls this run: {len(calls)} ({', '.join(f'{s}' for s, _ in calls) or 'none'}); cache {CACHE_DIR}")
-print("Source: SMHI open data (CC BY 4.0 SE); warnings as published by SMHI.")
+print(f"Source: SMHI open data (CC BY 4.0 SE). Changed: forecast cut to {HOURS} hourly steps and 7 of 24 parameters, "
+      f"shown as min/max/sum with missing values (9999) skipped; observations from the nearest CORE station only. "
+      f"Warnings as published by SMHI.")
 ```
 
 Output (from the fourth run on 2026-11-21, 23:35 UTC, empty cache):
@@ -691,7 +711,7 @@ SMHI warnings [HTTP 200, 140,445 bytes unzipped]: 11 in Sweden, 2 for this point
   YELLOW   Snow and wind | Parts of eastern Svealand | 2026-11-21T22:00:00.469Z -> 2026-11-23T15:00:00.801Z | id 3402/10811
 
 calls this run: 8 (404, 404, 404, 200, 200, 200, 200, 200); cache ~/.cache/smhi-skill
-Source: SMHI open data (CC BY 4.0 SE); warnings as published by SMHI.
+Source: SMHI open data (CC BY 4.0 SE). Changed: forecast cut to 48 hourly steps and 7 of 24 parameters, shown as min/max/sum with missing values (9999) skipped; observations from the nearest CORE station only. Warnings as published by SMHI.
 ```
 
 The fifth run, 13 seconds later (warm cache, same UTC hour): 4 calls instead of 8.
@@ -714,7 +734,7 @@ SMHI warnings [HTTP 304]: 11 in Sweden, 2 for this point
   YELLOW   Snow and wind | Parts of eastern Svealand | 2026-11-21T22:00:00.469Z -> 2026-11-23T15:00:00.801Z | id 3402/10811
 
 calls this run: 4 (404, 404, 404, 304); cache ~/.cache/smhi-skill
-Source: SMHI open data (CC BY 4.0 SE); warnings as published by SMHI.
+Source: SMHI open data (CC BY 4.0 SE). Changed: forecast cut to 48 hourly steps and 7 of 24 parameters, shown as min/max/sum with missing values (9999) skipped; observations from the nearest CORE station only. Warnings as published by SMHI.
 ```
 
 ### 4. curl, headers and mistakes
