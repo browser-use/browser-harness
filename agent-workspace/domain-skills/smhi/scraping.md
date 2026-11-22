@@ -1,6 +1,6 @@
 # SMHI Open Data - Get the Next 48 Hours of Hourly Temperature, Wind and Precipitation for a Swedish Town by Coordinates, Plus the Active SMHI Weather Warnings That Cover It (Point Forecast, Observations and Impact-Based Warnings JSON APIs, no key)
 
-Field-tested against SMHI's open-data APIs on 2026-11-21 (US Pacific afternoon; 23:26-23:57 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:26-23:38 UTC) plus Python `urllib` and `curl` from a Linux machine. 44 browser page loads (19 while reading the docs site, 12 in each of block 2's two runs, 1 in block 1's first run) and 34 in-page `fetch()` calls (blocks 1 and 2 ran twice each), 47 curl calls (30 while exploring, 12 in block 4, 5 polls of `createdtime.json` five minutes apart) and 35 urllib calls (block 3 ran 5 times: twice with an empty cache, twice warm, once with its forecast entry expired by hand), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes below: HTTP 404 (robots.txt on all four opendata hosts, a point outside the forecast area, a coordinate with 7 decimals, the retired `pmp3g/version/2` forecast, a closed station's latest hour), HTTP 304 (conditional GETs on the warnings list) and eight in-browser `fetch()` calls (four in each block 2 run) that CORS blocked. curl timed 27 answers at 0.51-1.00 s. No 429, no challenge, no key, no login, no cookie. Block 1's output below is its second run (23:36 UTC), block 2's its second (23:37 UTC, after relabelling four probes), block 3's its fourth (empty cache, after a caching fix) and fifth (warm), block 4's its first. An independent verifier re-ran all four blocks verbatim on 2026-11-21 23:58 to 2026-11-22 00:06 UTC (a second fresh cloud browser, urllib, curl): every block ran; only the forecast run (created 23:49:46), its numbers and the Varnish error IDs changed.
+Field-tested against SMHI's open-data APIs on 2026-11-21 (US Pacific afternoon; 23:26-23:57 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:26-23:38 UTC) plus Python `urllib` and `curl` from a Linux machine. 44 browser page loads (19 while reading the docs site, 12 in each of block 2's two runs, 1 in block 1's first run) and 34 in-page `fetch()` calls (blocks 1 and 2 ran twice each), 47 curl calls (30 while exploring, 12 in block 4, 5 polls of `createdtime.json` five minutes apart) and 35 urllib calls (block 3 ran 5 times: twice with an empty cache, twice warm, once with its forecast entry expired by hand), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes below: HTTP 404 (robots.txt on all four opendata hosts, a point outside the forecast area, a coordinate with 7 decimals, the retired `pmp3g/version/2` forecast, a closed station's latest hour), HTTP 304 (conditional GETs on the warnings list) and eight in-browser `fetch()` calls (four in each block 2 run) that CORS blocked. curl timed 27 answers at 0.51-1.00 s. No 429, no challenge, no key, no login, no cookie. Block 1's output below is its second run (23:36 UTC), block 2's its second (23:37 UTC, after relabelling four probes), block 3's its fourth (empty cache, after a caching fix) and fifth (warm), block 4's its first. An independent verifier re-ran all four blocks verbatim on 2026-11-21 23:58 to 2026-11-22 00:06 UTC (a second fresh cloud browser, urllib, curl): every block ran; only the forecast run (created 23:49:46), its numbers and the Varnish error IDs changed. After review on 2026-11-22, the blocks gained small fixes (a closing source line in blocks 2 and 4, an exact 48-step check, a guard for an hour with no CORE reading, a fixed tie-break) and re-ran at 00:59-01:02 UTC (a new cloud browser, urllib, curl); the source lines in the outputs of blocks 2 and 4 come from those runs, and nothing else changed except the live forecast.
 
 robots.txt (checked 2026-11-21, curl, the cloud browser and block 3): https://opendata-download-metfcst.smhi.se/robots.txt, https://opendata-download-metobs.smhi.se/robots.txt and https://opendata-download-warnings.smhi.se/robots.txt answer HTTP 404 (a Varnish error page), and https://opendata.smhi.se/robots.txt (the docs site) HTTP 404 too. RFC 9309 treats an unavailable (4xx) robots.txt as no restrictions, so every agent, including GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider, may fetch every path this skill uses (block 3 checks all 11 agents on every path on every run and stops if a host ever publishes rules that disallow one). https://www.smhi.se/robots.txt (the terms page's host) has only a `User-agent: *` group, which disallows image, bookmark and cart actions, printable pages, contact, state, session, profiling, PDF-properties and preview query URLs plus `/funktioner/*` and `/dokumentation/*`, not `/data/om-smhis-data/villkor-for-anvandning`; there are no named AI-agent groups on any SMHI host checked. Terms: "Villkor för användning av SMHIs öppna data" https://www.smhi.se/data/om-smhis-data/villkor-for-anvandning ("Uppdaterad 15 juni 2026"; the API docs say the API "is published under these Terms and conditions") say "Med våra öppna data följer licensvillkoren Creative commons Erkännande 4.0 SE" (Creative Commons Attribution 4.0 SE) and "Detta är tillåtet även för kommersiella ändamål. Du ska ange SMHI som källa och även ange om du har ändrat i licensmaterialet." (commercial use is allowed; name SMHI as the source and say if you changed the material). For impact-based warnings: "Användningen är även tillåten för kommersiella ändamål. Informationen får inte ändras och källan till informationen skall alltid anges." (commercial use allowed; the information must not be changed and the source must always be given). Usage rules on the same page: "Du ska endast använda dokumenterade API:er." (use only documented APIs), "Undvik t.ex. massnedladdning där man hämtar prognosdata för ett stort antal orter vid ett och samma tillfälle. Undvik även att hämta samma data fler gånger." (avoid mass downloads such as forecasts for many places at once, and avoid fetching the same data more than once), "Utnyttja möjligheten till tidsbegränsad cachning av data enligt våra metadata och eventuella klient-cache-direktiv." (use time-limited caching according to SMHI's metadata and cache directives) and "SMHI förbehåller sig rätten att blockera enskilda IP-adresser alternativt helt stänga av tjänster vid uppenbart missbruk." (SMHI may block IP addresses on obvious abuse). No AI/ML, scraping, crawling, robot or non-commercial wording on the page (block 2 checks the quotes and scans for the words). Services the docs mark as keyed and charged are out of scope; every endpoint here is keyless. Naming: this skill writes "SMHI" (Sveriges meteorologiska och hydrologiska institut, Swedish Meteorological and Hydrological Institute) in plain text and shows no SMHI logo; it is not affiliated with or endorsed by SMHI. Every block's output names SMHI as the source and says what was changed; warning text is printed exactly as SMHI publishes it.
 
@@ -116,7 +116,7 @@ def utc(s):
 
 def mostly(wet):
     kinds = [PTYPE.get(x["predominant_precipitation_type_at_surface"], "?") for x in wet]
-    return max(set(kinds), key=kinds.count) if kinds else "-"
+    return max(dict.fromkeys(kinds), key=kinds.count) if kinds else "-"   # ties: the type seen first
 
 def compass(deg):
     return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][round(deg / 45) % 8]
@@ -133,8 +133,8 @@ for name, lat, lon in TOWNS:
     glon, glat = f["geometry"]["coordinates"]
     rows = [t for t in f["timeSeries"] if now < utc(t["time"]) <= end]
     steps = {(utc(t["time"]) - utc(t["intervalParametersStartTime"])).seconds // 3600 for t in rows}
-    if steps != {1}:  # the forecast is hourly for ~2.5 days, then 3, 6 and 12 h steps
-        raise RuntimeError(f"{name}: steps of {sorted(steps)} h inside {HOURS} h; stopping")
+    if steps != {1} or len(rows) != HOURS:  # the forecast is hourly for ~2.5 days, then 3, 6 and 12 h steps
+        raise RuntimeError(f"{name}: {len(rows)} steps of {sorted(steps)} h inside {HOURS} h, not {HOURS} hourly ones; stopping")
     d = [t["data"] for t in rows]
     temps = [x["air_temperature"] for x in d]
     wet = [x for x in d if x["precipitation_amount_mean"] > 0]
@@ -409,6 +409,7 @@ for label, url in (
     ("obs: closed station, latest hour", f"{OBS}/parameter/1/station/154860/period/latest-hour/data.json"),
 ):
     print(f"{label} {brief(raw(url))}")  # status 0 = the browser blocked an answer without Access-Control-Allow-Origin
+print("\nSource: SMHI open data (CC BY 4.0 SE); answers shortened to the fields shown.")
 ```
 
 Output (from the second run, 2026-11-21 23:37 UTC; the first run at 23:32 printed the same apart from four probe labels):
@@ -448,6 +449,8 @@ warnings test set 2 (no CORS)    HTTP 0 - 26 chars 'TypeError: Failed to fetch'
 obs: temperature, all stations   HTTP 200 application/json 60,208 chars 233 stations, 184 with a value
 obs: Stockholm temperature       HTTP 200 application/json 1,506 chars station 'Stockholm-Observatoriekullen A', value [{'date': 1795302000000, 'value': '1.2', 'quality': 'G'}]
 obs: closed station, latest hour HTTP 404 text/html 710 chars '<!doctype html><html lang="en"><head><title>HTTP Status 404 '
+
+Source: SMHI open data (CC BY 4.0 SE); answers shortened to the fields shown.
 ```
 
 ### 3. One town with Python urllib: robots check for every agent, a 48-hour CSV, the latest observations nearby, warnings for the point (cache that follows SMHI's metadata, no browser)
@@ -612,8 +615,8 @@ def same_run(old):  # 77-byte check instead of the whole forecast again
     return "createdtime.json unchanged" if ct["createdTime"] == old["createdTime"] else None
 f, how_f = cached(point, same_run)
 rows = [t for t in f["timeSeries"] if now < utc(t["time"]) <= now + timedelta(hours=HOURS)]
-if {(utc(t["time"]) - utc(t["intervalParametersStartTime"])).seconds for t in rows} != {3600}:
-    sys.exit("forecast is not hourly inside the window: stop")
+if len(rows) != HOURS or {(utc(t["time"]) - utc(t["intervalParametersStartTime"])).seconds for t in rows} != {3600}:
+    sys.exit(f"forecast has {len(rows)} steps inside the window, not {HOURS} hourly ones: stop")
 glon, glat = f["geometry"]["coordinates"]
 print(f"\n{NAME} ({LAT}, {LON}) -> grid point ({glat}, {glon}), {km(LAT, LON, glat, glon):.1f} km away; "
       f"forecast created {f['createdTime']} [{how_f}]")
@@ -633,12 +636,15 @@ print(f"  temperature {min(x['air_temperature'] for x in d)} .. {max(x['air_temp
       f"precipitation {sum(x['precipitation_amount_mean'] for x in d):.1f} mm in {sum(x['precipitation_amount_mean'] > 0 for x in d)} hours")
 
 # 3) latest observation from the nearest CORE station per parameter (one call for all stations; max-age=600)
-print(f"  latest observations (nearest CORE station with a value):")
+print("  latest observations (nearest CORE station with a value):")
 for p, label in OBS_PARAMS.items():
     # the CDN often serves these with Age > max-age, so also keep a copy whose hour is the current one: no newer exists
     o, how_o = cached(f"{OBS}/parameter/{p}/station-set/all/period/latest-hour/data.json",
                       lambda old: "same observation hour" if old["updated"] // 1000 >= int(now.timestamp()) // 3600 * 3600 else None)
     st = [s for s in o["station"] if s.get("value") and s["measuringStations"] == "CORE"]  # or ?measuringStations=core (lower case; CORE is ignored)
+    if not st:
+        print(f"    {label:<30} no CORE station has a value this hour [{how_o}]")
+        continue
     s = min(st, key=lambda s: km(LAT, LON, s["latitude"], s["longitude"]))
     v = s["value"][-1]
     print(f"    {label:<30} {v['value']:>5} at {s['name']} ({km(LAT, LON, s['latitude'], s['longitude']):.0f} km), "
@@ -755,6 +761,7 @@ curl -sS -A "$UA" -o /dev/null -w '7 decimals -> HTTP %{http_code} %{content_typ
 curl -sS -A "$UA" -o /dev/null -w 'retired pmp3g/version/2 -> HTTP %{http_code}\n' "https://opendata-download-metfcst.smhi.se/api/category/pmp3g/version/2/geotype/point/lon/18.0686/lat/59.3293/data.json"; sleep 1
 curl -sS -A "$UA" -o /dev/null -w 'closed station, latest hour -> HTTP %{http_code}\n' "$O/parameter/1/station/154860/period/latest-hour/data.json"; sleep 1
 curl -sS -o /dev/null -w "curl's default User-Agent -> HTTP %{http_code}\n" "$F/createdtime.json"
+echo "Source: SMHI open data (CC BY 4.0 SE), accessed $(date -u '+%d %B %Y %H:%M') UTC; forecast and observation cut to the fields shown, first 6 warning areas, warning titles as published by SMHI."
 rm -f "$H" "$T"
 ```
 
@@ -789,6 +796,7 @@ lon/lat swapped -> HTTP 404 text/plain: Requested point is out of bounds
 retired pmp3g/version/2 -> HTTP 404
 closed station, latest hour -> HTTP 404
 curl's default User-Agent -> HTTP 200
+Source: SMHI open data (CC BY 4.0 SE), accessed 22 November 2026 00:59 UTC; forecast and observation cut to the fields shown, first 6 warning areas, warning titles as published by SMHI.
 ```
 
 ## Fields

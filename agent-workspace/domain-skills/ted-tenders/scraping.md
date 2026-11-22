@@ -1,6 +1,6 @@
 # TED (Tenders Electronic Daily) - Find Open EU Public Tenders by Keyword, CPV Code or Buyer Country Published Since a Date: Title, Buyer, Country, Submission Deadline and Notice Link (Search API, POST JSON, no key)
 
-Field-tested against api.ted.europa.eu, ted.europa.eu and docs.ted.europa.eu on 2026-11-21 (US Pacific afternoon; 23:26-23:42 UTC, which was 00:26-00:42 on Sunday 22 November in Brussels) using a fresh Browser Use cloud browser (logged out; one session, 23:29-23:41 UTC) plus Python `urllib` and `curl` from a Linux machine. 30 browser page loads (16 on ted.europa.eu, 11 on api.ted.europa.eu, 3 on docs.ted.europa.eu) and 64 in-page `fetch()` calls to the API (block 1 ran 3 times, block 2 three times), 73 curl calls (50 while exploring, 23 in three runs of block 4) and 10 urllib calls (block 3 twice), serial and at least 1 s apart, except one exploring curl call that ran during block 2's second run. Every API call was HTTP 200 except the deliberate probes below: HTTP 400 (unknown fields, a 2-letter country, a dashed date, `SORT BY ... ASC`, a broken quote, `limit` 0 and 251, too many fields per page, a page window past 15,000), HTTP 405 (GET) and HTTP 404 (robots.txt on api.ted.europa.eu and docs.ted.europa.eu). All 10 plain-HTTP requests to ted.europa.eu got HTTP 202 with an empty body and `x-amzn-waf-action: challenge` (see Gotchas). curl timed API answers at 0.22-1.41 s. No 429, no key, no login. Block 1's output below is its third run (23:39 UTC), block 2's its third (23:40; its section 5 comment was corrected afterwards, no code change), block 3's its second (23:41), block 4's its third (23:41). Between the last two runs of each block only the times, CloudFront ids, the navigation status of ted.europa.eu/robots.txt (200 or 202) and one tie in block 1's page 2 changed (see Gotchas). An independent re-run at 23:45-23:47 UTC (a new cloud browser, urllib, curl) reproduced all four outputs; only the times, CloudFront ids and the detail page's text length (1,151 characters) differed.
+Field-tested against api.ted.europa.eu, ted.europa.eu and docs.ted.europa.eu on 2026-11-21 (US Pacific afternoon; 23:26-23:42 UTC, which was 00:26-00:42 on Sunday 22 November in Brussels) using a fresh Browser Use cloud browser (logged out; one session, 23:29-23:41 UTC) plus Python `urllib` and `curl` from a Linux machine. 30 browser page loads (16 on ted.europa.eu, 11 on api.ted.europa.eu, 3 on docs.ted.europa.eu) and 64 in-page `fetch()` calls to the API (block 1 ran 3 times, block 2 three times), 73 curl calls (50 while exploring, 23 in three runs of block 4) and 10 urllib calls (block 3 twice), serial and at least 1 s apart, except one exploring curl call that ran during block 2's second run. Every API call was HTTP 200 except the deliberate probes below: HTTP 400 (unknown fields, a 2-letter country, a dashed date, `SORT BY ... ASC`, a broken quote, `limit` 0 and 251, too many fields per page, a page window past 15,000), HTTP 405 (GET) and HTTP 404 (robots.txt on api.ted.europa.eu and docs.ted.europa.eu). All 10 plain-HTTP requests to ted.europa.eu got HTTP 202 with an empty body and `x-amzn-waf-action: challenge` (see Gotchas). curl timed API answers at 0.22-1.41 s. No 429, no key, no login. Block 1's output below is its third run (23:39 UTC), block 2's its third (23:40; its section 5 comment was corrected afterwards, no code change), block 3's its second (23:41), block 4's its third (23:41). Between the last two runs of each block only the times, CloudFront ids, the navigation status of ted.europa.eu/robots.txt (200 or 202) and one tie in block 1's page 2 changed (see Gotchas). An independent re-run at 23:45-23:47 UTC (a new cloud browser, urllib, curl) reproduced all four outputs; only the times, CloudFront ids and the detail page's text length (1,151 characters) differed. After review on 2026-11-22, the blocks gained fixes (the lot count keeps lots that share a deadline, counts are labelled date-level, block 2 compares full per-lot datetimes, block 3 stops on `timedOut`, block 4 picks the earliest deadline by time) and re-ran at 00:59-01:02 UTC (a new cloud browser, urllib, curl): block 1 printed the same notices with the new label and lot counts (2 and 3 lots), block 2 the same deadline tally, blocks 3 and 4 the same totals.
 
 robots.txt (checked 2026-11-21, curl, `urllib.robotparser` and the cloud browser): https://api.ted.europa.eu/robots.txt answers HTTP 404 (JSON `"error":"Not Found"` to curl, a "Whitelabel Error Page" in the browser), so the API host has no rules and no named AI-agent groups; under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources". https://ted.europa.eu/robots.txt is readable only in a browser (plain HTTP gets the WAF challenge) and has a `User-Agent: *` group that disallows private pages (`/*/my-dashboard`, `/*/preferences`, `/c/portal/login`), Liferay internals (`/web/`, `/documents/`, `/api/jsonws/`, `/*/index` and others) and dynamic search results (`Allow: /*/search/result$`, `Disallow: /*/search/result?`), plus named groups only for `Sogou web spider` and `PetalBot` (`Disallow: /`) and `msnbot/bingbot` (`Crawl-delay: 1`). No group names GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot or Bytespider, so they fall under `*`, which allows `/en/notice/-/detail/<id>`, `/en/notice/<id>/pdf`, `/en/notice/<id>/xml` and `/en/legal-notice` (block 2 checks all 11 agents with RFC 9309 matching). https://docs.ted.europa.eu/robots.txt answers HTTP 404: no rules. This skill reads only the API; it prints notice links for people and never loads ted.europa.eu search result pages. Terms: the TED legal notice https://ted.europa.eu/en/legal-notice says "Unless otherwise noted, the procurement notices published in the Supplement to the Official Journal of the European Union can be freely reused, for commercial or non-commercial purposes", under the "Commission Decision of 12 December 2011 on the reuse of Commission documents" (the page links https://eur-lex.europa.eu/eli/dec/2011/833/oj, Decision 2011/833/EU); the editorial content of the SIMAP websites (TED, TED eNotices2, TED Developer Docs and TED Developer Portal) "is licensed under the Creative Commons Attribution 4.0 International (CC BY 4.0) license", and "The SIMAP's system metadata is dedicated to the public domain in accordance with the Creative Commons Universal Public Domain Dedication deed (CC0 1.0)". It names no AI, machine learning, text and data mining, scraping, crawling or robots (block 2 checks). The API docs https://docs.ted.europa.eu/api/latest/index.html say "TED API allows anonymous access to all services manipulating published notices (i.e., searching for or retrieving notices already published on TED)" and "The Search API does not require a key."; the Search API page says it "is primarily targeted at data reusers and does not require authentication". Naming: this skill writes "TED (Tenders Electronic Daily)" in plain text and shows no logo, because the legal notice says "The SIMAP system's logos (including that of TED) may not be used without the prior consent of the Publications Office of the European Union" and that "trademarks, registered designs, logos and names, are excluded from the Commission's reuse policy". This skill is not affiliated with or endorsed by the Publications Office of the European Union or any EU institution. The legal notice also warns that some content may need extra rights where it "depicts identifiable private individuals or includes third-party works"; this skill reads notice metadata (titles, buyers, dates).
 
@@ -127,10 +127,11 @@ def text(v, lang=LANG):
     return " ".join(str(v).split())
 
 def deadlines(n, now):
-    """deadline-receipt-request is one ISO datetime per lot -> (soonest still in the future, number of lots)."""
-    ds = sorted({datetime.fromisoformat(x) for x in n.get("deadline-receipt-request") or []})
-    future = [d for d in ds if d > now]
-    return (future[0] if future else None), len(ds)
+    """deadline-receipt-request is one ISO datetime per lot, repeated when lots share it -> (soonest still in the
+    future, number of lots)."""
+    raw = n.get("deadline-receipt-request") or []
+    future = sorted(d for d in {datetime.fromisoformat(x) for x in raw} if d > now)
+    return (future[0] if future else None), len(raw)
 
 on_api_tab()
 now = datetime.now(timezone.utc)
@@ -139,7 +140,7 @@ for keyword, cpv, country, since, show in SEARCHES:
     q = build(keyword, cpv, country, since)
     d = search(q, limit=show)
     label = " + ".join(x for x in (f'"{keyword}"' if keyword else "", f"CPV {cpv}" if cpv else "", country or "") if x)
-    print(f"\n{label}, published since {since}: {d['totalNoticeCount']} open notices")
+    print(f"\n{label}, published since {since}: {d['totalNoticeCount']} open notices (deadline date today or later)")
     print(f"  query: {q}")
     for n in d["notices"]:
         due, lots = deadlines(n, now)
@@ -166,13 +167,13 @@ Output (from the third run on 2026-11-21, 23:39 UTC; the runs at 23:30 and 23:36
 ```text
 TED (Tenders Electronic Daily) Search API, checked 2026-11-21 23:39 UTC
 
-"cloud computing", published since 2026-11-01: 4 open notices
+"cloud computing", published since 2026-11-01: 4 open notices (deadline date today or later)
   query: FT~"cloud computing" AND publication-date>=20261101 AND form-type=competition AND deadline-receipt-request>=today() SORT BY deadline-receipt-request
   777211-2026  published 2026-11-09  deadline 2026-11-23 23:59 +0100  open
     Contrato de Servicios para la dotación de una Plataforma Tecnológica multientidad para la gestión ad  [Software maintenance and repair services]
     buyer: Junta de Gobierno de la Diputación Provincial de Huelva (ESP)
     https://ted.europa.eu/en/notice/-/detail/777211-2026
-  790764-2026  published 2026-11-13  deadline 2026-12-07 11:00 +0100  neg-w-call
+  790764-2026  published 2026-11-13  deadline 2026-12-07 11:00 +0100 (2 lots)  neg-w-call
     Entwicklung, Bereitstellung und Betrieb eines Workflow?Fachdienstes, sowie der Aufbau und Betrieb ei  [Computer-related services]
     buyer: gematik GmbH (DEU)
     https://ted.europa.eu/en/notice/-/detail/790764-2026
@@ -185,7 +186,7 @@ TED (Tenders Electronic Daily) Search API, checked 2026-11-21 23:39 UTC
     buyer: Klinikum Lippe GmbH (DEU)
     https://ted.europa.eu/en/notice/-/detail/810212-2026
 
-CPV 72000000 + DEU, published since 2026-11-15: 93 open notices
+CPV 72000000 + DEU, published since 2026-11-15: 93 open notices (deadline date today or later)
   query: classification-cpv=72000000 AND buyer-country=DEU AND publication-date>=20261115 AND form-type=competition AND deadline-receipt-request>=today() SORT BY deadline-receipt-request
   808918-2026  published 2026-11-20  deadline 2026-11-23 10:00 +0100  neg-w-call
     Implementierung SAP S/4 HANA-Systems für die CFM  [Software supply services]
@@ -207,12 +208,12 @@ CPV 72000000 + DEU, published since 2026-11-15: 93 open notices
     Blockchainanalysetool (TRM)  [Software supply services]
     buyer: Zentrale Vergabestelle im Bayerischen Landesamt für Steuern (DEU)
     https://ted.europa.eu/en/notice/-/detail/798323-2026
-  803392-2026  published 2026-11-18  deadline 2026-11-24 12:00 +0100  open
+  803392-2026  published 2026-11-18  deadline 2026-11-24 12:00 +0100 (3 lots)  open
     Beratungs- und Prüfleistungen des Kompetenzzentrums Barrierefreiheit  [IT services: consulting, software development, Int]
     buyer: Landesamt für Zentrale Polizeiliche Dienste Nordrhein-Westfalen (DEU)
     https://ted.europa.eu/en/notice/-/detail/803392-2026
 
-"electric buses", published since 2026-10-01: 65 open notices
+"electric buses", published since 2026-10-01: 65 open notices (deadline date today or later)
   query: FT~"electric buses" AND publication-date>=20261001 AND form-type=competition AND deadline-receipt-request>=today() SORT BY deadline-receipt-request
   740868-2026  published 2026-10-26  deadline 2026-11-23 12:00 +0100  open
     Beschaffung von 12 Niederflursolobussen mit Elektroantrieb  [Electric buses]
@@ -231,7 +232,7 @@ CPV 72000000 + DEU, published since 2026-11-15: 93 open notices
     buyer: Miejskie Zakłady Autobusowe sp. z o.o. (POL)
     https://ted.europa.eu/en/notice/-/detail/721607-2026
 
-CPV 55524000 + FRA, published since 2026-11-01: 0 open notices
+CPV 55524000 + FRA, published since 2026-11-01: 0 open notices (deadline date today or later)
   query: classification-cpv=55524000 AND buyer-country=FRA AND publication-date>=20261101 AND form-type=competition AND deadline-receipt-request>=today() SORT BY deadline-receipt-request
 
 page 2 of CPV 72000000 + DEU (limit 6): ['795470-2026', '803777-2026', '800869-2026', '809844-2026', '806207-2026', '808431-2026']
@@ -398,12 +399,18 @@ for label, r in (
 #    to participate (restricted / negotiated ones). Compare with the two specific fields on 100 notices.
 r = post({"query": "form-type=competition AND publication-date>=today(-2) AND deadline-receipt-request>=today()",
           "fields": ["publication-number", "procedure-type", "deadline-receipt-request", "deadline-receipt-tender-date-lot",
-                     "deadline-receipt-request-date-lot"], "limit": 100})
+                     "deadline-receipt-tender-time-lot", "deadline-receipt-request-date-lot", "deadline-receipt-request-time-lot"],
+          "limit": 100})
+
+def lot_times(n, kind):
+    """'2026-12-19+01:00' + '00:00:00+01:00' -> '2026-12-19T00:00:00+01:00', one per lot (date and time are two fields)."""
+    return {f"{d[:10]}T{t}" for d, t in zip(n.get(f"deadline-receipt-{kind}-date-lot") or [], n.get(f"deadline-receipt-{kind}-time-lot") or [])}
+
 tally = {}
 for n in json.loads(r["text"])["notices"]:
-    d = (n.get("deadline-receipt-request") or [""])[0][:10]
-    src = ("tender date" if d in [x[:10] for x in n.get("deadline-receipt-tender-date-lot") or []] else
-           "request-to-participate date" if d in [x[:10] for x in n.get("deadline-receipt-request-date-lot") or []] else "neither")
+    d = set(n.get("deadline-receipt-request") or [])   # every lot's full datetime must match
+    src = ("tender date" if d and d <= lot_times(n, "tender") else
+           "request-to-participate date" if d and d <= lot_times(n, "request") else "neither")
     tally.setdefault(n.get("procedure-type"), {}).setdefault(src, 0)
     tally[n.get("procedure-type")][src] += 1
 print(f"\ndeadline-receipt-request equals, on 100 open notices published in the last 3 days: {json.dumps(tally)}")
@@ -469,7 +476,7 @@ https://ted.europa.eu/en/notice/789259-2026/html HTTP 200, 1,548 chars of text, 
 ITERATION mode pages with an `iterationNextToken` over a frozen snapshot (OpenAPI: "the user cannot miss notices or have duplicated notices"); the list ends with an empty page, so 153 notices took 3 calls of up to 100. Deadlines keep the buyer's offset in `deadline` and are converted for `deadline_utc`.
 
 ```python
-import collections, csv, email.utils, json, os, sys, time, urllib.error, urllib.request, urllib.robotparser
+import collections, csv, email.utils, json, sys, time, urllib.error, urllib.request, urllib.robotparser
 from datetime import datetime, timezone
 
 CPV = ["72000000", "48000000"]   # IT services, software packages (each covers every code below it)
@@ -556,12 +563,15 @@ while True:
     if st != 200:
         sys.exit(f"HTTP {st}: {raw.decode(errors='replace')[:300]}")
     d = json.loads(raw)
+    if d.get("timedOut"):
+        sys.exit("the search timed out on the server (timedOut true): the list would be partial, narrow the query")
     pages, size = pages + 1, size + len(raw)
     total = d["totalNoticeCount"] if total is None else total
     if not d["notices"]:
         break
     for n in d["notices"]:
-        ds = sorted(datetime.fromisoformat(x) for x in set(n.get("deadline-receipt-request") or []))
+        per_lot = n.get("deadline-receipt-request") or []   # one per lot, repeated when lots share a deadline
+        ds = sorted(datetime.fromisoformat(x) for x in set(per_lot))
         due = next((x for x in ds if x > now), None)
         if due is None:
             continue  # today's deadline already passed (the query compares dates only)
@@ -569,7 +579,7 @@ while True:
         rows.append({"publication_number": n["publication-number"],
                      "published": n["publication-date"][:10],
                      "deadline": due.isoformat(), "deadline_utc": due.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-                     "lots": len(ds), "procedure": n.get("procedure-type", ""),
+                     "lots": len(per_lot), "procedure": n.get("procedure-type", ""),
                      "country": " ".join(dict.fromkeys(n.get("buyer-country") or [])),
                      "buyer": text(n.get("buyer-name")),
                      "title": parts[-1], "title_en_prefix": " \u2013 ".join(parts[:-1]),
@@ -629,19 +639,19 @@ curl -sS --fail -A "$UA" -X POST "$S" -H 'Content-Type: application/json' -d '{
   "query": "FT~\"cybersecurity\" AND buyer-country IN (NLD BEL) AND publication-date>=20261101 AND form-type=competition AND deadline-receipt-request>=today() SORT BY deadline-receipt-request",
   "fields": ["publication-number", "notice-title", "buyer-name", "buyer-country", "deadline-receipt-request"],
   "limit": 3}' \
-  | python3 -c 'import sys, json
+  | python3 -c 'import sys, json, datetime as dt
 d = json.load(sys.stdin)
-print("open notices", d["totalNoticeCount"])
+print("open notices (deadline date today or later)", d["totalNoticeCount"])
 for n in d["notices"]:
     t = n["notice-title"].get("eng") or next(iter(n["notice-title"].values()))
     b = next(iter(n["buyer-name"].values()))[0]
-    print(n["publication-number"], "|", min(n["deadline-receipt-request"]), "|", ",".join(sorted(set(n["buyer-country"]))), "|", b, "|", t.split(" \u2013 ", 2)[-1][:70])
+    print(n["publication-number"], "|", min(n["deadline-receipt-request"], key=dt.datetime.fromisoformat), "|", ",".join(sorted(set(n["buyer-country"]))), "|", b, "|", t.split(" \u2013 ", 2)[-1][:70])
     print("   ", n["links"]["html"]["ENG"])'
 sleep 1
 # only the count: limit 1 (the OpenAPI file allows 0, the server answers 0 with HTTP 400)
 curl -sS --fail -A "$UA" -X POST "$S" -H 'Content-Type: application/json' \
   -d '{"query": "classification-cpv=33000000 AND publication-date>=today(-7) AND form-type=competition AND deadline-receipt-request>=today()", "fields": ["publication-number"], "limit": 1}' \
-  | python3 -c 'import sys, json; d = json.load(sys.stdin); print("medical equipment (CPV 33000000), open, published in the last 7 days:", d["totalNoticeCount"])'
+  | python3 -c 'import sys, json; d = json.load(sys.stdin); print("medical equipment (CPV 33000000), deadline date today or later, published in the last 7 days:", d["totalNoticeCount"])'
 sleep 1
 # checkQuerySyntax: validate a query without running it
 curl -sS -A "$UA" -X POST "$S" -H 'Content-Type: application/json' -w ' <- HTTP %{http_code}\n' \
@@ -667,14 +677,14 @@ rm -f "$T" "$T.h"
 Output (from the third run on 2026-11-21, 23:41 UTC):
 
 ```text
-open notices 4
+open notices (deadline date today or later) 4
 778712-2026 | 2026-11-30T14:00:59+01:00 | AUT,BEL,DEU,DNK,ESP,EST,FIN,FRA,GRC,HUN,IRL,ITA,LUX,LVA,MLT,NLD,POL,PRT,ROU,SVK,SVN,SWE | European Commission, DG BUDG - Budget | Financial and accounting support
     https://ted.europa.eu/en/notice/-/detail/778712-2026
 759639-2026 | 2026-12-07T16:00:59+01:00 | AUT,BEL,CZE,DEU,DNK,ESP,EST,FIN,FRA,GRC,HUN,IRL,ITA,LTU,LUX,LVA,MLT,NLD,POL,PRT,ROU,SVK,SVN,SWE | European Commission, PMO - Office for the Administration and Payment of Individual Entitlements | Assistance and Insurance Coverage for work-related travel
     https://ted.europa.eu/en/notice/-/detail/759639-2026
 787043-2026 | 2026-12-11T11:00:15Z | NLD | Gemeente Rotterdam | Procesautomatisering Civiele Kunstwerken
     https://ted.europa.eu/en/notice/-/detail/787043-2026
-medical equipment (CPV 33000000), open, published in the last 7 days: 963
+medical equipment (CPV 33000000), deadline date today or later, published in the last 7 days: 963
 {"notices":[],"totalNoticeCount":null,"iterationNextToken":null,"timedOut":false} <- HTTP 200
 HTTP/2 200 
 content-type: application/json

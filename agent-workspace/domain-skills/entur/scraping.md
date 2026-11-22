@@ -1,6 +1,6 @@
 # Entur via api.entur.io - Get the Next Departures (Line, Destination, Expected Time, Delay, Platform) From a Norwegian Stop by Name, or Plan a Trip Between Two Places (Geocoder v3 + Journey Planner v3 GraphQL, no key, ET-Client-Name header)
 
-Field-tested against api.entur.io and developer.entur.no on 2026-11-21 (US Pacific afternoon; 00:17-00:28 UTC on 22 November, which was 01:17-01:28 on Sunday 22 November in Norway) using a fresh Browser Use cloud browser (logged out; one session, 00:24-00:26 UTC) plus Python `urllib` and `curl` from a Linux machine. 15 browser page loads (1 in block 1's first run, 7 in each of block 2's two runs) and 53 in-page `fetch()` calls (blocks 1 and 2 ran twice each), 19 urllib calls (block 3 ran 6 times: 2 early runs, 1 refused run with a placeholder client name that made no call, and the 3 runs below) and 67 curl calls (43 while exploring, 27 of them to api.entur.io and 16 to the docs, robots, licence and RFC pages; 24 in three runs of block 4), all serial and at least 1 s apart. Every API call sent `ET-Client-Name` with Browser Use's own value, except four deliberate unidentified probes: one Geocoder and one Journey Planner call by curl, and the same pair in block 2's first run. Every API call was HTTP 200 except the deliberate HTTP 400 probes (Geocoder focus parameters) and the HTTP 404 robots.txt answers. curl timed Geocoder v3 answers at 0.21-0.65 s, departure boards and other GraphQL lookups at 0.21-0.66 s and trip searches at 0.71-1.55 s. No 429, no challenge, no key, no login, no cookie. The outputs below are the second runs of blocks 1 and 2 (00:26 and 00:25 UTC, after the rate-limit header comments changed), block 3's final three runs (00:26 UTC) and block 4's third run (00:27 UTC). An independent verifier re-ran all four blocks verbatim on 2026-11-22 00:32-00:35 UTC (a second fresh cloud browser, urllib, curl): every block ran, and only the live boards (Jernbanetorget, the next Trondheim S departures, the next Bergen tram) changed. The verifier then made blocks 2 and 4 refuse a missing, malformed or example client name, as blocks 1 and 3 do, and re-ran all four at 00:38-00:39 UTC with the same results.
+Field-tested against api.entur.io and developer.entur.no on 2026-11-21 (US Pacific afternoon; 00:17-00:28 UTC on 22 November, which was 01:17-01:28 on Sunday 22 November in Norway) using a fresh Browser Use cloud browser (logged out; one session, 00:24-00:26 UTC) plus Python `urllib` and `curl` from a Linux machine. 15 browser page loads (1 in block 1's first run, 7 in each of block 2's two runs) and 53 in-page `fetch()` calls (blocks 1 and 2 ran twice each), 19 urllib calls (block 3 ran 6 times: 2 early runs, 1 refused run with a placeholder client name that made no call, and the 3 runs below) and 67 curl calls (43 while exploring, 27 of them to api.entur.io and 16 to the docs, robots, licence and RFC pages; 24 in three runs of block 4), all serial and at least 1 s apart. Every API call sent `ET-Client-Name` with Browser Use's own value, except four deliberate unidentified probes: one Geocoder and one Journey Planner call by curl, and the same pair in block 2's first run. Every API call was HTTP 200 except the deliberate HTTP 400 probes (Geocoder focus parameters) and the HTTP 404 robots.txt answers. curl timed Geocoder v3 answers at 0.21-0.65 s, departure boards and other GraphQL lookups at 0.21-0.66 s and trip searches at 0.71-1.55 s. No 429, no challenge, no key, no login, no cookie. The outputs below are the second runs of blocks 1 and 2 (00:26 and 00:25 UTC, after the rate-limit header comments changed), block 3's final three runs (00:26 UTC) and block 4's third run (00:27 UTC). An independent verifier re-ran all four blocks verbatim on 2026-11-22 00:32-00:35 UTC (a second fresh cloud browser, urllib, curl): every block ran, and only the live boards (Jernbanetorget, the next Trondheim S departures, the next Bergen tram) changed. The verifier then made blocks 2 and 4 refuse a missing, malformed or example client name, as blocks 1 and 3 do, and re-ran all four at 00:38-00:39 UTC with the same results. After review on 2026-11-22, blocks 1 and 3 stop on a quota 429 instead of waiting it out, block 3's usage lines no longer show a refused example name, and block 4 writes to a `mktemp` file; blocks 1, 3 and 4 re-ran at 00:45-01:03 UTC (a new cloud browser, urllib, curl) with the same results apart from the live boards.
 
 robots.txt (checked 2026-11-22 UTC, curl, the cloud browser and block 3): https://api.entur.io/robots.txt answers HTTP 404 with an empty body, and https://developer.entur.no/robots.txt answers HTTP 404 with the portal's HTML page, so neither host has robots rules or named AI-agent groups. RFC 9309 (section 2.3.1.3) says that when robots.txt is unavailable (4xx) "the crawler MAY access any resources on the server", so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider may fetch every path this skill uses (block 3 checks all 11 agents on every run and stops if api.entur.io ever publishes rules that disallow one). The licence page's host https://data.norge.no/robots.txt has one `User-agent: *` group (disallows `/api/`, `/_next/`, `/admin/`, `/internal/` and `/*?`, `Crawl-delay: 1`), which does not cover `/nlod/en/2.0`. Terms: https://developer.entur.no/terms-of-service ("Last modified on October 21, 2026"; 0 changed lines against the copy read on 2026-11-20) says "All API requests must include an ET-Client-Name header identifying your application, not you personally" and "Applications without this header will operate at lower rate limits and may be subject to restrictions if usage is unreasonable". Not permitted: "Attempting to circumvent rate limiting or traffic shaping measures.", "Using fake or randomly generated values in the ET-Client-Name header." and "Impersonating traffic from another application or organisation." The data is under the Norwegian Licence for Open Government Data, NLOD 2.0 (https://data.norge.no/nlod/en/2.0): "NLOD permits free reuse for any purpose, including commercial use, subject to attribution requirements", with "State that the data originates from Entur.", "Link to the applicable licence.", "Indicate if you have modified the data." and "Do not present the attribution in a way that implies Entur endorses your product or service.", default text "Inneholder data under Norsk lisens for offentlige data (NLOD) tilgjengeliggjort av Entur AS". Getting started (https://developer.entur.no/docs/getting-started) marks the public transport data APIs "Available to everyone. No partnership agreement required." and asks for the header "in the form `<company>-<application>` (lowercase, no spaces)". No AI/ML, scraping, crawling, robot or non-commercial wording on the terms, getting-started, rate-limiting or Geocoder migration pages (block 2 checks the quotes and scans for the words). Partner APIs (OAuth) are out of scope. Naming: this skill writes "Entur" in plain text, shows no Entur logo, and is not affiliated with or endorsed by Entur AS; every block prints the NLOD attribution and says what it changed.
 
@@ -12,13 +12,13 @@ robots.txt (checked 2026-11-22 UTC, curl, the cloud browser and block 3): https:
 - **Answers (block 1, 22 November 2026, 00:26 UTC = 01:26 Sunday in Norway):** the next departure from **Oslo S** is **FLY1 to Oslo Lufthavn at 04:40 from platform 13**, then every 20 minutes (nothing runs earlier that night). **Bergen stasjon:** **L4 to Arna at 01:57 from platform 1**, then 02:27, 05:42, and R40 to Voss at 07:04. **Jernbanetorget (Oslo):** tram 18 to Storo-Grefsen st. at 01:27, bus 1N to Ullerntoppen at 01:28, and tram 15 to Kjelsås at 01:30, which was 5 minutes late. **Trip Oslo S -> Bergen stasjon** (Sunday morning): first found **07:40 -> 10:59**, FLY1 to the airport, the 08:55 flight, then airport bus FB50 (3 h 19 min). **Karl Johans gate 22, Oslo -> Trondheim S on Monday 23 Nov from 08:00** (block 3): **09:33 -> 12:48**, bus 37 to Jernbanetorget, FLY2 to the airport, the 10:50 flight, then bus 311 (3 h 14 min).
 - **Pick the stop carefully.** Several stops can share a name. "Flesland" matched a place and a stop in Karmøy before the Bergen one, and "Oslo S" is two stop ids: `NSR:StopPlace:59872`, the multimodal parent the Geocoder returns, and `NSR:StopPlace:337`, its rail child, also called "Oslo S". Blocks 1 and 3 take an exact name match first and print the other hits, so check `names.display` (the locality).
 - **No trip is not an error.** At night, `trip` came back with `tripPatterns: []`, `routingErrors: [{code: "noTransitConnectionInSearchWindow"}]` and a `nextPageCursor`. The search window was set by the server (200-510 minutes seen). The blocks follow the cursor, at most 3 pages, or you can pass `dateTime`.
-- **Rate limits (Journey Planner docs):** 1,000 requests a minute and 200 a second for clients identified by `ET-Client-Name`, 500 and 150 for trip requests. Without the header the limits are 60 and 20, and 30 and 2 for trips. The responses report the Journey Planner limits per 2-minute window (`rate-limit-allowed: 2000`, `1000` for trips, `rate-limit-range: PT2M`) and the Geocoder per minute (`1000`, or `600` without the header). On a 429, retry a spike-arrest violation (it carries `Spike-Allowed`) after a short pause. On a quota 429, wait until `Rate-Limit-Expiry-Time`, never sooner. The blocks do exactly that, once, and run serially at 1 call a second. In the browser these headers are hidden from `fetch()`.
+- **Rate limits (Journey Planner docs):** 1,000 requests a minute and 200 a second for clients identified by `ET-Client-Name`, 500 and 150 for trip requests. Without the header the limits are 60 and 20, and 30 and 2 for trips. The responses report the Journey Planner limits per 2-minute window (`rate-limit-allowed: 2000`, `1000` for trips, `rate-limit-range: PT2M`) and the Geocoder per minute (`1000`, or `600` without the header). On a 429, retry a spike-arrest violation (it carries `Spike-Allowed`) after a short pause. On a quota 429, do not retry; wait until `Rate-Limit-Expiry-Time` before trying again. Blocks 1 and 3 retry a spike arrest once after 2 s, stop on a quota 429 and print the expiry time, and run serially at 1 call a second. In the browser these headers are hidden from `fetch()`.
 
 ## What works
 
 ### 1. Departure boards by stop name, and trips between two places (browser)
 
-`on_entur_tab()` opens one logged-out developer.entur.no page. The API answers `Access-Control-Allow-Origin: *`, so any https page would do. `call()` returns parsed JSON on HTTP 200 and raises on a GraphQL `errors` list, which arrives with HTTP 200. It waits once and then raises: 60 s on a 429, because the browser cannot read `Spike-Allowed` or `Rate-Limit-Expiry-Time` (the code uses them where they are visible), and 10 s on 5xx or a network error. Each stop costs 2 calls (Geocoder, Journey Planner). Each trip costs 2 Geocoder calls and 1 to 3 Journey Planner calls, one per page of search window. The run below made 14. To ask about other stops or trips, edit `STOPS` and `TRIPS`.
+`on_entur_tab()` opens one logged-out developer.entur.no page. The API answers `Access-Control-Allow-Origin: *`, so any https page would do. `call()` returns parsed JSON on HTTP 200 and raises on a GraphQL `errors` list, which arrives with HTTP 200. It stops on any 429, because the browser cannot read `Spike-Allowed` to tell a spike arrest from a quota violation (the code uses it where it is visible) and Entur says never to retry a quota 429; it waits 10 s once on 5xx or a network error. Each stop costs 2 calls (Geocoder, Journey Planner). Each trip costs 2 Geocoder calls and 1 to 3 Journey Planner calls, one per page of search window. The run below made 14. To ask about other stops or trips, edit `STOPS` and `TRIPS`.
 
 ```python
 import json, os, re, time
@@ -91,29 +91,22 @@ def fetch(url, body=None):
     time.sleep(PAUSE)
     return r
 
-def expiry_wait(h):
-    """Seconds until Rate-Limit-Expiry-Time ('Sun Nov 22 2026 00:20:47 GMT-0000 (GMT)'), else 60. In a browser the
-    Rate-Limit-* and Spike-* headers are not exposed to fetch() (no Access-Control-Expose-Headers), so it is 60."""
-    m = re.search(r"\w{3} (\w{3} \d{1,2} \d{4} \d{2}:\d{2}:\d{2})", h.get("rate-limit-expiry-time", ""))
-    if not m:
-        return 60
-    t = datetime.strptime(m.group(1), "%b %d %Y %H:%M:%S").replace(tzinfo=timezone.utc)
-    return max(1, int((t - datetime.now(timezone.utc)).total_seconds()) + 1)
-
 def call(url, body=None):
-    """One request -> parsed JSON. Entur's rate-limit page: retry a spike-arrest 429 (it carries Spike-Allowed)
-    conservatively; never retry a quota 429 before Rate-Limit-Expiry-Time. One wait on 429/5xx/network error,
-    over 120 s stops. GraphQL errors come back as HTTP 200 with an `errors` list: raised here."""
+    """One request -> parsed JSON. Entur's retry policy: retry a spike-arrest 429 (it carries Spike-Allowed) once
+    after 2 s; never retry a quota 429 (stop; try again after Rate-Limit-Expiry-Time). In a browser the Spike-* and
+    Rate-Limit-* headers are hidden from fetch() (no Access-Control-Expose-Headers), so every 429 stops here.
+    5xx or network error: one retry after 10 s. GraphQL errors come back as HTTP 200 with an `errors` list: raised."""
     for attempt in range(2):
         r = fetch(url, body)
         s, h = r["status"], r["headers"]
-        if attempt == 0 and s in (0, 429, 500, 502, 503, 504):
-            wait = 2 if (s == 429 and "spike-allowed" in h) else expiry_wait(h) if s == 429 else 10
-            if wait > 120:
-                raise RuntimeError(f"{url}: HTTP 429, quota resets in {wait} s: stopping")
-            time.sleep(wait)
+        spike = s == 429 and "spike-allowed" in h
+        if attempt == 0 and (spike or s in (0, 500, 502, 503, 504)):
+            time.sleep(2 if spike else 10)
             continue
         break
+    if s == 429:
+        raise RuntimeError(f"{url}: HTTP 429 ({'spike arrest' if 'spike-allowed' in h else 'quota or unknown'}); not retried, "
+                           f"try again after {h.get('rate-limit-expiry-time') or 'Rate-Limit-Expiry-Time (hidden from the browser)'}")
     if s != 200:
         raise RuntimeError(f"{url}: HTTP {s} {' '.join(r['text'].split())[:160]!r}; stopping")
     d = json.loads(r["text"])
@@ -455,13 +448,14 @@ journey planner headers visible to fetch(): ['cache-control', 'content-length', 
 
 ### 3. The same with Python urllib, as a command-line tool: robots check for every agent, departures, trips with a departure time (no browser)
 
-Standard library only. It runs with `python3 -I`. Save it as `entur.py`. It makes 3 calls for a departure board (robots.txt, Geocoder, Journey Planner) and 4 to 6 for a trip (1 to 3 Journey Planner pages). Times are converted to Europe/Oslo. `--at` takes a Norwegian local time. `call()` follows Entur's retry policy: on a spike-arrest 429, retry after 2 s; on a quota 429, wait until `Rate-Limit-Expiry-Time` and stop if that is over 120 s; on 5xx, retry once after 10 s.
+Standard library only. It runs with `python3 -I`. Save it as `entur.py`. It makes 3 calls for a departure board (robots.txt, Geocoder, Journey Planner) and 4 to 6 for a trip (1 to 3 Journey Planner pages). Times are converted to Europe/Oslo. `--at` takes a Norwegian local time. `call()` follows Entur's retry policy: on a spike-arrest 429, retry after 2 s; on a quota 429, stop and print `Rate-Limit-Expiry-Time` (no retry); on 5xx, retry once after 10 s.
 
 ```python
 """Entur departures and trips from the command line (Python standard library only).
 
-  ET_CLIENT_NAME=yourcompany-yourapp python3 entur.py departures "Trondheim S" [-n 8]
-  ET_CLIENT_NAME=yourcompany-yourapp python3 entur.py trip "Bergen stasjon" "Bergen lufthavn" [--at 2026-11-23T08:00]
+  export ET_CLIENT_NAME='<company>-<application>'   # your own app's name; example values are refused
+  python3 entur.py departures "Trondheim S" [-n 8]
+  python3 entur.py trip "Bergen stasjon" "Bergen lufthavn" [--at 2026-11-23T08:00]
 """
 import argparse, json, os, re, sys, time, urllib.error, urllib.request, urllib.robotparser
 from datetime import datetime, timezone
@@ -505,27 +499,20 @@ def http(url, body=None):
     calls.append((url.split("?")[0].split("/")[-1] or url, out[0], round(time.time() - t0, 2), out[1].get("rate-limit-available")))
     return out
 
-def expiry_wait(h):
-    """Seconds until Rate-Limit-Expiry-Time ('Sun Nov 22 2026 00:20:47 GMT-0000 (GMT)'), else 60."""
-    m = re.search(r"\w{3} (\w{3} \d{1,2} \d{4} \d{2}:\d{2}:\d{2})", h.get("rate-limit-expiry-time", ""))
-    if not m:
-        return 60
-    t = datetime.strptime(m.group(1), "%b %d %Y %H:%M:%S").replace(tzinfo=timezone.utc)
-    return max(1, int((t - datetime.now(timezone.utc)).total_seconds()) + 1)
-
 def call(url, body=None):
-    """-> parsed JSON. Spike-arrest 429 (Spike-Allowed header): retry once after 2 s. Quota 429: wait until
-    Rate-Limit-Expiry-Time, once, and stop if that is over 120 s. 5xx or network error: once after 10 s.
+    """-> parsed JSON. Spike-arrest 429 (Spike-Allowed header): retry once after 2 s. Quota 429: never retried
+    (Entur's retry policy); stop and print Rate-Limit-Expiry-Time. 5xx or network error: once after 10 s.
     GraphQL errors arrive as HTTP 200 with an `errors` list: raised."""
     for attempt in range(2):
         s, h, text = http(url, body)
-        if attempt == 0 and s in (0, 429, 500, 502, 503, 504):
-            wait = 2 if (s == 429 and "spike-allowed" in h) else expiry_wait(h) if s == 429 else 10
-            if wait > 120:
-                sys.exit(f"{url}: HTTP 429, quota resets in {wait} s: stopping")
-            time.sleep(wait)
+        spike = s == 429 and "spike-allowed" in h
+        if attempt == 0 and (spike or s in (0, 500, 502, 503, 504)):
+            time.sleep(2 if spike else 10)
             continue
         break
+    if s == 429:
+        sys.exit(f"{url}: HTTP 429 ({'spike arrest' if spike else 'quota'}); not retried, "
+                 f"try again after {h.get('rate-limit-expiry-time') or 'Rate-Limit-Expiry-Time'}")
     if s != 200:
         sys.exit(f"{url}: HTTP {s} {' '.join(text.split())[:200]!r}")
     d = json.loads(text)
@@ -684,7 +671,7 @@ Inneholder data under Norsk lisens for offentlige data (NLOD) tilgjengeliggjort 
 ```bash
 #!/usr/bin/env bash
 # Set your own '<company>-<application>' first (Entur's terms: no fake, random or borrowed values):
-#   export ET_CLIENT_NAME=yourcompany-yourapp
+#   export ET_CLIENT_NAME='<company>-<application>'   (your own names; example values are refused)
 set -u
 : "${ET_CLIENT_NAME:?set ET_CLIENT_NAME to <company>-<application> for your own app}"
 case "$ET_CLIENT_NAME" in
