@@ -115,7 +115,7 @@ const unsafeRoute = /@|[?#]|:\/\/|onmicrosoft|(?:tenant|user|object)[_-]?id|[0-9
 const opaqueHex = /^#[0-9a-f]{6}$/i;
 if (C.schemaVersion !== 1)
   preflightErrors.push("composition must use schema version 1");
-if (C.frameStyle !== "native" || C.readingWpm !== 380)
+if (C.frameStyle !== "native" || C.readingWpm !== 170)
   preflightErrors.push("composition changed generated typography or frame style");
 if (!Number.isFinite(C.durationBudget) || DURATION > C.durationBudget + 0.001)
   preflightErrors.push(
