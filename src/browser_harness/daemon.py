@@ -38,6 +38,8 @@ BUF = 500
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
     "Library/Application Support/Google/Chrome Canary",
+    "Library/Application Support/Google/Chrome Beta",
+    "Library/Application Support/Google/Chrome Dev",
     "Library/Application Support/Comet",
     "Library/Application Support/Arc/User Data",
     "Library/Application Support/Dia/User Data",
@@ -50,6 +52,8 @@ _MAC_PROFILES = (
 )
 _LINUX_PROFILES = (
     ".config/google-chrome",
+    ".config/google-chrome-beta",
+    ".config/google-chrome-unstable",
     ".config/chromium",
     ".config/chromium-browser",
     ".config/microsoft-edge",
