@@ -127,6 +127,8 @@ TOGGLE_BOOT_GRACE = 12
 # Cancellation should make an in-flight CDP call finish immediately. Keep the
 # drain bounded anyway so shutdown fails closed if a client ignores cancellation.
 RECOVERY_CANCEL_DRAIN_TIMEOUT = 2
+# Leave headroom for _cancel_and_drain_recoveries() to observe task completion.
+REATTACH_CANCEL_ROLLBACK_TIMEOUT = 1.5
 TAB_MARKER_JS = "if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title"
 
 
@@ -736,6 +738,138 @@ class Daemon:
             # it doesn't add to the synchronous IPC budget.
             self._schedule_tab_marker(new_session)
             return {"session_id": new_session}
+        if meta == "reattach_session":
+            # Force a fresh CDP session for the currently attached target.
+            # Input.dispatchMouseEvent / dispatchKeyEvent can silently stop
+            # reaching the document while Runtime.evaluate on the same session
+            # stays healthy — Chrome answers every dispatch with success, so
+            # the "Session with given id not found" recovery path never fires
+            # and the client cannot detect the deadness except by round-tripping
+            # a probe event (helpers.verify_input_delivery). Helpers attaching
+            # their own replacement (Target.attachToTarget + explicit
+            # session_id) leave this session bookkeeping inconsistent and have
+            # been observed hanging the IPC socket, so the swap happens here.
+            recovery_task = self._begin_recovery()
+            if recovery_task is None:
+                return {"error": "daemon is shutting down"}
+            old_session = None
+            new_session = None
+            previous_replacements = None
+            attach_task = None
+            try:
+                async with self._session_state_lock:
+                    if self._shutting_down:
+                        return {"error": "daemon is shutting down"}
+                    if not self.target_id or not self.session:
+                        return {"error": "not_attached"}
+                    old_session = self.session
+                    reattached_target_id = self.target_id
+                    try:
+                        attach_task = asyncio.create_task(self.cdp.send_raw(
+                            "Target.attachToTarget",
+                            {"targetId": reattached_target_id, "flatten": True},
+                        ))
+                        new_session = (await asyncio.shield(attach_task))["sessionId"]
+                    except Exception as e:
+                        return {"error": str(e)}
+                    previous_replacements = self._session_replacements.copy()
+                    self.session = new_session
+                    self._record_session_replacement(old_session, new_session)
+                # Mirrors set_session: drop the old session's Network subscription
+                # (defense in depth against background-tab traffic) and enable the
+                # default domains on the new one, in parallel, so the synchronous
+                # reply stays inside the helper's IPC read budget.
+                tasks = []
+                if old_session != new_session:
+                    async def disable_old():
+                        try:
+                            await asyncio.wait_for(
+                                self.cdp.send_raw("Network.disable", session_id=old_session),
+                                timeout=2,
+                            )
+                        except Exception: pass
+                    tasks.append(disable_old())
+                tasks.append(self._enable_default_domains(new_session))
+                await asyncio.gather(*tasks)
+                self._schedule_tab_marker(new_session)
+                return {
+                    "session_id": new_session,
+                    "target_id": reattached_target_id,
+                }
+            except asyncio.CancelledError:
+                async def rollback():
+                    nonlocal new_session
+                    if new_session is None and attach_task is not None:
+                        try:
+                            new_session = (await asyncio.shield(attach_task))["sessionId"]
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            log(f"finish cancelled reattach: {e}")
+                            return
+                    if new_session is None:
+                        return
+
+                    # Restore each piece only while this handler still owns it.
+                    # A tab switch can move the active session without changing
+                    # the replacement map, while a newer reattach can advance
+                    # both pieces of state.
+                    restored_session = False
+                    async with self._session_state_lock:
+                        owns_replacement = (
+                            previous_replacements is not None
+                            and self._session_replacements.get(old_session) == new_session
+                        )
+                        if owns_replacement:
+                            if self.session == new_session:
+                                self.session = old_session
+                                restored_session = True
+                            self._session_replacements = previous_replacements
+
+                    async def restore_network():
+                        if not restored_session:
+                            return
+                        try:
+                            await asyncio.wait_for(
+                                self.cdp.send_raw("Network.enable", session_id=old_session),
+                                timeout=0.5,
+                            )
+                        except Exception as e:
+                            log(f"restore Network on {old_session}: {e}")
+
+                    async def detach_new():
+                        try:
+                            await asyncio.wait_for(
+                                self.cdp.send_raw(
+                                    "Target.detachFromTarget",
+                                    {"sessionId": new_session},
+                                ),
+                                timeout=0.5,
+                            )
+                        except Exception as e:
+                            log(f"detach cancelled reattach session {new_session}: {e}")
+
+                    await asyncio.gather(restore_network(), detach_new())
+
+                rollback_task = asyncio.create_task(rollback())
+                done, _pending = await asyncio.wait(
+                    {rollback_task}, timeout=REATTACH_CANCEL_ROLLBACK_TIMEOUT
+                )
+                if not done:
+                    rollback_task.cancel()
+                    if attach_task is not None and not attach_task.done():
+                        attach_task.cancel()
+                    log("cancelled reattach rollback timed out")
+                else:
+                    # Retrieve any unexpected exception without extending the
+                    # bounded cancellation path.
+                    try:
+                        rollback_task.result()
+                    except Exception as e:
+                        log(f"cancelled reattach rollback failed: {e}")
+                raise
+            finally:
+                self._finish_recovery(recovery_task)
         if meta == "pending_dialog": return {"dialog": self.dialog}
         if meta == "shutdown":
             # Flip the barrier synchronously with recovery registration, then
