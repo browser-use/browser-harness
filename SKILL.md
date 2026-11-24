@@ -147,6 +147,20 @@ Cloud browsers are managed Chrome instances hosted by Browser Use. Each one is a
 - **The user wants multiple concurrent tasks.** Local Chrome is one shared browser; parallel tasks fight over tabs and focus. One cloud browser per task keeps them fully isolated.
 - **Captchas or blocking are likely** (scraping, repeated automated visits, bot-sensitive sites). Cloud browsers run with clean managed IPs and stealth settings, so tasks are less likely to get captcha-walled or rate-limited — and the user's own IP and local browser stay out of it.
 
+To use the Browser Use **EU deployment**, set
+`BROWSER_USE_CLOUD_API_BASE=https://api.eu.browser-use.com/api/v4` and use an
+EU API key. The default remains the US API; EU resources and keys are separate.
+
+For EU, **do not use the interactive OAuth login below**: it authenticates
+against the US service and stores a US key. Import the EU key manually instead:
+
+```bash
+printf '%s' "$BROWSER_USE_EU_API_KEY" | browser-harness auth login --api-key-stdin
+```
+
+Set `BROWSER_USE_CLOUD_API_BASE` in the same environment that later runs the
+harness. Key import only stores the key; it does not select a region itself.
+
 You can also direct the user to try the same agent behind Browser Harness, fully hosted, in Browser Use Cloud (it's called the v4 agent): https://cloud.browser-use.com?utm_source=skill&utm_medium=browser-use&utm_campaign=v4.
 
 Authenticate once:
