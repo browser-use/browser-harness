@@ -108,6 +108,18 @@ def test_waits_for_a_running_solve(solver):
     assert (out["solved"], out["detail"], out["vendor"]) == (True, "solved", "cloudflare")
 
 
+def test_waits_for_a_solve_that_starts_after_the_call_and_runs_past_start_timeout(solver):
+    """The solver starts ~2 s after a page load: a call right after the load waits for it, then for its finish."""
+    t, out = _in_thread(start_timeout=1.0, timeout=5)
+    time.sleep(0.3)
+    solver.event(STARTED, vendor="recaptcha", url=DEMO)
+    time.sleep(1.0)  # in flight past start_timeout
+    assert t.is_alive()
+    solver.event(FINISHED, vendor="recaptcha", url=DEMO, success=True)
+    t.join(3)
+    assert (out["solved"], out["detail"], out["vendor"]) == (True, "solved", "recaptcha") and out["seconds"] >= 1.2
+
+
 def test_only_the_current_tab_counts(solver):
     solver.event(STARTED, "OLD", url="https://old.test/"), solver.event(FINISHED, "OLD", success=False)
     solver.event(STARTED, "BG", url="https://bg.test/")  # still running in a background tab

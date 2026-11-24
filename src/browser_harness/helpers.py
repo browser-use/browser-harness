@@ -250,8 +250,22 @@ def click_at_xy(x, y, button="left", clicks=1):
         except Exception as e:
             print(f"[debug_click] overlay failed: {e}")
         _debug_click_counter += 1
+    if _human_mouse():
+        try:  # the daemon moves the mouse there as a hand does (pointer.py), drawing the arrow, then presses
+            _send({"meta": "mouse", "x": x, "y": y, "press": [button, clicks]}, response_timeout=20)
+        except RuntimeError as e:
+            if "unknown request 'mouse'" in str(e):
+                raise RuntimeError(f"BH_HUMAN_MOUSE=1: the daemon predates it; run {_cli_name()} --reload") from e
+            raise
+        return
     cdp("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button=button, clickCount=clicks)
     cdp("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button=button, clickCount=clicks)
+
+def _human_mouse():
+    """BH_HUMAN_MOUSE=1: click_at_xy() first moves the mouse there along a human path (~0.3 s, 25-45 real
+    mouseMoved events) and draws the arrow on Chrome's overlay; fill_input() clicks the field instead of a JS
+    focus(). Akamai only trusts a session (_abck) that saw such pointer travel; a teleported click does not count."""
+    return os.environ.get("BH_HUMAN_MOUSE", "").strip().lower() in ("1", "true", "yes", "on")
 
 def type_text(text):
     cdp("Input.insertText", text=text)
@@ -278,11 +292,12 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
     if timeout > 0:
         if not wait_for_element(selector, timeout=timeout):
             raise RuntimeError(f"fill_input: element not found: {selector!r}")
-    focused = js(
+    if _human_mouse():
+        _click_field(selector, clear_first)
+    elif not js(
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
         f"if(!e)return false;e.focus();return true;}})()"
-    )
-    if not focused:
+    ):
         raise RuntimeError(f"fill_input: element not found: {selector!r}")
     if clear_first:
         # Dispatch select-all directly — NOT via press_key, which always emits a
@@ -305,6 +320,28 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         f"e.dispatchEvent(new Event('input',{{bubbles:true}}));"
         f"e.dispatchEvent(new Event('change',{{bubbles:true}}));}})();"
     )
+
+def _click_field(selector, clear_first):
+    """BH_HUMAN_MOUSE=1 fill_input(): focus the field with a real click, not JS focus()."""
+    q = f"document.querySelector({json.dumps(selector)})"
+    # The field's centre, and whether a click there lands on the field (or its own label or wrapper),
+    # not on a cookie banner or modal covering it: clicking that could press a button on it.
+    box = js(
+        f"(()=>{{const e={q};if(!e)return null;e.scrollIntoView({{block:'center',behavior:'instant'}});"
+        f"const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,h=document.elementFromPoint(x,y);"
+        f"const own=!!h&&(h===e||e.contains(h)||h.contains(e)||(h.closest('label')||{{}}).control===e"
+        f"||!!(e.parentElement&&e.parentElement.contains(h)&&!h.closest('a,button,input,select,textarea,[role=button],[onclick]')));"
+        f"return [x,y,r.width*r.height,own];}})()"
+    )
+    if not box:
+        raise RuntimeError(f"fill_input: element not found: {selector!r}")
+    if box[2] and box[3]:
+        click_at_xy(box[0], box[1])
+    # JS focus only if the click did not focus it. Appending (clear_first=False): put the caret at the
+    # end, where focus() leaves it, not where the click landed (inputs like type=email have no caret API).
+    end = "return true" if clear_first else "try{const n=(e.value||'').length;e.setSelectionRange(n,n);return true}catch(_){return false}"
+    if js(f"(()=>{{const e={q},a=document.activeElement;if(!e)return true;if(a!==e&&!e.contains(a))e.focus();{end}}})()") is False:
+        press_key("End")  # type=email/number have no caret API: move it with the key a user would press
 
 _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "Enter": (13, "Enter", "\r"), "Tab": (9, "Tab", "\t"), "Backspace": (8, "Backspace", ""),
