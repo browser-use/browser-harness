@@ -202,6 +202,27 @@ def test_the_press_pulse_draws_after_the_click_returns(monkeypatch):
     assert d.drawn == {"s1": QUAD}
 
 
+def test_a_click_on_one_tab_leaves_another_tabs_press_pulse_running(monkeypatch):
+    """Owners share one daemon: owner B's click must not cut owner A's arrow off mid-pulse."""
+    END = [9] * 8
+    monkeypatch.setattr(pointer, "path", lambda *a, **k: (
+        [{"at": 0.01, "type": "mouseMoved", "x": 3, "y": 3, "quad": QUAD},
+         {"at": 0.02, "type": "mousePressed", "x": 3, "y": 3, "button": "left", "clickCount": 1},
+         {"at": 0.03, "type": "mouseReleased", "x": 3, "y": 3, "button": "left", "clickCount": 1},
+         {"at": 0.1, "quad": QUAD}, {"at": 0.2, "quad": END}]))
+    d = daemon.Daemon()
+    d.cdp, d.viewport["A"], d.viewport["B"] = _Tab(), [1280, 720, 1], [1280, 720, 1]
+
+    async def run():
+        await d.mouse("A", (3, 3))
+        await d.mouse("B", (3, 3))
+        await asyncio.sleep(0.4)
+    asyncio.run(run())
+    for sid in ("A", "B"):
+        quads = [p["quad"] for _, m, p, s in d.cdp.sent if m == "Overlay.highlightQuad" and s == sid]
+        assert quads[-1] == END and d.drawn[sid] == END
+
+
 def test_screenshots_leave_the_drawn_arrow_out_and_draw_it_again(tab, monkeypatch):
     monkeypatch.setenv("BH_HUMAN_MOUSE", "1")
     helpers.click_at_xy(300, 200)

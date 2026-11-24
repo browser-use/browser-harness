@@ -536,8 +536,7 @@ class Daemon:
         self.viewport = {}  # sessionId -> [width, height, devicePixelRatio], refreshed after each meta=mouse
         self.drawn = {}  # sessionId -> quad of the arrow drawn on that tab's overlay
         self._overlay_on = set()  # sessions with Overlay.enable sent
-        self._draw_tail = None  # task drawing the press pulse after the input of a meta=mouse
-        self._tail_end = None  # (sessionId, quad) the press pulse ends on
+        self._tails = {}  # sessionId -> (task drawing the press pulse after a meta=mouse's input, quad it ends on)
         self._hide_at = None  # timer that hides the drawn arrow after pointer.IDLE
 
     def owner(self, key):
@@ -986,8 +985,9 @@ class Daemon:
         events = _pointer.path(self.pointer.get(sid), end, self.viewport.get(sid), press)
         loop = asyncio.get_running_loop()
         t0, sent = loop.time(), []
-        if self._draw_tail:
-            self._draw_tail.cancel()
+        tail = self._tails.pop(sid, None)
+        if tail:  # only this tab's pulse: another owner's tab keeps its own
+            tail[0].cancel()
         # Draw-only events after the last input (the press pulse) run on after this returns: they must not slow the click.
         last = max((i for i, e in enumerate(events) if "type" in e), default=-1)
         for e in events[:last + 1]:
@@ -1004,8 +1004,7 @@ class Daemon:
             if quad:
                 self.draw(sid, quad)
         if events[last + 1:]:
-            self._draw_tail = asyncio.ensure_future(self._draw_later(sid, t0, events[last + 1:]))
-            self._tail_end = (sid, events[-1]["quad"])
+            self._tails[sid] = (asyncio.ensure_future(self._draw_later(sid, t0, events[last + 1:])), events[-1]["quad"])
         if not sent:
             return {"sent": 0, "late": 0}
         # Refresh the viewport for the next path's bounds, alongside the events (costs no wall time).
@@ -1062,8 +1061,9 @@ class Daemon:
         for per_session in (self.pointer, self.viewport, self.drawn):
             per_session.pop(sid, None)
         self._overlay_on.discard(sid)
-        if self._draw_tail and self._tail_end and self._tail_end[0] == sid:
-            self._draw_tail.cancel()  # its press pulse would draw on the gone session again
+        tail = self._tails.pop(sid, None)
+        if tail:
+            tail[0].cancel()  # its press pulse would draw on the gone session again
 
     async def _tab_send(self, method, params, sid):
         """send_raw on a tab session; keeps the pointer for meta=mouse and its drawn arrow out of screenshots."""
@@ -1071,12 +1071,12 @@ class Daemon:
             self.pointer[sid] = (params["x"], params.get("y", 0))
         if method != "Page.captureScreenshot" or not self.drawn:
             return await self.cdp.send_raw(method, params, session_id=sid)
-        if self._draw_tail and not self._draw_tail.done():
-            # a press pulse still drawing would paint the arrow into this screenshot: jump to its end
-            self._draw_tail.cancel()
-            tail_sid, tail_quad = self._tail_end
-            if tail_sid in self.drawn:
-                self.drawn[tail_sid] = tail_quad
+        tail = self._tails.pop(sid, None)
+        if tail and not tail[0].done():
+            # this tab's press pulse still drawing would paint the arrow into the screenshot: jump to its end
+            tail[0].cancel()
+            if sid in self.drawn:
+                self.drawn[sid] = tail[1]
         quad = self.drawn.get(sid)
         if not quad:
             return await self.cdp.send_raw(method, params, session_id=sid)
