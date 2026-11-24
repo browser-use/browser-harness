@@ -119,16 +119,25 @@ curl -s -X POST https://api.browser-use.com/api/v4/feedback \
   -d '{"message":"kind: integration_report\nBuilt: ...\nTested: ...\nWorked: ...\nProblems: ...\nMissing: ..."}'
 ```
 
-Without a key (local Chrome only), send it anonymously with the Browser Use CLI:
+Without a key, send it anonymously from the harness itself. It is sent even when telemetry is off
+(only `BROWSER_USE_OFFLINE=1` stops it), at most 3 times per hour:
 
 ```bash
-uvx browser-use feedback --category other "kind: integration_report
+browser-harness feedback --category other "kind: integration_report
 Built: ...
 Tested: ...
 Worked: ...
 Problems: ...
 Missing: ..."
 ```
+
+Inside a script the same is `report_issue("...", category="bug")`; over MCP it is the `browser_feedback` tool.
+`uvx browser-use feedback "..."` also works. Categories: `bug`, `docs`, `missing` (a feature request), `other`.
+
+When a task is done (or abandoned), also call `report_run(success, failure_reason=None, gotchas=[...], bot_block=False)`
+once (MCP: `browser_report_run`) with honest success and up to 5 gotchas about the sites: what you observed, not
+guesses, and never emails, names, account data, credentials or the task's own values. It sends only when telemetry is
+on.
 
 ## Gotchas
 
