@@ -214,7 +214,13 @@ def _send_detached(payload: dict) -> None:
     if "send" in _sink:
         _sink["send"](payload)
         return
-    host = os.environ.get("BH_POSTHOG_HOST", POSTHOG_HOST).rstrip("/")
+    post_detached(payload, os.environ.get("BH_POSTHOG_HOST", POSTHOG_HOST))
+
+
+def post_detached(payload: dict, host: str) -> None:
+    """POST one PostHog event to host from a detached process. Never the set_sink() send: report.py's
+    library events carry their own project key and host."""
+    host = host.rstrip("/")
     job = {
         "url": f"{host}/i/v0/e/",
         "timeout": float(os.environ.get("BH_TELEMETRY_TIMEOUT", "5")),

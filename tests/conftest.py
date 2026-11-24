@@ -26,3 +26,12 @@ def _runtime_in_tmp(tmp_path, monkeypatch):
     # runtime dir while this process pings tmp_path, so start_remote_daemon() never sees them come up.
     monkeypatch.setenv("BH_RUNTIME_DIR", str(tmp_path))
     monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION", raising=False)  # tests may themselves run inside a sub-agent
+
+
+@pytest.fixture(autouse=True)
+def _no_real_telemetry(monkeypatch):
+    """Tests must never send a real event: run.main() calls sent cli_events to PostHog. A test that checks what is
+    sent replaces post_detached itself; processes the tests spawn send to a closed local port."""
+    from browser_harness import telemetry
+    monkeypatch.setattr(telemetry, "post_detached", lambda payload, host: None)
+    monkeypatch.setenv("BH_POSTHOG_HOST", "http://127.0.0.1:9")

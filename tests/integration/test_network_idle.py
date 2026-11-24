@@ -79,6 +79,7 @@ def harness():
         time.sleep(0.05)
     port, path = active_port.read_text().split()[:2]
     env = {**os.environ, "BU_NAME": f"test-{uuid.uuid4().hex[:8]}", "BH_HOME": home, "BH_TAB_MARKER": "0",
+           "BH_TELEMETRY": "0",  # a module fixture: conftest's function-scoped guard is not set up yet
            "BU_CDP_WS": f"ws://127.0.0.1:{port}{path}"}
     base = f"http://127.0.0.1:{server.server_address[1]}"
 
