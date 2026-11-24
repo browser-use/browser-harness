@@ -6,6 +6,8 @@ import pytest
 
 from browser_harness import telemetry
 
+REAL_POST_DETACHED = telemetry.post_detached  # conftest swaps it for a no-op; here Popen is faked instead
+
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
@@ -14,6 +16,7 @@ def _isolated(monkeypatch, tmp_path):
         monkeypatch.delenv(name, raising=False)
     popen = []
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen.append(a) or MagicMock())
+    monkeypatch.setattr(telemetry, "post_detached", REAL_POST_DETACHED)
     yield popen
     telemetry.set_sink()
 
