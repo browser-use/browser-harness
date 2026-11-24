@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-CHROME = next((shutil.which(b) for b in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser") if shutil.which(b)), None)
+CHROME = os.environ.get("BH_TEST_CHROME") or next((shutil.which(b) for b in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser") if shutil.which(b)), None)
 pytestmark = [
     pytest.mark.skipif(CHROME is None, reason="needs a Chrome/Chromium binary"),
     pytest.mark.skipif(sys.platform == "win32", reason="talks to the daemon's AF_UNIX socket"),
@@ -117,6 +117,11 @@ def live(tmp_path):
         if port_file.exists() and port_file.read_text().strip():
             break
         time.sleep(0.1)
+    if not (port_file.exists() and port_file.read_text().strip()):
+        chrome.kill()
+        chrome.wait(10)
+        shutil.rmtree(profile, ignore_errors=True)
+        pytest.fail(f"Chrome ({CHROME}) wrote no DevToolsActivePort in 10 s")
     port, ws_path = port_file.read_text().split()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -350,6 +355,8 @@ def test_one_daemons_mode_never_leaks_to_another_name(live):
     assert ipc.deny_path("denyprobe").exists() and not ipc.deny_path("other").exists()
     assert live["call"]({"meta": "ping"})["cdp_deny"] == "tokens"
     assert live["call"]({"meta": "ping"}, name="other")["cdp_deny"] is None
+    assert "result" in live["call"]({"method": "Fetch.enable", "params": {}}, name="other")  # really unfiltered
+    live["call"]({"method": "Fetch.disable", "params": {}}, name="other")
     admin.check_deny_mode("denyprobe")
     admin.check_deny_mode("other", env={"BH_CDP_DENY": ""})
     assert "Fetch.enable is blocked" in _cdp(live, "Fetch.enable")["error"]

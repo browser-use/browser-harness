@@ -104,13 +104,15 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
   The daemon then exits, and stops its cloud browser, when that process dies.
 - Orchestrators using browser tokens can start the daemon with `BH_CDP_DENY=tokens`.
   The daemon then passes only allowlisted CDP domains/methods (no `Fetch`,
-  `Tracing`, `Security`, `Target.openDevTools`, `createBrowserContext`,
-  `setAutoAttach`, response/post bodies), refuses sessions on `devtools:`,
+  `Tracing`, `IO`, `Security`, `Target.openDevTools`, `createBrowserContext`,
+  `setAutoAttach`, and no CDP methods that return response/post bodies or
+  cookies; page JS can still read what the page can), refuses sessions on `devtools:`,
   `chrome:`, extension and browser-UI targets, limits uploads/downloads to
   `BH_UPLOAD_DIR`/`BH_DOWNLOAD_DIR`, and drops `*ExtraInfo` events from
   `drain_events()`. The mode belongs to that daemon (`BU_NAME`) and covers every
   agent (`BH_OWNER`) that shares it; it sticks for that name across respawns
-  (`BH_CDP_DENY=off` clears it), and a caller that requires it is refused a
+  (to clear it, stop the daemon with `--reload` and start it once with
+  `BH_CDP_DENY=off`), and a caller that requires it is refused a
   daemon running without it. It is a speed bump, not a security boundary:
   the real value is only safe if the swap happens outside Chrome and responses
   never echo it.

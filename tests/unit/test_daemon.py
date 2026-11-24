@@ -1508,6 +1508,9 @@ _TOKENS_DENIED = [
     ("Network.setRequestInterception", {"patterns": [{"urlPattern": "*"}]}),
     ("Network.loadNetworkResource", {"url": "https://shop.example.com/", "options": {}}),
     ("Network.getResponseBody", {"requestId": "1"}),
+    ("Network.getCookies", {"urls": ["https://shop.example.com/"]}),
+    ("Network.getAllCookies", {}),
+    ("Storage.getCookies", {}),
     ("Network.getResponseBodyForInterception", {"interceptionId": "1"}),
     ("Network.takeResponseBodyForInterceptionAsStream", {"interceptionId": "1"}),
     ("Network.searchInResponseBody", {"requestId": "1", "query": "4111"}),
@@ -1668,6 +1671,17 @@ def test_cdp_deny_tokens_refuses_raw_attach_to_privileged_targets(monkeypatch, t
     assert [c[0] for c in d.cdp.calls] == ["Target.getTargetInfo"]
 
 
+@pytest.mark.parametrize("method", ["Target.activateTarget", "Target.closeTarget"])
+def test_cdp_deny_tokens_raw_activate_or_close_checks_the_target(monkeypatch, method):
+    d = _tokens(monkeypatch, "tokens", _PRIVILEGED[0])
+
+    refused, own = _run(d, cmd("a", method, targetId="dt"), cmd("a", method, targetId="shop"))
+
+    assert f"{method} on a devtools: target is blocked" in refused["error"]
+    assert own == {"result": {}}
+    assert [(m, p["targetId"]) for m, p, _s in d.cdp.calls if m == method] == [(method, "shop")]
+
+
 @pytest.mark.parametrize("target", [t for t in _PRIVILEGED if t["type"] == "page"])
 def test_cdp_deny_tokens_refuses_switch_tab_to_privileged_tab(monkeypatch, target):
     d = _tokens(monkeypatch, "tokens", target)
@@ -1814,6 +1828,7 @@ def test_cdp_deny_tokens_drops_wire_header_events_from_drain(monkeypatch):
     d._record_event("Network.responseReceived", {"requestId": "1", "response": {"status": 200, "requestHeaders": real, "requestHeadersText": "X-Card: REAL4111"}}, sa)
     d._record_event("Network.requestWillBeSent", {"requestId": "2", "request": {"url": "https://shop.example.com/b"}, "redirectResponse": {"status": 302, "requestHeaders": real}}, sa)
     d._record_event("Network.requestIntercepted", {"interceptionId": "i1", "request": {"headers": real}}, sa)
+    d._record_event("Network.webSocketWillSendHandshakeRequest", {"requestId": "3", "request": {"headers": real}}, sa)
     d._record_event("Fetch.requestPaused", {"requestId": "f1", "request": {"headers": real}}, sa)
 
     events = _drain(d)

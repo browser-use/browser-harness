@@ -11,11 +11,14 @@ permissions:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install
         run: python -m pip install -e . pytest==8.3.5
       # ubuntu-latest ships google-chrome, so the live BH_CDP_DENY probes run too.

@@ -1896,6 +1896,14 @@ def test_required_deny_mode_reads_env_then_sticky_marker(monkeypatch, value, mar
     assert admin.required_deny_mode("scoped") == expected
 
 
+@pytest.mark.parametrize("typo", ["token", "1", "on"])
+def test_required_deny_mode_refuses_a_typo_instead_of_opting_out(monkeypatch, typo):
+    _deny_env(monkeypatch, typo, "scoped")
+
+    with pytest.raises(ValueError, match="BH_CDP_DENY"):
+        admin.required_deny_mode("scoped")
+
+
 def test_required_deny_mode_honors_explicit_env_argument(monkeypatch):
     _deny_env(monkeypatch)
 

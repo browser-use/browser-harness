@@ -433,8 +433,10 @@ def required_deny_mode(name=None, env=None):
     v = {**os.environ, **(env or {})}.get("BH_CDP_DENY", "").strip().lower()
     if v == "tokens":
         return "tokens"
-    if v:
+    if v == "off":
         return None
+    if v:  # a typo never reuses an unprotected daemon (the daemon refuses to start with it too)
+        raise ValueError(f"BH_CDP_DENY={v!r} is not supported; use 'tokens', 'off', or leave it unset")
     return "tokens" if ipc.deny_path(name or NAME).exists() else None
 
 

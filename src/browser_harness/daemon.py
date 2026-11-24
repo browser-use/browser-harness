@@ -208,10 +208,11 @@ _TOKENS_METHODS = frozenset({
     "Target.closeTarget", "Target.createTarget",
 })
 # Refused even inside allowed domains: interception, browser-side resource loads
-# (read back through IO.*, which is refused too), response/post bodies, history
+# (read back through IO.*, which is refused too), cookie reads, response/post bodies, history
 # jumps that can land on chrome:// entries, legacy file choosers.
 _TOKENS_DENIED_METHODS = frozenset({
     "Network.setRequestInterception", "Network.loadNetworkResource", "Network.getResponseBody",
+    "Network.getCookies", "Network.getAllCookies", "Storage.getCookies",  # HttpOnly cookies page JS cannot read
     "Network.getResponseBodyForInterception", "Network.takeResponseBodyForInterceptionAsStream",
     "Network.searchInResponseBody", "Network.streamResourceContent", "Network.replayXHR",
     "Network.getRequestPostData",
@@ -227,7 +228,7 @@ _ATTACH_TYPES = {"page", "iframe", "worker", "shared_worker", "service_worker"}
 _DOWNLOAD_METHODS = {"Browser.setDownloadBehavior", "Page.setDownloadBehavior"}
 # Network events whose payload is what actually went on the wire, after any
 # interceptor rewrote it (the swapped real value), or interception traffic.
-_TOKENS_DROPPED_EVENTS = ("Network.requestIntercepted",)
+_TOKENS_DROPPED_EVENTS = ("Network.requestIntercepted", "Network.webSocketWillSendHandshakeRequest")
 _WIRE_HEADER_KEYS = {"requestHeaders", "requestHeadersText"}
 
 
@@ -725,9 +726,10 @@ class Daemon:
         return target_denied(info, method) if info is not None else None
 
     async def _attach_denied(self, tid, method=None):
-        """Tokens mode: check the live target before the daemon attaches to it."""
+        """Tokens mode: check the live target before the daemon attaches to it, or before a raw
+        Target.activateTarget / closeTarget on it (`method`)."""
         if not isinstance(tid, str) or not tid:
-            return _blocked("Target.attachToTarget without a targetId")
+            return _blocked(f"{method or 'Target.attachToTarget'} without a targetId")
         try:
             info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": tid}))["targetInfo"]
         except Exception as e:
@@ -1441,7 +1443,8 @@ class Daemon:
                     and await self._frame_tab(key, o, params["targetId"]) is None:
                 return {"error": f"frame-not-yours: iframe {params['targetId']} is not known to be inside a tab you hold. "
                                  "Nothing was sent. switch_tab() to its tab, then use iframe_target(url)."}
-            if self.deny and method == "Target.attachToTarget" and (denied := await self._attach_denied(params.get("targetId"))):
+            if self.deny and method in GUARDED and (denied := await self._attach_denied(
+                    params.get("targetId"), None if method == "Target.attachToTarget" else method)):
                 return {"error": denied}
             result = await self.cdp.send_raw(method, params)
             if method == "Target.attachToBrowserTarget":
