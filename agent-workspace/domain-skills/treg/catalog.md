@@ -20,7 +20,11 @@ for item in matches:
 detail = json.loads(http_get(f"{base}/endpoints/moz.web.url.metrics"))
 endpoint = detail["endpoint"]
 print(endpoint["method"], endpoint["input"]["body"]["targets"])
-print(endpoint["cost"]["usd"], endpoint["cost"]["unit"], endpoint["cost"]["note"])
+cost = endpoint["cost"]
+print("Billing:", cost["value"], cost["unit"])
+if cost.get("usd") is not None:
+    print("USD estimate:", cost["usd"])
+print(cost["note"])
 print(endpoint["docs_url"])
 ```
 
@@ -33,21 +37,29 @@ For other tasks, change the query first, then choose an ID from those results. Q
 For Moz, open the provider page and expand the group containing the exact endpoint ID. The visible entry pairs a plain-language title with its billing terms. The endpoint ID is rendered as text in a `code` element.
 
 ```python
-new_tab("https://treg.to/tools/moz")
-assert wait_for_element("#tools details > summary")
-row = js("""(() => {
-  const code = [...document.querySelectorAll('#tools li code')]
-    .find(node => node.textContent.trim() === 'moz.web.url.metrics');
-  if (!code) return null;
-  code.closest('details').open = true;
-  return code.closest('li').innerText.trim();
-})()""")
-close_tab()
-if row is None:
-    raise RuntimeError("The Moz endpoint is missing from the provider page")
-print(row)
+previous_tab = current_tab()["targetId"]
+lookup_tab = new_tab()  # A URL here could reuse an existing blank tab.
+try:
+    goto_url("https://treg.to/tools/moz")
+    if not wait_for_element("#tools details > summary"):
+        raise RuntimeError("The Moz provider page did not load its tool list")
+    row = js("""(() => {
+      const code = [...document.querySelectorAll('#tools li code')]
+        .find(node => node.textContent.trim() === 'moz.web.url.metrics');
+      if (!code) return null;
+      code.closest('details').open = true;
+      return code.closest('li').innerText.trim();
+    })()""")
+    if row is None:
+        raise RuntimeError("The tool list has no entry for moz.web.url.metrics")
+    print(row)
+finally:
+    try:
+        switch_tab(previous_tab)
+    finally:
+        close_tab(lookup_tab)
 ```
 
 For live execution, use the chosen endpoint’s HTTP method at `https://treg.to/call/{endpoint_id}` and send the team token in `X-Treg-Token` from the host process. Keep credentials out of page JavaScript. Treg supplies the provider credential server-side. Account actions require a connection with the appropriate permissions. Calls using Treg’s provider accounts can spend the team’s prepaid balance. [Treg API reference](https://treg.to/docs).
 
-Field-tested while logged out on November 24, 2026 with Browser Harness 0.1.13 and local Chrome.
+Field-tested while logged out on November 24, 2026 with Browser Harness 0.1.13 and 0.1.14 in local Chrome.
