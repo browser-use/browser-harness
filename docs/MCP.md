@@ -42,11 +42,29 @@ tools with a `browser_` prefix:
 - `browser_cdp`
 - `browser_upload_file`
 - `browser_http_get`
+- `browser_solve_captcha`
 - `browser_start_recording`
 - `browser_stop_recording`
 
 Every tool returns JSON text. On error the response is `{"error": "..."}` and the
 server process keeps running.
+
+On a Browser Use Cloud browser, a result can have a second text block (or, on
+error, end) with `[Captcha solver ...]` lines: a solve is running (wait with
+`browser_solve_captcha`; do not reload or navigate) or one just finished.
+`BU_CAPTCHA_SOLVER=off` stops `browser_solve_captcha` from switching the solver
+on; it does not switch off a solver the browser already has on.
+
+Two more tools need no browser:
+
+- `browser_feedback(message, category)`: tells the Browser Use team what broke in
+  browser-harness or what would make it better. Sent even when telemetry is off.
+- `browser_report_run(success, failure_reason, gotchas, bot_block)`: the agent's
+  own verdict on its task, once at the end. Sent only when telemetry is on.
+
+Each sends at most 3 times per server process. `BROWSER_USE_OFFLINE=1` stops
+both; `BROWSER_USE_ZDR=1` sends them without their texts. See the 0.1.14 entry in
+`CHANGELOG.md` for exactly what is sent.
 
 ## Example flow
 

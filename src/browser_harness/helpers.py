@@ -3,12 +3,13 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, time, urllib.request
+import base64, importlib.util, json, math, mimetypes, os, sys, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
 from . import _ipc as ipc
 from . import paths
+from .naming import cli_name as _cli_name
 
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -37,12 +38,31 @@ _load_env()
 
 NAME = os.environ.get("BU_NAME", "default")
 SOCK = ipc.sock_addr(NAME)
+OWNER = ipc.owner()  # each owner drives only its own tabs
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 IPC_CONNECT_TIMEOUT_SECONDS = 5.0
 DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0
+
+
+def _env_seconds(name, default):
+    try:
+        value = float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value if 0 < value < math.inf else default
+
+
+# Page.navigate answers only once the navigation commits, and evaluate waits on
+# the page's JS, so over a slow remote browser these need far more than an
+# ordinary round trip. BH_IPC_TIMEOUT (seconds) overrides this budget only;
+# every other call keeps the short default so a hung daemon still fails fast.
+SLOW_IPC_RESPONSE_TIMEOUT_SECONDS = _env_seconds("BH_IPC_TIMEOUT", 30.0)
+SLOW_CDP_METHODS = {"Page.navigate", "Page.reload", "Runtime.evaluate", "Runtime.callFunctionOn"}
 # Cloud screenshots routinely take longer than ordinary CDP round trips. Keep
 # their IPC socket alive within the caller's existing 90-second process budget.
-SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = 60.0
+SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS = max(60.0, SLOW_IPC_RESPONSE_TIMEOUT_SECONDS)
+# Megabytes of file bytes travel to a cloud browser inside one request.
+UPLOAD_IPC_RESPONSE_TIMEOUT_SECONDS = 120.0
 
 
 class _IPCResponseTimeout(TimeoutError):
@@ -50,11 +70,15 @@ class _IPCResponseTimeout(TimeoutError):
 
 
 def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
+    # A large request (a 10 MB upload as base64 is ~14 MB) needs seconds to reach
+    # a remote browser and be evaluated there: add 1 s per MiB to the budget.
+    if (mib := len(json.dumps(req)) >> 20):
+        response_timeout += mib
     c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
     try:
         c.settimeout(response_timeout)
         try:
-            r = ipc.request(c, token, req)
+            r = ipc.request(c, token, {**req, "owner": OWNER})
         except TimeoutError as e:
             # Carry the detail on the exception itself. Raising the bare class
             # left str(exc) empty, so every caller that reported the error had
@@ -69,8 +93,10 @@ def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
     return r
 
 
-def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
+def cdp(method, session_id=None, _response_timeout=None, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
+    if _response_timeout is None:
+        _response_timeout = SLOW_IPC_RESPONSE_TIMEOUT_SECONDS if method in SLOW_CDP_METHODS else DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS
     return _send(
         {"method": method, "params": params, "session_id": session_id},
         response_timeout=_response_timeout,
@@ -78,6 +104,24 @@ def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_
 
 
 def drain_events():  return _send({"meta": "drain_events"})["events"]
+
+
+def _shares_parents_owner():
+    """A sub-agent inherits its parent's session id, so without BH_OWNER it is its parent's owner."""
+    return not os.environ.get("BH_OWNER") and os.environ.get("CLAUDE_CODE_CHILD_SESSION") == "1"
+
+
+def _refuse_for_shared_owner(what):
+    if _shares_parents_owner():
+        raise RuntimeError(f"owner-shared: {what} refused, because a sub-agent without BH_OWNER would act on its "
+                           "parent's tabs. Nothing was sent. Set BH_OWNER=<name> for this agent and retry.")
+
+
+def _warn_shared_owner():
+    """A sub-agent inherits its parent's session id, so without BH_OWNER it drives its parent's
+    tabs. Said on every call: siblings share the id, so "once" would reach only one of them."""
+    if _shares_parents_owner():
+        print("browser-harness: sub-agent without BH_OWNER shares its parent's tabs; prefix commands with BH_OWNER=<name>", file=sys.stderr)
 
 
 def _js_snippet(expression, limit=160):
@@ -156,17 +200,33 @@ def goto_url(url):
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
 
+# new_tab(url)/goto_url(url) return once the new document commits, before its
+# first bytes are parsed: it has no <html> element yet. page_info() waits this
+# long for one (a slow server's body), then raises; calling it again retries.
+PAGE_INFO_ROOT_WAIT_S = 5.0
+_PAGE_INFO_JS = "(()=>{const d=document.documentElement;return d&&JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:d.scrollWidth,ph:d.scrollHeight})})()"
+
 def page_info():
     """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
 
     If a native dialog (alert/confirm/prompt/beforeunload) is open, returns
     {dialog: {type, message, ...}} instead — the page's JS thread is frozen
-    until the dialog is handled (see interaction-skills/dialogs.md)."""
-    dialog = _send({"meta": "pending_dialog"}).get("dialog")
-    if dialog:
-        return {"dialog": dialog}
-    expression = "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})"
-    return json.loads(_runtime_evaluate(expression))
+    until the dialog is handled (see interaction-skills/dialogs.md).
+    Right after new_tab(url)/goto_url(url) it waits for the new document's
+    <html> element (up to PAGE_INFO_ROOT_WAIT_S)."""
+    deadline = time.monotonic() + PAGE_INFO_ROOT_WAIT_S
+    while True:
+        # Each try checks for a dialog first: a page that alert()s as it loads
+        # returns {dialog} instead of waiting on an evaluate the dialog blocks.
+        dialog = _send({"meta": "pending_dialog"}).get("dialog")
+        if dialog:
+            return {"dialog": dialog}
+        raw = _runtime_evaluate(_PAGE_INFO_JS)
+        if raw:
+            return json.loads(raw)
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"page_info(): the page has no <html> element after {PAGE_INFO_ROOT_WAIT_S:g}s (still loading); call page_info() again")
+        time.sleep(0.05)
 
 # --- input ---
 _debug_click_counter = 0
@@ -362,21 +422,60 @@ def _is_agent_startup_placeholder(title, url):
 
 
 def list_tabs(include_chrome=True):
+    """Every tab with its owner: "you" (with your mark), None (the person's, free
+    to switch_tab) or "taken" (another agent's, shown without title or url)."""
     out = []
-    for t in cdp("Target.getTargets")["targetInfos"]:
-        if t["type"] != "page": continue
+    for t in _send({"meta": "tabs"})["tabs"]:
         url = t.get("url", "")
         if _is_agent_startup_placeholder(t.get("title", ""), url): continue
         if not include_chrome and url.startswith(INTERNAL): continue
-        out.append({
-            "targetId": t["targetId"],
-            "target_id": t["targetId"],
-            "title": t.get("title", ""),
-            "url": url,
-        })
+        tab = {"targetId": t["targetId"], "target_id": t["targetId"], "owner": t["owner"]}
+        # another agent's tab keeps the keys 0.1.13 gave every tab, empty, so t["url"] still works
+        taken = t["owner"] == "taken"
+        tab.update(title="" if taken else t.get("title", ""), url="" if taken else url)
+        if t.get("mark"):
+            tab["mark"] = t["mark"]
+        out.append(tab)
     return out
 
+def release_tabs():
+    """Call when your task is done: closes the unmarked tabs you opened, gives back the
+    tabs you took from the person, and leaves marked tabs open for them. Only when the
+    whole task is finished and no follow-up or approval is pending."""
+    _refuse_for_shared_owner("release_tabs")
+    _send({"meta": "release_tabs"})
+
+def list_browsers():
+    """Running browsers, one per daemon name: [{name, kind, endpoint, current}]."""
+    from .admin import _daemon_endpoint_names, _ping
+    return [{"name": n, "kind": p.get("browser_kind"), "endpoint": p.get("endpoint"), "current": n == NAME}
+            for n in _daemon_endpoint_names() if (p := _ping(n)).get("pong")]
+
+def use_browser(name):
+    """Send the rest of THIS call's commands to the running browser `name` (see
+    list_browsers()). It does not last: the next `browser-harness` call is back on
+    BU_NAME, so use `BU_NAME=<name> browser-harness` for later calls. An unknown name
+    fails with browser-not-found; it never falls back to another browser."""
+    global NAME
+    from .admin import _ping
+    if not _ping(str(name)).get("pong"):
+        running = ", ".join(b["name"] for b in list_browsers()) or "none"
+        raise RuntimeError(f"browser-not-found: no browser {name!r} is running; running: {running}. Nothing was sent.")
+    NAME = name
+    return name
+
+def name_session(name):
+    """Name your session. Your tabs' titles show it, so the person sees which agent holds which tab."""
+    return _send({"meta": "name_session", "name": name})["name"]
+
+def mark_tab(tab, mark):
+    """mark="deliverable": the tab stays open for the person when you are done.
+    mark="handoff": the person should act in it now. None clears the mark.
+    Unmarked tabs are released when you go idle; unmarked tabs you opened are closed."""
+    return _send({"meta": "mark_tab", "target_id": _target_id(tab), "mark": mark})["mark"]
+
 def current_tab():
+    """Your current tab. A fresh owner gets its own background tab, never the person's."""
     r = _send({"meta": "current_tab"})
     return {
         "targetId": r["targetId"],
@@ -384,13 +483,6 @@ def current_tab():
         "url": r["url"],
         "title": r["title"],
     }
-
-def _mark_tab():
-    """Prepend horse emoji to tab title so the user can see which tab the agent controls."""
-    if os.environ.get("BH_TAB_MARKER", "").strip().lower() in {"0", "false", "no", "off"}:
-        return
-    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F434'))document.title='\U0001F434 '+document.title")
-    except Exception: pass
 
 def _target_id(target):
     """Accept a raw target id or a tab dict returned by the helpers."""
@@ -407,78 +499,93 @@ def activate_tab(target):
     return target_id
 
 def switch_tab(target, activate=False):
-    """Attach the agent without changing Chrome's visible tab by default.
-
-    Pass activate=True only when Chrome must visibly show the target. The horse
-    marker still moves to the attached target so the user can find it.
-    """
-    # Accept either a raw targetId string or the dict returned by current_tab() / list_tabs(),
-    # so `switch_tab(current_tab())` works without a manual ["targetId"] dance.
-    target_id = _target_id(target)
-    # Unmark old tab. Horse emoji is a surrogate pair in JS UTF-16 strings (2 code units),
-    # plus the trailing space = 3 code units, so slice(3) cleanly removes the prefix.
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F434 '))document.title=document.title.slice(3)")
-    except Exception: pass
-    if activate:
-        activate_tab(target_id)
-    sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
-    _send({"meta": "set_session", "session_id": sid, "target_id": target_id})
-    _mark_tab()
-    return sid
+    """Take a tab and make it your current one, without changing Chrome's visible
+    tab unless activate=True. Another agent's tab fails with tab-taken. A dict
+    from list_tabs() also fails with tab-changed if the tab's url moved since."""
+    req = {"meta": "switch_tab", "target_id": _target_id(target), "activate": activate}
+    if isinstance(target, dict) and target.get("url"):
+        req["url"] = target["url"]
+    return _send(req)["session_id"]
 
 def new_tab(url="about:blank"):
+    """Open a background tab you own and make it current. With a url, an empty current tab is reused."""
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.
-    if url != "about:blank":
-        try:
-            cur = current_tab()
-            cur_url = cur.get("url") or ""
-            # Reuse attached tab when it's blank
-            if (
-                cur_url in ("", "about:blank", "data:text/html,")
-                or cur_url.startswith("about:blank#")
-                or cur_url.startswith(("chrome://newtab", "chrome://new-tab-page", "edge://newtab", "about:newtab"))
-            ):
-                goto_url(url)
-                return cur.get("targetId") or cur.get("target_id")
-        except Exception:
-            pass
-    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
-    switch_tab(tid)
+    tid = _send({"meta": "new_tab", "reuse": url != "about:blank"})["target_id"]
     if url != "about:blank":
         goto_url(url)
+    print(f"new_tab: {tid} {url}")
     return tid
 
 def close_tab(target=None):
-    """Close a tab. If `target` is omitted, closes the currently attached tab.
-    Accepts a raw targetId string or a dict from list_tabs()/current_tab()."""
-    target_id = _target_id(target)
-    if target_id is None:
-        target_id = current_tab()["targetId"]
-    cdp("Target.closeTarget", targetId=target_id)
+    """Close one of your tabs, the current one by default. Accepts a target id or a tab dict."""
+    _refuse_for_shared_owner("close_tab")
+    return _send({"meta": "close_tab", "target_id": _target_id(target)})["closed"]
 
 
 def ensure_real_tab():
-    """Switch to a real user tab if current is chrome:// / internal / stale."""
-    tabs = list_tabs(include_chrome=False)
-    if not tabs:
-        return None
-    try:
-        cur = current_tab()
-        if cur["url"] and not cur["url"].startswith(INTERNAL):
-            return cur
-    except Exception:
-        pass
-    switch_tab(tabs[0]["targetId"])
-    return tabs[0]
+    """Your current tab, opening your own background tab if you have none. Never takes the person's tab."""
+    return current_tab()
 
 def iframe_target(url_substr):
-    """First iframe target whose URL contains `url_substr`. Use with js(..., target_id=...)."""
-    for t in cdp("Target.getTargets")["targetInfos"]:
-        if t["type"] == "iframe" and url_substr in t.get("url", ""):
-            return t["targetId"]
-    return None
+    """First cross-origin iframe inside your current tab whose URL contains `url_substr`.
+    Use with js(..., target_id=...). Never an iframe of another tab."""
+    return _send({"meta": "iframe_target", "url": url_substr})["target_id"]
+
+
+# --- captcha ---
+def solve_captcha(start_timeout=20.0, timeout=75.0):
+    """Wait for Browser Use Cloud's captcha solver on the current tab: a solve running, one that finished since the
+    last call or script output (at most 60 s ago), or one it starts within start_timeout s. Returns {'solved',
+    'detail', 'seconds'} (+ 'vendor', 'url'). detail: 'solved', 'the solver failed', 'still solving' (+ 'next': call
+    again), 'no captcha solve started within N s', 'no result from the solver after 150 s' or 'solver unavailable:
+    ...' (not a cloud browser; never raises for that). Turns the solver on if it was off, and off again once no solve
+    runs and no caller waits."""
+    began, since, caller = time.monotonic(), time.time(), os.urandom(8).hex()
+    def out(solved, detail, **extra):
+        return {"solved": solved, "detail": detail, "seconds": round(time.monotonic() - began, 1), **extra}
+    if os.environ.get("BU_CAPTCHA_SOLVER") == "off":  # the daemon refuses too, for callers without this env
+        return out(False, "solver unavailable: BU_CAPTCHA_SOLVER=off turned it off; handle the captcha yourself")
+    try:  # up to three 2 s CDP calls
+        _send({"meta": "captcha", "op": "enable", "caller": caller, "lease": timeout + 5}, response_timeout=10)
+    except Exception as e:
+        why = str(e) or type(e).__name__
+        if "wasn't found" in why or "-32601" in why:  # Chrome: no BrowserUse domain
+            why = "this browser has no captcha solver (Browser Use Cloud browsers do)"
+        elif why == "'method'":  # a daemon started before solve_captcha() existed
+            why = f"the daemon predates solve_captcha(); run {_cli_name()} --reload"
+        return out(False, f"solver unavailable: {why[:300]}")
+    try:
+        while True:
+            state = _send({"meta": "captcha", "op": "poll", "since": since})
+            f = state.get("finished")
+            if f:
+                detail = "solved" if f["success"] else "no result from the solver after 150 s" if f.get("lost") \
+                    else "the solver failed"
+                return out(f["success"], detail, **{k: f[k] for k in ("vendor", "url") if k in f})
+            solving = state.get("solving")
+            limit = timeout if solving is not None else min(start_timeout, timeout)
+            if time.monotonic() - began >= limit:
+                if solving is not None:
+                    return out(False, "still solving", **solving, next="call solve_captcha() again")
+                return out(False, f"no captcha solve started within {limit:g} s")
+            time.sleep(0.25)
+    finally:
+        try:
+            _send({"meta": "captcha", "op": "release", "caller": caller})
+        except Exception:
+            pass
+
+
+def captcha_note():
+    """Captcha solver lines not shown yet: one per solve still running and one per solve finished since the last note
+    ('[Captcha solver ...]'). Append it to whatever you show the agent after a step. '' when there is nothing, no
+    daemon, or no solver (a local browser)."""
+    try:
+        return _send({"meta": "captcha", "op": "note"}, response_timeout=2).get("note") or ""
+    except Exception:  # no daemon, or one without the captcha op
+        return ""
 
 
 # --- utility ---
@@ -534,10 +641,19 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
     tab (e.g. a polling/SSE page the agent switched away from) keeps emitting
     Network events into the daemon's global event buffer; without this filter
     they would poison the idle check on the current tab.
+
+    Two kinds of request start on the tab but finish elsewhere, so they are not
+    waited for: a worker's script (CDP sends it with an empty loaderId, "fetched
+    from worker"; it finishes on the worker's target, or never if the worker
+    stops first), and an out-of-process iframe's requests while the iframe's
+    target is attached (the daemon auto-attaches them; targetId == frameId).
+    When the iframe comes back in process its target detaches and the tab
+    reports its requests again, so they are waited for again.
     """
     deadline = time.time() + timeout
     last_activity = time.time()
-    inflight = set()
+    inflight = {}  # requestId -> frameId
+    children = {}  # sessionId -> targetId of the tab's attached iframes (== their frameId) and workers
     active_session = _send({"meta": "session"}).get("session_id")
     while time.time() < deadline:
         for e in drain_events():
@@ -546,13 +662,20 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
             method = e.get("method", "")
             params = e.get("params", {})
             if method == "Network.requestWillBeSent":
-                inflight.add(params.get("requestId"))
+                if params.get("loaderId") != "" and params.get("frameId") not in children.values():
+                    inflight[params.get("requestId")] = params.get("frameId")
                 last_activity = time.time()
             elif method in ("Network.loadingFinished", "Network.loadingFailed"):
-                inflight.discard(params.get("requestId"))
+                inflight.pop(params.get("requestId"), None)
                 last_activity = time.time()
             elif method.startswith("Network."):
                 last_activity = time.time()
+            elif method == "Target.attachedToTarget":
+                child = params["targetInfo"]["targetId"]
+                children[params["sessionId"]] = child
+                inflight = {r: f for r, f in inflight.items() if f != child}
+            elif method == "Target.detachedFromTarget":
+                children.pop(params["sessionId"], None)
         if not inflight and (time.time() - last_activity) * 1000 >= idle_ms:
             return True
         time.sleep(0.1)
@@ -560,6 +683,8 @@ def wait_for_network_idle(timeout=10.0, idle_ms=500):
 
 def js(expression, target_id=None):
     """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
+    A `target_id` that is a free tab takes that tab for you, like switch_tab() without
+    making it current; an iframe must be inside a tab you hold.
 
     Expressions are evaluated as-is first. If Chrome reports an illegal top-level
     `return`, the snippet is retried inside a function wrapper, so both
@@ -618,36 +743,86 @@ def dispatch_key(selector, key="Enter", event="keypress"):
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});if(e){{e.focus();e.dispatchEvent(new KeyboardEvent({json.dumps(event)},{{key:{json.dumps(key)},code:{json.dumps(key)},keyCode:{kc},which:{kc},bubbles:true}}));}}}})()"
     )
 
-def upload_file(selector, path):
-    """Set files on a file input via CDP DOM.setFileInputFiles. `path` is an absolute filepath (use tempfile.mkstemp if needed)."""
-    doc = cdp("DOM.getDocument", depth=-1)
-    nid = cdp("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector=selector)["nodeId"]
-    if not nid: raise RuntimeError(f"no element for {selector}")
-    cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
+def upload_file(target, path):
+    """Set files on a file input. `target` is a CSS selector or a backendNodeId (from the AX tree; reaches shadow
+    roots and frames). `path` is an absolute filepath or a list of them. A cloud browser only takes paths in its own
+    downloads folder, so there the bytes go through the page as File objects (input and change fire, untrusted)."""
+    paths = [path] if isinstance(path, str) else list(path)
+    if isinstance(target, str):
+        doc = cdp("DOM.getDocument", depth=-1)
+        nid = cdp("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector=target)["nodeId"]
+        if not nid: raise RuntimeError(f"no element for {target}")
+        node = {"nodeId": nid}
+    else:
+        node = {"backendNodeId": target}
+    try:
+        return cdp("DOM.setFileInputFiles", files=paths, **node)
+    except RuntimeError as e:
+        if "downloads directory" not in str(e): raise
+    files = [[os.path.basename(p), base64.b64encode(Path(p).read_bytes()).decode(), mimetypes.guess_type(p)[0] or ""] for p in paths]
+    cdp("Runtime.callFunctionOn", objectId=cdp("DOM.resolveNode", **node)["object"]["objectId"], arguments=[{"value": files}],
+        _response_timeout=UPLOAD_IPC_RESPONSE_TIMEOUT_SECONDS,
+        functionDeclaration="function(fs){const d=new DataTransfer();for(const[n,b,t]of fs)d.items.add(new File([Uint8Array.from(atob(b),c=>c.charCodeAt(0))],n,{type:t}));"
+                            "this.files=d.files;for(const t of['input','change'])this.dispatchEvent(new Event(t,{bubbles:true}))}")
+
+_CREDENTIAL_HEADERS = {"authorization", "cookie", "proxy-authorization"}
+
+
+def _proxy_can_reach(url, headers):
+    """Whether http_get may send url via the fetch-use proxy: a public host and no
+    credentials. localhost, private IPs and intranet names (no dot, .local,
+    .internal, .localhost) are unreachable from the proxy, and an Authorization
+    or Cookie header should not leave this machine."""
+    if any(str(k).lower() in _CREDENTIAL_HEADERS for k in (headers or {})):
+        return False
+    host = (urlparse(url).hostname or "").rstrip(".").lower()
+    if not host or "." not in host or host.endswith((".local", ".localhost", ".internal")):
+        return False
+    import ipaddress
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
+
 
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.
 
-    When BROWSER_USE_API_KEY is set, routes through the fetch-use proxy (handles bot
-    detection, residential proxies, retries). Falls back to local urllib otherwise."""
-    if os.environ.get("BROWSER_USE_API_KEY"):
+    Returns str, or bytes when the body is not UTF-8 text (zip, pdf, image).
+    When BROWSER_USE_API_KEY is set, public URLs go through the fetch-use proxy
+    (handles bot detection, residential proxies, retries); localhost, private and
+    intranet hosts, and requests with Authorization/Cookie headers, stay local."""
+    if os.environ.get("BROWSER_USE_API_KEY") and _proxy_can_reach(url, headers):
         try:
             from fetch_use import fetch_sync
-            return fetch_sync(url, headers=headers, timeout_ms=int(timeout * 1000)).text
+            r = fetch_sync(url, headers=headers, timeout_ms=int(timeout * 1000))
+            if not getattr(r, "is_binary", False):
+                return r.text
+            data = r.content  # fetch-use's is_binary can flag UTF-8 text too: same str/bytes rule as below
         except ImportError:
             pass
+        else:
+            try:
+                return data.decode()
+            except UnicodeDecodeError:
+                return data
     import gzip
     h = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
     if headers: h.update(headers)
     with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
+    try:
         return data.decode()
+    except UnicodeDecodeError:
+        return data
 
 
 # Imported at the bottom so recorder's own `from . import helpers` sees a
 # fully-defined module. Exposes the recording helpers via `from .helpers import *`.
 from .recorder import start_recording, stop_recording, recording_dir
+# report_run(success, ...) at the end of a task; report_issue(message) for a harness bug (report.py).
+from .report import report_issue, report_run
 
 
 def _load_agent_helpers():

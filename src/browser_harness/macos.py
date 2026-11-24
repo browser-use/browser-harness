@@ -6,10 +6,32 @@ import platform
 import subprocess
 from pathlib import Path
 
-from .admin import daemon_browser_ready
+from .admin import _BROWSER_LAUNCH, _DEFAULT_LAUNCH, daemon_browser_ready
 from .daemon import remote_debugging_toggle_profiles
 
 _APPLESCRIPT = r'''using terms from application "System Events"
+    on hasApprovalHeading(nodeRef)
+        try
+            if (role of nodeRef as text) is "AXHeading" and ¬
+                (name of nodeRef as text) is "Allow remote debugging?" then
+                return true
+            end if
+        end try
+        try
+            repeat with childRef in UI elements of nodeRef
+                if my hasApprovalHeading(childRef) then return true
+            end repeat
+        end try
+        return false
+    end hasApprovalHeading
+    on isApprovalSheet(sheetRef)
+        -- Chrome <=152 names the sheet; 153+ leaves the name empty and puts
+        -- the title in a child AXHeading.
+        try
+            if (name of sheetRef as text) is "Allow remote debugging?" then return true
+        end try
+        return my hasApprovalHeading(sheetRef)
+    end isApprovalSheet
     on clickAllow(nodeRef)
         try
             if (role of nodeRef as text) is "AXButton" and ¬
@@ -28,27 +50,62 @@ _APPLESCRIPT = r'''using terms from application "System Events"
 end using terms from
 
 set resultText to "not-found"
+set browserNames to {__BROWSERS__}
 tell application "System Events"
-    if exists process "Google Chrome" then
-        tell process "Google Chrome"
-            repeat with w in windows
-                try
-                    repeat with s in sheets of w
-                        if (name of s as text) is "Allow remote debugging?" then
-                            if my clickAllow(s) then
-                                set resultText to "ready"
-                                exit repeat
+    repeat with browserName in browserNames
+        if resultText is "ready" then exit repeat
+        if exists process browserName then
+            tell process browserName
+                repeat with w in windows
+                    try
+                        repeat with s in sheets of w
+                            if my isApprovalSheet(s) then
+                                if my clickAllow(s) then
+                                    set resultText to "ready"
+                                    exit repeat
+                                end if
                             end if
-                        end if
-                    end repeat
-                end try
-                if resultText is "ready" then exit repeat
-            end repeat
-        end tell
-    end if
+                        end repeat
+                    end try
+                    if resultText is "ready" then exit repeat
+                end repeat
+            end tell
+        end if
+    end repeat
 end tell
 return resultText
 '''
+
+
+# Chromium-family apps that show the same "Allow remote debugging?" sheet: every
+# app the launcher knows (admin._BROWSER_LAUNCH) plus channels without a profile
+# entry of their own.
+_BROWSER_PROCESSES = tuple(dict.fromkeys(
+    [_DEFAULT_LAUNCH[0], *(spec[1] for spec in _BROWSER_LAUNCH)]
+    + ["Google Chrome Beta", "Google Chrome Dev", "Google Chrome for Testing", "Chromium",
+       "Brave Browser Beta", "Brave Browser Nightly", "Microsoft Edge Beta", "Microsoft Edge Dev",
+       "Microsoft Edge Canary", "Helium"]
+))
+_APPLESCRIPT = _APPLESCRIPT.replace(
+    "__BROWSERS__", ", ".join(f'"{name}"' for name in _BROWSER_PROCESSES)
+)
+
+
+def _accessibility_trusted():
+    """AXIsProcessTrusted() for this process, or None when it cannot be read.
+
+    Same answer osascript would get, without the osascript run: an untrusted
+    process otherwise blocks on macOS's Automation consent prompt (5 s here,
+    forever for an unattended Mac) before reporting accessibility-required."""
+    try:
+        import ctypes
+        lib = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        )
+        lib.AXIsProcessTrusted.restype = ctypes.c_bool
+        return bool(lib.AXIsProcessTrusted())
+    except (OSError, AttributeError):
+        return None
 
 
 _ACCESSIBILITY_DETAIL = (
@@ -62,8 +119,13 @@ def _google_chrome_root() -> Path:
 
 
 def _google_chrome_toggle_enabled() -> bool:
-    """Only accept the toggle from the Google Chrome root used by the script."""
+    """Kept for compatibility: the stock Google Chrome root has the toggle on."""
     return _google_chrome_root() in remote_debugging_toggle_profiles()
+
+
+def _any_toggle_enabled() -> bool:
+    """Some scanned Chromium-family profile has chrome://inspect's toggle on."""
+    return bool(remote_debugging_toggle_profiles())
 
 
 def approve_remote_debugging() -> tuple[str, str | None]:
@@ -74,12 +136,15 @@ def approve_remote_debugging() -> tuple[str, str | None]:
     if daemon_browser_ready():
         return "ready", None
 
-    if not _google_chrome_toggle_enabled():
+    if not _any_toggle_enabled():
         return (
             "setup-required",
             'first enable "Allow remote debugging for this browser instance" at '
             "chrome://inspect/#remote-debugging, then run `browser-harness mac-approve` again",
         )
+
+    if _accessibility_trusted() is False:
+        return "accessibility-required", _ACCESSIBILITY_DETAIL
 
     try:
         completed = subprocess.run(

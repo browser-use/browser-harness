@@ -23,6 +23,7 @@ interaction-skills/make-video.md.
 import base64, json, os, re, time
 from pathlib import Path
 
+from . import _ipc as ipc
 from . import paths
 
 # Helpers that change what's on screen. Read-only helpers (js, page_info,
@@ -32,7 +33,7 @@ ACTIONS = {
     "goto_url", "click_at_xy", "type_text", "fill_input", "press_key",
     "scroll", "dispatch_key", "upload_file", "new_tab", "switch_tab",
     "close_tab", "ensure_real_tab",
-    "wait", "wait_for_load", "wait_for_element", "wait_for_network_idle",
+    "wait", "wait_for_load", "wait_for_element", "wait_for_network_idle", "solve_captcha",
 }
 
 _TEXT_LIMIT = 500
@@ -91,7 +92,9 @@ def _env_override():
 
 
 def _marker():
-    return _recordings_root() / f".active-{os.environ.get('BU_NAME', 'default')}"
+    """One active recording per browser and owner, so agents sharing a daemon do not record each other."""
+    owner = re.sub(r"[^A-Za-z0-9_-]", "_", ipc.owner())[:64]
+    return _recordings_root() / f".active-{os.environ.get('BU_NAME', 'default')}{'' if owner == 'default' else '-' + owner}"
 
 
 def start_recording(name=None, title=None):

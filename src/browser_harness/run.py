@@ -10,6 +10,45 @@ for _stream in (sys.stdout, sys.stderr):
         try: _stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception: pass
 
+from . import _ipc
+
+
+def _alias_named_local_daemon_to_owner():
+    """`BU_NAME=<x>` on the local Chrome, with no daemon of that name, means owner x
+    on the shared daemon instead of a second browser connection.
+
+    Agents invent per-job names (`gmail1375`) to isolate work. On the local Chrome
+    a second daemon isolates nothing more than an owner does, and each one costs
+    another "Allow remote debugging?" dialog that brings Chrome to the front (3
+    named daemons = 3 dialogs, measured). Remote and CDP daemons keep their names:
+    a live daemon of that name, a name whose remote browser ended (it fails closed
+    with remote-browser-ended instead of falling back to local Chrome),
+    BU_CDP_URL/BU_CDP_WS, BH_REQUIRE_EXISTING_DAEMON=1 or BH_NAMED_LOCAL_DAEMON=1
+    leaves BU_NAME alone. Runs before the modules that read BU_NAME at import, so
+    it is silent: _print_owner_alias() says it when a script runs, under the CLI's
+    name (help, doctor and a host that imports this module print nothing)."""
+    global _owner_alias
+    name = os.environ.get("BU_NAME")
+    if not name or name == "default":
+        return False
+    if (os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS")
+            or os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
+            or os.environ.get("BH_NAMED_LOCAL_DAEMON") == "1"):
+        return False
+    try:
+        if _ipc.ping(name, timeout=0.5) or _ipc.read_remote_marker(name) is not None:
+            return False
+    except Exception:
+        return False
+    os.environ.setdefault("BH_OWNER", name)
+    os.environ["BU_NAME"] = "default"
+    _owner_alias = name
+    return True
+
+
+_owner_alias = None  # the BU_NAME that became an owner, for the notice when a script runs
+_alias_named_local_daemon_to_owner()
+
 from .admin import (
     _version,
     NAME,
@@ -31,6 +70,9 @@ from .admin import (
 )
 from . import auth, recorder, telemetry
 from .helpers import *
+from .helpers import captcha_note as _captcha_note  # private name: not traced as a step of the agent's script
+from .naming import cli_name as _cli_name, named as _named
+from .helpers import _warn_shared_owner
 
 HELP = """Browser Harness
 
@@ -38,7 +80,7 @@ Read SKILL.md for the default workflow and examples.
 
 Typical usage:
   browser-harness <<'PY'
-  ensure_real_tab()
+  new_tab("https://example.com")
   print(page_info())
   PY
 
@@ -65,6 +107,8 @@ Commands:
   browser-harness video review <recording>    compile and review the video
   browser-harness video export <recording> --reviewed   export a verified MP4
   browser-harness telemetry status    show anonymous telemetry opt-out state
+  browser-harness feedback "what happened" [--category bug|docs|missing|other]
+                                    tell the Browser Use team what broke or could be better
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
 """
@@ -108,6 +152,18 @@ def _cloud_auth_configured():
         return False
 
 
+def _print_captcha_note():
+    """Captcha solves running, and finishes not yet shown, so the agent waits instead of reloading."""
+    note = _captcha_note()
+    if note:
+        print(note)
+
+
+def _print_owner_alias():
+    if _owner_alias:
+        print(f"{_cli_name()}: BU_NAME={_owner_alias} has no browser of its own; using the shared local Chrome as owner {os.environ.get('BH_OWNER') or _owner_alias!r} (no extra Allow prompt). Set BH_NAMED_LOCAL_DAEMON=1 for a separate connection.", file=sys.stderr)
+
+
 def _print_skill():
     from importlib import resources
     # SKILL.md is UTF-8 (contains emoji); locale-codec read crashes on gbk Windows
@@ -130,7 +186,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "skill", "mac-approve", "recordings", "telemetry", "video"}:
+    if first in {"auth", "feedback", "skill", "mac-approve", "recordings", "telemetry", "video"}:
         return first
     return "usage"
 
@@ -178,12 +234,16 @@ def _traced(name, fn):
     return wrapper
 
 
+# Their arguments are free text sent, scrubbed, to the library project (report.py), never in cli_event's steps.
+_UNTRACED = {"report_issue", "report_run"}
+
+
 def _install_helper_trace():
     from . import helpers
 
     g = globals()
     for name in dir(helpers):
-        if name.startswith("_"):
+        if name.startswith("_") or name in _UNTRACED:
             continue
         fn = g.get(name)
         if callable(fn) and not isinstance(fn, type) and not getattr(fn, "__bh_traced__", False):
@@ -237,8 +297,11 @@ def _telemetry_browser(task):
         return None
 
 
-def main():
+def main(prog=None):
+    """The CLI. prog: the command name a wrapping CLI prints in help, usage and hints (sets BH_CLI_NAME)."""
     global _helper_call_count
+    if prog:
+        os.environ["BH_CLI_NAME"] = prog  # env, so subcommands and the daemon it spawns say the same name
     args = sys.argv[1:]
     if args and args[0] == "telemetry":
         sys.exit(telemetry.run_telemetry_cli(args[1:]))
@@ -303,7 +366,7 @@ def main():
 
 def _run(args):
     if args and args[0] in {"-h", "--help"}:
-        print(HELP)
+        print(_named(HELP))
         return
     if args and args[0] == "--version":
         print(_version() or "unknown")
@@ -318,18 +381,22 @@ def _run(args):
                 and "--json" in rest and len(rest) == len(set(rest)):
             sys.exit(run_doctor_json(require_existing_daemon="--require-existing-daemon" in rest))
         if rest:
-            print("usage: browser-harness doctor [--fix-snap|--json [--require-existing-daemon]]", file=sys.stderr)
+            print(f"usage: {_cli_name()} doctor [--fix-snap|--json [--require-existing-daemon]]", file=sys.stderr)
             sys.exit(2)
         sys.exit(run_doctor())
     if args and args[0] == "auth":
         sys.exit(auth.run_auth_cli(args[1:]))
+    if args and args[0] == "feedback":
+        from . import report
+
+        sys.exit(report.run_feedback_cli(args[1:]))
     if args and args[0] == "mac-approve":
         from . import macos
 
         sys.exit(macos.run_cli(args[1:]))
     if args and args[0] == "skill":
         if len(args) != 1:
-            print("usage: browser-harness skill", file=sys.stderr)
+            print(f"usage: {_cli_name()} skill", file=sys.stderr)
             sys.exit(2)
         _print_skill()
         return
@@ -348,7 +415,7 @@ def _run(args):
             print(f"auto-recording preference {'enabled' if enabled else 'disabled'}")
             return
         if rest:
-            print("usage: browser-harness recordings [--latest|enable|disable]", file=sys.stderr)
+            print(f"usage: {_cli_name()} recordings [--latest|enable|disable]", file=sys.stderr)
             sys.exit(2)
         enabled, source = recorder.auto_recording_setting()
         print(f"auto-recording: {'on' if enabled else 'off'} ({source})")
@@ -364,7 +431,7 @@ def _run(args):
     if args and args[0] == "--update":
         rest = args[1:]
         if not set(rest).issubset({"-y", "--yes"}):
-            print("usage: browser-harness --update [-y|--yes]", file=sys.stderr)
+            print(f"usage: {_cli_name()} --update [-y|--yes]", file=sys.stderr)
             sys.exit(2)
         sys.exit(run_update(yes=bool(rest)))
     if args and args[0] == "--reload":
@@ -377,16 +444,17 @@ def _run(args):
     if not args and not sys.stdin.isatty():
         code = sys.stdin.read()
         if not code.strip():
-            sys.exit(USAGE)
+            sys.exit(_named(USAGE))
     else:
-        sys.exit(USAGE)
+        sys.exit(_named(USAGE))
     print_update_banner()
     # Auto-bootstrap a cloud browser is opt-in via BU_AUTOSPAWN — BROWSER_USE_API_KEY alone
     # is not enough, since the key is commonly set for unrelated reasons (profile sync,
     # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
     # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
     cloud_admin = code.lstrip().startswith(("start_remote_daemon(", "stop_remote_daemon("))
-    if not cloud_admin:
+    if not cloud_admin:  # a cloud start or stop uses no local Chrome: no owner notice either
+        _print_owner_alias()
         require_existing = os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
         try:
             if require_existing:
@@ -403,10 +471,15 @@ def _run(args):
                 ensure_daemon()
         except RuntimeError as e:
             # Setup/permission errors are instructions for calling agent
-            print(f"browser-harness: {e}", file=sys.stderr)
+            print(f"{_cli_name()}: {e}", file=sys.stderr)
             sys.exit(1)
+    _warn_shared_owner()
     _install_helper_trace()
-    exec(code, globals())
+    try:
+        exec(code, globals())
+    finally:
+        if not cloud_admin:
+            _print_captcha_note()
 
 
 if __name__ == "__main__":

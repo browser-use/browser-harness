@@ -3,9 +3,11 @@ import os
 import signal
 import time
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 
 from browser_harness import admin
 
@@ -163,6 +165,21 @@ def test_update_banner_remains_enabled_by_default(monkeypatch):
     assert called == [True]
 
 
+def test_health_probes_carry_the_callers_owner(monkeypatch):
+    """An ownerless probe landed on owner "default" and kept it active forever."""
+    seen = []
+    monkeypatch.setenv("BH_OWNER", "agent-7")
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name=None: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda _name, timeout: (FakeSocket(), None))
+    monkeypatch.setattr(admin.ipc, "request", lambda _s, _t, req: seen.append(req) or {"result": {}, "page": None})
+
+    admin.ensure_daemon(name="rig")
+    admin.require_existing_daemon("rig")
+    admin.daemon_browser_ready("rig")
+
+    assert seen and all(req["owner"] == "agent-7" for req in seen)
+
+
 def test_local_chrome_mode_is_false_when_env_provides_remote_cdp():
     assert not admin._is_local_chrome_mode({"BU_CDP_WS": "ws://example.test/devtools/browser/1"})
 
@@ -183,6 +200,119 @@ def test_require_existing_daemon_probes_cdp(monkeypatch):
 
     assert b'"method": "Target.getTargets"' in sock.sent
     assert sock.closed is True
+
+
+@pytest.mark.parametrize(("have", "mismatch"), [("127.0.0.1:9333", False), ("127.0.0.1:9222", True), ("local", True), (None, False)])
+def test_daemon_must_drive_the_browser_the_env_points_at(monkeypatch, have, mismatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9333")
+    monkeypatch.setattr(admin, "_ping", lambda _name=None: {"pong": True, **({"endpoint": have} if have else {})})
+
+    if mismatch:
+        with pytest.raises(RuntimeError, match=f"browser-mismatch: daemon 'rig' drives {have}, but .* points at 127.0.0.1:9333"):
+            admin._check_same_browser("rig")
+    else:
+        admin._check_same_browser("rig")
+
+
+@pytest.mark.parametrize(("ping", "outcome"), [
+    ({"pong": True, "protocol": admin.ipc.PROTOCOL, "active": 3}, "kept"),
+    ({}, "kept"),  # no answer is no reason to drop a healthy connection
+    ({"pong": True, "browser_kind": "local"}, "restarted"),  # protocol 1 local daemon, nobody else on it
+    ({"pong": True, "protocol": 1, "active": 2, "browser_kind": "local"}, "other agents are using it"),
+    ({"pong": True, "protocol": 1, "active": 0, "browser_kind": "cloud"}, "its Cloud browser would stop"),
+    # restarted from this shell, a CDP daemon would come back on the person's local Chrome
+    ({"pong": True, "protocol": 1, "active": 0, "browser_kind": "cdp"}, "only its starter knows which browser it drives"),
+    ({"pong": True, "protocol": 1, "active": 0}, "only its starter knows which browser it drives"),
+    # an older client never stops a newer daemon; two installs would flap it, one Allow each time
+    ({"pong": True, "protocol": admin.ipc.PROTOCOL + 1, "active": 0, "browser_kind": "local"}, "it is newer than this client"),
+])
+def test_only_an_idle_daemon_on_another_protocol_restarts(monkeypatch, ping, outcome):
+    restarted = []
+    monkeypatch.setattr(admin, "_ping", lambda _name=None: ping)
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None: restarted.append(name))
+
+    if outcome in ("kept", "restarted"):
+        assert admin._restart_if_outdated("rig") is (outcome == "restarted")
+        assert restarted == (["rig"] if outcome == "restarted" else [])
+    else:
+        with pytest.raises(RuntimeError, match=f"daemon-outdated: .*not restarted because {outcome}") as e:
+            admin._restart_if_outdated("rig")
+        assert restarted == []
+        assert ("Update browser-harness" in str(e.value)) is (outcome == "it is newer than this client")
+
+
+def test_a_required_daemon_on_another_protocol_is_never_restarted(monkeypatch):
+    monkeypatch.setattr(admin, "_ping", lambda _name=None: {"pong": True, "protocol": 1, "active": 0})
+    monkeypatch.setattr(admin, "restart_daemon", lambda *a: pytest.fail("restarted a provisioned daemon"))
+
+    with pytest.raises(RuntimeError, match="daemon-outdated: .*because it must stay as provisioned"):
+        admin._restart_if_outdated("rig", may_restart=False)
+
+
+def test_cdp_daemons_spawn_under_the_lock_and_join_a_starting_one(tmp_path, monkeypatch):
+    """Ten agents starting together on BU_CDP_URL share one daemon."""
+    monkeypatch.setenv("BU_CDP_URL", "http://127.0.0.1:9555")
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda _name: tmp_path / "bu-rig.pid")
+    monkeypatch.setattr(admin.ipc, "log_path", lambda _name: tmp_path / "bu-rig.log")
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name=None: 4321)
+    alive = iter([False, False, True])
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: next(alive))
+    monkeypatch.setattr(admin, "_pending_pid_record", lambda _path: 4321)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("spawned a second daemon"))
+
+    admin.ensure_daemon(name="rig")
+
+
+def test_browser_check_is_skipped_without_an_explicit_endpoint(monkeypatch):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setattr(admin, "_ping", lambda _name=None: pytest.fail("no ping needed"))
+
+    admin._check_same_browser("remote")
+
+
+def test_endpoint_label_never_carries_credentials_or_paths():
+    assert admin.ipc.endpoint_label({"BU_CDP_WS": "wss://user:secret@cloud.example:443/devtools/browser/x?token=t"}) == "cloud.example:443"
+    assert admin.ipc.endpoint_label({}) == "local"
+    assert admin.ipc.endpoint_label({"BU_CDP_URL": "http://localhost:9222"}) == admin.ipc.endpoint_label({"BU_CDP_WS": "ws://127.0.0.1:9222/devtools/browser/x"})
+
+
+@pytest.mark.parametrize("kind", ["cloud", None])
+@pytest.mark.parametrize("failure", ["timeout", "error"])
+def test_cloud_health_failure_preserves_browser_and_recovers_on_retry(monkeypatch, kind, failure):
+    sockets = []
+    healthy = False
+
+    def connect(_name, timeout):
+        sock = FakeSocket()
+        sockets.append(sock)
+        return sock, None
+
+    def request(_sock, _token, _request):
+        if healthy:
+            return {"result": {"targetInfos": []}}
+        if failure == "timeout":
+            raise TimeoutError("CDP temporarily stalled")
+        return {"error": "CDP temporarily stalled"}
+
+    monkeypatch.setattr(admin, "daemon_alive", lambda _name: True)
+    monkeypatch.setattr(admin, "daemon_browser_kind", lambda _name: kind)
+    monkeypatch.setattr(admin.ipc, "connect", connect)
+    monkeypatch.setattr(admin.ipc, "request", request)
+    monkeypatch.setattr(admin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(admin, "stop_remote_daemon", lambda *_args: pytest.fail("health check destroyed the browser"))
+    monkeypatch.setattr(admin, "restart_daemon", lambda *_args: pytest.fail("health check replaced the daemon"))
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("health check started a replacement"))
+
+    with pytest.raises(RuntimeError, match="unhealthy.*preserved"):
+        admin.ensure_daemon(name="scoped")
+    assert len(sockets) == 2
+    assert all(sock.closed for sock in sockets)
+    healthy = True
+    admin.ensure_daemon(name="scoped")
+    assert len(sockets) == 4  # health probe + protocol ping
+    assert all(sock.closed for sock in sockets)
 
 
 def test_strict_remote_stop_propagates_daemon_error(monkeypatch):
@@ -264,39 +394,144 @@ def test_daemon_endpoint_names_discovers_valid_socket_names(tmp_path, monkeypatc
     assert admin._daemon_endpoint_names() == ["default", "remote_1"]
 
 
-def test_daemon_endpoint_names_with_bh_runtime_dir_returns_local_name_when_sock_exists(tmp_path, monkeypatch):
+def test_daemon_endpoint_names_with_bh_runtime_dir_discovers_named_sockets(tmp_path, monkeypatch):
     monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
     monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
-    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
-    monkeypatch.setattr(admin, "NAME", "session-xyz")
-    (tmp_path / "bu.sock").touch()
-
-    assert admin._daemon_endpoint_names() == ["session-xyz"]
-
-
-def test_daemon_endpoint_names_with_bh_runtime_dir_returns_empty_when_sock_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", False)
-    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
-    monkeypatch.setattr(admin, "NAME", "session-xyz")
-
-    assert admin._daemon_endpoint_names() == []
-
-
-def test_daemon_endpoint_names_with_shared_bh_runtime_dir_discovers_named_sockets(tmp_path, monkeypatch):
-    monkeypatch.setattr(admin.ipc, "IS_WINDOWS", False)
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(admin.ipc, "BH_RUNTIME_DIR_SHARED", True)
     monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
     (tmp_path / "bu-default.sock").touch()
     (tmp_path / "bu-work.sock").touch()
-    (tmp_path / "bu-invalid.name.sock").touch()
-    (tmp_path / "bu.sock").touch()  # stale isolated-runtime endpoint
+    (tmp_path / "bu.sock").touch()  # pre-0.1.14 isolated-runtime endpoint
 
     assert admin._daemon_endpoint_names() == ["default", "work"]
 
+
+# --- a name bound to a remote browser never falls back to local Chrome ------
+
+
+def _remote_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env=None: not (env or {}).get("BU_CDP_WS"))
+    spawned = []
+
+    def spawn(*args, **kwargs):
+        spawned.append(kwargs.get("env", {}).get("BU_CDP_WS"))
+        raise RuntimeError("spawn stub")
+
+    monkeypatch.setattr(admin.subprocess, "Popen", spawn)
+    return spawned
+
+
+def test_stale_cloud_daemon_fails_closed_instead_of_spawning_local_chrome(tmp_path, monkeypatch):
+    """A cloud timeout left the daemon alive but stale. ensure_daemon used to stop it
+    and then start a local-Chrome daemon under the same name. Now the browser is
+    preserved while the daemon lives, and the name stays bound once it is gone."""
+    spawned = _remote_name(tmp_path, monkeypatch)
+    admin.ipc.write_remote_marker("work", "cloud", "b-1")
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda *a, **k: (_ for _ in ()).throw(OSError("stale")))
+    monkeypatch.setattr(admin.time, "sleep", lambda s: None)
+    monkeypatch.setattr(admin, "daemon_browser_kind", lambda name=None: "cloud")
+    monkeypatch.setattr(admin, "stop_remote_daemon", lambda name: pytest.fail("health check destroyed the browser"))
+
+    with pytest.raises(RuntimeError, match="unhealthy.*preserved"):
+        admin.ensure_daemon(name="work")
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    for _ in range(2):  # the retry must fail closed too
+        with pytest.raises(RuntimeError, match=r"remote-browser-ended.*cloud b-1.*start_remote_daemon\('work'\)"):
+            admin.ensure_daemon(name="work")
+
+    assert spawned == []
+
+
+def test_stale_cdp_daemon_fails_closed_in_local_mode(tmp_path, monkeypatch):
+    spawned = _remote_name(tmp_path, monkeypatch)
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: True)
+    monkeypatch.setattr(admin.ipc, "connect", lambda *a, **k: (_ for _ in ()).throw(OSError("stale")))
+    monkeypatch.setattr(admin.time, "sleep", lambda s: None)
+    monkeypatch.setattr(admin, "daemon_browser_kind", lambda name=None: "cdp")
+    monkeypatch.setattr(admin, "restart_daemon", lambda name=None, **k: admin.ipc.clear_remote_marker(name))
+
+    with pytest.raises(RuntimeError, match="remote-browser-ended"):
+        admin.ensure_daemon(name="work")
+    assert spawned == []
+
+
+def test_exited_remote_daemon_fails_closed_in_local_mode(tmp_path, monkeypatch):
+    spawned = _remote_name(tmp_path, monkeypatch)
+    admin.ipc.write_remote_marker("work", "cloud", "b-1")
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+
+    with pytest.raises(RuntimeError, match="BU_NAME=work browser-harness --reload"):
+        admin.ensure_daemon(name="work")
+    assert spawned == []
+
+
+def test_remote_marker_does_not_block_an_explicit_remote_spawn(tmp_path, monkeypatch):
+    spawned = _remote_name(tmp_path, monkeypatch)
+    admin.ipc.write_remote_marker("work", "cdp")
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+
+    with pytest.raises(RuntimeError, match="spawn stub"):
+        admin.ensure_daemon(name="work", env={"BU_CDP_WS": "ws://127.0.0.1:1/x"})
+    assert spawned == ["ws://127.0.0.1:1/x"]
+
+
+def test_restart_daemon_frees_a_remote_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=1.0: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
+    admin.ipc.write_remote_marker("work", "cloud", "b-1")
+
+    admin.restart_daemon("work")
+
+    assert admin.ipc.read_remote_marker("work") is None
+
+
+def test_stop_remote_daemon_stops_the_browser_of_a_killed_daemon(tmp_path, monkeypatch):
+    """A SIGKILLed daemon left its cloud browser billing; its id was only in the log."""
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin.ipc, "identify", lambda name, timeout=1.0: None)
+    monkeypatch.setattr(admin.ipc, "ping", lambda name, timeout=1.0: False)
+    admin.ipc.write_remote_marker("work", "cloud", "b-1")
+    stopped = []
+    monkeypatch.setattr(admin, "_stop_cloud_browser", lambda browser_id, strict=False: stopped.append((browser_id, strict)))
+
+    admin.stop_remote_daemon("work")
+
+    assert stopped == [("b-1", True)]
+    assert admin.ipc.read_remote_marker("work") is None
+
+
+def test_start_remote_daemon_stops_the_browser_a_killed_daemon_left_under_that_name(tmp_path, monkeypatch):
+    """The new browser's marker overwrote the killed daemon's one; its browser billed until the cloud timeout."""
+    monkeypatch.setattr(admin.ipc, "_RUNTIME", tmp_path)
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    admin.ipc.write_remote_marker("work", "cloud", "b-old")
+    calls = []
+
+    def stop(browser_id, strict=False):
+        calls.append(("stop", browser_id, strict))
+        if len(calls) == 1:
+            raise RuntimeError("cloud API down")
+
+    def fake_browser_use(path, method, body=None):
+        calls.append((path, method))
+        return {"id": "b-new", "cdpUrl": "http://127.0.0.1:9333"}
+
+    monkeypatch.setattr(admin, "_stop_cloud_browser", stop)
+    monkeypatch.setattr(admin, "_browser_use", fake_browser_use)
+    monkeypatch.setattr(admin, "_cdp_ws_from_url", lambda url: "ws://example.test/devtools/browser/1")
+    monkeypatch.setattr(admin, "ensure_daemon", lambda **kwargs: None)
+    monkeypatch.setattr(admin, "_show_live_url", lambda url: None)
+
+    with pytest.raises(RuntimeError, match="cloud API down"):
+        admin.start_remote_daemon("work")
+    assert calls == [("stop", "b-old", True)]
+    assert admin.ipc.read_remote_marker("work") == {"kind": "cloud", "browser_id": "b-old"}
+
+    admin.start_remote_daemon("work")
+    assert calls[1:] == [("stop", "b-old", True), ("/browsers", "POST")]
+    assert admin.ipc.read_remote_marker("work") is None
 
 def test_active_browser_connections_counts_only_healthy_daemons(monkeypatch):
     monkeypatch.setattr(admin, "_daemon_endpoint_names", lambda: ["default", "stale", "remote"])
@@ -945,6 +1180,20 @@ def test_repo_dir_ignores_dotfiles_repo_above_a_tool_install(tmp_path, monkeypat
     assert admin._repo_dir() is None
 
 
+def test_run_update_leaves_the_running_daemon_alone(tmp_path, monkeypatch):
+    """Restarting the daemon would make Chrome ask to Allow again."""
+    _fake_install(monkeypatch, tmp_path / "site-packages" / "browser_harness")
+    monkeypatch.setattr(admin, "_version", lambda: "0.1.0")
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda *a, **k: "0.2.0")
+    monkeypatch.setattr(admin, "_cache_read", lambda: {})
+    monkeypatch.setattr(admin, "_cache_write", lambda data: None)
+    monkeypatch.setattr(admin, "daemon_alive", lambda *a, **k: True)
+    monkeypatch.setattr(admin, "restart_daemon", lambda *a, **k: pytest.fail("update restarted the daemon"))
+    monkeypatch.setattr(subprocess, "run", lambda command, *a, **k: subprocess.CompletedProcess(command, 0, "", ""))
+
+    assert admin.run_update(yes=True) == 0
+
+
 def test_run_update_of_installed_wheel_never_pulls_an_enclosing_repo(tmp_path, monkeypatch):
     """End-to-end symptom: `browser-harness --update -y` must upgrade the
     package, not run git against the repository that happens to contain it."""
@@ -1448,3 +1697,176 @@ def test_restart_daemon_does_not_cancel_successor_generation(tmp_path, monkeypat
         admin_mod.restart_daemon("pending")
 
     assert pid_file.exists()
+
+
+def test_launch_browser_opens_chrome_in_the_background_on_macos(monkeypatch, tmp_path):
+    profile = tmp_path / "Google" / "Chrome"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Local State").write_text('{"devtools": {"remote_debugging": {"user-enabled": true}}}')
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [profile])
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    calls = []
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0))
+
+    assert admin._launch_browser() == (None, profile)
+    assert calls[0][:3] == ["open", "-g", "-a"]
+
+
+def test_launch_browser_preenables_the_inspect_toggle_for_a_closed_browser(monkeypatch, tmp_path):
+    profile = tmp_path / "Google" / "Chrome"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Local State").write_text('{"profile": {"last_used": "Default"}}')
+    monkeypatch.delenv("BH_CHROME_PATH", raising=False)
+    monkeypatch.delenv("CHROME_PATH", raising=False)
+    monkeypatch.delenv("BH_PRESET_INSPECT_TOGGLE", raising=False)
+    monkeypatch.setattr("browser_harness.daemon.PROFILES", [profile])
+    monkeypatch.setattr("browser_harness.daemon.remote_debugging_toggle_profiles", lambda: [])
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: SimpleNamespace(returncode=0))
+
+    assert admin._launch_browser() == (None, profile)
+    state = json.loads((profile / "Local State").read_text())
+    assert state["devtools"]["remote_debugging"]["user-enabled"] is True
+    assert state["profile"]["last_used"] == "Default"
+
+
+def test_preenable_respects_opt_out_and_existing_toggle(monkeypatch, tmp_path):
+    profile = tmp_path / "Chrome"
+    profile.mkdir()
+    (profile / "Local State").write_text('{}')
+    monkeypatch.setenv("BH_PRESET_INSPECT_TOGGLE", "0")
+    assert admin._preenable_remote_debugging(profile) is False
+    assert json.loads((profile / "Local State").read_text()) == {}
+    monkeypatch.delenv("BH_PRESET_INSPECT_TOGGLE")
+    (profile / "Local State").chmod(0o600)
+    assert admin._preenable_remote_debugging(profile) is True
+    assert (profile / "Local State").stat().st_mode & 0o777 == 0o600
+    assert admin._preenable_remote_debugging(profile) is False
+    # an explicit false is the person's choice: left alone
+    (profile / "Local State").write_text('{"devtools": {"remote_debugging": {"user-enabled": false}}}')
+    assert admin._preenable_remote_debugging(profile) is False
+    assert json.loads((profile / "Local State").read_text())["devtools"]["remote_debugging"]["user-enabled"] is False
+
+
+def test_cold_start_launches_browser_when_the_daemon_exits_before_connecting(monkeypatch, tmp_path):
+    """#786: no browser running -> daemon dies at once -> ensure_daemon must launch one and retry."""
+    monkeypatch.setattr(admin, "daemon_alive", lambda name=None: False)
+    monkeypatch.setattr(admin, "_is_local_chrome_mode", lambda env: True)
+    monkeypatch.setattr(admin, "_daemon_wait_windows", lambda wait, local: (2.0, None))
+    monkeypatch.setattr(admin, "_parked_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_starting_daemon_pid", lambda name: None)
+    monkeypatch.setattr(admin, "_publish_pid", lambda path, pid: None)
+    monkeypatch.setattr(admin, "_pid_number", lambda path: None)
+    monkeypatch.setattr(admin, "_pending_pid_record", lambda path: None)
+    monkeypatch.setattr(admin, "_log_tail", lambda name: "fatal: chrome-not-running: no supported Chromium-family browser is running")
+    monkeypatch.setattr(admin.ipc, "log_path", lambda name: tmp_path / "log")
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: tmp_path / "pid")
+    monkeypatch.setattr(admin.ipc, "spawn_kwargs", lambda: {})
+    monkeypatch.setattr("browser_harness.daemon.supported_browser_running", lambda: True)
+
+    class Lock:
+        fd = 1
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(admin, "_spawn_lock", lambda name, timeout: Lock())
+
+    launches = []
+    monkeypatch.setattr(admin, "_launch_browser", lambda: launches.append(1) or (None, tmp_path))
+    dead = FakeProcess(pid=4242, returncode=1)
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: dead)
+
+    with pytest.raises(RuntimeError):
+        admin.ensure_daemon(name="default")
+    assert launches == [1], "the browser must be launched exactly once after the daemon dies on a cold start"
+
+
+# --- a dead daemon that is still a zombie (browser-use's reattach) ---
+
+def _dead_child_record(tmp_path):
+    """A daemon this process spawned that then died: a zombie until this process reaps it.
+    Its pid record is the one ensure_daemon() published for it."""
+    child = subprocess.Popen(["sleep", "30"])
+    pid_file = tmp_path / "daemon.pid"
+    admin._publish_pid(pid_file, child.pid)
+    os.kill(child.pid, signal.SIGKILL)
+    deadline = time.time() + 5
+    while time.time() < deadline and not Path(f"/proc/{child.pid}/stat").read_text().split(")")[1].split()[0] == "Z":
+        time.sleep(0.02)
+    return child, pid_file
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="reads /proc to confirm the zombie")
+def test_a_killed_daemon_child_is_dead_not_still_starting(tmp_path, monkeypatch):
+    """browser-use's reattach waited 60 s and then failed: the daemon it had spawned was SIGKILLed, stayed a zombie
+    of browser-use with the same pid and start time, and ensure_daemon() took it for a daemon still starting."""
+    child, pid_file = _dead_child_record(tmp_path)
+    monkeypatch.setattr(admin.ipc, "pid_path", lambda name: pid_file)
+
+    assert admin._pending_pid_record(pid_file) is None
+    assert admin._starting_daemon_pid("zombie") is None
+    assert not Path(f"/proc/{child.pid}").exists()  # reaped, so it is gone for every other caller too
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="builds a zombie whose parent is another process")
+def test_another_processs_zombie_daemon_is_dead_not_still_starting(tmp_path):
+    """The zombie of a daemon another process spawned (and has not reaped yet) cannot be reaped from here."""
+    parent = subprocess.Popen(
+        [sys.executable, "-c", "import subprocess, sys, time; c = subprocess.Popen(['true']); print(c.pid, flush=True); time.sleep(30)"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        pid = int(parent.stdout.readline())
+        deadline = time.time() + 5
+        while time.time() < deadline and Path(f"/proc/{pid}/stat").read_text().split(")")[1].split()[0] != "Z":
+            time.sleep(0.02)
+        assert Path(f"/proc/{pid}/stat").read_text().split(")")[1].split()[0] == "Z"
+
+        assert admin._process_start_time(pid) is None
+    finally:
+        parent.kill()
+        parent.wait()
+
+
+def test_reap_leaves_a_live_child_and_a_foreign_pid_alone():
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        admin._reap(child.pid)
+        admin._reap(1)  # not our child: ChildProcessError, ignored
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_a_remote_daemon_that_was_still_exiting_is_replaced_not_reported(tmp_path, monkeypatch):
+    """browser-use kills a stuck cloud/CDP daemon, then calls ensure_daemon(). Caught between its socket closing and
+    becoming a zombie, the dying daemon looked like one still starting; when it was gone a moment later,
+    ensure_daemon() raised its last log line ('listening on ...') instead of starting a new daemon."""
+    from browser_harness import admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.ipc, "pid_path", lambda name: tmp_path / "daemon.pid")
+    monkeypatch.setattr(admin_mod.ipc, "log_path", lambda name: tmp_path / "daemon.log")
+    monkeypatch.setattr(admin_mod.ipc, "spawn_kwargs", lambda: {})
+    (tmp_path / "daemon.log").write_text("listening on /tmp/bu-x.sock (name=x, remote=local, owner=none)")
+    monkeypatch.setattr(admin_mod, "_is_local_chrome_mode", lambda env: False)
+    monkeypatch.setattr(admin_mod, "_check_cdp_endpoint", lambda name, env: None)
+    monkeypatch.setattr(admin_mod, "_parked_daemon_pid", lambda name=None: None)
+    exiting = iter([4321])
+    monkeypatch.setattr(admin_mod, "_starting_daemon_pid", lambda name=None: next(exiting, None))
+    monkeypatch.setattr(admin_mod, "_pending_pid_record", lambda path: None)  # gone on the first look
+    monkeypatch.setattr(admin_mod, "_process_start_time", lambda pid: "start")
+    spawned = []
+
+    class Live:
+        pid = 5678
+        def poll(self): return None
+
+    monkeypatch.setattr(admin_mod.subprocess, "Popen", lambda *a, **k: spawned.append(a) or Live())
+    monkeypatch.setattr(admin_mod, "daemon_alive", lambda name=None: bool(spawned))
+
+    admin_mod.ensure_daemon(name="x", env={"BU_CDP_WS": "ws://127.0.0.1:1/devtools/browser/x"})
+
+    assert len(spawned) == 1
