@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.15
+
+### Saved scripts
+- New: `browser-harness scripts save <name> --from-last|--file PATH [--host H] [--param k=v]` saves a working script for a site as `<agent-workspace>/scripts/<host>/<name>.py`, with a header (host, url, params, last verified time). String literals equal to a `--param` value become `PARAMS["k"]`. Text typed by `type_text`/`fill_input` on a line that mentions a password, secret, token, OTP or API key becomes a required param, credential query params in URLs are redacted, and secret-looking `--param` values are not written to the file.
+- New: `browser-harness scripts run <name|host/name> [--param k=v] [--accept]` replays a saved script with no LLM. Exit 0 stamps `verified_at`. A failure prints `drifted: <error>` and the file to fix, and exits 1. Replays wait up to 30 s per browser call instead of 5 s.
+- Output check: the first verified replay that prints JSON records its shape in an `# expect:` header line. A later replay is `drifted` when it prints no JSON, a key goes missing, a type changes, or a value that had data comes back null or empty. `--accept` keeps a correct but different output and relaxes only the fields that changed.
+- New: `browser-harness scripts list [--host H]`.
+- Scripts read their params as `PARAMS` (from `--param`, or from `BH_PARAMS` as a JSON object on a plain stdin run). `PARAMS` is `{}` when none are given.
+- `goto_url(url)` adds `saved_scripts` to its result and prints one `saved scripts for <host>: ...` line on stderr per host, but only when that host has saved scripts.
+- SKILL.md: a short "Saved Scripts" section tells agents to reuse a site's saved script and to save one after a repeatable task works.
+
+### Cloud browsers
+- On a Browser Use Cloud browser, each tab the daemon opens for an agent gets its own window. A screenshot of a background tab in a shared window there timed out after 60 s; now it returns at once. Local Chrome and `BU_CDP_URL` / `BU_CDP_WS` browsers keep one window (they screenshot background tabs fine).
+
+### Update banner
+- The daily "new version available" banner shows only when someone runs the `browser-harness` command itself. It stays silent inside a host that pins browser-harness as a dependency: when `BH_CLIENT` is set (browser-use's CLI and MCP set it) or the process is not the `browser-harness` command (for example `python -m browser_harness.run`, or the `./browser-harness` launcher in a git checkout). `BH_UPDATE_CHECK=0` still turns it off everywhere.
+
+### Behavior changes to know
+- Every successful stdin script is kept as one local file per `BU_NAME` and working folder in the private runtime folder (`last-script-<name>-<hash>.py`, overwritten by the next success), so `scripts save --from-last` can read it. It never leaves the machine. It holds the script as written, including any typed secret; `scripts save` redacts those, the kept copy does not.
+- A stdin run with `BH_PARAMS` set to anything but a JSON object now exits with an error.
+- `goto_url()` returns one more key (`saved_scripts`) on hosts with saved scripts.
+- Cloud browsers: one window per agent tab instead of tabs in one window.
+
 ## 0.1.14
 
 ### Captchas
