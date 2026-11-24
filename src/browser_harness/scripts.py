@@ -67,7 +67,13 @@ def journal_path():
 
 
 def journal(code):
-    """Keep the script for `scripts save --from-last`. Owner-only: it can hold a typed password."""
+    """Keep the script for `scripts save --from-last`. Owner-only: it can hold a typed password.
+
+    Not under an embedding CLI (BH_CLIENT set, e.g. browser-use): its users never run `scripts save`, so the file
+    would only keep their code and typed text on disk for nothing.
+    """
+    if os.environ.get("BH_CLIENT"):
+        return
     try:
         path = journal_path()
         with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:

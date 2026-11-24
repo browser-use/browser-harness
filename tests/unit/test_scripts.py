@@ -340,3 +340,12 @@ def test_journal_is_owner_only(ws):
 
     assert cli(stdin=SCRIPT)[0] == 0
     assert scripts.journal_path().stat().st_mode & 0o777 == 0o600
+
+
+def test_no_journal_under_an_embedding_cli(ws, monkeypatch):
+    """browser-use's users never run `scripts save`; their piped code and typed text must not stay on disk."""
+    from browser_harness import scripts
+
+    monkeypatch.setenv("BH_CLIENT", "browser-use-cli")
+    scripts.journal('type_text("hunter2")\n')
+    assert not scripts.journal_path().exists()

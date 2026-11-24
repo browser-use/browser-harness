@@ -24,6 +24,7 @@
 - A stdin run with `BH_PARAMS` set to anything but a JSON object now exits with an error.
 - `goto_url()` returns one more key (`saved_scripts`) on hosts with saved scripts.
 - Cloud browsers: one window per agent tab instead of tabs in one window.
+- The last successful script is not kept on disk when an embedding CLI runs the harness (BH_CLIENT set, for example browser-use), since `scripts save` is never used there.
 
 ## 0.1.14
 
