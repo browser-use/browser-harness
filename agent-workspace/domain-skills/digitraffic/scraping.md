@@ -1,6 +1,6 @@
 # Digitraffic (Fintraffic) via rata.digitraffic.fi - List the Next Trains Departing Helsinki Central (HKI) or Any Finnish Station, With Scheduled vs Live Estimated Time, Track, Destination and Cancellations (REST JSON, no key, gzip required)
 
-Field-tested against rata.digitraffic.fi and www.digitraffic.fi on 2026-11-23 (US Pacific afternoon; 23:55 UTC on 23 November to 00:02 UTC on 24 November, which was 01:55-02:02 on Tuesday 24 November in Helsinki) using a fresh Browser Use cloud browser (logged out; one session, 23:57-00:01 UTC) plus Python `urllib` and `curl` from a Linux machine. 12 browser page loads (1 smoke test, 1 in block 1's first run, 5 in each of block 2's two runs) and 16 in-page `fetch()` calls (3 in each run of block 1, 5 in each run of block 2), 19 urllib calls (block 3: 3 commands in its first run, 5 in its second, one of them refused before any call) and 36 curl calls (22 while exploring the API, the OpenAPI document and a full day of trains, 7 in each of block 4's two runs), all serial and at least 1 s apart. Every API call sent `Digitraffic-User: BrowserUse/domain-skills` except the deliberate anonymous ones (one curl call while exploring, the 3 calls of block 3's `Pasila` run, and the no-gzip call in each run of block 4), which answered the same way. Every call was HTTP 200 except the deliberate probes: HTTP 406 without `Accept-Encoding: gzip`, HTTP 400 for `departing_trains=abc` and `train_categories=Night`, HTTP 404 for www.digitraffic.fi/robots.txt and `/api/v1/swagger.json`, HTTP 403 for `/swagger/rata-api.json` and a 302 from `/api-docs/rata-api.json` to the Finnish docs page. curl timed live-train answers at 0.50-0.85 s and the station list at 0.51 s; one whole day of trains (`/api/v1/trains/2026-11-23`, 1,792 trains) took 4.20 s for 918 KB of gzip (21 MB of JSON). No 429, no challenge, no key, no login, no cookie. The outputs below are the second runs of blocks 1 to 4 (00:00-00:01 UTC on 24 November); the first runs (23:57-00:00 UTC) gave the same departures and the same block 2 output. It was 02:00 at night in Finland, so the Helsinki board shows the first morning trains with timetable times only; live estimates appear on trains already running (the Tampere board). An independent verifier re-ran all four blocks verbatim on 2026-11-24 00:03-00:04 UTC (a second fresh cloud browser, urllib, curl): every block ran, and the departures, tracks, estimates and block 2 lines were identical; only call timings and block 4's access time changed. After a code review, blocks 2, 3 and 4 changed and re-ran on 2026-11-24 between 00:28 and 00:36 UTC (browser blocks in a new cloud browser); the outputs shown for them come from those runs. A second review round changed block 3 again; its re-run at 00:44 UTC printed the same apart from times.
+Field-tested against rata.digitraffic.fi and www.digitraffic.fi on 2026-11-23 (US Pacific afternoon; 23:55 UTC on 23 November to 00:02 UTC on 24 November, which was 01:55-02:02 on Tuesday 24 November in Helsinki) using a fresh Browser Use cloud browser (logged out; one session, 23:57-00:01 UTC) plus Python `urllib` and `curl` from a Linux machine. 12 browser page loads (1 smoke test, 1 in block 1's first run, 5 in each of block 2's two runs) and 16 in-page `fetch()` calls (3 in each run of block 1, 5 in each run of block 2), 19 urllib calls (block 3: 3 commands in its first run, 5 in its second, one of them refused before any call) and 36 curl calls (22 while exploring the API, the OpenAPI document and a full day of trains, 7 in each of block 4's two runs), all serial and at least 1 s apart. Every API call sent `Digitraffic-User: BrowserUse/domain-skills` except the deliberate anonymous ones (one curl call while exploring, the 3 calls of block 3's `Pasila` run, and the no-gzip call in each run of block 4), which answered the same way. Every call was HTTP 200 except the deliberate probes: HTTP 406 without `Accept-Encoding: gzip`, HTTP 400 for `departing_trains=abc` and `train_categories=Night`, HTTP 404 for www.digitraffic.fi/robots.txt and `/api/v1/swagger.json`, HTTP 403 for `/swagger/rata-api.json` and a 302 from `/api-docs/rata-api.json` to the Finnish docs page. curl timed live-train answers at 0.50-0.85 s and the station list at 0.51 s; one whole day of trains (`/api/v1/trains/2026-11-23`, 1,792 trains) took 4.20 s for 918 KB of gzip (21 MB of JSON). No 429, no challenge, no key, no login, no cookie. The outputs below are the second runs of blocks 1 to 4 (00:00-00:01 UTC on 24 November); the first runs (23:57-00:00 UTC) gave the same departures and the same block 2 output. It was 02:00 at night in Finland, so the Helsinki board shows the first morning trains with timetable times only; live estimates appear on trains already running (the Tampere board). An independent verifier re-ran all four blocks verbatim on 2026-11-24 00:03-00:04 UTC (a second fresh cloud browser, urllib, curl): every block ran, and the departures, tracks, estimates and block 2 lines were identical; only call timings and block 4's access time changed. After a code review, blocks 2, 3 and 4 changed and re-ran on 2026-11-24 between 00:28 and 00:36 UTC (browser blocks in a new cloud browser); the outputs shown for them come from those runs. A second review round changed block 3 again; its re-run at 00:44 UTC printed the same apart from times. A website review changed block 3's `--to` path (it asks again with a larger limit when the category filter leaves fewer than `-n`); its re-run of the five commands shown, at 01:45 UTC, printed the same apart from times and one HKI train that had left by then.
 
 robots.txt (checked 2026-11-23/24 UTC, curl, the cloud browser and block 3): https://rata.digitraffic.fi/robots.txt is `User-agent: *` / `Allow: /` with no named agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider may fetch every API path this skill uses (block 2 checks these 11 agents with Python's `urllib.robotparser`; block 3 checks the same 11 plus its own User-Agent before every API call and stops if the file ever disallows one; block 4 reads it before any API call). https://www.digitraffic.fi/robots.txt answers HTTP 404 with the site's "404 - Page not found." page, so the docs host has no rules; RFC 9309 (section 2.3.1.3) says a 4xx robots.txt means "the crawler MAY access any resources on the server". Terms: https://www.digitraffic.fi/en/terms-of-service/ (0 changed lines against the copy read on 2026-11-21): "Fintraffic’s open data is licensed under the Creative Commons 4.0 By license. It gives the right to distribute, remix, tweak, and build upon our data, even commercially, as long as you credit the source for the original creation." Attribution: "you must give appropriate credit, provide a link to the license, and indicate if changes were made"; "If the material has beem modified, it must be accompanied with a notice describing the modification and a hyperlink to the website of the original material" (spelling as on the page); the example credit line is "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY". The railway page https://www.digitraffic.fi/en/railway-traffic/ says (under its GTFS and NeTEx feed sections) "Data is licensed under Creative Commons Attribution 4.0 International", and the API's own OpenAPI document (https://rata.digitraffic.fi/swagger/openapi.json) names the licence "Creative Commons 4.0 BY" and links the terms. The instructions page https://www.digitraffic.fi/en/support/instructions/: "The Digitraffic-User header should include an identifiable user party and/or application. Using the header increases the amount of requests you can make.", "Don’t send any PII (personally identifiable information) via the headers!" and "The use of compression is mandatory on all interfaces except for weather camera images." No AI/ML, scraping, crawling, robot or non-commercial wording on the terms, instructions or railway pages (block 2 checks the quotes and scans for the words). Naming: this skill writes "Digitraffic (Fintraffic)" in plain text, shows no Fintraffic logo, is not affiliated with or endorsed by Fintraffic, and blocks 1, 3 and 4 (the ones that show train data) print the CC BY 4.0 credit line with a link to the licence and what it changed.
 
@@ -354,7 +354,7 @@ headers visible to fetch(): ['cache-control', 'content-type']
 
 ### 3. The same with Python urllib, as a command-line tool: robots check for every agent, departures, trains to a second station (no browser)
 
-Standard library only. It runs with `python3 -I`. Save it as `digitraffic.py`. Each run makes 3 calls: robots.txt, the station list and the departures. `urllib` does not decompress, so `http()` sends `Accept-Encoding: gzip` and gunzips the body itself. `--to` uses the station-to-station endpoint and adds the arrival time there. On a 429 it waits 60 s once (the limits are per minute) and then stops; on 5xx it retries once after 10 s.
+Standard library only. It runs with `python3 -I`. Save it as `digitraffic.py`. Each run makes 3 calls: robots.txt, the station list and the departures; with `--to`, up to 2 more when the category filter leaves fewer than `-n` trains (the limit grows 4x each time). `urllib` does not decompress, so `http()` sends `Accept-Encoding: gzip` and gunzips the body itself. `--to` uses the station-to-station endpoint and adds the arrival time there. On a 429 it waits 60 s once (the limits are per minute) and then stops; on 5xx it retries once after 10 s.
 
 ```python
 """Next train departures from a Finnish station, with live estimates, track and cancellations
@@ -471,27 +471,24 @@ def station(q):
 frm = station(args.station)
 code = frm["stationShortCode"]
 cats = "Commuter" if args.commuter else "Long-distance" if args.long_distance else "Long-distance,Commuter"
-if args.to:
-    to = station(args.to)
-    # limit counts every train, work trains too, so ask for spares and cut to -n after the category filter
-    trains = call(f"/live-trains/station/{quote(code)}/{quote(to['stationShortCode'])}", {"limit": args.n + 20})
-    title = f"{code} {frm['stationName']} -> {to['stationShortCode']} {to['stationName']}"
-else:
-    to = None
-    trains = call(f"/live-trains/station/{quote(code)}", {
-        "departing_trains": args.n, "arrived_trains": 0, "arriving_trains": 0, "departed_trains": 0,
-        "include_nonstopping": "false", "train_categories": cats})
-    title = f"{code} {frm['stationName']} ({cats})"
 
-rows = []
-for t in trains:
+def pick(trains):
+    """-> one row per train in the chosen categories that stops to depart at `code`."""
+    rows = []
+    for t in trains:
+        row = departure(t)
+        if row:
+            rows.append(row)
+    return rows
+
+def departure(t):
     tt = t["timeTableRows"]
-    if args.to and t["trainCategory"] not in cats.split(","):
-        continue
+    if t["trainCategory"] not in cats.split(","):
+        return None
     i = next((k for k, r in enumerate(tt) if r["stationShortCode"] == code and r["type"] == "DEPARTURE"
               and r["trainStopping"]), None)
     if i is None:
-        continue
+        return None
     r = tt[i]
     last = tt[-1]["stationShortCode"]
     dest = by_code.get(last, {}).get("stationName", last)
@@ -511,12 +508,38 @@ for t in trains:
     else:
         status = "timetable"
     train = f"{t['trainType']} {t['trainNumber']}" + (f" {t['commuterLineID']}" if t["commuterLineID"] else "")
-    rows.append((local(live or r["scheduledTime"]), local(r["scheduledTime"]), live and local(live),
-                 r["commercialTrack"] or "-", train, dest, arr, status, t["operatorShortCode"]))
+    return (local(live or r["scheduledTime"]), local(r["scheduledTime"]), live and local(live),
+            r["commercialTrack"] or "-", train, dest, arr, status, t["operatorShortCode"])
+
+note = ""
+if args.to:
+    to = station(args.to)
+    # limit counts every train, other categories too. Ask for 20 spares; if the category filter leaves fewer
+    # than -n and the API filled the whole limit, ask again with 4x the limit (at most 3 calls in all)
+    path, limit = f"/live-trains/station/{quote(code)}/{quote(to['stationShortCode'])}", args.n + 20
+    for ask in range(3):
+        trains = call(path, {"limit": limit})
+        rows = pick(trains)
+        if len(rows) >= args.n or len(trains) < limit:
+            break
+        if ask < 2:
+            limit *= 4
+    if len(rows) < args.n:
+        note = (f" (only {len(rows)} {cats} trains among the {len(trains)} the API returned"
+                + (")" if len(trains) < limit else f"; stopped after 3 calls at limit={limit})"))
+    title = f"{code} {frm['stationName']} -> {to['stationShortCode']} {to['stationName']}"
+else:
+    to = None
+    trains = call(f"/live-trains/station/{quote(code)}", {
+        "departing_trains": args.n, "arrived_trains": 0, "arriving_trains": 0, "departed_trains": 0,
+        "include_nonstopping": "false", "train_categories": cats})
+    rows = pick(trains)
+    title = f"{code} {frm['stationName']} ({cats})"
+
 rows.sort(key=lambda x: x[0])
 rows = rows[:args.n]
 
-print(f"{title}: next {len(rows)} departures, Helsinki time")
+print(f"{title}: next {len(rows)} departures, Helsinki time{note}")
 print(f"  {'day':<4}{'sched':<6} {'est':<6} {'track':<6}{'train':<14}{'destination':<38}" + ("arr   " if to else "") + "status")
 for _, s, e, track, train, dest, arr, status, op in rows:
     print(f"  {s:%a} {s:%H:%M}  {(f'{e:%H:%M}' if e else '-'):<6} {track:<6}{train:<14}{dest:<38}"
@@ -525,7 +548,7 @@ print(f"{len(calls)} calls: " + ", ".join(f"{p} {s} {t}s {z / 1024:.1f} KB" for 
 print(CREDIT + "; departures picked, sorted and converted to Helsinki time by this script.")
 ```
 
-Output (five commands, re-run on 2026-11-24 after the code-review fixes, 00:30 UTC; the `Pasila` run had `DIGITRAFFIC_USER` empty, so it was anonymous, and the last one was refused before any call; the 00:00 UTC runs listed the same trains). With `--to` the block asks for 20 spare trains, filters categories, then keeps `-n`: `Helsinki --to Tampere --commuter -n 3` gave HL 9621, HL 9635 and HL 9649, where `limit=3` (checked at 00:36 UTC) returns IC 35, HL 9621 and IC 21, only one of them a commuter train:
+Output (five commands, re-run on 2026-11-24 after the code-review fixes, 00:30 UTC; the `Pasila` run had `DIGITRAFFIC_USER` empty, so it was anonymous, and the last one was refused before any call; the 00:00 UTC runs listed the same trains). With `--to` the block asks for 20 spare trains, filters categories, then keeps `-n`: `Helsinki --to Tampere --commuter -n 3` gave HL 9621, HL 9635 and HL 9649, where `limit=3` (checked at 00:36 UTC) returns IC 35, HL 9621 and IC 21, only one of them a commuter train. If the filter still leaves fewer than `-n` and the API filled the limit, it asks again with 4x the limit: at 01:44 UTC `Helsinki --to Tampere --commuter -n 8` got 6 of 8 from `limit=28`, then all 8 from `limit=112` (4 calls; the version before this change printed 6). When the API runs out first, the header says so, e.g. `(only 10 Commuter trains among the 42 the API returned)` for `-n 25`:
 
 ```text
 $ python3 -I digitraffic.py HKI
