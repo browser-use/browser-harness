@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, mimetypes, os, sys, time, urllib.request
+import base64, importlib.util, json, math, mimetypes, os, re, sys, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -69,7 +69,10 @@ class _IPCResponseTimeout(TimeoutError):
     pass
 
 
-def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
+def _send(req, response_timeout=None):
+    # Resolved per call so `scripts run` can raise the default for a whole replay.
+    if response_timeout is None:
+        response_timeout = DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS
     # A large request (a 10 MB upload as base64 is ~14 MB) needs seconds to reach
     # a remote browser and be evaluated there: add 1 s per MiB to the budget.
     if (mib := len(json.dumps(req)) >> 20):
@@ -193,12 +196,35 @@ def _is_illegal_return_error(exc):
 
 
 # --- navigation / page ---
+SAVED_SCRIPT_HINTS = True
+_hinted_hosts = set()
+
+
 def goto_url(url):
     r = cdp("Page.navigate", url=url)
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    saved = _saved_scripts(host)
+    if saved:
+        r = {**r, "saved_scripts": saved[:10]}
+        # new_tab() drops goto_url's return value, so also say it once on stderr.
+        if SAVED_SCRIPT_HINTS and host not in _hinted_hosts:
+            _hinted_hosts.add(host)
+            names = ", ".join(f"{host}/{n}" for n in saved[:10])
+            print(f"saved scripts for {host}: {names} ({_cli_name()} scripts run <host>/<name>)", file=sys.stderr)
     if os.environ.get("BH_DOMAIN_SKILLS") != "1":
         return r
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
+
+_HOST_RE = re.compile(r"\A[a-z0-9-]+(\.[a-z0-9-]+)*\Z")
+
+
+def _saved_scripts(host):
+    # Only plain hostnames: a crafted URL host must not become a path outside scripts/.
+    if not _HOST_RE.match(host or ""):
+        return []
+    d = AGENT_WORKSPACE / "scripts" / host
+    return sorted(p.stem for p in d.glob("*.py")) if d.is_dir() else []
 
 # new_tab(url)/goto_url(url) return once the new document commits, before its
 # first bytes are parsed: it has no <html> element yet. page_info() waits this
