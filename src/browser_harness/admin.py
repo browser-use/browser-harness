@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -1107,6 +1108,27 @@ def _stop_cloud_browser(browser_id, strict=False):
     if strict:
         raise RuntimeError(f"failed to stop remote browser {browser_id}: {last_error}")
     return False
+
+
+def rotate_proxy(country=None, name=None):
+    """Give this name's cloud browser a new proxy exit IP, keeping the browser, its tabs and the daemon.
+
+    country: ISO2 code ("de", "us", ...) to also move the exit to that country; default keeps the current one.
+    Returns {"mode", "country", "exitIp"}. Raises when the name has no cloud browser (local Chrome has no
+    Browser Use proxy) or when Browser Use Cloud refuses (e.g. 409: a custom proxy or a browser run by a
+    cloud agent session). Calls PATCH /browsers/{id}/proxy."""
+    name = name or NAME
+    browser_id = (ipc.read_remote_marker(name) or {}).get("browser_id")
+    if not browser_id:
+        raise RuntimeError(f"daemon {name!r} has no Browser Use cloud browser -- start one with start_remote_daemon({name!r})")
+    body = {"rotate": True}
+    if country:
+        body["country"] = country.lower()
+    try:
+        return _browser_use(f"/browsers/{browser_id}/proxy", "PATCH", body)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        raise RuntimeError(f"rotate_proxy failed: HTTP {e.code} {detail}") from None
 
 
 def _cdp_ws_from_url(cdp_url):
