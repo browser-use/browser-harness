@@ -151,6 +151,8 @@ def test_update_banner_can_be_disabled_without_network_or_cache_access(monkeypat
 
 def test_update_banner_remains_enabled_by_default(monkeypatch):
     monkeypatch.delenv("BH_UPDATE_CHECK", raising=False)
+    monkeypatch.delenv("BH_CLIENT", raising=False)
+    monkeypatch.setattr("sys.argv", ["/usr/local/bin/browser-harness"])
     monkeypatch.setattr(admin, "_cache_read", lambda: {"banner_shown_on": "1970-01-01"})
     called = []
 
@@ -163,6 +165,24 @@ def test_update_banner_remains_enabled_by_default(monkeypatch):
     admin.print_update_banner()
 
     assert called == [True]
+
+
+@pytest.mark.parametrize("argv0, client", [
+    ("/venv/lib/python3.12/site-packages/browser_harness/run.py", ""),  # python -m browser_harness.run from a host
+    ("/usr/local/bin/browser-use", "browser-use-cli"),  # an embedding CLI that pins browser-harness
+    ("/usr/local/bin/browser-harness", "hermes"),  # the command, but run on behalf of a host
+])
+def test_update_banner_stays_silent_inside_a_host_that_pins_browser_harness(monkeypatch, argv0, client):
+    monkeypatch.delenv("BH_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr("sys.argv", [argv0])
+    if client:
+        monkeypatch.setenv("BH_CLIENT", client)
+    else:
+        monkeypatch.delenv("BH_CLIENT", raising=False)
+    monkeypatch.setattr(admin, "_cache_read", lambda: pytest.fail("cache should not be read"))
+    monkeypatch.setattr(admin, "check_for_update", lambda: pytest.fail("network should not run"))
+
+    admin.print_update_banner()
 
 
 def test_health_probes_carry_the_callers_owner(monkeypatch):

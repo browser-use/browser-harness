@@ -1347,10 +1347,22 @@ def check_for_update():
     return cur, latest, newer
 
 
+def _standalone_command():
+    """True when this process is the `browser-harness` console script, not an import or `python -m` from a host."""
+    import sys
+    name = os.path.basename(sys.argv[0] if sys.argv else "").lower()
+    return name in {"browser-harness", "browser-harness.exe", "browser-harness-script.py"}
+
+
 def print_update_banner(out=None):
     """Print the update banner to stderr once per day. Silent when up-to-date or offline."""
     import sys
     if os.environ.get("BH_UPDATE_CHECK", "").strip().lower() in {"0", "false", "no", "off"}:
+        return
+    # Only for someone who installed and runs the browser-harness command itself. Inside a host that pins it as a
+    # dependency (an embedding CLI sets BH_CLIENT; others run `python -m browser_harness.run`), telling the agent to
+    # run `--update -y` would upgrade a pinned package underneath that host.
+    if os.environ.get("BH_CLIENT") or not _standalone_command():
         return
     out = out or sys.stderr
     cache = _cache_read()
