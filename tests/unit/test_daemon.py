@@ -1485,3 +1485,22 @@ def test_shutdown_closes_no_tabs(monkeypatch):
     assert r == {"ok": True} and d.stop.is_set()
     assert d.cdp.sent("Target.closeTarget") == []
     assert json.loads(daemon.STATE.read_text())["a"]["tabs"] == ["tab-1"]
+
+
+
+def test_remote_owner_tabs_open_in_their_own_window(monkeypatch):
+    """Remote browsers render only each window's active tab, so a background tab in a
+    shared window cannot be screenshotted (#882). One window per owner tab fixes it."""
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "cloud")
+    d = _daemon(PERSON)
+    _run(d, {"meta": "new_tab", "owner": "a"})
+    assert [p for m, p, _s in d.cdp.calls if m == "Target.createTarget"] == [
+        {"url": "about:blank", "background": True, "newWindow": True}
+    ]
+
+
+def test_local_owner_tabs_stay_in_the_persons_window(monkeypatch):
+    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
+    d = _daemon(PERSON)
+    _run(d, {"meta": "new_tab", "owner": "a"})
+    assert [p for m, p, _s in d.cdp.calls if m == "Target.createTarget"] == [{"url": "about:blank", "background": True}]

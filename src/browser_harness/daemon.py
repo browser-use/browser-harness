@@ -659,14 +659,25 @@ class Daemon:
         except Exception as e:  # a damaged file must never keep the daemon from starting
             log(f"load owners: {e!r}")
 
+    async def _create_tab(self):
+        """A blank background tab for an owner. On a remote browser it gets its own
+        window: Chrome renders only the active tab of each window, so a screenshot of
+        a background tab in a shared window hangs (#882). Nobody watches a remote
+        browser's windows, and they stack at the same bounds, so this costs nothing.
+        Local Chrome keeps one window: a new window per agent would pop up on the
+        person's screen."""
+        params = {"url": "about:blank", "background": True}
+        if BROWSER_KIND != "local":
+            params["newWindow"] = True
+        return (await self.cdp.send_raw("Target.createTarget", params))["targetId"]
+
     async def _current(self, key, o):
         """The owner's current tab. A fresh owner gets its own background tab, never the person's."""
         async with o.lock:
             if o.current is None:
                 spare = [t for t, i in self.info.items() if REMOTE_ID and t not in self.tab_owner
                          and i.get("type") == "page" and is_blank(i.get("url", ""))]
-                tid = spare[0] if spare else (await self.cdp.send_raw(
-                    "Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
+                tid = spare[0] if spare else await self._create_tab()
                 self._own(key, tid, created=not spare)
             return o.current
 
@@ -1192,8 +1203,7 @@ class Daemon:
         if meta == "new_tab":
             o.gone = None
             reuse = req.get("reuse") and o.current and is_blank(self.info.get(o.current, {}).get("url", "-"))
-            tid = o.current if reuse else (await self.cdp.send_raw(
-                "Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
+            tid = o.current if reuse else await self._create_tab()
             self._own(key, tid, current=False, created=not reuse)
             return {"target_id": tid, "session_id": await self._switch(key, o, tid)}
         if meta not in ("session", "current_tab"):
