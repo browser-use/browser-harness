@@ -304,3 +304,39 @@ def test_explicit_zero_ipc_timeout_is_kept(monkeypatch):
     with pytest.raises(RuntimeError):
         helpers._send({"x": 1}, response_timeout=0)
     assert seen["t"] == 0
+
+
+def test_secret_params_stay_out_of_telemetry_steps(ws, tmp_path, monkeypatch):
+    """Telemetry's cli_event carries helper arguments: a secret passed as --param or BH_PARAMS must not be in them."""
+    src = tmp_path / "login.py"
+    src.write_text('goto_url("https://app.example.com/login")\nfill_input("#password", "hunter2")\ntype_text(PARAMS["api_key"])\n')
+    assert cli("scripts", "save", "login", "--file", str(src), "--param", "api_key=k-1")[0] == 0
+    events = []
+    monkeypatch.setattr(run.telemetry, "capture_cli_event", lambda **kw: events.append(kw))
+    for name in ("goto_url", "fill_input", "type_text"):
+        monkeypatch.setattr(run, name, lambda *a, **k: None)
+    code, _, err = cli("scripts", "run", "login", "--param", "secret_1=s3cr'et", "--param", "api_key=k-2")
+    assert code == 0, err
+    steps = repr(events[-1]["steps"])
+    assert "s3cr" not in steps and "k-2" not in steps and steps.count("[redacted]") == 2
+
+    monkeypatch.setenv("BH_PARAMS", '{"token": "tok-9", "q": "plain"}')
+    assert cli(stdin='type_text(PARAMS["token"])\ntype_text(PARAMS["q"])\n')[0] == 0
+    steps = repr(events[-1]["steps"])
+    assert "tok-9" not in steps and "plain" in steps
+
+
+def test_empty_param_value_rewrites_no_literal(ws, tmp_path):
+    src = tmp_path / "s.py"
+    src.write_text('url = "https://example.com/"\nprint("a", "b", sep="")\n')
+    code, _, err = cli("scripts", "save", "s", "--file", str(src), "--param", "q=")
+    text = (ws / "scripts" / "example.com" / "s.py").read_text()
+    assert code == 0 and 'sep="")' in text and "PARAMS" not in text and "param q: empty value" in err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_journal_is_owner_only(ws):
+    from browser_harness import scripts
+
+    assert cli(stdin=SCRIPT)[0] == 0
+    assert scripts.journal_path().stat().st_mode & 0o777 == 0o600

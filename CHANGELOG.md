@@ -10,6 +10,8 @@
 - Scripts read their params as `PARAMS` (from `--param`, or from `BH_PARAMS` as a JSON object on a plain stdin run). `PARAMS` is `{}` when none are given.
 - `goto_url(url)` adds `saved_scripts` to its result and prints one `saved scripts for <host>: ...` line on stderr per host, but only when that host has saved scripts.
 - SKILL.md: a short "Saved Scripts" section tells agents to reuse a site's saved script and to save one after a repeatable task works.
+- Secret params stay out of telemetry: the value of a param the saved file requires (a redacted typed secret) or whose key looks secret (`password`, `token`, `api_key`, ...), from `--param` or `BH_PARAMS`, is replaced by `[redacted]` in the helper arguments a run report carries.
+- `--param k=` (an empty value) rewrites no literal; before, every `""` in the script became `PARAMS["k"]`.
 
 ### Cloud browsers
 - On a Browser Use Cloud browser, each tab the daemon opens for an agent gets its own window. A screenshot of a background tab in a shared window there timed out after 60 s; now it returns at once. Local Chrome and `BU_CDP_URL` / `BU_CDP_WS` browsers keep one window (they screenshot background tabs fine).
@@ -18,7 +20,7 @@
 - The daily "new version available" banner shows only when someone runs the `browser-harness` command itself. It stays silent inside a host that pins browser-harness as a dependency: when `BH_CLIENT` is set (browser-use's CLI and MCP set it) or the process is not the `browser-harness` command (for example `python -m browser_harness.run`, or the `./browser-harness` launcher in a git checkout). `BH_UPDATE_CHECK=0` still turns it off everywhere.
 
 ### Behavior changes to know
-- Every successful stdin script is kept as one local file per `BU_NAME` and working folder in the private runtime folder (`last-script-<name>-<hash>.py`, overwritten by the next success), so `scripts save --from-last` can read it. It never leaves the machine. It holds the script as written, including any typed secret; `scripts save` redacts those, the kept copy does not.
+- Every successful stdin script is kept as one local file per `BU_NAME` and working folder in the private runtime folder (`last-script-<name>-<hash>.py`, overwritten by the next success), so `scripts save --from-last` can read it. It never leaves the machine. It holds the script as written, including any typed secret, so it is owner-only (mode 600); `scripts save` redacts those, the kept copy does not.
 - A stdin run with `BH_PARAMS` set to anything but a JSON object now exits with an error.
 - `goto_url()` returns one more key (`saved_scripts`) on hosts with saved scripts.
 - Cloud browsers: one window per agent tab instead of tabs in one window.

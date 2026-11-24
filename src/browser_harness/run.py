@@ -211,7 +211,10 @@ _helper_call_count = 0
 
 def _step_args(args, kwargs):
     parts = [repr(a) for a in args] + [f"{k}={v!r}" for k, v in kwargs.items()]
-    return ", ".join(parts)[:_MAX_STEP_ARGS_LENGTH]
+    text = ", ".join(parts)
+    for secret in scripts.SECRET_VALUES:  # a password passed as --param must not reach telemetry as type_text('...')
+        text = text.replace(repr(secret)[1:-1], "[redacted]").replace(secret, "[redacted]")
+    return text[:_MAX_STEP_ARGS_LENGTH]
 
 
 def _traced(name, fn):
@@ -311,6 +314,7 @@ def main(prog=None):
     if args and args[0] == "telemetry":
         sys.exit(telemetry.run_telemetry_cli(args[1:]))
     _helper_trace.clear()
+    scripts.SECRET_VALUES.clear()
     _helper_call_count = 0
     start_time = time.monotonic()
     command = _telemetry_command(args)

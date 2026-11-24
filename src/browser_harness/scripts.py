@@ -33,6 +33,7 @@ REPLAY_IPC_TIMEOUT_SECONDS = 30.0
 EXPECT_DEPTH = 4  # nesting levels recorded in `# expect:`
 _CAPTURE_LIMIT = 8 << 20  # stdout bytes kept for the output check
 ACCEPT_OUTPUT = False  # set by `scripts run --accept`
+SECRET_VALUES = set()  # secret param values of this run: run.py keeps them out of telemetry's step args
 MARKER = "# browser-harness saved script"
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 _HOST_RE = re.compile(r"\A[a-z0-9-]+(\.[a-z0-9-]+)*\Z")
@@ -66,8 +67,13 @@ def journal_path():
 
 
 def journal(code):
+    """Keep the script for `scripts save --from-last`. Owner-only: it can hold a typed password."""
     try:
-        journal_path().write_text(code, encoding="utf-8")
+        path = journal_path()
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+            f.write(code)
+        if sys.platform != "win32":
+            os.chmod(path, 0o600)  # a copy from before this change kept its old mode
     except OSError:
         pass
 
@@ -83,7 +89,16 @@ def env_params():
         raise SystemExit("browser-harness: BH_PARAMS must be a JSON object")
     if not isinstance(params, dict):
         raise SystemExit("browser-harness: BH_PARAMS must be a JSON object")
+    _note_secrets(params)
     return params
+
+
+def _note_secrets(params, required=()):
+    """Remember values of secret-looking keys and of params the saved file requires (typed secrets)."""
+    SECRET_VALUES.update(
+        str(v) for k, v in params.items()
+        if v not in (None, "") and (k in required or _SECRET_KEY_RE.search(k))
+    )
 
 
 def read_header(text):
@@ -162,6 +177,9 @@ def _redact(code, params):
     for k, v in params.items():
         if v is None:  # a required secret from an earlier save
             continue
+        if v == "":  # every "" in the script (sep="", default="") would become this param
+            notes.append(f"param {k}: empty value, no literal rewritten; read PARAMS[{k!r}] there")
+            continue
         hits = [n for n in strings if n.value == v]
         edits.update({span(n): f"PARAMS[{k!r}]" for n in hits})
         if not hits:
@@ -237,10 +255,12 @@ def prepare_run(args):
     ACCEPT_OUTPUT = "--accept" in opts
     path = resolve(pos[0])
     code = path.read_text(encoding="utf-8")
-    params = {**read_header(code)[0].get("params", {}), **env_params(), **params}
+    stored = read_header(code)[0].get("params", {})
+    params = {**stored, **env_params(), **params}
     missing = [k for k, v in params.items() if v is None]
     if missing:
         raise SystemExit("browser-harness: missing " + " ".join(f"--param {k}=..." for k in missing))
+    _note_secrets(params, required={k for k, v in stored.items() if v is None})
     os.environ["BH_PARAMS"] = json.dumps(params)
     return path, code, params
 
