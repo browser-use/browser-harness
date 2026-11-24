@@ -1499,8 +1499,9 @@ def test_remote_owner_tabs_open_in_their_own_window(monkeypatch):
     ]
 
 
-def test_local_owner_tabs_stay_in_the_persons_window(monkeypatch):
-    monkeypatch.setattr(daemon, "BROWSER_KIND", "local")
+@pytest.mark.parametrize("kind", ["local", "cdp"])
+def test_local_and_cdp_owner_tabs_stay_in_one_window(monkeypatch, kind):
+    monkeypatch.setattr(daemon, "BROWSER_KIND", kind)
     d = _daemon(PERSON)
     _run(d, {"meta": "new_tab", "owner": "a"})
     assert [p for m, p, _s in d.cdp.calls if m == "Target.createTarget"] == [{"url": "about:blank", "background": True}]

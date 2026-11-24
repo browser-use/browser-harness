@@ -660,14 +660,13 @@ class Daemon:
             log(f"load owners: {e!r}")
 
     async def _create_tab(self):
-        """A blank background tab for an owner. On a remote browser it gets its own
-        window: Chrome renders only the active tab of each window, so a screenshot of
-        a background tab in a shared window hangs (#882). Nobody watches a remote
-        browser's windows, and they stack at the same bounds, so this costs nothing.
-        Local Chrome keeps one window: a new window per agent would pop up on the
-        person's screen."""
+        """A blank background tab for an owner. On a Browser Use Cloud browser it gets
+        its own window: there a screenshot of a background tab in a shared window hangs
+        (#882), and nobody watches its windows, which stack at the same bounds. Local
+        Chrome and BU_CDP_URL / BU_CDP_WS keep one window: they screenshot background
+        tabs fine, and a new window per agent would pop up on the person's screen."""
         params = {"url": "about:blank", "background": True}
-        if BROWSER_KIND != "local":
+        if BROWSER_KIND == "cloud":
             params["newWindow"] = True
         return (await self.cdp.send_raw("Target.createTarget", params))["targetId"]
 
