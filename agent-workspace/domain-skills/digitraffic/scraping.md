@@ -1,6 +1,6 @@
 # Digitraffic (Fintraffic) via rata.digitraffic.fi - List the Next Trains Departing Helsinki Central (HKI) or Any Finnish Station, With Scheduled vs Live Estimated Time, Track, Destination and Cancellations (REST JSON, no key, gzip required)
 
-Field-tested against rata.digitraffic.fi and www.digitraffic.fi on 2026-11-23 (US Pacific afternoon; 23:55 UTC on 23 November to 00:02 UTC on 24 November, which was 01:55-02:02 on Tuesday 24 November in Helsinki) using a fresh Browser Use cloud browser (logged out; one session, 23:57-00:01 UTC) plus Python `urllib` and `curl` from a Linux machine. 12 browser page loads (1 smoke test, 1 in block 1's first run, 5 in each of block 2's two runs) and 16 in-page `fetch()` calls (3 in each run of block 1, 5 in each run of block 2), 19 urllib calls (block 3: 3 commands in its first run, 5 in its second, one of them refused before any call) and 36 curl calls (22 while exploring the API, the OpenAPI document and a full day of trains, 7 in each of block 4's two runs), all serial and at least 1 s apart. Every API call sent `Digitraffic-User: BrowserUse/domain-skills` except the deliberate anonymous ones (one curl call while exploring, the 3 calls of block 3's `Pasila` run, and the no-gzip call in each run of block 4), which answered the same way. Every call was HTTP 200 except the deliberate probes: HTTP 406 without `Accept-Encoding: gzip`, HTTP 400 for `departing_trains=abc` and `train_categories=Night`, HTTP 404 for www.digitraffic.fi/robots.txt and `/api/v1/swagger.json`, HTTP 403 for `/swagger/rata-api.json` and a 302 from `/api-docs/rata-api.json` to the Finnish docs page. curl timed live-train answers at 0.50-0.85 s and the station list at 0.51 s; one whole day of trains (`/api/v1/trains/2026-11-23`, 1,792 trains) took 4.20 s for 918 KB of gzip (21 MB of JSON). No 429, no challenge, no key, no login, no cookie. The outputs below are the second runs of blocks 1 to 4 (00:00-00:01 UTC on 24 November); the first runs (23:57-00:00 UTC) gave the same departures and the same block 2 output. It was 02:00 at night in Finland, so the Helsinki board shows the first morning trains with timetable times only; live estimates appear on trains already running (the Tampere board). An independent verifier re-ran all four blocks verbatim on 2026-11-24 00:03-00:04 UTC (a second fresh cloud browser, urllib, curl): every block ran, and the departures, tracks, estimates and block 2 lines were identical; only call timings and block 4's access time changed.
+Field-tested against rata.digitraffic.fi and www.digitraffic.fi on 2026-11-23 (US Pacific afternoon; 23:55 UTC on 23 November to 00:02 UTC on 24 November, which was 01:55-02:02 on Tuesday 24 November in Helsinki) using a fresh Browser Use cloud browser (logged out; one session, 23:57-00:01 UTC) plus Python `urllib` and `curl` from a Linux machine. 12 browser page loads (1 smoke test, 1 in block 1's first run, 5 in each of block 2's two runs) and 16 in-page `fetch()` calls (3 in each run of block 1, 5 in each run of block 2), 19 urllib calls (block 3: 3 commands in its first run, 5 in its second, one of them refused before any call) and 36 curl calls (22 while exploring the API, the OpenAPI document and a full day of trains, 7 in each of block 4's two runs), all serial and at least 1 s apart. Every API call sent `Digitraffic-User: BrowserUse/domain-skills` except the deliberate anonymous ones (one curl call while exploring, the 3 calls of block 3's `Pasila` run, and the no-gzip call in each run of block 4), which answered the same way. Every call was HTTP 200 except the deliberate probes: HTTP 406 without `Accept-Encoding: gzip`, HTTP 400 for `departing_trains=abc` and `train_categories=Night`, HTTP 404 for www.digitraffic.fi/robots.txt and `/api/v1/swagger.json`, HTTP 403 for `/swagger/rata-api.json` and a 302 from `/api-docs/rata-api.json` to the Finnish docs page. curl timed live-train answers at 0.50-0.85 s and the station list at 0.51 s; one whole day of trains (`/api/v1/trains/2026-11-23`, 1,792 trains) took 4.20 s for 918 KB of gzip (21 MB of JSON). No 429, no challenge, no key, no login, no cookie. The outputs below are the second runs of blocks 1 to 4 (00:00-00:01 UTC on 24 November); the first runs (23:57-00:00 UTC) gave the same departures and the same block 2 output. It was 02:00 at night in Finland, so the Helsinki board shows the first morning trains with timetable times only; live estimates appear on trains already running (the Tampere board). An independent verifier re-ran all four blocks verbatim on 2026-11-24 00:03-00:04 UTC (a second fresh cloud browser, urllib, curl): every block ran, and the departures, tracks, estimates and block 2 lines were identical; only call timings and block 4's access time changed. After a code review, blocks 2, 3 and 4 changed and re-ran on 2026-11-24 between 00:28 and 00:36 UTC (browser blocks in a new cloud browser); the outputs shown for them come from those runs.
 
 robots.txt (checked 2026-11-23/24 UTC, curl, the cloud browser and block 3): https://rata.digitraffic.fi/robots.txt is `User-agent: *` / `Allow: /` with no named agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider may fetch every API path this skill uses (blocks 2 and 3 check all 11 agents with Python's `urllib.robotparser`, and block 3 stops if the file ever disallows one). https://www.digitraffic.fi/robots.txt answers HTTP 404 with the site's "404 - Page not found." page, so the docs host has no rules; RFC 9309 (section 2.3.1.3) says a 4xx robots.txt means "the crawler MAY access any resources on the server". Terms: https://www.digitraffic.fi/en/terms-of-service/ (0 changed lines against the copy read on 2026-11-21): "Fintraffic’s open data is licensed under the Creative Commons 4.0 By license. It gives the right to distribute, remix, tweak, and build upon our data, even commercially, as long as you credit the source for the original creation." Attribution: "you must give appropriate credit, provide a link to the license, and indicate if changes were made"; "If the material has beem modified, it must be accompanied with a notice describing the modification and a hyperlink to the website of the original material" (spelling as on the page); the example credit line is "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY". The railway page https://www.digitraffic.fi/en/railway-traffic/ says (under its GTFS and NeTEx feed sections) "Data is licensed under Creative Commons Attribution 4.0 International", and the API's own OpenAPI document (https://rata.digitraffic.fi/swagger/openapi.json) names the licence "Creative Commons 4.0 BY" and links the terms. The instructions page https://www.digitraffic.fi/en/support/instructions/: "The Digitraffic-User header should include an identifiable user party and/or application. Using the header increases the amount of requests you can make.", "Don’t send any PII (personally identifiable information) via the headers!" and "The use of compression is mandatory on all interfaces except for weather camera images." No AI/ML, scraping, crawling, robot or non-commercial wording on the terms, instructions or railway pages (block 2 checks the quotes and scans for the words). Naming: this skill writes "Digitraffic (Fintraffic)" in plain text, shows no Fintraffic logo, is not affiliated with or endorsed by Fintraffic, and blocks 1, 3 and 4 (the ones that show train data) print the CC BY 4.0 credit line with a link to the licence and what it changed.
 
@@ -196,6 +196,9 @@ import json, os, time, urllib.robotparser
 
 API = "https://rata.digitraffic.fi/api/v1"
 USER = os.environ.get("DIGITRAFFIC_USER", "").strip()   # your own value (see block 1); empty = anonymous
+if USER.lower() in {"junamies/foobarapp 1.0", "trainguy/foobarapp 1.0", "fintraffic", "liikennetilanne",
+                    "fintraffic/liikennetilanne", "dt/tester"}:
+    raise SystemExit("DIGITRAFFIC_USER is an example from Digitraffic's docs; use your own party/app name")
 AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-User", "anthropic-ai",
           "Google-Extended", "PerplexityBot", "CCBot", "Bytespider"]
 
@@ -311,7 +314,7 @@ print(f"  categories: {sorted({t['trainCategory'] for t in d})}; first in the li
 print(f"headers visible to fetch(): {sorted(r['headers'])}")
 ```
 
-Output (from the run on 2026-11-24, 00:00 UTC; the first run at 23:58 UTC printed the same lines):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:32 UTC, in a new cloud browser; the 23:58 and 00:00 UTC runs printed the same lines):
 
 ```text
 rata.digitraffic.fi/robots.txt HTTP 200 text/plain: 'User-agent: * / Allow: /'; named agent groups: none; disallowed for the 11 agents: none
@@ -373,8 +376,8 @@ USER = os.environ.get("DIGITRAFFIC_USER", "").strip()
 DOC_EXAMPLES = {"junamies/foobarapp 1.0", "trainguy/foobarapp 1.0", "fintraffic", "liikennetilanne",
                 "fintraffic/liikennetilanne", "dt/tester"}
 AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-User", "anthropic-ai",
-          "Google-Extended", "PerplexityBot", "CCBot", "Bytespider"]
-PATHS = ["/api/v1/metadata/stations", "/api/v1/live-trains/station/HKI", "/api/v1/live-trains/station/HKI/TPE"]
+          "Google-Extended", "PerplexityBot", "CCBot", "Bytespider", "digitraffic-skill-example"]  # last = this script's UA
+UA = "digitraffic-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"
 CREDIT = "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY (https://creativecommons.org/licenses/by/4.0/)"
 if USER.lower() in DOC_EXAMPLES:
     sys.exit("DIGITRAFFIC_USER is an example from Digitraffic's docs; use your own party/app name")
@@ -385,7 +388,7 @@ def http(url):
     """-> (status, headers, text). Serial, at least 1 s apart. Sends Accept-Encoding: gzip (mandatory: HTTP 406
     without it) and gunzips the body itself, since urllib does not."""
     time.sleep(max(0.0, _last[0] + 1.0 - time.time()))
-    h = {"Accept-Encoding": "gzip", "Accept": "application/json"}
+    h = {"Accept-Encoding": "gzip", "Accept": "application/json", "User-Agent": UA}
     if USER:
         h["Digitraffic-User"] = USER
     t0 = time.time()
@@ -404,9 +407,12 @@ def http(url):
     return status, hdrs, body.decode("utf-8", errors="replace")
 
 def call(path, params=None):
-    """-> parsed JSON. 429: wait 60 s once (the limits are per minute), then stop. 5xx or network error: one retry
+    """-> parsed JSON. Checks the exact path against robots.txt first. 429: wait 60 s once (the limits are per minute), then stop. 5xx or network error: one retry
     after 10 s. 406 means the gzip header was lost. Any other non-200 stops."""
     url = API + path + ("?" + urlencode(params) if params else "")
+    bad = [a for a in AGENTS if RP and not RP.can_fetch(a, url)]
+    if bad:
+        sys.exit(f"robots.txt disallows {path} for {bad}: stop")
     for attempt in range(2):
         s, h, text = http(url)
         if attempt == 0 and s in (0, 429, 500, 502, 503, 504):
@@ -417,20 +423,21 @@ def call(path, params=None):
         sys.exit(f"{url}: HTTP {s} {' '.join(text.split())[:200]!r}")
     return json.loads(text)
 
-def robots_ok():
-    """rata.digitraffic.fi/robots.txt is 'User-agent: * / Allow: /' today; stop if it ever disallows a path."""
+RP = None   # parsed robots.txt; call() checks every request path against it
+
+def robots_load():
+    """rata.digitraffic.fi/robots.txt is 'User-agent: * / Allow: /' today. A 4xx other than 429 = no rules;
+    429, 5xx or no answer = rules unknown, so stop."""
+    global RP
     s, _, text = http(HOST + "/robots.txt")
-    if 400 <= s < 500:
+    if 400 <= s < 500 and s != 429:
         print(f"robots.txt rata.digitraffic.fi: HTTP {s}, no rules")
         return
     if s != 200:
-        sys.exit(f"robots.txt: HTTP {s}; try later")
-    rp = urllib.robotparser.RobotFileParser()
-    rp.parse(text.splitlines())
-    bad = [(a, p) for a in AGENTS for p in PATHS if not rp.can_fetch(a, HOST + p)]
-    if bad:
-        sys.exit(f"robots.txt now disallows {bad}: stop")
-    print(f"robots.txt rata.digitraffic.fi: HTTP 200, all {len(AGENTS)} agents allowed on the {len(PATHS)} API paths")
+        sys.exit(f"robots.txt: HTTP {s}; rules unknown, try later")
+    RP = urllib.robotparser.RobotFileParser()
+    RP.parse(text.splitlines())
+    print(f"robots.txt rata.digitraffic.fi: HTTP 200; each API path is checked for all {len(AGENTS)} agents before its call")
 
 def local(iso):
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(HEL)
@@ -446,7 +453,7 @@ args = ap.parse_args()
 
 print(f"Digitraffic rail, checked {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC; "
       f"Digitraffic-User {'set' if USER else 'not set (anonymous: 60 requests a minute)'}")
-robots_ok()
+robots_load()
 stations = call("/metadata/stations")
 by_code = {s["stationShortCode"]: s for s in stations}
 
@@ -464,7 +471,8 @@ code = frm["stationShortCode"]
 cats = "Commuter" if args.commuter else "Long-distance" if args.long_distance else "Long-distance,Commuter"
 if args.to:
     to = station(args.to)
-    trains = call(f"/live-trains/station/{quote(code)}/{quote(to['stationShortCode'])}", {"limit": args.n})
+    # limit counts every train, work trains too, so ask for spares and cut to -n after the category filter
+    trains = call(f"/live-trains/station/{quote(code)}/{quote(to['stationShortCode'])}", {"limit": args.n + 20})
     title = f"{code} {frm['stationName']} -> {to['stationShortCode']} {to['stationName']}"
 else:
     to = None
@@ -504,6 +512,7 @@ for t in trains:
     rows.append((local(live or r["scheduledTime"]), local(r["scheduledTime"]), live and local(live),
                  r["commercialTrack"] or "-", train, dest, arr, status, t["operatorShortCode"]))
 rows.sort(key=lambda x: x[0])
+rows = rows[:args.n]
 
 print(f"{title}: next {len(rows)} departures, Helsinki time")
 print(f"  {'day':<4}{'sched':<6} {'est':<6} {'track':<6}{'train':<14}{'destination':<38}" + ("arr   " if to else "") + "status")
@@ -514,12 +523,12 @@ print(f"{len(calls)} calls: " + ", ".join(f"{p} {s} {t}s {z / 1024:.1f} KB" for 
 print(CREDIT + "; departures picked, sorted and converted to Helsinki time by this script.")
 ```
 
-Output (five commands on 2026-11-24, 00:00 UTC; the `Pasila` run had `DIGITRAFFIC_USER` empty, so it was anonymous, and the last one was refused before any call):
+Output (five commands, re-run on 2026-11-24 after the code-review fixes, 00:30 UTC; the `Pasila` run had `DIGITRAFFIC_USER` empty, so it was anonymous, and the last one was refused before any call; the 00:00 UTC runs listed the same trains). With `--to` the block asks for 20 spare trains, filters categories, then keeps `-n`: `Helsinki --to Tampere --commuter -n 3` gave HL 9621, HL 9635 and HL 9649, where `limit=3` (checked at 00:36 UTC) returns IC 35, HL 9621 and IC 21, only one of them a commuter train:
 
 ```text
 $ python3 -I digitraffic.py HKI
-Digitraffic rail, checked 2026-11-24 00:00 UTC; Digitraffic-User set
-robots.txt rata.digitraffic.fi: HTTP 200, all 11 agents allowed on the 3 API paths
+Digitraffic rail, checked 2026-11-24 00:30 UTC; Digitraffic-User set
+robots.txt rata.digitraffic.fi: HTTP 200; each API path is checked for all 12 agents before its call
 HKI Helsinki asema (Long-distance,Commuter): next 10 departures, Helsinki time
   day sched  est    track train         destination                           status
   Tue 03:37  -      4     HV 10101 V    Kerava asema                          timetable
@@ -532,12 +541,12 @@ HKI Helsinki asema (Long-distance,Commuter): next 10 departures, Helsinki time
   Tue 04:48  -      18    HL 8605 P     Helsinki asema (ring via Lentoasema)  timetable
   Tue 04:51  -      3     HL 8806 I     Helsinki asema (ring via Lentoasema)  timetable
   Tue 05:01  -      3     HL 9013 K     Kerava asema                          timetable
-3 calls: /robots.txt 200 0.04s 0.0 KB, /api/v1/metadata/stations 200 0.09s 14.7 KB, /api/v1/live-trains/station/HKI 200 0.39s 4.4 KB
+3 calls: /robots.txt 200 0.07s 0.0 KB, /api/v1/metadata/stations 200 0.24s 14.7 KB, /api/v1/live-trains/station/HKI 200 0.29s 4.3 KB
 Source: Fintraffic / digitraffic.fi, license CC 4.0 BY (https://creativecommons.org/licenses/by/4.0/); departures picked, sorted and converted to Helsinki time by this script.
 
 $ python3 -I digitraffic.py Helsinki --to Tampere -n 5
-Digitraffic rail, checked 2026-11-24 00:00 UTC; Digitraffic-User set
-robots.txt rata.digitraffic.fi: HTTP 200, all 11 agents allowed on the 3 API paths
+Digitraffic rail, checked 2026-11-24 00:30 UTC; Digitraffic-User set
+robots.txt rata.digitraffic.fi: HTTP 200; each API path is checked for all 12 agents before its call
 HKI Helsinki asema -> TPE Tampere asema: next 5 departures, Helsinki time
   day sched  est    track train         destination                           arr   status
   Tue 05:03  -      9     IC 35         Rovaniemi                             06:53 timetable
@@ -545,24 +554,24 @@ HKI Helsinki asema -> TPE Tampere asema: next 5 departures, Helsinki time
   Tue 06:20  -      8     IC 21         Oulu asema                            07:58 timetable
   Tue 07:00  -      9     IC 155        Pieksämäki asema                      08:53 timetable
   Tue 07:10  -      10    HL 9635 R     Tampere asema                         09:25 timetable
-3 calls: /robots.txt 200 0.05s 0.0 KB, /api/v1/metadata/stations 200 0.09s 14.7 KB, /api/v1/live-trains/station/HKI/TPE 200 0.11s 7.3 KB
+3 calls: /robots.txt 200 0.06s 0.0 KB, /api/v1/metadata/stations 200 0.09s 14.7 KB, /api/v1/live-trains/station/HKI/TPE 200 0.46s 31.0 KB
 Source: Fintraffic / digitraffic.fi, license CC 4.0 BY (https://creativecommons.org/licenses/by/4.0/); departures picked, sorted and converted to Helsinki time by this script.
 
 $ python3 -I digitraffic.py Tamper
-Digitraffic rail, checked 2026-11-24 00:00 UTC; Digitraffic-User set
-robots.txt rata.digitraffic.fi: HTTP 200, all 11 agents allowed on the 3 API paths
+Digitraffic rail, checked 2026-11-24 00:30 UTC; Digitraffic-User set
+robots.txt rata.digitraffic.fi: HTTP 200; each API path is checked for all 12 agents before its call
 no passenger station 'Tamper'; similar names: ['Tampere asema']
 
 $ DIGITRAFFIC_USER= python3 -I digitraffic.py Pasila --long-distance -n 4
-Digitraffic rail, checked 2026-11-24 00:00 UTC; Digitraffic-User not set (anonymous: 60 requests a minute)
-robots.txt rata.digitraffic.fi: HTTP 200, all 11 agents allowed on the 3 API paths
+Digitraffic rail, checked 2026-11-24 00:30 UTC; Digitraffic-User not set (anonymous: 60 requests a minute)
+robots.txt rata.digitraffic.fi: HTTP 200; each API path is checked for all 12 agents before its call
 PSL Pasila asema (Long-distance): next 4 departures, Helsinki time
   day sched  est    track train         destination                           status
   Tue 05:09  -      3     IC 35         Rovaniemi                             timetable
   Tue 05:32  -      8     IC 941        Turku satama                          timetable
   Tue 06:00  -      4     S 61          Kuopio asema                          timetable
   Tue 06:21  06:21  6     PYO 266       Helsinki asema                        live +0 min
-3 calls: /robots.txt 200 0.04s 0.0 KB, /api/v1/metadata/stations 200 0.07s 14.7 KB, /api/v1/live-trains/station/PSL 200 0.51s 7.9 KB
+3 calls: /robots.txt 200 0.06s 0.0 KB, /api/v1/metadata/stations 200 0.1s 14.7 KB, /api/v1/live-trains/station/PSL 200 0.37s 7.9 KB
 Source: Fintraffic / digitraffic.fi, license CC 4.0 BY (https://creativecommons.org/licenses/by/4.0/); departures picked, sorted and converted to Helsinki time by this script.
 
 $ DIGITRAFFIC_USER="Junamies/FoobarApp 1.0" python3 -I digitraffic.py HKI
@@ -574,7 +583,7 @@ DIGITRAFFIC_USER is an example from Digitraffic's docs; use your own party/app n
 ```bash
 #!/usr/bin/env bash
 # Optional: export DIGITRAFFIC_USER='<your party>/<your app>' (no personal data); it raises your request limit.
-set -u
+set -euo pipefail
 case "${DIGITRAFFIC_USER:-}" in
   "Junamies/FoobarApp 1.0"|"Trainguy/FoobarApp 1.0"|Fintraffic|Liikennetilanne|Fintraffic/Liikennetilanne|DT/Tester)
     echo "DIGITRAFFIC_USER is an example from Digitraffic's docs; use your own party/app name" >&2; exit 1;;
@@ -582,15 +591,27 @@ esac
 C=(curl -sS --max-time 30 --compressed)           # --compressed sends Accept-Encoding: gzip (mandatory) and unzips
 [ -n "${DIGITRAFFIC_USER:-}" ] && C+=(-H "Digitraffic-User: $DIGITRAFFIC_USER")
 R=https://rata.digitraffic.fi/api/v1
+T=$(mktemp)
+# 0. robots.txt on the API host first: a 4xx other than 429 = no rules; stop if it disallows the API paths
+code=$(curl -sS --max-time 30 -o "$T" -w '%{http_code}' https://rata.digitraffic.fi/robots.txt)
+echo "robots.txt HTTP $code: $(tr '\n' ' ' < "$T")"
+python3 -c 'import sys, urllib.robotparser
+code, text = int(sys.argv[1]), open(sys.argv[2]).read()
+if code != 200 and not (400 <= code < 500 and code != 429): sys.exit("robots.txt rules unknown: stop")
+rp = urllib.robotparser.RobotFileParser(); rp.parse(text.splitlines() if code == 200 else [])
+paths = ("/api/v1/metadata/stations", "/api/v1/live-trains/station/HKI")
+if not all(rp.can_fetch(a, "https://rata.digitraffic.fi" + p) for a in ("*", "curl") for p in paths): sys.exit("robots.txt disallows the API: stop")
+print("robots: API paths allowed")' "$code" "$T"
+sleep 1
 # 1. station names -> short codes (Finnish names; "asema" = station)
-"${C[@]}" "$R/metadata/stations" | python3 -c 'import json, sys
+"${C[@]}" --fail "$R/metadata/stations" | python3 -c 'import json, sys
 s = json.load(sys.stdin); print(len(s), "stations,", sum(x["passengerTraffic"] for x in s), "with passenger traffic")
 for x in s:
     if x["stationShortCode"] in ("HKI", "PSL", "LEN", "TPE", "TKU"):
         print(x["stationShortCode"], "|", x["stationName"], "|", x["latitude"], x["longitude"])'
 sleep 1
 # 2. next 8 passenger departures from Helsinki (HKI): scheduled vs live time, track, destination, cancellations
-"${C[@]}" "$R/live-trains/station/HKI?departing_trains=8&arrived_trains=0&arriving_trains=0&departed_trains=0&include_nonstopping=false&train_categories=Long-distance,Commuter" \
+"${C[@]}" --fail "$R/live-trains/station/HKI?departing_trains=8&arrived_trains=0&arriving_trains=0&departed_trains=0&include_nonstopping=false&train_categories=Long-distance,Commuter" \
   | python3 -c 'import json, sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -606,7 +627,6 @@ for t in json.load(sys.stdin):
 for o in sorted(out):
     print("sched", o[1], "est", o[2], "track", o[3], o[4], "->", o[5], o[6])'
 sleep 1
-T=$(mktemp)
 # 3. gzip is mandatory: the same request without Accept-Encoding
 curl -sS --max-time 30 -o "$T" -w 'no gzip: HTTP %{http_code} ' "$R/live-trains/station/HKI?departing_trains=1"; cat "$T"; echo
 sleep 1
@@ -619,14 +639,14 @@ for q in "XYZ?departing_trains=3" "HKI?departing_trains=abc"; do
   "${C[@]}" -o "$T" -w "$q: HTTP %{http_code} " "$R/live-trains/station/$q"; head -c 120 "$T"; echo; sleep 1
 done
 rm -f "$T"
-# 6. robots.txt on the API host
-curl -sS https://rata.digitraffic.fi/robots.txt | tr '\n' ' '; echo
 echo "Source: Fintraffic / digitraffic.fi, license CC 4.0 BY (https://creativecommons.org/licenses/by/4.0/). Accessed $(date -u '+%d %B %Y %H:%M') UTC. Changed: fields picked, times converted from UTC to Helsinki time."
 ```
 
-Output (from the run on 2026-11-24, 00:00 UTC; the first run a minute earlier printed the same apart from the access time):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:30 UTC; robots.txt is now read first; the rest matches the 23:59 and 00:00 UTC runs apart from the access time):
 
 ```text
+robots.txt HTTP 200: User-agent: * Allow: /
+robots: API paths allowed
 563 stations, 215 with passenger traffic
 HKI | Helsinki asema | 60.171356 24.941444
 LEN | Lentoasema | 60.315732 24.968343
@@ -642,15 +662,14 @@ sched 04:36 est - track 4 HL8804 I -> HKI ok
 sched 04:41 est - track 3 HL9005 K -> KE ok
 sched 04:48 est - track 18 HL8605 P -> HKI ok
 no gzip: HTTP 406 Use of gzip compression is required with Accept-Encoding: gzip header.
-HTTP/2 200 
+HTTP/2 200
 content-type: application/json
 content-encoding: gzip
 access-control-allow-origin: *
 cache-control: max-age=30, public
 XYZ?departing_trains=3: HTTP 200 []
 HKI?departing_trains=abc: HTTP 400 {"errorMessage":"Invalid format for parameter. Target type: Integer, parameter: abc","code":"PARAMETER_WRONG_TYPE","quer
-User-agent: * Allow: / 
-Source: Fintraffic / digitraffic.fi, license CC 4.0 BY (https://creativecommons.org/licenses/by/4.0/). Accessed 24 November 2026 00:01 UTC. Changed: fields picked, times converted from UTC to Helsinki time.
+Source: Fintraffic / digitraffic.fi, license CC 4.0 BY (https://creativecommons.org/licenses/by/4.0/). Accessed 24 November 2026 00:30 UTC. Changed: fields picked, times converted from UTC to Helsinki time.
 ```
 
 ## Fields

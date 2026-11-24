@@ -1,6 +1,6 @@
 # Grants.gov - Find Open and Forecasted US Federal Grant Opportunities for a Keyword: Number, Title, Agency, Open and Close Dates, Then Award Ceiling, Award Floor and Eligibility for the Top Hit (search2 and fetchOpportunity JSON APIs, POST, no key)
 
-Field-tested against api.grants.gov, www.grants.gov and www.hhs.gov on 2026-11-23 (US Eastern evening; roughly 23:30-23:45 UTC, saved exploration files from 23:33 UTC) using fresh Browser Use cloud browsers (logged out; one session 23:34:28-23:42:02 UTC, and a second, new one at 23:44:29-23:44:40 UTC for block 1's last run) plus Python `urllib` and `curl` from a Linux machine. 42 browser page loads (36 on www.grants.gov, 4 on www.hhs.gov, 2 on api.grants.gov) and 80 in-page `fetch()` calls to the API (block 1 ran 5 times, block 2 three times), 59 curl calls (41 while exploring, 18 in two runs of block 4) and 61 urllib calls (block 3 ran 6 times with 10 calls each, plus one TLS test), all serial and at least 1 s apart. Every API answer was HTTP 200 except the deliberate probes below: HTTP 403 `{"message":"Missing Authentication Token"}` (a GET, a CORS preflight `OPTIONS` and `/robots.txt` on api.grants.gov) and HTTP 502 (a body that is not JSON). 11 in-page `fetch()` calls failed on purpose or by CORS (see Gotchas), and every plain `curl` or Python request to www.grants.gov failed certificate verification (incomplete chain, see Gotchas). curl timed answers at 0.22-0.87 s (0.87 s for all 790 posted opportunities in one call). No 429, no key, no login, no cookie. Block 1's output below is its fifth run (23:44 UTC), block 2's its third (23:40), block 3's its sixth (23:44), block 4's its second (23:41). Between the last two runs of each block only the times changed, plus one printed label in block 1 (the default order is no longer called relevance, which is not documented), and in earlier runs the eligibility code order in block 3 (now sorted, because the API returns it in a different order per call) and an `&amp;` in a title in block 4 (now decoded). Block 1's first run (23:35) stopped on a `cfdas` entry without a number and block 3's first (23:38) on a sort bug; both were fixed before the runs shown. An earlier live check on the same day (23:19 UTC, while choosing this site) gave the same 149 hits. An independent verifier re-ran all four blocks verbatim on 2026-11-23 23:46 to 23:47 UTC (a new cloud browser, urllib, curl): every block ran, and apart from the printed times every output was identical to the one shown.
+Field-tested against api.grants.gov, www.grants.gov and www.hhs.gov on 2026-11-23 (US Eastern evening; roughly 23:30-23:45 UTC, saved exploration files from 23:33 UTC) using fresh Browser Use cloud browsers (logged out; one session 23:34:28-23:42:02 UTC, and a second, new one at 23:44:29-23:44:40 UTC for block 1's last run) plus Python `urllib` and `curl` from a Linux machine. 42 browser page loads (36 on www.grants.gov, 4 on www.hhs.gov, 2 on api.grants.gov) and 80 in-page `fetch()` calls to the API (block 1 ran 5 times, block 2 three times), 59 curl calls (41 while exploring, 18 in two runs of block 4) and 61 urllib calls (block 3 ran 6 times with 10 calls each, plus one TLS test), all serial and at least 1 s apart. Every API answer was HTTP 200 except the deliberate probes below: HTTP 403 `{"message":"Missing Authentication Token"}` (a GET, a CORS preflight `OPTIONS` and `/robots.txt` on api.grants.gov) and HTTP 502 (a body that is not JSON). 11 in-page `fetch()` calls failed on purpose or by CORS (see Gotchas), and every plain `curl` or Python request to www.grants.gov failed certificate verification (incomplete chain, see Gotchas). curl timed answers at 0.22-0.87 s (0.87 s for all 790 posted opportunities in one call). No 429, no key, no login, no cookie. Block 1's output below is its fifth run (23:44 UTC), block 2's its third (23:40), block 3's its sixth (23:44), block 4's its second (23:41). Between the last two runs of each block only the times changed, plus one printed label in block 1 (the default order is no longer called relevance, which is not documented), and in earlier runs the eligibility code order in block 3 (now sorted, because the API returns it in a different order per call) and an `&amp;` in a title in block 4 (now decoded). Block 1's first run (23:35) stopped on a `cfdas` entry without a number and block 3's first (23:38) on a sort bug; both were fixed before the runs shown. An earlier live check on the same day (23:19 UTC, while choosing this site) gave the same 149 hits. An independent verifier re-ran all four blocks verbatim on 2026-11-23 23:46 to 23:47 UTC (a new cloud browser, urllib, curl): every block ran, and apart from the printed times every output was identical to the one shown. After a code review, blocks 1, 3 and 4 changed and re-ran on 2026-11-24 between 00:28 and 00:36 UTC (browser blocks in a new cloud browser); the outputs shown for them come from those runs.
 
 robots.txt (checked 2026-11-23, curl, `urllib.robotparser` and the cloud browser): https://api.grants.gov/robots.txt answers HTTP 403 with the JSON `{"message":"Missing Authentication Token"}` (the same answer a GET or an OPTIONS to the search endpoint gets), so the API host has no rules and no named AI-agent groups; under RFC 9309 (section 2.3.1.3) an unavailable robots.txt (4xx) means a crawler "MAY access any resources". https://www.grants.gov/robots.txt is `User-agent: *` / `Allow: /` and nothing else (read in the cloud browser by block 2, and with `curl -k` while choosing this site because the server sends an incomplete certificate chain). No group names GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot or Bytespider, so all of them fall under `*`, which allows `/api/api-guide`, `/api/common/search2`, `/api/common/fetchopportunity` and `/search-results-detail/<id>` (block 2 checks all 11 agents). Terms: the API guide https://www.grants.gov/api/api-guide says "Authentication and authorization are not required for the following APIs: Endpoint: search2, Endpoint: fetchOpportunity" and, under "Unrestricted Access", that "The primary endpoint, v1/api/search2, is designed to be accessible without user authentication (in other words, no login or authentication key required)", "allowing the public and developers alike to conduct thorough searches"; the endpoint pages say "Authentication and authorization is not required for search2" and "... for fetchOpportunity". The guide also says "some will require an API key from Grants.gov": the two endpoints used here are not among them. The site footer's "Disclaimers" link goes to the exit disclaimer https://www.grants.gov/exit-disclaimer, which is about links to other websites ("these sites are not endorsed by the federal government"). Grants.gov is an HHS site (https://www.grants.gov/support/about-grants-gov: "Managed by the Department of Health and Human Services, Grants.gov is an E-Government initiative operating under the governance of the Office of Management and Budget"); the HHS website disclaimers https://www.hhs.gov/digital/policies/disclaimers/index.html say "Reference in this website to any specific commercial product, process, service, manufacturer, or company is not an endorsement or recommendation by the U.S. Government" and that its licensed "stock photos are not in the public domain". None of these pages mentions AI, machine learning, text and data mining, scraping, crawling, robots, automated access or non-commercial use (block 2 checks), and no licence restriction was found for the opportunity data, which federal agencies publish. Naming: this skill writes "Grants.gov" in plain text, shows no Grants.gov or HHS logo, and is not affiliated with or endorsed by Grants.gov, HHS or any US government agency.
 
@@ -9,7 +9,7 @@ robots.txt (checked 2026-11-23, curl, `urllib.robotparser` and the cloud browser
 - **No scraping.** `POST https://api.grants.gov/v1/api/search2` with JSON `{"keyword": "artificial intelligence", "oppStatuses": "forecasted|posted", "rows": 10, "startRecordNum": 0}` -> `{"errorcode": 0, "msg": "Webservice Succeeds", "token": "...", "data": {"hitCount": 149, "oppHits": [{"id", "number", "title", "agencyCode", "agency", "openDate", "closeDate", "oppStatus", "docType", "cfdaList"}], "oppStatusOptions": [...], "agencies": [...], "eligibilities": [...], ...}}`. Then `POST /v1/api/fetchOpportunity` with `{"opportunityId": 320753}` (the `id`, not the `number`) -> one opportunity with a `synopsis` block (posted) or a `forecast` block (forecasted) holding `awardCeiling`, `awardFloor`, `estimatedFunding` and `applicantTypes`. JSON, no key, no login. GET is HTTP 403.
 - **Answers (block 1, 23:44 UTC):** "artificial intelligence" has **149** open and forecasted opportunities (124 posted, 25 forecasted; 113 as a quoted phrase). First in the default order: **PD-19-127Y**, NSF, "Science of Learning and Augmented Intelligence (SL)", open 09/19/2019, close **02/10/2027**: award ceiling **none**, award floor **$550**, eligibility **99 Unrestricted**. Top forecast: **W519TC-25-S-0001**, Army Contracting Command Rock Island, "Broad Agency Announcement for Fundamental AI Research", no close date, no award amounts, eligibility **25 Others** with the text "institutions of higher education, nonprofit organizations, state and local governments, foreign organizations, foreign public entities, and for-profit organizations". Closing soonest: G27AS00044 (Geological Survey) on 11/30/2026. Block 3 writes all 149 to a CSV; block 4 shows DE-FOA-0003612 (Office of Science): ceiling $16,000,000, floor $500,000, estimated total $293,760,000.
 - **Filters are codes in pipe-separated strings.** `agencies` (`NSF`, `DOD-AMC-ACCRI`, `DOD*`), `eligibilities` (`23` small businesses, `99` unrestricted ...), `fundingCategories` (`ST`, `HL` ...), `cfda` (Assistance Listing number, e.g. `47.075`); the codes come back as facets in every search2 answer, and the eligibility and category codes (not the agency codes) are also listed on https://www.grants.gov/api/status-codes. Wrong names, separators and codes give `hitCount 0` or are ignored, never an error (block 2).
-- **Rate limit: none published as a number.** The status-codes page says "429 Too Many Requests: Too many of the user's requests hit the API too quickly. We recommend an exponential backoff of your requests."; answers carry no rate-limit headers (block 4). The blocks stay serial, wait 1 s around each call, back off on 429/5xx (`Retry-After`, else 30 s once in block 1, 15 s then 30 s in block 3) and stop when asked to wait more than 120 s.
+- **Rate limit: none published as a number.** The status-codes page says "429 Too Many Requests: Too many of the user's requests hit the API too quickly. We recommend an exponential backoff of your requests."; answers carry no rate-limit headers (block 4). The blocks stay serial, wait 1 s around each call, back off on 429/5xx (`Retry-After`, else 30 s once in block 1, 15 s then 30 s in block 3, `curl --retry 3` on block 4's data calls) and stop when asked to wait more than 120 s.
 
 ## What works
 
@@ -118,6 +118,8 @@ print(f"hitCount {d['hitCount']} (posted {st.get('posted')}, forecasted {st.get(
       f"not asked for: closed {st.get('closed')}, archived {st.get('archived')})")
 q = search(f'"{KEYWORD}"', 1)
 print(f"as a quoted phrase: hitCount {q['hitCount']} (unquoted words also match opportunities that have only some of them)")
+if not d["oppHits"]:
+    raise SystemExit(f"no open or forecasted opportunity for {KEYWORD!r}: try fewer words, or add closed|archived")
 print(f"\nTop {SHOW} in the default order (sortBy empty):")
 for h in d["oppHits"]:
     close = h["closeDate"] or "-"
@@ -126,8 +128,9 @@ for h in d["oppHits"]:
 soon = search(KEYWORD, 5, sort="closeDate|asc")
 print("\nClosing soonest (sortBy closeDate|asc; hits with no close date, all forecasts and some posted, sort last):")
 for h in soon["oppHits"]:
-    days = (datetime.strptime(h["closeDate"], "%m/%d/%Y").date() - now.date()).days
-    print(f"  {h['closeDate']} (in {days} days)  {h['number']:<18} {h['agency'][:34]:<34} {html.unescape(h['title'])[:50]}")
+    when = (f"{h['closeDate']} (in {(datetime.strptime(h['closeDate'], '%m/%d/%Y').date() - now.date()).days} days)"
+            if h["closeDate"] else "no close date")
+    print(f"  {when}  {h['number']:<18} {h['agency'][:34]:<34} {html.unescape(h['title'])[:50]}")
 
 top = d["oppHits"][0]
 first_forecast = next((h for h in d["oppHits"] if h["docType"] == "forecast"), None)
@@ -151,10 +154,10 @@ for h in [top] + ([first_forecast] if first_forecast and first_forecast is not t
 print(f"\nSource: Grants.gov search2 and fetchOpportunity APIs, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the fifth run on 2026-11-23, 23:44 UTC, in the second cloud browser; the runs at 23:36, 23:40 and 23:41 printed the same opportunities and values):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:31 UTC, in a new cloud browser; the 23:36-23:44 runs on 2026-11-23 printed the same opportunities and values, with each "in N days" one higher; with a keyword that has no hits the block now stops with "no open or forecasted opportunity"):
 
 ```text
-Grants.gov search2, keyword 'artificial intelligence', oppStatuses 'forecasted|posted', checked 2026-11-23 23:44 UTC
+Grants.gov search2, keyword 'artificial intelligence', oppStatuses 'forecasted|posted', checked 2026-11-24 00:31 UTC
 hitCount 149 (posted 124, forecasted 25; not asked for: closed 675, archived 3926)
 as a quoted phrase: hitCount 113 (unquoted words also match opportunities that have only some of them)
 
@@ -164,22 +167,22 @@ Top 8 in the default order (sortBy empty):
   PAS-TUNIS- APS FY2026  forecasted open 05/06/2026  close -           DOS-TUN        Annual Program Statement (APS) For Fiscal Year 2026
   26-504                 posted     open 02/05/2026  close 09/28/2027  NSF            Postdoctoral Research Fellowships in Biology (PRFB)
   25-531                 posted     open 01/04/2025  close 01/20/2027  NSF            Cybersecurity Innovation for Cyberinfrastructure (CICI)
-  26-512                 posted     open 07/21/2026  close 11/03/2027  NSF            Unlocking Dataset Value for AI-Enabled Scientific Discovery 
+  26-512                 posted     open 07/21/2026  close 11/03/2027  NSF            Unlocking Dataset Value for AI-Enabled Scientific Discovery
   26-503                 posted     open 02/04/2026  close 04/05/2027  NSF            Artificial Intelligence and Cybersecurity Education Innovati
   PAS-TUNIS-FY2025       forecasted open 06/02/2025  close -           DOS-TUN        Annual Program Statement (APS) for Fiscal Year 2025
 
 Closing soonest (sortBy closeDate|asc; hits with no close date, all forecasts and some posted, sort last):
-  11/30/2026 (in 7 days)  G27AS00044         Geological Survey                  Cooperative Agreement for affiliated Partner with 
-  12/02/2026 (in 9 days)  G27AS00040         Geological Survey                  Cooperative Agreement for affiliated Partner with 
-  12/04/2026 (in 11 days)  NNH25ZDA001N-CRYO  NASA Headquarters                  ROSES 2025: A.16 Cryosphere
-  12/07/2026 (in 14 days)  G27AS00047         Geological Survey                  Cooperative Agreement for affiliated Partner with 
-  12/07/2026 (in 14 days)  G27AS00062         Geological Survey                  Cooperative Agreement for affiliated Partner with 
+  11/30/2026 (in 6 days)  G27AS00044         Geological Survey                  Cooperative Agreement for affiliated Partner with
+  12/02/2026 (in 8 days)  G27AS00040         Geological Survey                  Cooperative Agreement for affiliated Partner with
+  12/04/2026 (in 10 days)  NNH25ZDA001N-CRYO  NASA Headquarters                  ROSES 2025: A.16 Cryosphere
+  12/07/2026 (in 13 days)  G27AS00047         Geological Survey                  Cooperative Agreement for affiliated Partner with
+  12/07/2026 (in 13 days)  G27AS00062         Geological Survey                  Cooperative Agreement for affiliated Partner with
 
 fetchOpportunity 320753 (synopsis): PD-19-127Y  Science of Learning and Augmented Intelligence (SL)
   agency: U.S. National Science Foundation (NSF), top agency U.S. National Science Foundation
   award ceiling none, award floor $550, estimated total funding not given, cost sharing False
   posted Sep 19, 2019 12:00:00 AM EDT, closes Feb 10, 2027 12:00:00 AM EST, archive Sep 03, 2027 12:00:00 AM EDT
-  eligibility: 99 Unrestricted (i.e., open to any type of entity above), subject to any 
+  eligibility: 99 Unrestricted (i.e., open to any type of entity above), subject to any
   additional eligibility text: (empty)
   instruments: ['Grant'], ALN ['47.075']
   page for people: https://www.grants.gov/search-results-detail/320753
@@ -193,7 +196,7 @@ fetchOpportunity 358687 (forecast): W519TC-25-S-0001  Broad Agency Announcement 
   instruments: ['Cooperative Agreement'], ALN ['12.431']
   page for people: https://www.grants.gov/search-results-detail/358687
 
-Source: Grants.gov search2 and fetchOpportunity APIs, accessed 23 November 2026 23:44 UTC.
+Source: Grants.gov search2 and fetchOpportunity APIs, accessed 24 November 2026 00:31 UTC.
 ```
 
 ### 2. robots.txt, the API guide and disclaimers, the status codes, and what the API does with mistakes (browser)
@@ -476,6 +479,8 @@ def day(s):
 # 1) robots.txt. api.grants.gov answers 403 JSON: unavailable, so no rules (RFC 9309 2.3.1.3). Python's
 #    robotparser would treat 401/403 as "disallow all", so feed it nothing instead of letting it read().
 st, body = http("https://api.grants.gov/robots.txt")
+if st != 200 and not (400 <= st < 500 and st != 429):
+    sys.exit(f"robots.txt api.grants.gov: HTTP {st}, rules unknown: stop")
 rp = urllib.robotparser.RobotFileParser()
 rp.parse(body.decode(errors="replace").splitlines() if st == 200 else [])
 ok = all(rp.can_fetch(a, API + "/search2") and rp.can_fetch(a, API + "/fetchOpportunity") for a in AGENTS)
@@ -500,8 +505,11 @@ while total is None or len(hits) < total:
         break
     hits += d["oppHits"]
 ids = [h["id"] for h in hits]
+partial = len(hits) < total   # an empty page came back before hitCount was reached
 print(f"\n{KEYWORD!r}, {STATUSES}, checked {now:%Y-%m-%d %H:%M} UTC: hitCount {total}, read {len(hits)} "
       f"({len(set(ids))} distinct) in {calls['POST']} calls of {PAGE} ({size / 1e3:.0f} KB)")
+if partial:
+    print(f"PARTIAL: only {len(hits)} of {total} hits came back; the CSV below is incomplete, re-run later")
 
 # 3) Award ceiling, floor and eligibility for the top hits (default order).
 extra = {}
@@ -528,14 +536,15 @@ with open(OUT, "w", newline="", encoding="utf-8") as f:
                     "aln": " ".join(h.get("cfdaList") or []),
                     **{k: e.get(k, "") for k in ("award_ceiling", "award_floor", "estimated_funding", "eligibility_codes")},
                     "url": f"https://www.grants.gov/search-results-detail/{h['id']}"})
-print(f"written to {OUT} ({len(hits)} rows, dates as YYYY-MM-DD, award columns filled for the top {DETAILS})")
+print(f"written to {OUT} ({len(hits)} rows{' of ' + str(total) + ', PARTIAL' if partial else ''}, dates as YYYY-MM-DD, award columns filled for the top {DETAILS})")
 
 print(f"  by status: {dict(collections.Counter(h['oppStatus'] for h in hits))}")
 print(f"  top agencies: {collections.Counter(h['agency'] for h in hits).most_common(5)}")
 closing = sorted(((day(h["closeDate"]), h) for h in hits if h["closeDate"]), key=lambda x: x[0])
 soon = [(c, h) for c, h in closing if (c - now.date()).days <= 30]
+latest = f"{closing[-1][0]} ({closing[-1][1]['number']})" if closing else "none"
 print(f"  closing within 30 days: {len(soon)}; closing date in the past: {sum(c < now.date() for c, _ in closing)}; "
-      f"latest close {closing[-1][0]} ({closing[-1][1]['number']})")
+      f"latest close {latest}")
 print(f"  no close date ('' in closeDate): {dict(collections.Counter(h['oppStatus'] for h in hits if not h['closeDate']))}")
 print(f"\ntop {DETAILS} with award data:")
 for h in hits[:DETAILS]:
@@ -546,13 +555,13 @@ print(f"calls: {dict(calls)}")
 print("Source: Grants.gov search2 and fetchOpportunity APIs.")
 ```
 
-Output (from the sixth run on 2026-11-23, 23:44 UTC; the four complete runs from 23:39 to 23:41 printed the same counts and award values):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:28 UTC; identical to the 23:39-23:44 runs on 2026-11-23 apart from the time):
 
 ```text
 robots https://api.grants.gov: HTTP 403 b'{"message":"Missing Authentication Token"}': search2 and fetchOpportunity allowed for all 11 agents
 robots https://www.grants.gov: SSLCertVerificationError: unable to get local issuer certificate (the server sends an incomplete certificate chain; block 2 reads it in a browser)
 
-'artificial intelligence', forecasted|posted, checked 2026-11-23 23:44 UTC: hitCount 149, read 149 (149 distinct) in 3 calls of 50 (73 KB)
+'artificial intelligence', forecasted|posted, checked 2026-11-24 00:28 UTC: hitCount 149, read 149 (149 distinct) in 3 calls of 50 (73 KB)
 written to grants-gov-ai.csv (149 rows, dates as YYYY-MM-DD, award columns filled for the top 5)
   by status: {'posted': 124, 'forecasted': 25}
   top agencies: [('National Institutes of Health', 40), ('U.S. National Science Foundation', 19), ('Dept of the Army -- Materiel Command', 8), ('Air Force Office of Scientific Research', 8), ('Geological Survey', 6)]
@@ -577,18 +586,22 @@ The CSV columns: `number, id, status, doc_type, agency_code, agency, title, open
 S=https://api.grants.gov/v1/api/search2
 F=https://api.grants.gov/v1/api/fetchOpportunity
 UA='grants-gov-skill-example/1.0 (+https://github.com/browser-use/browser-harness)'
+# data calls retry 429/5xx/timeouts up to 3 times (curl waits Retry-After, else 1 s, 2 s, 4 s) and give up after 120 s;
+# the mistake probes further down have no retry, so the 502 shows once
+RETRY=(--retry 3 --retry-max-time 120)
 # open and forecasted opportunities for a phrase, NSF and every DOD sub-agency, closing soonest first
-curl -sS --fail -A "$UA" -X POST "$S" -H 'Content-Type: application/json' \
+curl -sS --fail "${RETRY[@]}" -A "$UA" -X POST "$S" -H 'Content-Type: application/json' \
   -d '{"keyword": "\"machine learning\"", "oppStatuses": "forecasted|posted", "agencies": "NSF|DOD*", "sortBy": "closeDate|asc", "rows": 5}' \
   | python3 -c 'import sys, json, html
 d = json.load(sys.stdin)
 if d["errorcode"] != 0: sys.exit("errorcode %s %s" % (d["errorcode"], d["msg"]))
 print("hitCount", d["data"]["hitCount"], {o["value"]: o["count"] for o in d["data"]["oppStatusOptions"]})
 for h in d["data"]["oppHits"]:
-    print(h["number"], "|", h["oppStatus"], "|", h["openDate"], "->", h["closeDate"] or "-", "|", h["agencyCode"], "|", html.unescape(h["title"])[:60])'
+    print(h["id"], "|", h["number"], "|", h["oppStatus"], "|", h["openDate"], "->", h["closeDate"] or "-", "|", h["agencyCode"], "|", html.unescape(h["title"])[:60])'
 sleep 1
-# award ceiling, floor and eligibility for one opportunity (id from search2, not the number)
-curl -sS --fail -A "$UA" -X POST "$F" -H 'Content-Type: application/json' -d '{"opportunityId": 361526}' \
+# award ceiling, floor and eligibility for one opportunity: the id (first column above), not the number;
+# 361526 is DE-FOA-0003612, an opportunity with all three award fields filled
+curl -sS --fail "${RETRY[@]}" -A "$UA" -X POST "$F" -H 'Content-Type: application/json' -d '{"opportunityId": 361526}' \
   | python3 -c 'import sys, json, html
 o = json.load(sys.stdin)["data"]
 if "id" not in o: sys.exit("no such opportunity")
@@ -598,7 +611,7 @@ print("ceiling", b.get("awardCeiling"), "floor", b.get("awardFloor"), "estimated
 print("eligibility", [a["id"] + " " + a["description"][:40] for a in b.get("applicantTypes") or []])'
 sleep 1
 # response headers: JSON, CORS open to any origin, no cache or rate-limit headers
-curl -sS -A "$UA" -D - -o /dev/null -X POST "$S" -H 'Content-Type: application/json' -d '{"keyword": "artificial intelligence", "rows": 1}' \
+curl -sS "${RETRY[@]}" -A "$UA" -D - -o /dev/null -X POST "$S" -H 'Content-Type: application/json' -d '{"keyword": "artificial intelligence", "rows": 1}' \
   | tr -d '\r' | grep -iE '^(HTTP/|(content-type|access-control-allow-[a-z]+|cache-control|retry-after|x-ratelimit-[a-z]+|ratelimit[a-z-]*):)'
 sleep 1
 # mistakes: GET, a CORS preflight (OPTIONS), a body that is not JSON, a comma in oppStatuses, an unknown id
@@ -618,19 +631,19 @@ curl -sS -A "$UA" -o /dev/null -w 'www.grants.gov/robots.txt -> HTTP %{http_code
 rm -f "$T"
 ```
 
-Output (from the second run on 2026-11-23, 23:41 UTC; the 23:39 run printed the same, with `&amp;` in the HM047623BAA0001 title before it was decoded):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:28 UTC, which added the id column; the 23:39 and 23:41 runs on 2026-11-23 printed the same opportunities and headers):
 
 ```text
 hitCount 27 {'posted': 25, 'closed': 15, 'archived': 397, 'forecasted': 2}
-N0001426SF001 | posted | 06/18/2026 -> 12/11/2026 | DOD-ONR | Fiscal Year (FY) 2027 Department of the Navy (DoN) Historica
-HM047623BAA0001 | posted | 12/15/2023 -> 12/14/2026 | DOD-NGIA | Boosting Innovative GEOINT - Science & Technology  Broad Age
-N00173-24-S-BA01 | posted | 03/01/2024 -> 12/30/2026 | DOD-ONR-NRL | NRL Long Range Broad Agency Announcement (BAA) for Basic and
-PD-19-127Y | posted | 09/19/2019 -> 02/10/2027 | NSF | Science of Learning and Augmented Intelligence (SL)
-FA955027S0002 | posted | 10/28/2026 -> 02/19/2027 | DOD-AFOSR | AFRL/AFOSR-Taiwan NSTC Frontiers in Materials and Nanostruct
+362871 | N0001426SF001 | posted | 06/18/2026 -> 12/11/2026 | DOD-ONR | Fiscal Year (FY) 2027 Department of the Navy (DoN) Historica
+351404 | HM047623BAA0001 | posted | 12/15/2023 -> 12/14/2026 | DOD-NGIA | Boosting Innovative GEOINT - Science & Technology  Broad Age
+352741 | N00173-24-S-BA01 | posted | 03/01/2024 -> 12/30/2026 | DOD-ONR-NRL | NRL Long Range Broad Agency Announcement (BAA) for Basic and
+320753 | PD-19-127Y | posted | 09/19/2019 -> 02/10/2027 | NSF | Science of Learning and Augmented Intelligence (SL)
+364165 | FA955027S0002 | posted | 10/28/2026 -> 02/19/2027 | DOD-AFOSR | AFRL/AFOSR-Taiwan NSTC Frontiers in Materials and Nanostruct
 DE-FOA-0003612 | The Genesis Mission:  Transforming Science and Energy with AI | Office of Science
 ceiling 16000000 floor 500000 estimated total 293760000 | closes Dec 17, 2026 12:00:00 AM EST
 eligibility ['99 Unrestricted (i.e., open to any type of ']
-HTTP/2 200 
+HTTP/2 200
 content-type: application/json
 access-control-allow-origin: *
 access-control-allow-headers: Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-requested-with

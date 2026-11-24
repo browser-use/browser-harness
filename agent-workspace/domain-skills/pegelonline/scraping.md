@@ -1,6 +1,6 @@
 # PEGELONLINE - Get the Current Rhine Water Level at Köln, or Any German Federal Waterway Gauge by River, With Its 24-Hour Trend and Its State Against Mean Low and Mean High Water (REST API JSON, no key)
 
-Field-tested against the PEGELONLINE REST API (WSV / ITZBund) on 2026-11-23 (US Pacific afternoon; 23:32-23:46 UTC, already 24 November in German local time) using a fresh Browser Use cloud browser (logged out; one session, 23:34-23:43 UTC) plus Python `urllib` and `curl` from a Linux machine. 17 browser page loads (8 in each of block 2's two runs, 1 in block 1's first run; its second run reused the open guide page) and 32 in-page `fetch()` calls (block 1: 3 per run, block 2: 13 per run, both ran twice), 53 curl calls (29 while exploring the API and the docs, 12 in each of block 4's two runs) and 17 urllib calls (block 3 ran 7 times: empty cache, warm, after the cache expired, the Main at Würzburg, a misspelled gauge, plus two earlier runs before a file-name fix), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes below: HTTP 404 (robots.txt on both hosts, `KOELN`, `XYZ`), HTTP 304 (conditional GETs with `If-None-Match`) and one HTTP 301 (`www.` docs page to the bare host). curl timed 28 answers at 0.50-0.87 s. No 429, no challenge, no key, no login, no cookie needed (answers carry a load-balancer `Set-Cookie`; no block sends it back). Block 1's output below is its second run (23:43 UTC), block 2's its second (started 23:36:36 UTC, after one docs quote was re-cut to match the page's spacing), block 3's its third (empty cache) and fourth (warm), block 4's its second. An independent re-run (23:46-23:56 UTC, fresh cloud browser) reproduced every block one 15-minute step later; it corrected the cache-header gotcha, the Basel and gauge-zero notes, the current-value size, the cookie wording and one block 4 comment.
+Field-tested against the PEGELONLINE REST API (WSV / ITZBund) on 2026-11-23 (US Pacific afternoon; 23:32-23:46 UTC, already 24 November in German local time) using a fresh Browser Use cloud browser (logged out; one session, 23:34-23:43 UTC) plus Python `urllib` and `curl` from a Linux machine. 17 browser page loads (8 in each of block 2's two runs, 1 in block 1's first run; its second run reused the open guide page) and 32 in-page `fetch()` calls (block 1: 3 per run, block 2: 13 per run, both ran twice), 53 curl calls (29 while exploring the API and the docs, 12 in each of block 4's two runs) and 17 urllib calls (block 3 ran 7 times: empty cache, warm, after the cache expired, the Main at Würzburg, a misspelled gauge, plus two earlier runs before a file-name fix), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes below: HTTP 404 (robots.txt on both hosts, `KOELN`, `XYZ`), HTTP 304 (conditional GETs with `If-None-Match`) and one HTTP 301 (`www.` docs page to the bare host). curl timed 28 answers at 0.50-0.87 s. No 429, no challenge, no key, no login, no cookie needed (answers carry a load-balancer `Set-Cookie`; no block sends it back). Block 1's output below is its second run (23:43 UTC), block 2's its second (started 23:36:36 UTC, after one docs quote was re-cut to match the page's spacing), block 3's its third (empty cache) and fourth (warm), block 4's its second. An independent re-run (23:46-23:56 UTC, fresh cloud browser) reproduced every block one 15-minute step later; it corrected the cache-header gotcha, the Basel and gauge-zero notes, the current-value size, the cookie wording and one block 4 comment. After a code review, blocks 1 and 3 changed and re-ran on 2026-11-24 between 00:28 and 00:36 UTC (browser blocks in a new cloud browser); the outputs shown for them come from those runs.
 
 robots.txt (checked 2026-11-23, curl, the cloud browser and block 3): https://www.pegelonline.wsv.de/robots.txt and https://pegelonline.wsv.de/robots.txt both answer HTTP 404 with the site's HTML error page. RFC 9309 treats an unavailable (4xx) robots.txt as no restrictions, so every agent, including GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider, may fetch every path this skill uses (`/webservices/rest-api/v2/...` and the docs pages; block 3 checks all 11 agents on every path on every run and stops if the host ever publishes rules that disallow one). Terms: "Nutzungsbedingungen PEGELONLINE", https://pegelonline.wsv.de/gast/nutzungsbedingungen ("Stand: 21.05.2024"): "Informationen, Produkte oder Dienste, die Sie von dieser Website erhalten, dürfen übernommen werden. Dies geschieht auf der Grundlage der Lizenz DL-DE->Zero-2.0" and the data "dürfen für die kommerzielle und nicht kommerzielle Nutzung insbesondere ... in interne und externe Geschäftsprozesse, Produkte und Anwendungen in öffentlichen und nicht öffentlichen elektronischen Netzwerken eingebunden werden" (commercial and non-commercial use, including in applications). The licence text at govdata.de (Datenlizenz Deutschland - Zero - Version 2.0) says "Any use is permitted without restrictions or conditions."; no attribution is required. The webservices overview https://pegelonline.wsv.de/webservice/ueberblick: "Über die PEGELONLINE-Webservices können Drittanbieter kostenlos ihre Angebote mit Daten von PEGELONLINE erweitern." and "Die Wasserstraßen- und Schifffahrtsverwaltung des Bundes (WSV) stellt diese ungeprüften Rohdaten bereit." (unchecked raw data, no liability or warranty for correctness, accuracy, timeliness, reliability or completeness). The REST docs: "Es ist keine Authentifizierung oder Autorisierung erforderlich"; the FAQ: "Sie können die PEGELONLINE Webservices ohne Registrierung verwenden." No AI/ML, scraping, crawling, robot or non-commercial-only wording on the terms page (block 2 scans it; its two hits are the allowing phrase "kommerzielle und nicht kommerzielle Nutzung" and the phone service's "automatisierter Sprachansage"). www.govdata.de/robots.txt has `User-agent: *` / `Disallow: /`, so no block fetches the licence page; the quote above was read once while vetting. Naming: this skill writes "PEGELONLINE (WSV / ITZBund)" in plain text and shows no WSV or federal-eagle logo; it is not affiliated with or endorsed by the WSV, the GDWS or the ITZBund. Every block's output names the source and says what was computed.
 
@@ -125,6 +125,8 @@ if not series:
     raise RuntimeError(f"{GAUGE}: no measurements in the last 24 h: stop")
 first, last = series[0], series[-1]
 expected = 24 * 60 // w["equidistance"]
+gaps = sum(ts(b["timestamp"]) - ts(a["timestamp"]) != timedelta(minutes=w["equidistance"]) for a, b in zip(series, series[1:]))
+complete = "no gaps" if not gaps else f"PARTIAL: {gaps} breaks in the {w['equidistance']}-min steps, read the trend with care"
 lo, hi = min(series, key=lambda m: m["value"]), max(series, key=lambda m: m["value"])
 back3 = [m for m in series if ts(m["timestamp"]) <= ts(last["timestamp"]) - timedelta(hours=3)]
 d3 = last["value"] - back3[-1]["value"] if back3 else None
@@ -134,6 +136,8 @@ age_h = (now - ts(cur["timestamp"])).total_seconds() / 3600
 print(f"\n{st['longname']} ({RIVER} km {st['km']:g}, {st['agency']}, uuid {st['uuid']})")
 print(f"  now: W = {cur['value']:g} {w['unit']} at {cur['timestamp']} ({utc(cur['timestamp'])}; {age_h:.1f} h old)")
 print(f"  state vs MNW/MHW: {cur['stateMnwMhw']}; vs HSW: {cur['stateNswHsw']}")
+if age_h > 25 or cur["stateMnwMhw"] in ("out-dated", "commented"):
+    print("  WARNING: value older than 25 h or gauge commented (fault); do not use it or the differences below as current")
 for k in ("MNW", "MW", "MHW"):
     if k in cv:
         c = cv[k]
@@ -146,7 +150,7 @@ if "gaugeZero" in w:
     gz = w["gaugeZero"]
     print(f"  gauge zero {gz['value']:g} {gz['unit']} -> water surface {gz['value'] + cur['value'] / 100:.2f} {gz['unit']} "
           f"(W is height above gauge zero, not water depth)")
-print(f"  last 24 h: {len(series)} values ({w['equidistance']}-min steps; {expected} expected), "
+print(f"  last 24 h: {len(series)} values ({w['equidistance']}-min steps; {expected} expected, {complete}), "
       f"{first['timestamp'][5:16]} -> {last['timestamp'][5:16]} local")
 print(f"    {first['value']:g} -> {last['value']:g} cm ({last['value'] - first['value']:+g} cm in 24 h); "
       f"low {lo['value']:g} at {lo['timestamp'][5:16]}, high {hi['value']:g} at {hi['timestamp'][5:16]}")
@@ -158,52 +162,52 @@ print(f"\nSource: PEGELONLINE (WSV / ITZBund) REST API, DL-DE->Zero-2.0, accesse
       f"Unchecked raw data, no warranty. Trend and differences computed here.")
 ```
 
-Output (from the second run on 2026-11-23, 23:43 UTC; the first run at 23:35 printed the same Köln figures):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:32 UTC, in a new cloud browser; the 23:35 and 23:43 runs on 2026-11-23 printed the same Köln figures, one or four 15-minute steps earlier):
 
 ```text
-PEGELONLINE REST API, checked 2026-11-23 23:43 UTC
+PEGELONLINE REST API, checked 2026-11-24 00:32 UTC
 
 RHEIN: 36 gauges with a W (water level) series, upstream to downstream by river km
        km  gauge                 W cm  measured (local) state     vs MW  MNW/MW/MHW      HSW
-      0.5  KONSTANZ-RHEIN         265  2026-11-24 00:30 unknown       -  -/-/-           -
-    164.3  Basel-Rheinhalle       632  2026-11-24 00:30 unknown       -  -/-/-           820
-    186.2  RHEINWEILER            198  2026-11-24 00:30 normal      -22  192/220/564     -
-    227.6  BREISACH               222  2026-11-24 00:30 unknown       -  -/-/-           -
-    254.2  RUST                    80  2026-11-24 00:30 unknown       -  -/-/-           -
-    270.6  OTTENHEIM              299  2026-11-24 00:30 unknown       -  -/-/-           -
-    292.2  KEHL-KRONENHOF         281  2026-11-24 00:30 normal      +45  180/236/426     -
-    336.2  IFFEZHEIM              318  2026-11-24 00:30 normal      +78  104/240/518     -
-    340.2  PLITTERSDORF           481  2026-11-24 00:30 normal      +70  272/411/687     -
-  362.327  MAXAU                  559  2026-11-24 00:30 normal      +63  353/496/785     750
-   389.33  PHILIPPSBURG           444  2026-11-24 00:30 normal      +46  254/398/718     -
-   400.61  SPEYER                 400  2026-11-24 00:30 normal      +39  214/361/699     730
-  424.733  MANNHEIM               302  2026-11-24 00:30 normal       +9  132/293/644     760
-   443.37  WORMS                  195  2026-11-24 00:30 normal       +0  46/195/529      650
-  480.606  NIERSTEIN-OPPENHEIM    267  2026-11-24 00:30 normal       +8  112/259/554     -
-      489  Bodenheim              336  2026-11-24 00:30 unknown       -  -/-/-           -
-   498.27  MAINZ                  308  2026-11-24 00:30 normal      +20  159/288/547     630
-   518.08  OESTRICH               200  2026-11-24 00:30 normal      +14  79/186/412      -
-   528.36  BINGEN                 208  2026-11-24 00:30 normal      +13  84/195/436      490
-   546.23  KAUB                   222  2026-11-24 00:30 normal      +14  65/208/544      640
-   556.43  SANKT GOAR             336  2026-11-24 00:30 normal      +25  152/311/652     -
-   570.45  BOPPARD                263  2026-11-24 00:30 normal      +24  77/239/573      -
-   579.98  BRAUBACH               276  2026-11-24 00:30 unknown       -  -/-/-           -
-   591.49  KOBLENZ                251  2026-11-24 00:30 normal      +37  60/214/588      650
-   608.04  Neuwied Stadt          266  2026-11-24 00:30 unknown       -  -/-/-           -
-   613.78  ANDERNACH              303  2026-11-24 00:30 normal      +45  71/258/672      760
-   638.19  OBERWINTER             264  2026-11-24 00:30 normal      +46  50/218/597      680
-    654.8  BONN                   333  2026-11-24 00:30 normal      +43  121/290/680     -
-      688  KÖLN                   345  2026-11-24 00:30 normal      +48  114/297/725     830
-    744.2  DÜSSELDORF             303  2026-11-24 00:30 normal      +46  70/257/684      880
-    780.8  DUISBURG-RUHRORT       458  2026-11-24 00:30 normal      +64  201/394/835     1130
-      814  WESEL                  415  2026-11-24 00:30 normal      +67  144/348/804     1060
-    837.4  REES                   350  2026-11-24 00:30 normal      +57  91/293/747      -
-    851.9  EMMERICH               288  2026-11-24 00:30 normal      +49  51/239/669      870
-      862  LOBITH                 944  2026-11-24 00:30 unknown       -  -/-/-           -
-    867.3  PANNERDENSE KOP        904  2026-11-24 00:30 unknown       -  -/-/-           -
+      0.5  KONSTANZ-RHEIN         265  2026-11-24 01:15 unknown       -  -/-/-           -
+    164.3  Basel-Rheinhalle       630  2026-11-24 01:20 unknown       -  -/-/-           820
+    186.2  RHEINWEILER            198  2026-11-24 01:30 normal      -22  192/220/564     -
+    227.6  BREISACH               220  2026-11-24 01:15 unknown       -  -/-/-           -
+    254.2  RUST                    80  2026-11-24 01:15 unknown       -  -/-/-           -
+    270.6  OTTENHEIM              299  2026-11-24 01:15 unknown       -  -/-/-           -
+    292.2  KEHL-KRONENHOF         281  2026-11-24 01:15 normal      +45  180/236/426     -
+    336.2  IFFEZHEIM              319  2026-11-24 01:15 normal      +79  104/240/518     -
+    340.2  PLITTERSDORF           480  2026-11-24 01:15 normal      +69  272/411/687     -
+  362.327  MAXAU                  560  2026-11-24 01:15 normal      +64  353/496/785     750
+   389.33  PHILIPPSBURG           446  2026-11-24 01:15 normal      +48  254/398/718     -
+   400.61  SPEYER                 402  2026-11-24 01:15 normal      +41  214/361/699     730
+  424.733  MANNHEIM               303  2026-11-24 01:15 normal      +10  132/293/644     760
+   443.37  WORMS                  195  2026-11-24 01:15 normal       +0  46/195/529      650
+  480.606  NIERSTEIN-OPPENHEIM    267  2026-11-24 01:15 normal       +8  112/259/554     -
+      489  Bodenheim              336  2026-11-24 01:15 unknown       -  -/-/-           -
+   498.27  MAINZ                  308  2026-11-24 01:30 normal      +20  159/288/547     630
+   518.08  OESTRICH               200  2026-11-24 01:15 normal      +14  79/186/412      -
+   528.36  BINGEN                 209  2026-11-24 01:15 normal      +14  84/195/436      490
+   546.23  KAUB                   223  2026-11-24 01:30 normal      +15  65/208/544      640
+   556.43  SANKT GOAR             335  2026-11-24 01:15 normal      +24  152/311/652     -
+   570.45  BOPPARD                263  2026-11-24 01:15 normal      +24  77/239/573      -
+   579.98  BRAUBACH               276  2026-11-24 01:15 unknown       -  -/-/-           -
+   591.49  KOBLENZ                251  2026-11-24 01:30 normal      +37  60/214/588      650
+   608.04  Neuwied Stadt          264  2026-11-24 01:30 unknown       -  -/-/-           -
+   613.78  ANDERNACH              302  2026-11-24 01:30 normal      +44  71/258/672      760
+   638.19  OBERWINTER             263  2026-11-24 01:15 normal      +45  50/218/597      680
+    654.8  BONN                   333  2026-11-24 01:15 normal      +43  121/290/680     -
+      688  KÖLN                   345  2026-11-24 01:15 normal      +48  114/297/725     830
+    744.2  DÜSSELDORF             301  2026-11-24 01:30 normal      +44  70/257/684      880
+    780.8  DUISBURG-RUHRORT       457  2026-11-24 01:15 normal      +63  201/394/835     1130
+      814  WESEL                  414  2026-11-24 01:15 normal      +66  144/348/804     1060
+    837.4  REES                   350  2026-11-24 01:15 normal      +57  91/293/747      -
+    851.9  EMMERICH               287  2026-11-24 01:30 normal      +48  51/239/669      870
+      862  LOBITH                 944  2026-11-24 01:20 unknown       -  -/-/-           -
+    867.3  PANNERDENSE KOP        904  2026-11-24 01:20 unknown       -  -/-/-           -
 
 KÖLN (RHEIN km 688, STANDORT KÖLN, uuid a6ee8177-107b-47dd-bcfd-30960ccc6e9c)
-  now: W = 345 cm at 2026-11-24T00:30:00+01:00 (23 Nov 23:30 UTC; 0.2 h old)
+  now: W = 345 cm at 2026-11-24T01:15:00+01:00 (24 Nov 00:15 UTC; 0.3 h old)
   state vs MNW/MHW: normal; vs HSW: normal
     MNW     114 cm  Mittel der Niedrigwasserstände (2010-2020); now +231 cm
     MW      297 cm  Mittel der Tageswasserstände (2010-2020); now +48 cm
@@ -213,12 +217,13 @@ KÖLN (RHEIN km 688, STANDORT KÖLN, uuid a6ee8177-107b-47dd-bcfd-30960ccc6e9c)
     M_II    830 cm  Marke_II; now -485 cm
     GlW     139 cm  gleichwertiger Wasserstand; now +206 cm
   gauge zero 35.038 m. ü. NHN -> water surface 38.49 m. ü. NHN (W is height above gauge zero, not water depth)
-  last 24 h: 96 values (15-min steps; 96 expected), 11-23T00:45 -> 11-24T00:30 local
-    368 -> 345 cm (-23 cm in 24 h); low 345 at 11-23T21:30, high 368 at 11-23T00:45
-    last 3 h: +0 cm -> steady (steady = within +-2 cm, this skill's cut-off)
-    hourly: 01:00 368, 02:00 368, 03:00 368, 04:00 368, 05:00 368, 06:00 367, 07:00 367, 08:00 366, 09:00 365, 10:00 364, 11:00 362, 12:00 361, 13:00 358, 14:00 356, 15:00 354, 16:00 352, 17:00 351, 18:00 349, 19:00 349, 20:00 348, 21:00 347, 22:00 346, 23:00 346, 00:00 345
+  last 24 h: 96 values (15-min steps; 96 expected, no gaps), 11-23T01:45 -> 11-24T01:30 local
+    368 -> 345 cm (-23 cm in 24 h); low 345 at 11-23T21:30, high 368 at 11-23T01:45
+    last 3 h: -2 cm -> steady (steady = within +-2 cm, this skill's cut-off)
+    note: currentmeasurement (2026-11-24T01:15:00+01:00) and the series end (2026-11-24T01:30:00+01:00) differ
+    hourly: 02:00 368, 03:00 368, 04:00 368, 05:00 368, 06:00 367, 07:00 367, 08:00 366, 09:00 365, 10:00 364, 11:00 362, 12:00 361, 13:00 358, 14:00 356, 15:00 354, 16:00 352, 17:00 351, 18:00 349, 19:00 349, 20:00 348, 21:00 347, 22:00 346, 23:00 346, 00:00 345, 01:00 345
 
-Source: PEGELONLINE (WSV / ITZBund) REST API, DL-DE->Zero-2.0, accessed 23 November 2026 23:43 UTC. Unchecked raw data, no warranty. Trend and differences computed here.
+Source: PEGELONLINE (WSV / ITZBund) REST API, DL-DE->Zero-2.0, accessed 24 November 2026 00:32 UTC. Unchecked raw data, no warranty. Trend and differences computed here.
 ```
 
 ### 2. robots.txt, the terms and docs quotes, and what the API does with mistakes (browser)
@@ -389,7 +394,7 @@ Source: PEGELONLINE (WSV / ITZBund), DL-DE->Zero-2.0; answers shortened to the f
 
 ### 3. One gauge with Python urllib: robots check for every agent, a 24-hour CSV, trend and state (cache by max-age and ETag, no browser)
 
-`python3 block3.py [RIVER GAUGE]` (default `RHEIN KÖLN`). 3 calls with an empty cache: robots.txt, the river list (to find the gauge and its MNW/MW/MHW/HSW) and the 24 h series. A warm run reuses the river list while its `max-age` lasts and sends `If-None-Match` for the series. Writes `pegelonline-<gauge>-24h.csv` (local time with offset, UTC, cm) with a source line at the end.
+`python3 block3.py [RIVER GAUGE]` (default `RHEIN KÖLN`). 3 calls with an empty cache: robots.txt, the river list (to find the gauge and its MNW/MW/MHW/HSW) and the 24 h series. A warm run reuses the river list while its `max-age` lasts and sends `If-None-Match` for the series. Writes `pegelonline-<gauge>-24h.csv` (local time with offset, UTC, cm; three columns on every row, the source line goes to the terminal).
 
 ```python
 import csv, email.utils, gzip, hashlib, json, os, re, sys, time, urllib.error, urllib.request
@@ -401,7 +406,7 @@ UA = "pegelonline-skill-example/1.0 (+https://github.com/browser-use/browser-har
 HOST = "www.pegelonline.wsv.de"
 API = f"https://{HOST}/webservices/rest-api/v2"
 AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-User", "anthropic-ai",
-          "Google-Extended", "PerplexityBot", "CCBot", "Bytespider"]
+          "Google-Extended", "PerplexityBot", "CCBot", "Bytespider", "pegelonline-skill-example"]  # last = this script's UA
 CACHE_DIR = "~/.cache/pegelonline-skill"
 CACHE = os.path.expanduser(CACHE_DIR)
 SLUG = re.sub(r"[^a-z0-9]+", "-", GAUGE.lower().translate(str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"}))).strip("-")
@@ -495,13 +500,13 @@ now = datetime.now(timezone.utc)
 river_url = (f"{API}/stations.json?waters={quote(RIVER)}&timeseries=W&includeTimeseries=true"
              f"&includeCurrentMeasurement=true&includeCharacteristicValues=true")
 
-# 1) robots.txt for the API host, for every agent and every path this run uses
-paths = ["/webservices/rest-api/v2/stations.json", f"/webservices/rest-api/v2/stations/{quote(GAUGE, safe='')}/W/measurements.json"]
+# 1) robots.txt for the API host, for every agent; the gauge's own path is checked in 3) once its exact shortname is known
+paths = ["/webservices/rest-api/v2/stations.json"]
 st, _, body = http(f"https://{HOST}/robots.txt", ok=(200, 404))
 groups = robots_groups(body.decode(errors="replace")) if st == 200 else {}
 bad = [(a, p) for a in AGENTS for p in paths if st == 200 and not allowed(groups, a, p)]
 print(f"robots.txt {HOST}: HTTP {st}" + (" (no rules: RFC 9309 treats 4xx as allow-all)" if 400 <= st < 500 else "")
-      + f"; {len(paths)} paths x {len(AGENTS)} agents: {len(paths) * len(AGENTS) - len(bad)} allowed")
+      + f"; stations.json x {len(AGENTS)} agents: {len(paths) * len(AGENTS) - len(bad)} allowed; the gauge's path is checked before its call")
 if bad or st >= 500:
     sys.exit("robots.txt disallows (or could not be read for) a path this skill uses: stop")
 
@@ -523,9 +528,14 @@ if age_h > 25 or cur["stateMnwMhw"] in ("out-dated", "commented"):
     print("  WARNING: value older than 25 h or gauge commented (fault); do not use it as current")
 
 # 3) the last 24 h (15-minute steps on most inland gauges); ETag lets a repeat run get HTTP 304
-series, how_m = cached(f"{API}/stations/{quote(s['shortname'], safe='')}/W/measurements.json?start=P1D")
+mpath = f"/webservices/rest-api/v2/stations/{quote(s['shortname'], safe='')}/W/measurements.json"
+if any(not allowed(groups, a, mpath) for a in AGENTS):
+    sys.exit(f"robots.txt disallows {mpath}: stop")
+series, how_m = cached(f"https://{HOST}{mpath}?start=P1D")
 if not series:
     sys.exit(f"{GAUGE}: no measurements in the last 24 h: stop")
+gaps = sum(ts(b["timestamp"]) - ts(a["timestamp"]) != timedelta(minutes=w["equidistance"]) for a, b in zip(series, series[1:]))
+complete = "no gaps" if not gaps else f"PARTIAL: {gaps} breaks in the {w['equidistance']}-min steps"
 last = series[-1]
 back3 = [m for m in series if ts(m["timestamp"]) <= ts(last["timestamp"]) - timedelta(hours=3)]
 d3 = last["value"] - back3[-1]["value"] if back3 else None
@@ -536,58 +546,57 @@ with open(OUT, "w", newline="") as fh:
     out.writerow(["timestamp_local", "timestamp_utc", "w_cm"])
     for m in series:
         out.writerow([m["timestamp"], ts(m["timestamp"]).astimezone(timezone.utc).isoformat(), m["value"]])
-    out.writerow([f"# Source: PEGELONLINE (WSV / ITZBund), DL-DE->Zero-2.0; {s['shortname']} W, unchecked raw data; UTC column added."])
-print(f"  24 h [{how_m}]: {len(series)} values {series[0]['timestamp']} .. {last['timestamp']} -> {OUT}")
+print(f"  24 h [{how_m}]: {len(series)} values ({complete}) {series[0]['timestamp']} .. {last['timestamp']} -> {OUT}")
 print(f"  {series[0]['value']:g} -> {last['value']:g} cm ({last['value'] - series[0]['value']:+g}); min {min(vals):g}, max {max(vals):g}; "
       f"last 3 h {'n/a' if d3 is None else f'{d3:+g}'} cm -> {trend}")
 print(f"\ncalls this run: {len(calls)} ({', '.join(map(str, calls))}); cache {CACHE_DIR}")
 print("Source: PEGELONLINE (WSV / ITZBund) REST API, DL-DE->Zero-2.0. Unchecked raw data, no warranty; trend computed here.")
 ```
 
-Output (third run, 2026-11-23 23:37:51 UTC, empty cache):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:33:38 UTC, empty cache; the 23:37 UTC run on 2026-11-23 printed the same figures four 15-minute steps earlier):
 
 ```text
-robots.txt www.pegelonline.wsv.de: HTTP 404 (no rules: RFC 9309 treats 4xx as allow-all); 2 paths x 11 agents: 22 allowed
+robots.txt www.pegelonline.wsv.de: HTTP 404 (no rules: RFC 9309 treats 4xx as allow-all); stations.json x 12 agents: 12 allowed; the gauge's path is checked before its call
 
 KÖLN (RHEIN km 688) [HTTP 200, 92,979 bytes unzipped; 36 gauges on RHEIN]
-  W 345 cm at 2026-11-24T00:30:00+01:00 (0.1 h old); stateMnwMhw normal, stateNswHsw normal
+  W 345 cm at 2026-11-24T01:30:00+01:00 (0.1 h old); stateMnwMhw normal, stateNswHsw normal
   MNW 114 (+231), MW 297 (+48), MHW 725 (-380), HSW 830 (-485)
-  24 h [HTTP 200, 7,106 bytes unzipped]: 96 values 2026-11-23T00:45:00+01:00 .. 2026-11-24T00:30:00+01:00 -> pegelonline-koeln-24h.csv
-  368 -> 345 cm (-23); min 345, max 368; last 3 h +0 cm -> steady
+  24 h [HTTP 200, 7,106 bytes unzipped]: 96 values (no gaps) 2026-11-23T01:45:00+01:00 .. 2026-11-24T01:30:00+01:00 -> pegelonline-koeln-24h.csv
+  368 -> 345 cm (-23); min 345, max 368; last 3 h -2 cm -> steady
 
 calls this run: 3 (404, 200, 200); cache ~/.cache/pegelonline-skill
 Source: PEGELONLINE (WSV / ITZBund) REST API, DL-DE->Zero-2.0. Unchecked raw data, no warranty; trend computed here.
 ```
 
-Fourth run, 5 seconds later: 2 calls instead of 3 (river list still fresh, series HTTP 304). A fifth run 73 s later, after the list's `max-age` had passed, got HTTP 304 for both (3 calls, no body). If any gauge on the river reports a new value in between, the list comes back HTTP 200 instead (a re-run at 23:48 UTC: 404, 200, 304).
+5 seconds later: 2 calls instead of 3 (river list still fresh, series HTTP 304). 73 s later, after the list's `max-age` had passed, a gauge on the Rhine had reported in between, so the list came back HTTP 200 and the series HTTP 304 (3 calls: 404, 200, 304). On 2026-11-23 at 23:39 UTC, with no new value in between, the same wait gave HTTP 304 for both.
 
 ```text
-robots.txt www.pegelonline.wsv.de: HTTP 404 (no rules: RFC 9309 treats 4xx as allow-all); 2 paths x 11 agents: 22 allowed
+robots.txt www.pegelonline.wsv.de: HTTP 404 (no rules: RFC 9309 treats 4xx as allow-all); stations.json x 12 agents: 12 allowed; the gauge's path is checked before its call
 
 KÖLN (RHEIN km 688) [cache (fresh); 36 gauges on RHEIN]
-  W 345 cm at 2026-11-24T00:30:00+01:00 (0.1 h old); stateMnwMhw normal, stateNswHsw normal
+  W 345 cm at 2026-11-24T01:30:00+01:00 (0.1 h old); stateMnwMhw normal, stateNswHsw normal
   MNW 114 (+231), MW 297 (+48), MHW 725 (-380), HSW 830 (-485)
-  24 h [HTTP 304]: 96 values 2026-11-23T00:45:00+01:00 .. 2026-11-24T00:30:00+01:00 -> pegelonline-koeln-24h.csv
-  368 -> 345 cm (-23); min 345, max 368; last 3 h +0 cm -> steady
+  24 h [HTTP 304]: 96 values (no gaps) 2026-11-23T01:45:00+01:00 .. 2026-11-24T01:30:00+01:00 -> pegelonline-koeln-24h.csv
+  368 -> 345 cm (-23); min 345, max 368; last 3 h -2 cm -> steady
 
 calls this run: 2 (404, 304); cache ~/.cache/pegelonline-skill
 Source: PEGELONLINE (WSV / ITZBund) REST API, DL-DE->Zero-2.0. Unchecked raw data, no warranty; trend computed here.
 ```
 
-Another river (`python3 block3.py MAIN WÜRZBURG`, 23:39 UTC) and a misspelled gauge (`RHEIN KOELN`, which stops and lists the names):
+Another river (`python3 block3.py MAIN WÜRZBURG`, 00:35 UTC) and a misspelled gauge (`RHEIN KOELN`, which stops and lists the names):
 
 ```text
-robots.txt www.pegelonline.wsv.de: HTTP 404 (no rules: RFC 9309 treats 4xx as allow-all); 2 paths x 11 agents: 22 allowed
+robots.txt www.pegelonline.wsv.de: HTTP 404 (no rules: RFC 9309 treats 4xx as allow-all); stations.json x 12 agents: 12 allowed; the gauge's path is checked before its call
 
 WÜRZBURG (MAIN km 251.97) [HTTP 200, 38,146 bytes unzipped; 13 gauges on MAIN]
-  W 228 cm at 2026-11-24T00:30:00+01:00 (0.2 h old); stateMnwMhw normal, stateNswHsw normal
-  MNW 140 (+88), MW 174 (+54), MHW 515 (-287), HSW 340 (-112)
-  24 h [HTTP 200, 7,106 bytes unzipped]: 96 values 2026-11-23T00:45:00+01:00 .. 2026-11-24T00:30:00+01:00 -> pegelonline-wuerzburg-24h.csv
-  228 -> 228 cm (+0); min 223, max 233; last 3 h +4 cm -> rising
+  W 229 cm at 2026-11-24T01:30:00+01:00 (0.1 h old); stateMnwMhw normal, stateNswHsw normal
+  MNW 140 (+89), MW 174 (+55), MHW 515 (-286), HSW 340 (-111)
+  24 h [HTTP 200, 7,106 bytes unzipped]: 96 values (no gaps) 2026-11-23T01:45:00+01:00 .. 2026-11-24T01:30:00+01:00 -> pegelonline-wuerzburg-24h.csv
+  226 -> 229 cm (+3); min 223, max 233; last 3 h +4 cm -> rising
 
 calls this run: 3 (404, 200, 200); cache ~/.cache/pegelonline-skill
 Source: PEGELONLINE (WSV / ITZBund) REST API, DL-DE->Zero-2.0. Unchecked raw data, no warranty; trend computed here.
-robots.txt www.pegelonline.wsv.de: HTTP 404 (no rules: RFC 9309 treats 4xx as allow-all); 2 paths x 11 agents: 22 allowed
+robots.txt www.pegelonline.wsv.de: HTTP 404 (no rules: RFC 9309 treats 4xx as allow-all); stations.json x 12 agents: 12 allowed; the gauge's path is checked before its call
 'KOELN' is not one gauge on 'RHEIN' (36 gauges): KONSTANZ-RHEIN, Basel-Rheinhalle, RHEINWEILER, BREISACH, RUST, OTTENHEIM, KEHL-KRONENHOF, IFFEZHEIM, PLITTERSDORF, MAXAU, PHILIPPSBURG, SPEYER, MANNHEIM, WORMS, NIERSTEIN-OPPENHEIM, Bodenheim, MAINZ, OESTRICH, BINGEN, KAUB, SANKT GOAR, BOPPARD, BRAUBACH, KOBLENZ, Neuwied Stadt, ANDERNACH, OBERWINTER, BONN, KÖLN, DÜSSELDORF, DUISBURG-RUHRORT, WESEL, REES, EMMERICH, LOBITH, PANNERDENSE KOP
 ```
 
@@ -697,7 +706,7 @@ Source: PEGELONLINE (WSV / ITZBund), DL-DE->Zero-2.0, accessed 23 November 2026 
 - **Foreign gauges have other references.** Basel-Rheinhalle (BUNDESAMT FÜR UMWELT CH) has 5-minute values (`equidistance` 5), a gauge zero in `mü.M.` instead of m. ü. NHN, and only GlW, M_I, M_II and HSW; Lobith (943-944 cm) and Pannerdense Kop (903-904 cm), both RIJKSWATERSTAAT, have no `gaugeZero` and no characteristic values in the answer. Do not compare them with German gauges.
 - **`timeseries=W` filters gauges.** On the Main, the plain list has 16 stations but `timeseries=W` 13: `HANAU BRÜCKE DFH` and `AUHEIM BRÜCKE DFH` only measure bridge clearance (`DFH`), `KLEINOSTHEIM_WUK` only oxygen and water temperature (`O2`, `WT`). Without the filter, pick the `W` series by `shortname`, not by position.
 - **Characteristic values are reference statistics, not live records.** Köln lists `NNW` 69 cm (lowest known daily mean, 2018-10-23), but the 31-day series held 808 quarter-hour values below 69 cm, lowest 56 cm at 2026-11-09T01:45+01:00. Quarter-hour values are not daily means, and the data are unchecked raw data; say so when you quote a "record".
-- **Unchecked raw data.** The WSV publishes "ungeprüfte Rohdaten" with no warranty; spikes and gaps can occur. The 24 h Köln series had all 96 expected values; check the count against `equidistance`, as block 1 does.
+- **Unchecked raw data.** The WSV publishes "ungeprüfte Rohdaten" with no warranty; spikes and gaps can occur. The 24 h Köln series had all 96 expected values; blocks 1 and 3 check that every step is `equidistance` minutes and print PARTIAL otherwise. The count alone can read 95 without a gap: `start=P1D` slides with the clock, so the oldest value can drop out before the newest one is published (2026-11-24 00:30 UTC run).
 - **`max-age` is a countdown, and series have none.** Lists and current values get `max-age` = seconds left until a shared `Expires` time, the same on both hosts (six alternating calls to www. and the bare host at 23:51:49-23:51:57 UTC gave 31, 30, 28, 26, 25, 23, all with `Expires` 23:52:21), so a call just before that time sees `max-age=0`. Series (`measurements.json`) have only `Cache-Control: no-transform` and an `ETag`. Use `If-None-Match`; it returned HTTP 304 with 0 bytes.
 - **HyDAS is Beta.** The overview says of the HyDAS API: "Die Schnittstelle befindet sich derzeit in der Beta-Phase und kann sich noch inkompatibel ändern." This skill uses the REST API v2 only; the SOAP service is no longer developed.
 - **The Rhine list's `km` is a float with up to 3 decimals** (`362.327`); `km=688&radius=20` on `waters=RHEIN` returned only KÖLN (Bonn is 33 km upstream).

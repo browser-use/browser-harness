@@ -1,6 +1,6 @@
 # Statistics Sweden (SCB) Statistical Database via statistikdatabasen.scb.se (PxWebApi v2) - Get Sweden's Newest Population, or the Newest Value of Any SCB Table Found by Keyword (CPI, Unemployment): Search Tables, Read Their Variables, Pull the Latest Periods as Tidy Rows (JSON-stat API, no key)
 
-Field-tested against statistikdatabasen.scb.se on 2026-11-23 (US Pacific afternoon; 2026-11-23 23:55 UTC to 2026-11-24 00:07 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:59-00:03 UTC) plus Python `urllib` and `curl` from a Linux machine. 13 browser page loads (one API answer, then two robots.txt URLs, three www.scb.se pages and the API again in each of block 2's two runs) and 71 in-page `fetch()` calls (block 1 ran three times, the first stopping on a search with no hits; block 2 twice), 42 urllib calls (block 3 ran 3 times: twice with an empty cache, once warm, plus 3 calls testing its pause at a low `X-Rate-Limit-Remaining` with the threshold raised by hand; 6 of the calls were robots.txt) and 92 curl calls (64 while exploring, one of them RFC 9309 from rfc-editor.org; 28 in block 4, which ran twice), all serial and at least 0.5 s apart. Every data call was HTTP 200 except the deliberate HTTP 400 and 404 probes of mistakes and the HTTP 404 of the API host's robots.txt. No 403 or 429, no challenge, no key, no login, no cookie. Data calls took 0.7-2.3 s in curl (a TAB638 population request took 4.6 s in an earlier check at 23:19 UTC) and at most 1.6 s in the browser. An independent verifier re-ran all four blocks verbatim on 2026-11-24 00:10-00:15 UTC (a second fresh cloud browser, urllib with an empty and then a warm cache, curl): every block ran and printed the same tables, codes and numbers; only the clock, timings and rate-limit countdowns changed.
+Field-tested against statistikdatabasen.scb.se on 2026-11-23 (US Pacific afternoon; 2026-11-23 23:55 UTC to 2026-11-24 00:07 UTC) using a fresh Browser Use cloud browser (logged out; one session, 23:59-00:03 UTC) plus Python `urllib` and `curl` from a Linux machine. 13 browser page loads (one API answer, then two robots.txt URLs, three www.scb.se pages and the API again in each of block 2's two runs) and 71 in-page `fetch()` calls (block 1 ran three times, the first stopping on a search with no hits; block 2 twice), 42 urllib calls (block 3 ran 3 times: twice with an empty cache, once warm, plus 3 calls testing its pause at a low `X-Rate-Limit-Remaining` with the threshold raised by hand; 6 of the calls were robots.txt) and 92 curl calls (64 while exploring, one of them RFC 9309 from rfc-editor.org; 28 in block 4, which ran twice), all serial and at least 0.5 s apart. Every data call was HTTP 200 except the deliberate HTTP 400 and 404 probes of mistakes and the HTTP 404 of the API host's robots.txt. No 403 or 429, no challenge, no key, no login, no cookie. Data calls took 0.7-2.3 s in curl (a TAB638 population request took 4.6 s in an earlier check at 23:19 UTC) and at most 1.6 s in the browser. An independent verifier re-ran all four blocks verbatim on 2026-11-24 00:10-00:15 UTC (a second fresh cloud browser, urllib with an empty and then a warm cache, curl): every block ran and printed the same tables, codes and numbers; only the clock, timings and rate-limit countdowns changed. After a code review, blocks 1, 3 and 4 changed and re-ran on 2026-11-24 between 00:28 and 00:36 UTC (browser blocks in a new cloud browser); the outputs shown for them come from those runs.
 
 robots.txt (checked 2026-11-23, curl, the cloud browser and `urllib.robotparser`): https://statistikdatabasen.scb.se/robots.txt is HTTP 404, so the API host has no robots rules and no named AI-agent groups; RFC 9309 section 2.3.1.3 says that for 400-499 answers "the crawler MAY access any resources on the server". https://www.scb.se/robots.txt is `Sitemap: https://www.scb.se/sitemap.xml`, `User-agent: *` and an empty `Disallow:` (allow everything), with no named AI-agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*`. Every path this skill uses is allowed for all 11 agents (block 3). Terms: the open-data page https://www.scb.se/en/services/open-data-api/ says "We use the licence CC0 for this data, which means that you may use and disseminate or provide such data without any requirement to state the source", recommends "Source: Statistics Sweden" if you state one, says statistics "which have a source reference to another agency, you should state this", "If you yourself have processed data from Statistics Sweden, do not state the source", and "You may not present a service as an “official cooperation” or “partnership” with Statistics Sweden." The API's own `/config` gives the licence as CC0 (https://creativecommons.org/share-your-work/public-domain/cc0/) and the credit line as "Source: Statistics Sweden". The PxWebApi page https://www.scb.se/en/services/open-data-api/pxwebapi/ sets the limits: "a limit of 150 000 data cells and make a maximum number of calls of 30 per 10 seconds. The limit is per IP address and can therefore apply to multiple colleagues at the same workplace". The website terms https://www.scb.se/en/About-us/about-the-website-and-terms-of-use/ put the statistics on scb.se itself under CC BY 4.0 ("you must always state Statistics Sweden as the source") and say photos and illustrations "cannot be copied and spread without permission". No AI/ML, scraping, automated-access or non-commercial clause on the three pages (block 2 found none of the words scrap, artificial intelligence, machine learning, non-commercial, robot or crawl on them). Naming: this skill says "Statistics Sweden (SCB)", credits "Source: Statistics Sweden" with a link to www.scb.se, uses no SCB logo, and is not an official cooperation or partnership with, or endorsed by, Statistics Sweden.
 
@@ -119,9 +119,10 @@ def get(path, **params):
         raise RuntimeError(f"{url}: HTTP {r['status']} {' '.join(r['text'].split())[:150]!r}; stopping")
     return json.loads(r["text"])
 
-def find_table(query, vars, label_has, max_pages=3):
+def find_table(query, vars, label_has, max_pages=5):
     """Search and keep the hits whose variable names are exactly `vars` and whose label contains `label_has`;
-    return the one with the newest lastPeriod (then the newest `updated`). Reads up to `max_pages` pages of 100."""
+    return the one with the newest lastPeriod (then the newest `updated`). Reads every page of 100; stops with an
+    error instead of guessing when there are more than `max_pages` pages."""
     found, page = [], 1
     want = " ".join(label_has.lower().split())
     while True:
@@ -132,8 +133,11 @@ def find_table(query, vars, label_has, max_pages=3):
                   + "; ".join(f"{t['id']} {t['lastPeriod']} {t['label'][:40]}" for t in hits[:3]))
         found += [t for t in hits if set(t["variableNames"]) == vars and want in " ".join(t["label"].lower().split())
                   and not t.get("discontinued")]
-        if page >= min(res["page"]["totalPages"], max_pages):
+        if page >= res["page"]["totalPages"]:
             break
+        if page >= max_pages:
+            raise RuntimeError(f"{query!r}: {res['page']['totalPages']} pages of hits, only {max_pages} read; "
+                               "a newer table could be on a later page: narrow the query")
         page += 1
     if not found:
         raise RuntimeError(f"no table for {query!r} with variables {sorted(vars)} and label {label_has!r}: read the hits")
@@ -213,10 +217,10 @@ print(f"\n{len(calls)} API calls, statuses {sorted({s for s, _, _ in calls})}, "
 print(f"Source: Statistics Sweden, https://www.scb.se, Statistical Database tables via {API}, CC0, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-24, 00:00-00:01 UTC; the first run stopped with "no table" on the 0-hit query above, the second printed the same numbers before the pause at a low countdown was added):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:32 UTC, in a new cloud browser; the 00:00 UTC run printed the same numbers; before that, one run stopped with "no table" on the 0-hit query above and one printed the same numbers before the pause at a low countdown was added):
 
 ```text
-Statistics Sweden (SCB) Statistical Database via PxWebApi v2, checked 2026-11-24 00:00 UTC
+Statistics Sweden (SCB) Statistical Database via PxWebApi v2, checked 2026-11-24 00:32 UTC
 
 population, newest month:
   search 'population statistics region sex month': 2 tables; top 3: TAB6473 2026M09 Population statistics by region and sex.; TAB1625 2024M12 Population statistics by region and sex.
@@ -246,8 +250,8 @@ unemployment:
     2026M09  unemployed, thousands  seasonally adjusted  total  total 15–74 years  Population aged 15-74: 496.5 thousands/percent
     2026M10  unemployed, thousands  seasonally adjusted  total  total 15–74 years  Population aged 15-74: 476.4 thousands/percent
 
-9 API calls, statuses [200], x-rate-limit-remaining seen ['21', '22', '23', '24', '25', '26', '27', '28', '29'], slowest 1.6 s
-Source: Statistics Sweden, https://www.scb.se, Statistical Database tables via https://statistikdatabasen.scb.se/api/v2, CC0, accessed 24 November 2026 00:00 UTC.
+9 API calls, statuses [200], x-rate-limit-remaining seen ['21', '22', '23', '24', '25', '26', '27', '28', '29'], slowest 1.4 s
+Source: Statistics Sweden, https://www.scb.se, Statistical Database tables via https://statistikdatabasen.scb.se/api/v2, CC0, accessed 24 November 2026 00:32 UTC.
 ```
 
 ### 2. robots.txt, the open-data, PxWebApi and terms pages, `/config`, and what the API does with mistakes (browser)
@@ -544,8 +548,8 @@ for host, paths in (("https://statistikdatabasen.scb.se", ["/api/v2/tables", "/a
             rp.parse(text.splitlines())
     except urllib.error.HTTPError as e:
         print(f"{host}/robots.txt: HTTP {e.code}: no robots file, so no rules")
-        if not 400 <= e.code < 500:
-            sys.exit("robots.txt unreachable (not a 4xx): stop")
+        if not 400 <= e.code < 500 or e.code in (401, 403, 429):
+            sys.exit("robots.txt unreachable, access denied or rate-limited: stop")
         rp.allow_all = True   # what RobotFileParser.read() does on a 4xx other than 401/403
     time.sleep(PAUSE)
     for p in paths:
@@ -617,7 +621,7 @@ print(f"Source: Statistics Sweden, https://www.scb.se, tables TAB4481, TAB4365 a
       f"accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (from the run on 2026-11-24, 00:04 UTC, empty cache; a warm re-run at 00:05 UTC printed the same rows with "4 served from disk so far", 9 API calls and 123,832 bytes; an earlier cold run at 00:04 UTC differed only in the robots line format, the national-figure note and the countdown):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:29 UTC, empty cache; the same rows as the 00:04 UTC run apart from the clock and the lowest countdown (26 here, 25 then); a warm re-run at 00:05 UTC printed the same rows with "4 served from disk so far", 9 API calls and 123,832 bytes):
 
 ```text
 https://statistikdatabasen.scb.se/robots.txt: HTTP 404: no robots file, so no rules
@@ -629,7 +633,7 @@ https://www.scb.se/robots.txt: HTTP 200 text/plain: ['Sitemap: https://www.scb.s
   robots /en/services/open-data-api/              allowed for all 11 agents
   robots /en/services/open-data-api/pxwebapi/     allowed for all 11 agents
 
-Statistics Sweden (SCB) Statistical Database via PxWebApi v2, checked 2026-11-24 00:04 UTC
+Statistics Sweden (SCB) Statistical Database via PxWebApi v2, checked 2026-11-24 00:29 UTC
 tables updated in the last 7 days: 77 (77 per the API) in 1 pages; by day {'2026-11-17': 4, '2026-11-18': 6, '2026-11-19': 1, '2026-11-20': 49, '2026-11-23': 17}
 
 TAB4481 Key figures, populations statistics 2016M09-2026M09 (updated 2026-11-11): 2026M09: 10,621,725 persons, +0.01 % on the month, +0.12 % on the year
@@ -654,8 +658,8 @@ TAB6473 municipalities (code list vs_CKM03Kommun): 290 regions in 2026M09, 10,62
   0580  Linköping                 169,588
 
 metadata again: 1 API call (the /tables/TAB6473 change check), 1 served from disk so far
-totals: 12 API calls, 162,121 bytes, lowest X-Rate-Limit-Remaining 25, paused for the limit 0 times, cache ~/.cache/scb-skill
-Source: Statistics Sweden, https://www.scb.se, tables TAB4481, TAB4365 and TAB6473 via https://statistikdatabasen.scb.se/api/v2, CC0, accessed 24 November 2026 00:04 UTC.
+totals: 12 API calls, 162,121 bytes, lowest X-Rate-Limit-Remaining 26, paused for the limit 0 times, cache ~/.cache/scb-skill
+Source: Statistics Sweden, https://www.scb.se, tables TAB4481, TAB4365 and TAB6473 via https://statistikdatabasen.scb.se/api/v2, CC0, accessed 24 November 2026 00:29 UTC.
 ```
 
 ### 4. curl: limits, search, variables, the newest two months, the closed 1968-2024 table, CSV, headers, mistakes
@@ -685,9 +689,9 @@ $C --fail "$B/tables/TAB6473/data?lang=en&outputFormat=json-stat2&valueCodes[Reg
   | python3 -c 'import json, sys
 d = json.load(sys.stdin); print(d["label"], "|", list(d["dimension"]["Tid"]["category"]["index"]), d["value"], "| updated", d["updated"])'
 sleep 1
-# 5. the same request on TAB638 (1968-2024) still answers, but its newest year is 2024
+# 5. the same request on TAB638 (1968-2024) still answers, but its newest year is 2024 (BE0101N1 = population)
 T=$(mktemp)
-S=$($C --fail -o "$T" -w '%{time_total}' "$B/tables/TAB638/data?lang=en&outputFormat=json-stat2&valueCodes[Region]=00&valueCodes[Tid]=top(2)&valueCodes[ContentsCode]=*")
+S=$($C --fail -o "$T" -w '%{time_total}' "$B/tables/TAB638/data?lang=en&outputFormat=json-stat2&valueCodes[Region]=00&valueCodes[Tid]=top(2)&valueCodes[ContentsCode]=BE0101N1")
 python3 -c 'import json, sys
 d = json.load(open(sys.argv[1])); print(d["label"], "|", list(d["dimension"]["Tid"]["category"]["index"]), d["value"], "|", sys.argv[2], "s")' "$T" "$S"
 sleep 1
@@ -715,7 +719,7 @@ echo
 echo "Source: Statistics Sweden, https://www.scb.se, Statistical Database via $B, CC0, accessed $(date -u '+%d %B %Y %H:%M') UTC."
 ```
 
-Output (from the run on 2026-11-24, 00:06 UTC; the first run at 00:05 UTC printed the same numbers, with the TAB638 line out of order):
+Output (re-run on 2026-11-24 after the code-review fixes, 00:30 UTC; TAB638 now asks only for BE0101N1, population, so its line has two values instead of four; the rest matches the 00:05 and 00:06 UTC runs apart from timings and the clock):
 
 ```text
 {'apiVersion': '2.3.2', 'maxDataCells': 150000, 'maxCallsPerTimeWindow': 30, 'timeWindow': 10, 'license': 'https://creativecommons.org/share-your-work/public-domain/cc0/'} Source: Statistics Sweden
@@ -723,19 +727,19 @@ TAB6473 2026M09 2026-11-11 ['region', 'population changes', 'sex', 'observations
 TAB1625 2024M12 2025-02-21 ['region', 'population changes', 'sex', 'observations', 'month']
 Region = 'region' | optional | {'00': 'Sweden', '01': 'Stockholm county', '0114': 'Upplands Väsby'} +309 more
 Forandringar = 'population changes' | required | {'100': 'population', '110': 'population increase/decline', '115': 'births'} +18 more
-Kon = 'sex' | optional | {'TotSa': 'total, all men and women', '1': 'men', '2': 'women'} 
-ContentsCode = 'observations' | required | {'000007SR': 'Population'} 
+Kon = 'sex' | optional | {'TotSa': 'total, all men and women', '1': 'men', '2': 'women'}
+ContentsCode = 'observations' | required | {'000007SR': 'Population'}
 Tid = 'month' | required | {'2025M01': '2025M01', '2025M02': '2025M02', '2025M03': '2025M03'} +18 more
 Population by region, population changes, sex and month | ['2026M08', '2026M09'] [10621103, 10621725] | updated 2026-11-11T07:00:00Z
-Population by region and year | ['2023', '2024'] [10551707, 10587710, 30151, 36003] | 0.735641 s
+Population by region and year | ['2023', '2024'] [10551707, 10587710] | 1.207294 s
 "Region","Forandringar","Kon","000007SR 2026M07","000007SR 2026M08","000007SR 2026M09"
 "00","100","TotSa",10613531,10621103,10621725
 
 HTTP/1.1 200 OK
 Content-Type: application/json; charset=utf-8
 X-Rate-Limit-Limit: 10s
-X-Rate-Limit-Remaining: 29
-X-Rate-Limit-Reset: 2026-11-24T00:06:59.1578489Z
+X-Rate-Limit-Remaining: 28
+X-Rate-Limit-Reset: 2026-11-24T00:30:01.7860476Z
 404 {"type":"Parameter error","title":"Non-existent table","status":404}  <- tables/638/metadata?lang=en
 400 {"type":"Parameter error","title":"Non-existent value","status":400}  <- tables/TAB4365/data?lang=en&valueCodes[ContentsCode]=000000LV&valueCodes[Tid]=top(1)&valueCodes[Kon]=1+2
 200 {"version":"2.0","class":"dataset","label":"Population by sex and year","source":"Statisti  <- tables/TAB4365/data?lang=en&valueCodes[ContentsCode]=000000LV&valueCodes[Tid]=top(1)&valueCodes[Kon]=1%2B2
@@ -745,7 +749,7 @@ statistikdatabasen.scb.se/robots.txt: HTTP 404
 Sitemap: https://www.scb.se/sitemap.xml
 User-agent: *
 Disallow:
-Source: Statistics Sweden, https://www.scb.se, Statistical Database via https://statistikdatabasen.scb.se/api/v2, CC0, accessed 24 November 2026 00:07 UTC.
+Source: Statistics Sweden, https://www.scb.se, Statistical Database via https://statistikdatabasen.scb.se/api/v2, CC0, accessed 24 November 2026 00:30 UTC.
 ```
 
 ## Fields
