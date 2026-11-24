@@ -19,6 +19,12 @@
 ### Update banner
 - The daily "new version available" banner shows only when someone runs the `browser-harness` command itself. It stays silent inside a host that pins browser-harness as a dependency: when `BH_CLIENT` is set (browser-use's CLI and MCP set it) or the process is not the `browser-harness` command (for example `python -m browser_harness.run`, or the `./browser-harness` launcher in a git checkout). `BH_UPDATE_CHECK=0` still turns it off everywhere.
 
+### Human mouse and pointer (opt-in, BH_HUMAN_MOUSE=1)
+- With `BH_HUMAN_MOUSE=1`, clicks and `fill_input` move the mouse along a human-like path and a visible pointer is drawn, which some bot checks require (in a 18-run A/B on one bot-protected login, logins went from 0 of 18 to 14 of 18). Each click takes about 0.5 s instead of 0.2 s. Off by default: with the flag off, clicks and `fill_input` run the same code as 0.1.14.
+
+### CDP deny list (opt-in, BH_CDP_DENY=tokens)
+- With `BH_CDP_DENY=tokens`, the daemon refuses CDP calls that could read or intercept browser tokens (cookies, response bodies, request interception, tracing, DevTools attach and similar), fail-closed. Off by default; nothing changes without the flag.
+
 ### Behavior changes to know
 - Every successful stdin script is kept as one local file per `BU_NAME` and working folder in the private runtime folder (`last-script-<name>-<hash>.py`, overwritten by the next success), so `scripts save --from-last` can read it. It never leaves the machine. It holds the script as written, including any typed secret, so it is owner-only (mode 600); `scripts save` redacts those, the kept copy does not.
 - A stdin run with `BH_PARAMS` set to anything but a JSON object now exits with an error.
