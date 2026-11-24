@@ -59,7 +59,7 @@ PY
 The browser is usually already connected. Read one of these only when it is not, or when the task asks for it. They sit next to this file in `interaction-skills/` and at https://github.com/browser-use/browser-harness/tree/main/interaction-skills.
 
 - `local-chrome.md`: attaching to the running Chrome, the Allow prompt, `--doctor`, `mac-approve`.
-- `remote-browsers.md`: Browser Use cloud browsers: auth, `start_remote_daemon(name)`, parallel or isolated work.
+- `remote-browsers.md`: Browser Use cloud browsers: auth, `start_remote_daemon(name)`, parallel or isolated work, `rotate_proxy()` when an IP is blocked.
 - `recordings.md`: recording a task and making a video of it.
 
 ## Interaction Skills
