@@ -126,3 +126,65 @@ def test_ping_returns_false_when_pong_field_is_missing_or_not_true(monkeypatch):
         assert ipc.ping("default", timeout=0.0) is False, (
             f"ping() should require pong is exactly True; got: {resp!r}"
         )
+
+
+# --- AF_UNIX path budget (macOS sun_path is 104 bytes) ---
+
+import os, sys
+from pathlib import Path
+
+import pytest
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX path budget is POSIX-only")
+
+
+@posix_only
+def test_short_runtime_dir_is_kept(tmp_path):
+    short = Path("/tmp") / f"bh-test-{os.getpid()}"
+    try:
+        assert ipc._socket_safe_runtime(short) == short
+    finally:
+        short.rmdir() if short.exists() else None
+
+
+@posix_only
+def test_long_runtime_dir_moves_to_short_private_tmp_dir(tmp_path):
+    deep = tmp_path / ("x" * 120) / "runtime"
+    got = ipc._socket_safe_runtime(deep)
+    assert got != deep
+    assert len(str(got / "bu-default.sock").encode()) <= ipc._SUN_PATH_MAX
+    assert got.stat().st_uid == os.getuid()
+    assert got.stat().st_mode & 0o077 == 0
+    # Same input maps to the same dir, so a client and its daemon agree.
+    assert ipc._socket_safe_runtime(deep) == got
+    got.rmdir()
+
+
+@posix_only
+def test_distinct_long_dirs_get_distinct_fallbacks(tmp_path):
+    a = ipc._socket_safe_runtime(tmp_path / ("a" * 120))
+    b = ipc._socket_safe_runtime(tmp_path / ("b" * 120))
+    assert a != b
+    a.rmdir(); b.rmdir()
+
+
+@posix_only
+def test_fallback_refuses_dir_with_open_permissions(tmp_path, monkeypatch):
+    deep = tmp_path / ("y" * 120)
+    target = ipc._fallback_runtime_path(deep)
+    target.mkdir(mode=0o777, exist_ok=True)
+    os.chmod(target, 0o777)
+    try:
+        with pytest.raises(RuntimeError, match="BH_RUNTIME_DIR"):
+            ipc._socket_safe_runtime(deep)
+    finally:
+        os.chmod(target, 0o700)
+        target.rmdir()
+
+
+@posix_only
+def test_sock_path_over_budget_raises_clear_error(monkeypatch):
+    monkeypatch.setattr(ipc, "_RUNTIME", Path("/tmp/" + "r" * 40))
+    monkeypatch.setattr(ipc, "BH_RUNTIME_DIR", None)
+    with pytest.raises(ValueError, match="104"):
+        ipc._sock_path("n" * 64)
