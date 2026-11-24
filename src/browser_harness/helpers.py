@@ -3,7 +3,7 @@
 Core helpers live here. Agent-editable helpers live in
 BH_AGENT_WORKSPACE/agent_helpers.py.
 """
-import base64, importlib.util, json, math, os, time, urllib.request
+import base64, importlib.util, json, math, os, re, sys, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -49,7 +49,10 @@ class _IPCResponseTimeout(TimeoutError):
     pass
 
 
-def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
+def _send(req, response_timeout=None):
+    # Resolved per call so `scripts run` can raise the default for a whole replay.
+    if response_timeout is None:
+        response_timeout = DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS
     c, token = ipc.connect(NAME, timeout=IPC_CONNECT_TIMEOUT_SECONDS)
     try:
         c.settimeout(response_timeout)
@@ -69,7 +72,7 @@ def _send(req, response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS):
     return r
 
 
-def cdp(method, session_id=None, _response_timeout=DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, **params):
+def cdp(method, session_id=None, _response_timeout=None, **params):
     """Raw CDP. cdp('Page.navigate', url='...'), cdp('DOM.getDocument', depth=-1)."""
     return _send(
         {"method": method, "params": params, "session_id": session_id},
@@ -149,12 +152,35 @@ def _is_illegal_return_error(exc):
 
 
 # --- navigation / page ---
+SAVED_SCRIPT_HINTS = True
+_hinted_hosts = set()
+
+
 def goto_url(url):
     r = cdp("Page.navigate", url=url)
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    saved = _saved_scripts(host)
+    if saved:
+        r = {**r, "saved_scripts": saved[:10]}
+        # new_tab() drops goto_url's return value, so also say it once on stderr.
+        if SAVED_SCRIPT_HINTS and host not in _hinted_hosts:
+            _hinted_hosts.add(host)
+            names = ", ".join(f"{host}/{n}" for n in saved[:10])
+            print(f"saved scripts for {host}: {names} (browser-harness scripts run <host>/<name>)", file=sys.stderr)
     if os.environ.get("BH_DOMAIN_SKILLS") != "1":
         return r
     d = (AGENT_WORKSPACE / "domain-skills" / (urlparse(url).hostname or "").removeprefix("www.").split(".")[0])
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
+
+_HOST_RE = re.compile(r"\A[a-z0-9-]+(\.[a-z0-9-]+)*\Z")
+
+
+def _saved_scripts(host):
+    # Only plain hostnames: a crafted URL host must not become a path outside scripts/.
+    if not _HOST_RE.match(host or ""):
+        return []
+    d = AGENT_WORKSPACE / "scripts" / host
+    return sorted(p.stem for p in d.glob("*.py")) if d.is_dir() else []
 
 def page_info():
     """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
