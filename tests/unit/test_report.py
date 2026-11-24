@@ -18,6 +18,8 @@ SWITCHES = (
     "BH_CLI_NAME",
     "BU_NAME",
     "BROWSER_USE_TELEMETRY_INTERNAL",
+    "BH_CLIENT",
+    "BH_CLIENT_VERSION",
 )
 
 
@@ -78,6 +80,8 @@ def test_report_run_sends_library_judgement_to_the_library_project(sent):
         "texts_withheld": False,
         "is_internal": False,
         "schema_version": 1,
+        "client": None,
+        "client_version": None,
     }
 
 
@@ -237,6 +241,8 @@ def test_report_issue_sends_library_feedback(sent):
         "run_id": None,
         "step": None,
         "last_error_type": None,
+        "client": None,
+        "client_version": None,
     }
 
 
@@ -329,3 +335,15 @@ def test_detached_sender_posts_to_the_library_host(monkeypatch):
         report._send("library_feedback", {"message": "m"})
     assert jobs[0]["url"] == "https://eu.i.posthog.com/i/v0/e/"
     assert jobs[0]["payload"]["api_key"] == report.LIBRARY_POSTHOG_KEY
+
+
+def test_library_events_name_the_embedding_client(sent, monkeypatch):
+    """browser-use's CLI and --cli-mcp star-import these helpers: their events say so instead of passing as harness ones."""
+    monkeypatch.setenv("BH_CLIENT", "browser-use-mcp")
+    monkeypatch.setenv("BH_CLIENT_VERSION", "1.2.3")
+    report.report_issue("goto_url hangs")
+    report.report_run(True)
+    assert [(p["event"], p["properties"]["client"], p["properties"]["client_version"]) for p, _ in sent] == [
+        ("library_feedback", "browser-use-mcp", "1.2.3"),
+        ("library_judgement", "browser-use-mcp", "1.2.3"),
+    ]

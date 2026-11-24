@@ -236,6 +236,15 @@ def _send(event: str, properties: dict) -> None:
         pass
 
 
+def _client() -> dict:
+    """The CLI or server that embeds the harness (BH_CLIENT, as cli_event): browser-use's CLI and --cli-mcp set
+    browser-use-cli / browser-use-mcp, so their events are not counted as plain harness ones."""
+    return {
+        "client": (os.environ.get("BH_CLIENT") or "")[:80] or None,
+        "client_version": (os.environ.get("BH_CLIENT_VERSION") or "")[:80] or None,
+    }
+
+
 def judgement_properties(surface, success, failure_reason=None, gotchas=(), bot_block=False, description="") -> dict:
     """library_judgement's properties (judgement-event-spec.md), texts scrubbed, or empty under BROWSER_USE_ZDR=1."""
     if isinstance(gotchas, str):
@@ -259,6 +268,7 @@ def judgement_properties(surface, success, failure_reason=None, gotchas=(), bot_
         "texts_withheld": withheld,
         "is_internal": _on("BROWSER_USE_TELEMETRY_INTERNAL"),  # as browser-use's LibraryJudgementEvent
         "schema_version": 1,
+        **_client(),
     }
 
 
@@ -276,6 +286,7 @@ def feedback_properties(source, message, category="bug") -> dict:
         "run_id": None,
         "step": None,
         "last_error_type": None,
+        **_client(),
     }
 
 
