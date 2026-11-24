@@ -64,6 +64,7 @@ def remote_marker_path(name): return _RUNTIME / f"{_stem(name)}.remote"
 
 
 def state_path(name): return _RUNTIME / f"{_stem(name)}.owners.json"
+def deny_path(name):  return _RUNTIME / f"{_stem(name)}.deny"  # sticky BH_CDP_DENY mode of this daemon name
 
 
 def read_remote_marker(name):
