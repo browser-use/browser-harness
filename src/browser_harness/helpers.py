@@ -840,4 +840,5 @@ def _load_agent_helpers():
         globals()[name] = value
 
 
+_OWN_NAMES = frozenset(globals())  # before agent_helpers.py adds its own
 _load_agent_helpers()
