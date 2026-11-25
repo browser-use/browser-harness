@@ -204,7 +204,7 @@ _helper_trace = []
 _helper_call_count = 0
 
 
-_BUILTIN_CLASSES = {id(c): name for name, c in vars(builtins).items() if isinstance(c, type)}
+_BUILTIN_CLASSES = {id(c): c.__name__ for c in vars(builtins).values() if isinstance(c, type)}
 
 
 def _error_class(exc):
