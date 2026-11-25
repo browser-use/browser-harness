@@ -704,9 +704,13 @@ for x in rows:
 print(f"  {'party':<14}{'seats':>6}{'voted':>6}{'Sim':>5}{'Não':>5}{'other':>6}  {'party line':<10}{'with line':>10}  leader said")
 for party, c in sorted(by.items(), key=lambda kv: -sum(kv[1].values())):
     n = sum(c.values())
-    line, k = c.most_common(1)[0]
+    top = c.most_common(2)
+    line, k = top[0]
+    share = f"{k / n:>9.0%}"
+    if len(top) > 1 and top[1][1] == k:   # an exact split has no party line
+        line, share = "tie", f"{'-':>9}"
     print(f"  {party:<14}{seats.get(party, 0):>6}{n:>6}{c['Sim']:>5}{c['Não']:>5}{n - c['Sim'] - c['Não']:>6}  "
-          f"{line:<10}{k / n:>9.0%}  {ori.get(party, '(none listed)')}")
+          f"{line:<10}{share}  {ori.get(party, '(none listed)')}")
 tot = Counter(x["tipoVoto"] for x in rows)
 print(f"  {'all':<14}{ndeps:>6}{len(rows):>6}{tot['Sim']:>5}{tot['Não']:>5}{len(rows) - tot['Sim'] - tot['Não']:>6}  "
       + ", ".join(f"{k} {v}" for k, v in tot.items() if k not in ("Sim", "Não")))
@@ -727,7 +731,7 @@ print("Source: Dados Abertos da Camara dos Deputados (API v2). Seats = deputies 
       "tallies, party lines and shares computed here.")
 ```
 
-Output (re-run on 2026-11-25, 01:00 UTC, empty cache; the same bills, vote and tallies as the 23:42 UTC run on 2026-11-24; the first run at 23:40 read only 500 of the 513 deputies, because the deputies list was capped by `MAX_PAGES`; the fix reads it to the end and stops if the count still differs):
+Output (re-run on 2026-11-25, 01:00 UTC, empty cache; on 2026-11-25 at 02:08 UTC, after block 3 learned to print `tie` with no share for a party split exactly between two votes, the four commands re-ran and printed the same lines apart from the times (no party was split in this vote; a forced 2-2 party printed `tie` and `-`); the same bills, vote and tallies as the 23:42 UTC run on 2026-11-24; the first run at 23:40 read only 500 of the 513 deputies, because the deputies list was capped by `MAX_PAGES`; the fix reads it to the end and stops if the count still differs):
 
 ```text
 Dados Abertos da Camara dos Deputados API v2, 2026-11-25 01:00 UTC
