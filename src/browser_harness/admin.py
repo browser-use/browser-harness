@@ -641,6 +641,31 @@ def _launch_and_wait_for_browser(name=None):
     return launched
 
 
+def _daemon_stderr_sink(name, rotate=True):
+    """Rotate before opening the child's stderr; retain all three startup attempts."""
+    path = ipc.log_path(name or NAME)
+    error = None
+    if rotate:
+        try:
+            if path.exists() and path.stat().st_size > 0:
+                for generation in range(2, 0, -1):
+                    source = path.with_name(f"{path.name}.{generation}")
+                    if source.exists():
+                        os.replace(source, path.with_name(f"{path.name}.{generation + 1}"))
+                os.replace(path, path.with_name(f"{path.name}.1"))
+        except OSError as e:
+            error = f"rotate log {path}: {e}"
+            print(error, file=sys.stderr)
+    try:
+        sink = open(path, "ab")
+    except OSError:
+        return subprocess.DEVNULL
+    if error:
+        sink.write(f"{error}\n".encode("utf-8", errors="replace"))
+        sink.flush()
+    return sink
+
+
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
     Chrome, and missing Allow on chrome://inspect. Never replaces a name bound
@@ -704,10 +729,6 @@ def ensure_daemon(wait=None, name=None, env=None):
     opened_inspect = False
     for _ in range(3):
         e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
-        try:
-            stderr_sink = open(ipc.log_path(name or NAME), "ab")
-        except OSError:
-            stderr_sink = subprocess.DEVNULL
         # One spawner per daemon name, for every browser kind: agents starting
         # together share one daemon and one browser connection (one Allow), and two
         # cold callers asking one name for two browsers cannot steal each other's
@@ -716,15 +737,15 @@ def ensure_daemon(wait=None, name=None, env=None):
             if lock.fd is None:
                 raise RuntimeError("daemon-starting: another browser-harness daemon is still starting; retry later")
             if daemon_alive(name):
-                if stderr_sink is not subprocess.DEVNULL:
-                    stderr_sink.close()
                 _check_cdp_endpoint(name, env)
                 return
             ipc.sweep_dead_endpoints()
             pending_pid = _parked_daemon_pid(name) or _starting_daemon_pid(name)
             if pending_pid:
                 p = None
+                stderr_sink = subprocess.DEVNULL
             else:
+                stderr_sink = _daemon_stderr_sink(name)
                 p = subprocess.Popen(
                     [sys.executable, "-m", "browser_harness.daemon"],
                     env=e, stdout=subprocess.DEVNULL, stderr=stderr_sink, **ipc.spawn_kwargs(),

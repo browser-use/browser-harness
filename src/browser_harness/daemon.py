@@ -1407,7 +1407,6 @@ if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
-    open(LOG, "w").close()
     _publish_own_pid()
     try:
         asyncio.run(main())
