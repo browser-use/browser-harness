@@ -1,6 +1,6 @@
 # KMB (Kowloon Motor Bus) via DATA.GOV.HK - Find a Stop on a KMB Route by Name and List the Next 3 Bus Arrivals in Hong Kong Time With Remarks (REST JSON, no key)
 
-Field-tested against data.etabus.gov.hk (the ETA API) and data.gov.hk on 2026-11-24 (US Pacific afternoon; 00:01-00:20 UTC on 25 November, which was 08:01-08:20 on Wednesday 25 November in Hong Kong, HKT = UTC+8) using a fresh Browser Use cloud browser (logged out; one session, 00:04:50-00:20:09 UTC) plus Python `urllib` and `curl` from a Linux machine. 29 browser page loads (1 smoke test, 1 in a first draft of block 1, 7 while probing the firewall, 1 in block 1's first run, 6, 6 and 7 in block 2's three runs) and 117 in-page `fetch()` calls (3 in the first draft of block 1, 2 while probing, 41 in each of block 1's two runs, 10 in each of block 2's three runs), 69 urllib calls (block 3: 43 in its first run, which fell back to one `/stop/{id}` call per stop; 26 in its second run of six commands), and 82 curl calls (67 while exploring the API, the spec and the data dictionary, 15 in block 4's two runs), all serial and at least 1 s apart, except the firewall probes while exploring (20 list and ETA calls 2-3 s apart). Every per-route, per-stop and ETA call was HTTP 200; the deliberate probes gave HTTP 422 (wrong direction word, missing path part, robots.txt on the API host) and HTTP 404 (data.gov.hk/robots.txt). The three list endpoints (`/route`, `/stop`, `/route-stop`) are different: 13 of the curl calls and some of the browser calls to them got **HTTP 403 "The request is blocked."** from the Azure Front Door firewall, sometimes and not always (see Gotchas). curl timed ETA and per-route answers at 0.27-1.80 s and the 1 MB stop list at 1.74 s. No 429, no challenge, no key, no login, no cookie. Before the change at the end of this paragraph, the last runs were block 1's second (00:14 UTC), block 3's second (00:16 UTC) and, for block 4, a verifier's run at 00:30 UTC; block 2's output below is its third run (00:19 UTC). Earlier runs gave the same stops and the same probe answers, and ETAs that moved with the clock. An independent verifier re-ran all four blocks at 00:23-00:32 UTC in a separate cloud browser, re-checked the facts below against the live API, spec, data dictionary, dataset and terms pages, and added a per-stop fallback to block 4 after its `/stop` download got HTTP 403 twice. On 2026-11-25, blocks 1, 3 and 4 were changed to drop arrival rows whose time has already passed before taking the next N; they re-ran on 2026-11-25 at 01:01-01:02 UTC (block 1 in a new cloud browser, stopped and confirmed `stopped`), and the outputs shown for blocks 1, 3 and 4 come from those runs.
+Field-tested against data.etabus.gov.hk (the ETA API) and data.gov.hk on 2026-11-24 (US Pacific afternoon; 00:01-00:20 UTC on 25 November, which was 08:01-08:20 on Wednesday 25 November in Hong Kong, HKT = UTC+8) using a fresh Browser Use cloud browser (logged out; one session, 00:04:50-00:20:09 UTC) plus Python `urllib` and `curl` from a Linux machine. 29 browser page loads (1 smoke test, 1 in a first draft of block 1, 7 while probing the firewall, 1 in block 1's first run, 6, 6 and 7 in block 2's three runs) and 117 in-page `fetch()` calls (3 in the first draft of block 1, 2 while probing, 41 in each of block 1's two runs, 10 in each of block 2's three runs), 69 urllib calls (block 3: 43 in its first run, which fell back to one `/stop/{id}` call per stop; 26 in its second run of six commands), and 82 curl calls (67 while exploring the API, the spec and the data dictionary, 15 in block 4's two runs), all serial and at least 1 s apart, except the firewall probes while exploring (20 list and ETA calls 2-3 s apart). Every per-route, per-stop and ETA call was HTTP 200; the deliberate probes gave HTTP 422 (wrong direction word, missing path part, robots.txt on the API host) and HTTP 404 (data.gov.hk/robots.txt). The three list endpoints (`/route`, `/stop`, `/route-stop`) are different: 13 of the curl calls and some of the browser calls to them got **HTTP 403 "The request is blocked."** from the Azure Front Door firewall, sometimes and not always (see Gotchas). curl timed ETA and per-route answers at 0.27-1.80 s and the 1 MB stop list at 1.74 s. No 429, no challenge, no key, no login, no cookie. Before the change at the end of this paragraph, the last runs were block 1's second (00:14 UTC), block 3's second (00:16 UTC) and, for block 4, a verifier's run at 00:30 UTC; block 2's output below is its third run (00:19 UTC). Earlier runs gave the same stops and the same probe answers, and ETAs that moved with the clock. An independent verifier re-ran all four blocks at 00:23-00:32 UTC in a separate cloud browser, re-checked the facts below against the live API, spec, data dictionary, dataset and terms pages, and added a per-stop fallback to block 4 after its `/stop` download got HTTP 403 twice. On 2026-11-25, blocks 1, 3 and 4 were changed to drop arrival rows whose time has already passed before taking the next N; they re-ran on 2026-11-25 at 01:01-01:02 UTC (block 1 in a new cloud browser, stopped and confirmed `stopped`), and the outputs shown for blocks 1, 3 and 4 come from those runs. Later on 2026-11-25, "now" became the later of `generated_timestamp` and the current time, because a cached answer keeps its old timestamp (see Gotchas); blocks 1, 3 and 4 re-ran at 02:08-02:12 UTC (block 1 in another new cloud browser, stopped and confirmed `stopped`), and the outputs shown are from those runs. A forced check fed block 4's arrivals step an answer generated 4 minutes earlier with rows 2 minutes past, 5 and 12 minutes ahead: it printed the two ahead, where the old rule printed all three.
 
 robots.txt (checked 2026-11-25 00:01-00:20 UTC with curl, the cloud browser and blocks 3 and 4): https://data.etabus.gov.hk/robots.txt answers HTTP 422 `application/json` `{"code":422,"message":"Invalid/Missing parameter(s)."}` (the API's own error for an unknown path), and https://data.gov.hk/robots.txt answers HTTP 404 with the site's "Page Not Found" HTML page. Neither host has a robots.txt file, so there are no rules for `*` or for any named agent (GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot, Bytespider); RFC 9309 (section 2.3.1.3) says a 4xx robots.txt means "the crawler MAY access any resources on the server". Every path this skill uses (`/v1/transport/kmb/route/...`, `/route-stop/...`, `/stop`, `/stop/{id}`, `/eta/...`, the dataset and terms pages) is allowed. Blocks 3 and 4 read robots.txt before any API call and stop if it ever returns rules that disallow a path. Terms: https://data.gov.hk/en/terms-and-conditions ("Version 1.2 (last updated on 26 May 2025)"): "You are allowed to browse, download, distribute, reproduce, hyperlink to, and print the Data for both commercial and non-commercial purposes on a free-of-charge basis on condition that" you comply with the Terms of Use, "identify clearly the source of the Data and acknowledge the Government and the Relevant Organisations’ ownership of the intellectual property rights in the Data", "indemnify the Government and the Relevant Organisations" against claims arising from your use, and "give proper attribution to the Government, the Relevant Organisations and DATA.GOV.HK". Links do not mean "that the Government agrees with, approves, recommends or endorses" a third-party site. The dataset page https://data.gov.hk/en-data/dataset/hk-td-tis_21-etakmb names the "Owner of Raw Dataset : Kowloon Motor Bus Company (1933) Limited (KMB) and Long Win Bus Company Limited (LWB)" and says "The Transport Department disseminates the KMB/LWB ETA from raw data provided by KMB/LWB". No AI/ML, scraping, crawling, robot, automated-access or rate-limit wording on the terms page, the dataset page, the API specification (v1.05, 23 Oct 2024) or the data dictionary (v1.02, 10 May 2021); the only "non-commercial" is the grant above (block 2 checks the quotes and scans for the words). Naming: this skill writes "KMB" and "Kowloon Motor Bus" in plain text as the data owner and "DATA.GOV.HK" as the source, uses no KMB, LWB or HKSAR Government logo, and is not affiliated with or endorsed by any of them. Blocks 1, 3 and 4 print a source and ownership line.
 
@@ -116,7 +116,8 @@ for bound in ("outbound", "inbound"):
 
 for bound, seq, sid, info in found:
     d = call(f"/eta/{sid}/{route}/{SERVICE_TYPE}")
-    now = hkt(d["generated_timestamp"])
+    gen = hkt(d["generated_timestamp"])   # made before caching: a cached answer keeps its old timestamp
+    now = max(gen, datetime.now(HKT))     # so "now" is the later of it and this machine's clock
     uniq = {}
     for e in d["data"]:
         if e["dir"] == bound and e["seq"] == seq:   # other directions can come back,
@@ -125,7 +126,7 @@ for bound, seq, sid, info in found:
     rows = sorted((e for e in uniq.values() if e not in past), key=lambda e: (e["eta"] is None, e["eta"] or ""))[:N]
     s = names[sid]
     print(f"\n{route} to {info['dest_en']} ({bound}), stop {seq}: {s['name_en']} {s['name_tc']} ({sid}, "
-          f"{float(s['lat']):.5f}, {float(s['long']):.5f}); generated {now:%H:%M:%S} HKT")
+          f"{float(s['lat']):.5f}, {float(s['long']):.5f}); generated {gen:%H:%M:%S} HKT")
     if len(rows) < N:
         print(f"  only {len(rows)} of {N} asked for: the answer holds at most 3 rows per direction"
               + (f", and {len(past)} already past were dropped" if past else ""))
@@ -150,24 +151,24 @@ print("Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long
       "times shown in HKT with minutes to go.")
 ```
 
-Output (re-run on 2026-11-25, 01:01-01:02 UTC = 09:01-09:02 HKT, in a new cloud browser; the same two stops and 41 calls as the 00:08 and 00:14 UTC runs, with ETAs that moved with the clock):
+Output (re-run on 2026-11-25, 02:10-02:12 UTC = 10:10-10:12 HKT, in a new cloud browser, after the change to "now" described in Gotchas; the same two stops and 41 calls as the 00:08, 00:14 and 01:01 UTC runs, with ETAs that moved with the clock; "in N min" now counts from this machine's clock, which was later than `generated_timestamp`):
 
 ```text
-KMB ETA API, checked 2026-11-25 01:01 UTC (Wed 25 Nov 09:01 HKT)
+KMB ETA API, checked 2026-11-25 02:10 UTC (Wed 25 Nov 10:10 HKT)
 route 1A outbound (O) type 1: SAU MAU PING (CENTRAL) -> STAR FERRY, 35 stops, exact match for 'Hiu Lai Court': stop 6 HIU LAI COURT
 route 1A inbound (I) type 1: STAR FERRY -> SAU MAU PING (CENTRAL), 34 stops, exact match for 'Hiu Lai Court': stop 29 HIU LAI COURT
 
-1A to STAR FERRY (O), stop 6: HIU LAI COURT 曉麗苑 (41E81A921D79F375, 22.31871, 114.22984); generated 09:02:54 HKT
-  1. 09:09:26 HKT  in 6 min   remark: Scheduled Bus
-  2. 09:18:26 HKT  in 15 min  remark: Scheduled Bus
-  3. 09:26:26 HKT  in 23 min  remark: Scheduled Bus
+1A to STAR FERRY (O), stop 6: HIU LAI COURT 曉麗苑 (41E81A921D79F375, 22.31871, 114.22984); generated 10:12:18 HKT
+  1. 10:14:59 HKT  in 2 min   remark: (none)
+  2. 10:22:22 HKT  in 10 min  remark: Scheduled Bus
+  3. 10:30:22 HKT  in 18 min  remark: Scheduled Bus
 
-1A to SAU MAU PING (CENTRAL) (I), stop 29: HIU LAI COURT 曉麗苑 (C3201264CC8E5C5D, 22.31908, 114.22935); generated 09:02:56 HKT
-  1. 09:27:24 HKT  in 24 min  remark: (none)
-  2. 09:43:28 HKT  in 40 min  remark: (none)
-  3. 09:53:10 HKT  in 50 min  remark: (none)
+1A to SAU MAU PING (CENTRAL) (I), stop 29: HIU LAI COURT 曉麗苑 (C3201264CC8E5C5D, 22.31908, 114.22935); generated 10:12:20 HKT
+  1. 10:15:39 HKT  in 3 min   remark: (none)
+  2. 10:29:37 HKT  in 17 min  remark: (none)
+  3. 10:38:48 HKT  in 26 min  remark: (none)
 
-41 API calls: route x2 HTTP [200] 1.11-1.11s, route-stop x2 HTTP [200] 1.11-1.11s, stop x35 HTTP [200] 0.32-1.90s, eta x2 HTTP [200] 1.11-1.11s
+41 API calls: route x2 HTTP [200] 1.37-1.90s, route-stop x2 HTTP [200] 1.11-3.47s, stop x35 HTTP [200] 0.32-3.29s, eta x2 HTTP [200] 0.85-1.11s
 Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bus Services (Transport Department). Data owners: The Kowloon Motor Bus Company (1933) Limited and Long Win Bus Company Limited; intellectual property rights belong to the HKSAR Government and these data owners. Changed: stop picked, times shown in HKT with minutes to go.
 ```
 
@@ -477,7 +478,8 @@ if not found:
     sys.exit(2)
 for b, seq, sid, info in found:
     d = call(f"/eta/{sid}/{route}/{args.service_type}")
-    now = datetime.fromisoformat(d["generated_timestamp"])
+    # generated_timestamp is set before caching, so a cached answer can be behind: use the later of it and the clock
+    now = max(datetime.fromisoformat(d["generated_timestamp"]), datetime.now(HKT))
     uniq = {}
     for e in d["data"]:
         if e["dir"] == b and e["seq"] == seq:          # the answer can hold the other direction too
@@ -504,63 +506,63 @@ print(f"\n{len(calls)} calls: " + ", ".join(f"{p} x{len(v)} {sorted(set(v))}" fo
 print(CREDIT + " Times converted to HKT and stop matched by this script.")
 ```
 
-Output (six commands, re-run on 2026-11-25, 01:01-01:02 UTC = 09:01-09:02 HKT, empty cache; the first command downloaded and cached the stop list, the others read the cache, and in the first and third the outbound answer still held a row whose time had passed, which is now dropped). The first run of the first command, on 2026-11-25 at 00:13 UTC, got HTTP 403 on `/stop`, fell back to 35 `/stop/{id}` calls and found the same two stops (43 calls in all):
+Output (six commands, re-run on 2026-11-25, 02:08-02:09 UTC = 10:08-10:09 HKT, empty cache, after the change to "now"; the first command downloaded and cached the stop list, the others read the cache. At 01:01 UTC the first and third commands still got an outbound row whose time had passed and dropped it; this time no row had passed). The first run of the first command, on 2026-11-25 at 00:13 UTC, got HTTP 403 on `/stop`, fell back to 35 `/stop/{id}` calls and found the same two stops (43 calls in all):
 
 ```text
 $ python3 -I kmb.py 1A "Hiu Lai Court"
-KMB ETA, checked 2026-11-25 01:01 UTC (Wed 09:01 HKT)
+KMB ETA, checked 2026-11-25 02:08 UTC (Wed 10:08 HKT)
 robots.txt: HTTP 422, no rules
 stop names: list of 6744 stops (cached per day)
 1A outbound: SAU MAU PING (CENTRAL) -> STAR FERRY, 35 stops; stop 6 HIU LAI COURT
 1A inbound: STAR FERRY -> SAU MAU PING (CENTRAL), 34 stops; stop 29 HIU LAI COURT
 
 1A -> STAR FERRY at stop 6 HIU LAI COURT / 曉麗苑 (41E81A921D79F375)
-  only 2 of 3: the answer holds at most 3 rows per direction, 1 already past dropped
-  2  09:09 HKT  in 7 min         remark: Scheduled Bus
-  3  09:18 HKT  in 16 min        remark: Scheduled Bus
+  1  10:14 HKT  in 5 min         remark: -
+  2  10:22 HKT  in 13 min        remark: Scheduled Bus
+  3  10:30 HKT  in 21 min        remark: Scheduled Bus
 
 1A -> SAU MAU PING (CENTRAL) at stop 29 HIU LAI COURT / 曉麗苑 (C3201264CC8E5C5D)
-  1  09:27 HKT  in 25 min        remark: -
-  2  09:43 HKT  in 41 min        remark: -
-  3  09:52 HKT  in 51 min        remark: -
+  1  10:15 HKT  in 5 min         remark: -
+  2  10:28 HKT  in 19 min        remark: -
+  3  10:40 HKT  in 31 min        remark: -
 
 8 calls: robots.txt x1 [422], stop list x1 [200], route x2 [200], route-stop x2 [200], eta x2 [200]
 Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bus Services (Transport Department). Data owners: The Kowloon Motor Bus Company (1933) Limited and Long Win Bus Company Limited; intellectual property rights belong to the HKSAR Government and these data owners. Times converted to HKT and stop matched by this script.
 
 $ python3 -I kmb.py 1A "star ferry" --bound I
-KMB ETA, checked 2026-11-25 01:01 UTC (Wed 09:01 HKT)
+KMB ETA, checked 2026-11-25 02:09 UTC (Wed 10:09 HKT)
 robots.txt: HTTP 422, no rules
 stop names: list of 6744 stops (cached per day)
 1A inbound: STAR FERRY -> SAU MAU PING (CENTRAL), 34 stops; stop 1 STAR FERRY, HARBOUR CITY
 
 1A -> SAU MAU PING (CENTRAL) at stop 1 STAR FERRY, HARBOUR CITY / 尖沙咀碼頭,海港城 (8D804CFD9C7B9042)
-  1  09:12 HKT  in 10 min        remark: Scheduled Bus
-  2  09:24 HKT  in 22 min        remark: Scheduled Bus
-  3  09:36 HKT  in 34 min        remark: Scheduled Bus
+  1  10:15 HKT  in 5 min         remark: Scheduled Bus
+  2  10:22 HKT  in 12 min        remark: Scheduled Bus
+  3  10:30 HKT  in 20 min        remark: Scheduled Bus
 
 4 calls: robots.txt x1 [422], route x1 [200], route-stop x1 [200], eta x1 [200]
 Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bus Services (Transport Department). Data owners: The Kowloon Motor Bus Company (1933) Limited and Long Win Bus Company Limited; intellectual property rights belong to the HKSAR Government and these data owners. Times converted to HKT and stop matched by this script.
 
 $ python3 -I kmb.py 1A 曉麗苑 -n 2
-KMB ETA, checked 2026-11-25 01:02 UTC (Wed 09:02 HKT)
+KMB ETA, checked 2026-11-25 02:09 UTC (Wed 10:09 HKT)
 robots.txt: HTTP 422, no rules
 stop names: list of 6744 stops (cached per day)
 1A outbound: SAU MAU PING (CENTRAL) -> STAR FERRY, 35 stops; stop 6 HIU LAI COURT
 1A inbound: STAR FERRY -> SAU MAU PING (CENTRAL), 34 stops; stop 29 HIU LAI COURT
 
 1A -> STAR FERRY at stop 6 HIU LAI COURT / 曉麗苑 (41E81A921D79F375)
-  2  09:09 HKT  in 7 min         remark: Scheduled Bus
-  3  09:18 HKT  in 16 min        remark: Scheduled Bus
+  1  10:14 HKT  in 4 min         remark: -
+  2  10:22 HKT  in 12 min        remark: Scheduled Bus
 
 1A -> SAU MAU PING (CENTRAL) at stop 29 HIU LAI COURT / 曉麗苑 (C3201264CC8E5C5D)
-  1  09:27 HKT  in 25 min        remark: -
-  2  09:43 HKT  in 41 min        remark: -
+  1  10:15 HKT  in 5 min         remark: -
+  2  10:28 HKT  in 18 min        remark: -
 
 7 calls: robots.txt x1 [422], route x2 [200], route-stop x2 [200], eta x2 [200]
 Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bus Services (Transport Department). Data owners: The Kowloon Motor Bus Company (1933) Limited and Long Win Bus Company Limited; intellectual property rights belong to the HKSAR Government and these data owners. Times converted to HKT and stop matched by this script.
 
 $ python3 -I kmb.py N293 "Hiu Lai Court" --bound O
-KMB ETA, checked 2026-11-25 01:02 UTC (Wed 09:02 HKT)
+KMB ETA, checked 2026-11-25 02:09 UTC (Wed 10:09 HKT)
 robots.txt: HTTP 422, no rules
 stop names: list of 6744 stops (cached per day)
 N293 outbound: SHEUNG TAK -> MONG KOK (PARK AVENUE), 41 stops; stop 22 HIU LAI COURT
@@ -573,7 +575,7 @@ N293 -> MONG KOK (PARK AVENUE) at stop 22 HIU LAI COURT / 曉麗苑 (41E81A921D7
 Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bus Services (Transport Department). Data owners: The Kowloon Motor Bus Company (1933) Limited and Long Win Bus Company Limited; intellectual property rights belong to the HKSAR Government and these data owners. Times converted to HKT and stop matched by this script.
 
 $ python3 -I kmb.py zz9 "Hiu Lai Court"
-KMB ETA, checked 2026-11-25 01:02 UTC (Wed 09:02 HKT)
+KMB ETA, checked 2026-11-25 02:09 UTC (Wed 10:09 HKT)
 robots.txt: HTTP 422, no rules
 stop names: list of 6744 stops (cached per day)
 ZZ9 outbound service type 1: not in the API
@@ -641,8 +643,8 @@ read -r SID SEQ < "$T/hit"
 sleep 1
 # 3. next arrivals at that stop: keep dir O and this seq, drop times already past; +08:00 (HKT); eta can be null
 "${C[@]}" --fail "$K/eta/$SID/$ROUTE/1" | python3 -c 'import json, sys
-from datetime import datetime as T
-d = json.load(sys.stdin); seq = int(sys.argv[1]); now = T.fromisoformat(d["generated_timestamp"])
+from datetime import datetime as T, timezone
+d = json.load(sys.stdin); seq = int(sys.argv[1]); now = max(T.fromisoformat(d["generated_timestamp"]), T.now(timezone.utc))
 print("generated", d["generated_timestamp"], "|", len(d["data"]), "rows, dirs", sorted({e["dir"] for e in d["data"]}))
 for e in [e for e in d["data"] if e["dir"] == "O" and e["seq"] == seq and not (e["eta"] and T.fromisoformat(e["eta"]) < now)][:3]:
     print(" ", e["eta_seq"], e["eta"], "|", e["dest_en"], "|", repr(e["rmk_en"]), "|", e["data_timestamp"])' "$SEQ"
@@ -659,7 +661,7 @@ rm -rf "$T"
 echo "Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bus Services (Transport Department); data owners The Kowloon Motor Bus Company (1933) Limited and Long Win Bus Company Limited. Accessed $(date -u '+%d %B %Y %H:%M') UTC."
 ```
 
-Output (re-run on 2026-11-25, 01:02 UTC; the stop list came back HTTP 200, and the outbound answer's first row, `eta_seq` 1, had passed, so rows 2 and 3 are shown). The verifier's run at 00:30 UTC and the author's at 00:18 UTC printed the same stops and probe lines. An earlier version of the script exited when the list was blocked; the verifier's two runs of it at 00:27 and 00:29 UTC both got HTTP 403 on `/stop`, so the fallback was added and tested with the list forced to fail:
+Output (re-run on 2026-11-25, 02:09 UTC, after the change to "now"; the stop list came back HTTP 200 and all three outbound rows were still ahead. At 01:02 UTC the first row, `eta_seq` 1, had passed and only rows 2 and 3 were shown). The verifier's run at 00:30 UTC and the author's at 00:18 UTC printed the same stops and probe lines. An earlier version of the script exited when the list was blocked; the verifier's two runs of it at 00:27 and 00:29 UTC both got HTTP 403 on `/stop`, so the fallback was added and tested with the list forced to fail:
 
 ```text
 robots.txt HTTP 422: {"code":422,"message":"Invalid/Missing parameter(s)."}
@@ -673,18 +675,19 @@ stop list HTTP 200, 1048321 bytes
   6 41E81A921D79F375 HIU LAI COURT 曉麗苑 22.318714 114.229840
   7 04B6438688E12AC0 CHEUNG WO COURT 祥和苑 22.319803 114.227405
   35 DCFF4041D0C0ACF8 STAR FERRY, HARBOUR CITY 尖沙咀碼頭,海港城 22.293816 114.168797
-generated 2026-11-25T09:02:32+08:00 | 3 rows, dirs ['O']
-  2 2026-11-25T09:09:26+08:00 | STAR FERRY | 'Scheduled Bus' | 2026-11-25T09:02:16+08:00
-  3 2026-11-25T09:18:26+08:00 | STAR FERRY | 'Scheduled Bus' | 2026-11-25T09:02:16+08:00
+generated 2026-11-25T10:09:48+08:00 | 3 rows, dirs ['O']
+  1 2026-11-25T10:15:16+08:00 | STAR FERRY | '' | 2026-11-25T10:09:46+08:00
+  2 2026-11-25T10:22:22+08:00 | STAR FERRY | 'Scheduled Bus' | 2026-11-25T10:09:46+08:00
+  3 2026-11-25T10:30:22+08:00 | STAR FERRY | 'Scheduled Bus' | 2026-11-25T10:09:46+08:00
 HTTP/2 200
 content-type: application/json; charset=utf-8
 access-control-allow-origin: *
 cache-control: max-age=300;
-x-cache: TCP_HIT
+x-cache: TCP_MISS
 route/1A/O/1: HTTP 422 {"code":422,"message":"Invalid direction."}
-route/1a/outbound/1: HTTP 200 {"type":"Route","version":"1.0","generated_timestamp":"2026-11-25T09:02:36+08:00","data":{}}
-eta/0000000000000000/1A/1: HTTP 200 {"type":"ETA","version":"1.0","generated_timestamp":"2026-11-25T09:02:38+08:00","data":[]}
-Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bus Services (Transport Department); data owners The Kowloon Motor Bus Company (1933) Limited and Long Win Bus Company Limited. Accessed 25 November 2026 01:02 UTC.
+route/1a/outbound/1: HTTP 200 {"type":"Route","version":"1.0","generated_timestamp":"2026-11-25T10:09:53+08:00","data":{}}
+eta/0000000000000000/1A/1: HTTP 200 {"type":"ETA","version":"1.0","generated_timestamp":"2026-11-25T10:09:55+08:00","data":[]}
+Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bus Services (Transport Department); data owners The Kowloon Motor Bus Company (1933) Limited and Long Win Bus Company Limited. Accessed 25 November 2026 02:09 UTC.
 ```
 
 ## Fields
@@ -705,12 +708,12 @@ Source: DATA.GOV.HK, Real time Arrival Data of Kowloon Motor Bus and Long Win Bu
 - **Case matters and mistakes are silent.** "Please note that URL and parameters in API requests are case-sensitive" (spec). `/route/1a/outbound/1`, a lower-case stop id, an unknown stop id or a stop that route 999 does not serve all answer HTTP 200 with empty `data` (`{}` or `[]`), not an error. Upper-case the route and check for empty data, as the blocks do.
 - **`eta` can be `null`.** Seen live on 2026-11-25 08:01-08:20 HKT: night route N293 at Hiu Lai Court (`null`, empty remark; all 85 N293 rows and all 103 N216 rows were `null`), 601P ("The final bus has departed from this stop"), and 1A outbound: `/route-eta/1A/1` at 08:16:05 HKT had `null` with an empty remark for outbound stops 1-15, while block 1 at 08:15:54 and block 3 in the same minute saw `null` and then 08:22 at stop 6. The spec's sample has `null` with "This route only operates on Sundays and Public Holidays". Print the remark when there is no time.
 - **Remarks.** Live values were `""` (most rows), "Scheduled Bus" (`原定班次`) and "The final bus has departed from this stop" (`最後班次已過`), each also in Simplified Chinese. The spec's samples show `""`, "Scheduled Bus" and "This route only operates on Sundays and Public Holidays", but neither the spec nor the data dictionary lists the possible values; show them as given.
-- **ETAs can already be past.** At 08:01:46 HKT a 13X row said 08:00:42, and at 09:01 HKT the 1A answer for Hiu Lai Court still held a row for 09:00. Blocks 1, 3 and 4 drop rows whose `eta` is before `generated_timestamp` before taking the next N, and blocks 1 and 3 say when fewer than N are left (the answer holds at most 3 per direction).
+- **ETAs can already be past.** At 08:01:46 HKT a 13X row said 08:00:42, and at 09:01 HKT the 1A answer for Hiu Lai Court still held a row for 09:00. Blocks 1, 3 and 4 drop rows whose `eta` is before the later of `generated_timestamp` and the current time before taking the next N, and blocks 1 and 3 say when fewer than N are left (the answer holds at most 3 per direction).
 - **Same bus, several service types.** "the returned ETA information is also included in other service types of the same route number if they share the same bus stop" (spec). `/stop-eta` therefore lists such a bus once per service type, and `/eta/{stop}/13X/1`, `/2` and `/5` each returned the same three times. Drop duplicates on (`eta`, `rmk_en`) and ask one service type.
 - **Seq types differ.** `seq` is the string `"6"` in `/route-stop` and the number `6` in `/eta`; `service_type` likewise. Convert before comparing.
 - **The list endpoints can be blocked.** `/route`, `/stop` and `/route-stop` (all routes) answered HTTP 403 "The request is blocked." (Azure Front Door) to some calls and HTTP 200 to others, from both the cloud browser and the Linux machine. With curl: 8 `/route` calls 2 s apart with Chrome's User-Agent gave 2 x 200 and 6 x 403, then 4 calls with curl's own User-Agent gave 4 x 403; 4 minutes later `/stop` was HTTP 200 again. Per-route, per-stop and ETA calls were never blocked. Cache the lists for the day; do not retry them in a loop.
 - **Stop names are not unique and not tidy.** Some have double spaces (`KOWLOON BAY  STATION`) and the same stop has different names in each direction (outbound `STAR FERRY, HARBOUR CITY` is `DCFF4041D0C0ACF8`, inbound `8D804CFD9C7B9042`). Normalise spaces and case, try the exact name first, then "contains". Block 1 stops at the first exact match in each direction (each name costs a `/stop/{id}` call); block 3 does the same when the list is blocked, but with the cached list it keeps every exact match, so a route that serves the same stop twice in one direction lists both.
-- **Hong Kong time.** Times carry `+08:00`; Hong Kong has no daylight saving. `generated_timestamp` is the API's clock; compute "minutes to go" from it rather than from your own clock.
+- **Hong Kong time.** Times carry `+08:00`; Hong Kong has no daylight saving. `generated_timestamp` is "the initial generated time of the response before it is cached" (data dictionary), and answers carry `cache-control: max-age=300;`: on 2026-11-25 at 02:05:40 UTC a `TCP_HIT` answer for `/eta/41E81A921D79F375/1A/1` still said 10:05:20 HKT, 20 s behind its own `Date` header. So the blocks take "now" as the later of `generated_timestamp` and the current time, for dropping passed rows and for "minutes to go".
 - **Credit and no logo.** Name DATA.GOV.HK as the source, acknowledge that the HKSAR Government and KMB/LWB own the rights in the data, give attribution to the Government, the data owners and DATA.GOV.HK, and use no KMB, LWB or Government logo or wording that suggests endorsement.
 - **Tab marker.** The harness sets the tab title to a horse emoji. Blocks 1 and 2 check `location.href` and the page text, not the title.
 
