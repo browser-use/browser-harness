@@ -1,13 +1,13 @@
 # Camara dos Deputados - Find the Newest Brazilian Bills (PL) on a Topic Such as "inteligencia artificial", With Number, Year, Ementa, Date Presented and Latest Procedural Step, Then How Each Party Voted in the Most Recent Roll-Call Vote (Dados Abertos REST API JSON, no key)
 
-Field-tested against the Dados Abertos da Camara dos Deputados API v2 (dadosabertos.camara.leg.br) on 2026-11-24 (US Pacific afternoon; 23:31-23:45 UTC, which was 20:31-20:45 the same evening in Brasilia) using a fresh Browser Use cloud browser `ka-camara-deput-1124` (logged out; one session, 23:33:18-23:44:26 UTC, confirmed `stopped` through the Browser Use API) plus Python `urllib` and `curl` from a Linux machine. 19 browser page loads (1 smoke test that opened the API docs page, which block 1's three runs reused; 6 in each of block 2's three runs) and 89 in-page `fetch()` calls (block 1: 15, 16 and 16; block 2: 14 per run), 53 curl calls (33 while exploring the API and its OpenAPI document, 10 in each of block 4's two runs) and 77 urllib calls (block 3 ran 8 times: 17, 10, 9 and 2 calls before a paging fix, then 18 with an empty cache, 10 warm, 9 for `deepfake` and 2 for a keyword with no match), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes below: HTTP 400 (`ordenarPor=dataApresentacao` and unknown parameters such as `foo=1` and `x=1`) and HTTP 404 (unknown ids). curl timed 22 answers at 0.59-2.34 s (2.34 s for the newest 100 votes of all bodies). No 429, no challenge, no key, no login, no cookie. Every answer inspected (the 21 saved exploration headers, all 13 block 2 probes, block 4's search) carried `retry-after: 30`, 200s included (see Gotchas). Block 1's output below is its third run (23:36 UTC; the first run used the `idOrgao=180` filter and picked a stale vote, which is how the filter lag in Gotchas was found; the second added the `siglaOrgao` filter, the third the federation orientations), block 2's its third (23:39; the first searched the FAQ with `innerText` and missed the collapsed answers, the second quoted a sentence with a dash in it), block 3's its fifth (empty cache) and sixth (warm), and block 4's its second (the first had a quoting error in one Python one-liner). An independent verifier re-ran all 4 blocks verbatim at 23:48-23:52 UTC (fresh cloud browser `kv-camara-deput-1124`, confirmed `stopped`) with the same output apart from times and the gzip size of one answer, then fixed the terms section and re-ran block 2 at 23:57 UTC in a second session of the same name (also confirmed `stopped`).
+Field-tested against the Dados Abertos da Camara dos Deputados API v2 (dadosabertos.camara.leg.br) on 2026-11-24 (US Pacific afternoon; 23:31-23:45 UTC, which was 20:31-20:45 the same evening in Brasilia) using a fresh Browser Use cloud browser `ka-camara-deput-1124` (logged out; one session, 23:33:18-23:44:26 UTC, confirmed `stopped` through the Browser Use API) plus Python `urllib` and `curl` from a Linux machine. 19 browser page loads (1 smoke test that opened the API docs page, which block 1's three runs reused; 6 in each of block 2's three runs) and 89 in-page `fetch()` calls (block 1: 15, 16 and 16; block 2: 14 per run), 53 curl calls (33 while exploring the API and its OpenAPI document, 10 in each of block 4's two runs) and 77 urllib calls (block 3 ran 8 times: 17, 10, 9 and 2 calls before a paging fix, then 18 with an empty cache, 10 warm, 9 for `deepfake` and 2 for a keyword with no match), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes below: HTTP 400 (`ordenarPor=dataApresentacao` and unknown parameters such as `foo=1` and `x=1`) and HTTP 404 (unknown ids). curl timed 22 answers at 0.59-2.34 s (2.34 s for the newest 100 votes of all bodies). No 429, no challenge, no key, no login, no cookie. Every answer inspected (the 21 saved exploration headers, all 13 block 2 probes, block 4's search) carried `retry-after: 30`, 200s included (see Gotchas). Block 1's output below is its third run (23:36 UTC; the first run used the `idOrgao=180` filter and picked a stale vote, which is how the filter lag in Gotchas was found; the second added the `siglaOrgao` filter, the third the federation orientations), block 2's its third (23:39; the first searched the FAQ with `innerText` and missed the collapsed answers, the second quoted a sentence with a dash in it), block 3's its fifth (empty cache) and sixth (warm), and block 4's its second (the first had a quoting error in one Python one-liner). An independent verifier re-ran all 4 blocks verbatim at 23:48-23:52 UTC (fresh cloud browser `kv-camara-deput-1124`, confirmed `stopped`) with the same output apart from times and the gzip size of one answer, then fixed the terms section and re-ran block 2 at 23:57 UTC in a second session of the same name (also confirmed `stopped`). After a code review, block 1 reads every page of the search and sorts by date presented, blocks 1 and 3 follow the vote list's pages until a roll-call is found, and block 4 keeps the votes in a `mktemp` file removed on exit; they re-ran on 2026-11-25 at 01:00-01:03 UTC (block 1 in a new cloud browser, stopped and confirmed `stopped`), and the outputs shown for blocks 1, 3 and 4 come from those runs.
 
 robots.txt (checked 2026-11-24, curl, the cloud browser and block 3): https://dadosabertos.camara.leg.br/robots.txt answers HTTP 200 `text/html` with the portal's own HTML page (title "Dados Abertos da Câmara dos Deputados", no `User-agent` or `Disallow` line). That is not a robots file, so it sets no rules, and every agent, including GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Claude-Web, Google-Extended, PerplexityBot, CCBot and Bytespider, may fetch every path this skill uses (`/api/v2/proposicoes`, `/proposicoes/{id}`, `/proposicoes/{id}/tramitacoes`, `/votacoes`, `/votacoes/{id}`, `/votacoes/{id}/votos`, `/votacoes/{id}/orientacoes`, `/deputados`, `/api/v2/api-docs` and the docs pages; block 3 checks 13 agents on its 6 API paths before any call and stops if the host ever publishes rules that disallow one). Apart from block 2, which reads www.camara.leg.br/robots.txt and the terms page on www2.camara.leg.br (whose robots.txt has only a `*` group and does not disallow that page), the skill does not fetch www.camara.leg.br. Its robots.txt (read by block 2) has a group for GPTBot, ChatGPT-User, Google-Extended, anthropic-ai, Claude-Web, CCBot and PerplexityBot (plus Omgilibot, Omgili and FacebookBot) under the comment "BLOQUEIO DE BOTS DE INTELIGÊNCIA ARTIFICIAL (LLMs)" / "Evita que o conteúdo do site seja usado para treinar IAs.", but that group disallows the same paths as its `*` group: admin, login and comment pages, list pages and pages with certain query strings, the bill tree pages, `/deputados/*/*` and files such as `/*.pdf`; the `urlInteiroTeor` links the API returns point there and are printed, not fetched. Terms: the "Termos de uso" link in the www.camara.leg.br footer goes to https://www2.camara.leg.br/termo-de-uso-e-politica-de-privacidade (https://www.camara.leg.br/termos-de-uso is HTTP 404). It applies "ao acessar o portal da Câmara dos Deputados (www.camara.leg.br)" and says (clause 29): "Todas as informações publicadas no Portal da Câmara são de domínio público, gratuitas e podem ser reproduzidas desde que citada a fonte "Câmara dos Deputados" e a autoria da informação, quando houver." So name the source: every block's output ends with a "Source: Dados Abertos da Camara dos Deputados ..." line. Its one bot clause (22), "Podemos coibir a participação de sistemas automatizados ou robôs (scripts, bots, entre outros) que tentem imitar pessoas.", reserves the right to curb bots that pose as people in the portal's participation features; it bans neither automated reading nor this skill's API calls, and this skill posts nothing. Its one AI clause (37) is about the Camara's own use of AI to produce content. No non-commercial-only wording. The official FAQ, https://dadosabertos.camara.leg.br/faq/faq-home.html: "É totalmente de graça" ... "os dados são públicos! E não, não é preciso se cadastrar, nem se identificar para baixar qualquer dos conjuntos de dados." and, to "Posso cobrar por um aplicativo ou serviço que use os dados da Câmara?": "Sim, pode. Não há qualquer restrição quanto ao isso." (paid apps allowed, no restriction). It describes the data as formatted for "processamento por softwares de diversos tipos", and https://dadosabertos.camara.leg.br/howtouse/sobre-dados-abertos.html says "Serviços de dados abertos são feitos para máquinas e programas (softwares)" and lists "Livres de licenças" among the open-data criteria it follows. No AI/ML, scraping, crawling, robot or non-commercial-only wording on either page (block 2 scans both; its one hit is that "Livres de licenças" line; on the terms page its hits are clauses 22 and 37 above). The OpenAPI document: "Por padrão, todos os serviços de listagens retornam 15 itens, e o limite por requisição é de 100 itens." and "Esta versão é ainda incompleta, sujeita a mudanças". The FAQ also says personal and family information of deputies and staff is restricted ("Existem restrições às informações que podem ser divulgadas, especialmente as de caráter pessoal e/ou familiar."), which is one more reason the blocks print only a deputy's name, party, state and vote. Naming: this skill writes "Camara dos Deputados" and "Dados Abertos da Camara dos Deputados" in plain text and shows no coat of arms or logo; it is not affiliated with or endorsed by the Camara dos Deputados. Every block's output names the source and says what was computed.
 
 ## Quick summary
 
-- **No scraping needed.** `GET https://dadosabertos.camara.leg.br/api/v2/proposicoes?keywords=inteligencia%20artificial&siglaTipo=PL&itens=5&ordem=DESC&ordenarPor=id` with `Accept: application/json` -> the newest PL bills (`id`, `numero`, `ano`, `ementa`, `dataApresentacao`). `GET /proposicoes/{id}` -> `statusProposicao` = the latest procedural step (`dataHora`, `siglaOrgao`, `descricaoTramitacao`, `descricaoSituacao`, `despacho`); `/proposicoes/{id}/tramitacoes` = every step. `GET /votacoes?ordem=DESC&ordenarPor=dataHoraRegistro&itens=100` -> the newest votes of every body; `/votacoes/{id}/votos` -> one row per deputy who voted (empty for symbolic votes); `/votacoes/{id}/orientacoes` -> each leadership's recommended vote. JSON, gzip, no key, 100 rows per page at most, paging in `links` (`rel="next"`, `"last"`) and the `Link` / `X-Total-Count` headers.
-- **Answers (block 1, 24 November 2026 23:36 UTC = 20:36 in Brasilia):** 105 PL bills matched "inteligencia artificial" in the default 30-day window. Newest by id: **PL 5928/2026** (presented 2026-11-23 15:26 Brasilia; protection of workers against automated decisions and AI surveillance at work; amends the CLT and the LGPD), **PL 5864/2026** (2026-11-16; voice and image replicas generated by AI), **PL 5826/2026** (2026-11-11; AI in food advertising and delivery platforms), **PL 5813/2026** (2026-11-10; precision medicine in paediatric oncology, matched through the indexing keywords only) and **PL 5729/2026** (2026-11-03; "Lei Anticrime Deepfake"). All five were still at their first step, "Apresentação de Proposição" at the MESA (four "Aguardando Autorização do Despacho" or "Aguardando Chancela e Publicação do Despacho").
+- **No scraping needed.** `GET https://dadosabertos.camara.leg.br/api/v2/proposicoes?keywords=inteligencia%20artificial&siglaTipo=PL&itens=100&ordem=DESC&ordenarPor=id` with `Accept: application/json` -> the matching PL bills, highest id first (`id`, `numero`, `ano`, `ementa`, `dataApresentacao`); `ordenarPor=dataApresentacao` is HTTP 400, so read every page and sort by `dataApresentacao` yourself (blocks 1 and 3). `GET /proposicoes/{id}` -> `statusProposicao` = the latest procedural step (`dataHora`, `siglaOrgao`, `descricaoTramitacao`, `descricaoSituacao`, `despacho`); `/proposicoes/{id}/tramitacoes` = every step in one answer (no paging: its only parameters are `dataInicio` and `dataFim`, and `itens=5` is HTTP 400). `GET /votacoes?ordem=DESC&ordenarPor=dataHoraRegistro&itens=100` -> the newest votes of every body; `/votacoes/{id}/votos` -> one row per deputy who voted (empty for symbolic votes); `/votacoes/{id}/orientacoes` -> each leadership's recommended vote. JSON, gzip, no key, 100 rows per page at most, paging in `links` (`rel="next"`, `"last"`) and the `Link` / `X-Total-Count` headers.
+- **Answers (block 1, 24 November 2026 23:36 UTC = 20:36 in Brasilia):** 105 PL bills matched "inteligencia artificial" in the default 30-day window. Newest by date presented (the same five as the highest ids; block 1 re-ran at 2026-11-25 01:03 UTC with the same bills): **PL 5928/2026** (presented 2026-11-23 15:26 Brasilia; protection of workers against automated decisions and AI surveillance at work; amends the CLT and the LGPD), **PL 5864/2026** (2026-11-16; voice and image replicas generated by AI), **PL 5826/2026** (2026-11-11; AI in food advertising and delivery platforms), **PL 5813/2026** (2026-11-10; precision medicine in paediatric oncology, matched through the indexing keywords only) and **PL 5729/2026** (2026-11-03; "Lei Anticrime Deepfake"). All five were still at their first step, "Apresentação de Proposição" at the MESA (four "Aguardando Autorização do Despacho" or "Aguardando Chancela e Publicação do Despacho").
 - **Most recent roll-call vote:** plenary vote **2332174-59** at 2026-11-24 17:52:28 Brasilia, "Aprovado o Substitutivo ao Projeto de Lei nº 1.969, de 2022 ... Sim: 292; Não: 147; Abstenção: 2; Total: 441." (PL 1969/2022, the Acari case). 442 vote rows; **PL 80 Não / 5 Sim, NOVO 5 Não, MDB 17 Não / 11 Sim; PT 63 Sim, UNIÃO 27-15, PSD 33-5, PP 27-9, REPUBLICANOS 29-6** and every other party a Sim majority except CIDADANIA and MISSÃO (1 Não each). The newer plenary vote 2332174-62 (the final wording, 17:53:39) was symbolic (0 rows) and was skipped.
 - **Rate limits: none published, no rate-limit headers.** `retry-after: 30` comes on every answer, so it cannot signal throttling; honour it only on a 429 or 5xx. Lists carry `Cache-Control: public, max-age=360` (proposicoes) or `1800` (deputados); details and votes carry none, and there is no `ETag`. Serial, 1 s apart; the whole task is 12-18 calls.
 
@@ -15,7 +15,7 @@ robots.txt (checked 2026-11-24, curl, the cloud browser and block 3): https://da
 
 ### 1. Topic -> newest PL bills with their latest step; most recent plenary roll-call -> vote by party (browser)
 
-`on_api_tab()` opens the logged-out API docs page on dadosabertos.camara.leg.br and `fetch()` calls the API on the same host with `Accept: application/json`. `get()` returns parsed JSON on HTTP 200, waits once on 429/5xx or a network error and otherwise raises. 16 `fetch()` calls in the run shown: the search, 2 per bill (detail and step history), the vote list, the votes of each plenary vote until one has at least `MIN_ROWS` rows, the chosen vote's detail and its orientations.
+`on_api_tab()` opens the logged-out API docs page on dadosabertos.camara.leg.br and `fetch()` calls the API on the same host with `Accept: application/json`. `get()` returns parsed JSON on HTTP 200, waits once on 429/5xx or a network error and otherwise raises. 17 `fetch()` calls in the run shown: every page of the search (2 of 100; `MAX_PAGES` caps it), 2 per bill (detail and step history), the vote list (following `rel="next"` pages while no roll-call is found), the votes of each plenary vote until one has at least `MIN_ROWS` rows, the chosen vote's detail and its orientations.
 
 ```python
 import email.utils, json, re, textwrap, time, unicodedata
@@ -28,6 +28,7 @@ N_BILLS = 5                            # newest PL bills to show
 ORGAO = "PLEN"                         # siglaOrgao of the floor (Plenario); None = every body, committees included
 MIN_ROWS = 20                          # this skill's cut-off: fewer vote rows = symbolic vote with a few registered positions
 MAX_SCAN = 15                          # votes to check, newest first, before giving up
+MAX_PAGES = 5                          # pages of 100 to read from the bill search and from the vote list
 PAGE = "https://dadosabertos.camara.leg.br/swagger/api.html"
 API = "https://dadosabertos.camara.leg.br/api/v2"
 BRT = timezone(timedelta(hours=-3))    # API times are Brasilia local without an offset; no daylight saving since 2019
@@ -98,17 +99,21 @@ on_api_tab()
 now = datetime.now(timezone.utc)
 print(f"Dados Abertos da Camara dos Deputados API v2, checked {now:%Y-%m-%d %H:%M} UTC ({now.astimezone(BRT):%H:%M} Brasilia)")
 
-# 1 call: newest PL bills for the keywords (default window: presented or moved in the last 30 days); ordered by id
-found, r = get(f"{API}/proposicoes?keywords={quote(KEYWORDS)}&siglaTipo=PL&itens={N_BILLS}&ordem=DESC&ordenarPor=id")
-bills = found["dados"]
-if not bills:
+# every PL matching the keywords (default window: presented or moved in the last 30 days), 100 per page.
+# ordenarPor=dataApresentacao is HTTP 400, so read the pages and sort by date presented here
+url, found, pages, total = f"{API}/proposicoes?keywords={quote(KEYWORDS)}&siglaTipo=PL&itens=100&ordem=DESC&ordenarPor=id", [], 0, None
+while url and pages < MAX_PAGES:
+    d, r = get(url)
+    found += d["dados"]
+    pages, total = pages + 1, total or r["total"]
+    url = next((l["href"] for l in d.get("links", []) if l["rel"] == "next"), None)
+if not found:
     raise RuntimeError(f"no PL matches {KEYWORDS!r} in the default 30-day window; add dataApresentacaoInicio=...: stop")
-last = re.search(r'pagina=(\d+)[^>]*>; rel="last"', r["link"])
-print(f"\nPL bills matching {KEYWORDS!r}: X-Total-Count {r['total']} (presented or moved in the last 30 days), "
-      f"{last[1] if last else '?'} pages of {N_BILLS}; newest {len(bills)} by id:")
-dates = [b["dataApresentacao"] for b in bills]
-if dates != sorted(dates, reverse=True):
-    print("  note: id order and presentation-date order differ on this page")
+bills = sorted(found, key=lambda b: (b["dataApresentacao"], b["id"]), reverse=True)[:N_BILLS]
+print(f"\nPL bills matching {KEYWORDS!r}: X-Total-Count {total} (presented or moved in the last 30 days), "
+      f"read {len(found)} in {pages} page(s) of 100; newest {len(bills)} by date presented:")
+if url:
+    print(f"  PARTIAL: stopped at MAX_PAGES = {MAX_PAGES}; the newest by date may be on a later page ({url})")
 
 # 2 calls per bill: the bill (statusProposicao = latest step) and its full step history
 for b in bills:
@@ -127,19 +132,27 @@ for b in bills:
     print(wrap(st["despacho"][:300] + ("..." if len(st["despacho"]) > 300 else ""), "      despacho: "))
     print(f"    {len(steps['dados'])} tramitacao step(s); newest {agree} statusProposicao; text: {d['urlInteiroTeor'] or '-'}")
 
-# votes, newest first; the first with >= MIN_ROWS individual votes is the most recent roll-call (nominal) vote.
+# votes, newest first, 100 per page; the first with >= MIN_ROWS individual votes is the most recent roll-call (nominal)
+# vote. Pages are followed (links rel="next") until one is found, MAX_SCAN votes were checked or MAX_PAGES were read.
 # Filter by siglaOrgao here: the idOrgao=180 parameter lagged a day behind (see Gotchas)
-votes, _ = get(f"{API}/votacoes?ordem=DESC&ordenarPor=dataHoraRegistro&itens=100")
-cands = [v for v in votes["dados"] if not ORGAO or v["siglaOrgao"] == ORGAO][:MAX_SCAN]
-pick, skipped = None, []
-for v in cands:
-    rows, _ = get(f"{API}/votacoes/{v['id']}/votos")
-    if len(rows["dados"]) >= MIN_ROWS:
-        pick, rows = v, rows["dados"]
-        break
-    skipped.append(f"{v['id']} ({len(rows['dados'])} rows)")
+url, vpages, pick, skipped = f"{API}/votacoes?ordem=DESC&ordenarPor=dataHoraRegistro&itens=100", 0, None, []
+while url and pick is None and len(skipped) < MAX_SCAN and vpages < MAX_PAGES:
+    votes, _ = get(url)
+    vpages += 1
+    for v in votes["dados"]:
+        if ORGAO and v["siglaOrgao"] != ORGAO:
+            continue
+        if len(skipped) >= MAX_SCAN:
+            break
+        rows, _ = get(f"{API}/votacoes/{v['id']}/votos")
+        if len(rows["dados"]) >= MIN_ROWS:
+            pick, rows = v, rows["dados"]
+            break
+        skipped.append(f"{v['id']} ({len(rows['dados'])} rows)")
+    url = next((l["href"] for l in votes.get("links", []) if l["rel"] == "next"), None)
 if not pick:
-    raise RuntimeError(f"no roll-call vote among the newest {len(cands)} {ORGAO or ''} votes (all symbolic): stop")
+    raise RuntimeError(f"no roll-call vote among the newest {len(skipped)} {ORGAO or ''} votes in {vpages} page(s) of 100 "
+                       f"({'MAX_SCAN or MAX_PAGES reached' if url else 'no more pages'}): stop")
 detail, _ = get(f"{API}/votacoes/{pick['id']}")
 orient, _ = get(f"{API}/votacoes/{pick['id']}/orientacoes")
 detail = detail["dados"]
@@ -180,12 +193,12 @@ print(f"\nSource: Dados Abertos da Camara dos Deputados (API v2), accessed {now:
       "Tallies and majorities computed here; deputies' names, e-mails and photos not printed.")
 ```
 
-Output (third run, 2026-11-24 23:36 UTC; the second run at 23:35 printed the same bills and the same vote, without the federation orientations in the last column):
+Output (re-run on 2026-11-25 after the code-review fixes, 01:03 UTC = 22:03 Brasilia, in a new cloud browser; it now reads both search pages and sorts by date presented, which gave the same five bills as the newest by id in the 23:35 and 23:36 UTC runs on 2026-11-24, and the same vote):
 
 ```text
-Dados Abertos da Camara dos Deputados API v2, checked 2026-11-24 23:36 UTC (20:36 Brasilia)
+Dados Abertos da Camara dos Deputados API v2, checked 2026-11-25 01:03 UTC (22:03 Brasilia)
 
-PL bills matching 'inteligencia artificial': X-Total-Count 105 (presented or moved in the last 30 days), 21 pages of 5; newest 5 by id:
+PL bills matching 'inteligencia artificial': X-Total-Count 105 (presented or moved in the last 30 days), read 105 in 2 page(s) of 100; newest 5 by date presented:
 
   PL 5928/2026  (id 2658843; presented 2026-11-23 15:26 Brasilia (18:26 UTC); match: ementa)
     ementa: Institui normas de proteção do trabalhador frente a decisões automatizadas e à vigilância por
@@ -281,7 +294,7 @@ Most recent roll-call vote in PLEN: 2332174-59 at 2026-11-24 17:52:28 Brasilia (
   check vs descricao: Sim 292, Não 147 -> match
   orientations by blocs, federations and leaderships: Oposição Não; Minoria Não; Bl UniPpPsd... Liberado; Fdr PT-PCdoB-PV Sim; Fdr PSOL-REDE Sim; Governo Sim; Maioria Liberado
 
-Source: Dados Abertos da Camara dos Deputados (API v2), accessed 24 November 2026 23:36 UTC. Tallies and majorities computed here; deputies' names, e-mails and photos not printed.
+Source: Dados Abertos da Camara dos Deputados (API v2), accessed 25 November 2026 01:03 UTC. Tallies and majorities computed here; deputies' names, e-mails and photos not printed.
 ```
 
 ### 2. robots.txt, the FAQ and docs quotes, and what the API does with mistakes (browser)
@@ -498,7 +511,7 @@ N_BILLS = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 ORGAO = "PLEN"       # siglaOrgao; "" = any body
 MIN_ROWS = 20        # this skill's cut-off for a roll-call (nominal) vote; symbolic votes have 0 or a few rows
 MAX_SCAN = 15        # votes to check, newest first
-MAX_PAGES = 5        # pages of 100 to read from a search (the deputies list, 513 rows, always reads all 6)
+MAX_PAGES = 5        # pages of 100 to read from a search or the vote list (the deputies list, 513 rows, always reads all 6)
 UA = "camara-deputados-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"
 HOST = "dadosabertos.camara.leg.br"
 API = f"https://{HOST}/api/v2"
@@ -651,17 +664,25 @@ with open(out_b, "w", newline="") as fh:
 print(f"  -> {out_b}")
 
 # 3) the most recent roll-call vote (newest first; filter on siglaOrgao, not idOrgao, see Gotchas)
-votes, _ = get(f"{API}/votacoes?ordem=DESC&ordenarPor=dataHoraRegistro&itens=100")
-cands = [v for v in votes["dados"] if not ORGAO or v["siglaOrgao"] == ORGAO][:MAX_SCAN]
-pick, symbolic = None, 0
-for v in cands:
-    rows, _ = get(f"{API}/votacoes/{v['id']}/votos")
-    if len(rows["dados"]) >= MIN_ROWS:
-        pick, rows = v, rows["dados"]
-        break
-    symbolic += 1
+#    100 per page, following links rel="next" until one is found, MAX_SCAN votes were checked or MAX_PAGES were read
+url, vpages, pick, symbolic = f"{API}/votacoes?ordem=DESC&ordenarPor=dataHoraRegistro&itens=100", 0, None, 0
+while url and pick is None and symbolic < MAX_SCAN and vpages < MAX_PAGES:
+    votes, _ = get(url)
+    vpages += 1
+    for v in votes["dados"]:
+        if ORGAO and v["siglaOrgao"] != ORGAO:
+            continue
+        if symbolic >= MAX_SCAN:
+            break
+        rows, _ = get(f"{API}/votacoes/{v['id']}/votos")
+        if len(rows["dados"]) >= MIN_ROWS:
+            pick, rows = v, rows["dados"]
+            break
+        symbolic += 1
+    url = next((l["href"] for l in votes.get("links", []) if l["rel"] == "next"), None)
 if not pick:
-    sys.exit(f"no roll-call vote among the newest {len(cands)} {ORGAO} votes: stop")
+    sys.exit(f"no roll-call vote among the newest {symbolic} {ORGAO} votes in {vpages} page(s) of 100 "
+             f"({'MAX_SCAN or MAX_PAGES reached' if url else 'no more pages'}): stop")
 orient, _ = get(f"{API}/votacoes/{pick['id']}/orientacoes")
 ori = {o["siglaPartidoBloco"]: o["orientacaoVoto"] or "(blank)" for o in orient["dados"]}
 for fed, said in list(ori.items()):
@@ -706,10 +727,10 @@ print("Source: Dados Abertos da Camara dos Deputados (API v2). Seats = deputies 
       "tallies, party lines and shares computed here.")
 ```
 
-Output (fifth run, 2026-11-24 23:42 UTC, empty cache; the first run at 23:40 printed the same bills and votes but read only 500 of the 513 deputies, because the deputies list was capped by `MAX_PAGES`; the fix reads it to the end and stops if the count still differs):
+Output (re-run on 2026-11-25 after the code-review fixes, 01:00 UTC, empty cache; the same bills, vote and tallies as the 23:42 UTC run on 2026-11-24; the first run at 23:40 read only 500 of the 513 deputies, because the deputies list was capped by `MAX_PAGES`; the fix reads it to the end and stops if the count still differs):
 
 ```text
-Dados Abertos da Camara dos Deputados API v2, 2026-11-24 23:42 UTC
+Dados Abertos da Camara dos Deputados API v2, 2026-11-25 01:00 UTC
 robots.txt dadosabertos.camara.leg.br: HTTP 200 text/html; charset=utf-8 (an HTML page, no robots rules: everything allowed); 6 paths x 13 agents: 78 allowed
 
 105 PL bills match 'inteligencia artificial' (2 page(s) of 100); numbered 2026: 76; older bills that moved recently: 29. Newest 5:
@@ -760,7 +781,7 @@ Source: Dados Abertos da Camara dos Deputados (API v2). Seats = deputies in offi
 The warm run a few seconds later printed the same lines with 10 calls instead of 18 (both search pages and the 6 deputies pages came from the cache):
 
 ```text
-Dados Abertos da Camara dos Deputados API v2, 2026-11-24 23:42 UTC
+Dados Abertos da Camara dos Deputados API v2, 2026-11-25 01:00 UTC
 robots.txt dadosabertos.camara.leg.br: HTTP 200 text/html; charset=utf-8 (an HTML page, no robots rules: everything allowed); 6 paths x 13 agents: 78 allowed
 
 105 PL bills match 'inteligencia artificial' (2 page(s) of 100); numbered 2026: 76; older bills that moved recently: 29. Newest 5:
@@ -808,10 +829,10 @@ calls this run: 10 (200, 200, 200, 200, 200, 200, 200, 200, 200, 200); cache ~/.
 Source: Dados Abertos da Camara dos Deputados (API v2). Seats = deputies in office today, as the API lists them; tallies, party lines and shares computed here.
 ```
 
-Another topic (`python3 block3.py deepfake 3`, 23:44 UTC; the deputies list still fresh in the cache) and a keyword with no match (`"xyzzy quantum"`, which stops):
+Another topic (`python3 block3.py deepfake 3`, 01:00 UTC; the deputies list still fresh in the cache) and a keyword with no match (`"xyzzy quantum"`, which stops):
 
 ```text
-Dados Abertos da Camara dos Deputados API v2, 2026-11-24 23:44 UTC
+Dados Abertos da Camara dos Deputados API v2, 2026-11-25 01:01 UTC
 robots.txt dadosabertos.camara.leg.br: HTTP 200 text/html; charset=utf-8 (an HTML page, no robots rules: everything allowed); 6 paths x 13 agents: 78 allowed
 
 15 PL bills match 'deepfake' (1 page(s) of 100); numbered 2026: 13; older bills that moved recently: 2. Newest 3:
@@ -853,7 +874,7 @@ Roll-call 2332174-59 (PLEN) 2026-11-24 17:52:28 Brasilia = 24 Nov 20:52 UTC; 1 n
 
 calls this run: 9 (200, 200, 200, 200, 200, 200, 200, 200, 200); cache ~/.cache/camara-deputados-skill
 Source: Dados Abertos da Camara dos Deputados (API v2). Seats = deputies in office today, as the API lists them; tallies, party lines and shares computed here.
-Dados Abertos da Camara dos Deputados API v2, 2026-11-24 23:45 UTC
+Dados Abertos da Camara dos Deputados API v2, 2026-11-25 01:01 UTC
 robots.txt dadosabertos.camara.leg.br: HTTP 200 text/html; charset=utf-8 (an HTML page, no robots rules: everything allowed); 6 paths x 13 agents: 78 allowed
 no PL matches 'xyzzy quantum' in the last 30 days: stop
 ```
@@ -864,8 +885,8 @@ no PL matches 'xyzzy quantum' in the last 30 days: stop
 A=https://dadosabertos.camara.leg.br/api/v2
 UA='camara-deputados-skill-example/1.0 (+https://github.com/browser-use/browser-harness)'
 J='Accept: application/json'
-# newest 3 PL bills on "inteligencia artificial" (last 30 days), with the paging and cache headers
-H=$(mktemp)
+# the 3 highest-id PL bills on "inteligencia artificial" (last 30 days; blocks 1 and 3 sort every match by date), with the paging and cache headers
+H=$(mktemp); V=$(mktemp); trap 'rm -f "$H" "$V"' EXIT
 curl -sS --fail --compressed -A "$UA" -H "$J" -D "$H" "$A/proposicoes?keywords=inteligencia%20artificial&siglaTipo=PL&itens=3&ordem=DESC&ordenarPor=id" \
   | python3 -c 'import sys, json
 for b in json.load(sys.stdin)["dados"]: print("PL %s/%s id %s presented %s: %s..." % (b["numero"], b["ano"], b["id"], b["dataApresentacao"], b["ementa"][:90]))'
@@ -877,12 +898,11 @@ curl -sS --fail --compressed -A "$UA" -H "$J" "$A/proposicoes/2658843" \
   | python3 -c 'import sys, json; s = json.load(sys.stdin)["dados"]["statusProposicao"]; print("latest step:", s["dataHora"], s["siglaOrgao"], s["descricaoTramitacao"], "|", s["descricaoSituacao"])'
 sleep 1
 # party tally of plenary roll-call 2332174-59 (name, party, UF and vote are all this prints; rows also hold e-mail and photo URL)
-curl -sS --fail --compressed -A "$UA" -H "$J" -w '%{size_download} bytes gzip, %{time_total} s\n' -o /tmp/votos.$$ "$A/votacoes/2332174-59/votos"
+curl -sS --fail --compressed -A "$UA" -H "$J" -w '%{size_download} bytes gzip, %{time_total} s\n' -o "$V" "$A/votacoes/2332174-59/votos"
 python3 -c 'import sys, json, collections
 v = json.load(open(sys.argv[1]))["dados"]; c = collections.defaultdict(collections.Counter)
 for x in v: c[x["deputado_"]["siglaPartido"]][x["tipoVoto"]] += 1
-print(len(v), "votes;", "; ".join(f"{p} {dict(k)}" for p, k in sorted(c.items(), key=lambda i: -sum(i[1].values()))[:5]), "...")' /tmp/votos.$$
-rm -f /tmp/votos.$$
+print(len(v), "votes;", "; ".join(f"{p} {dict(k)}" for p, k in sorted(c.items(), key=lambda i: -sum(i[1].values()))[:5]), "...")' "$V"
 sleep 1
 # mistakes
 curl -sS -A "$UA" -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' -o /dev/null -w 'browser-style Accept -> HTTP %{http_code} %{content_type}\n' "$A/votacoes/2332174-59/votos"; sleep 1
@@ -893,16 +913,15 @@ curl -sS -A "$UA" -H "$J" "$A/votacoes?idOrgao=180&ordem=DESC&ordenarPor=dataHor
 curl -sS -A "$UA" -H "$J" "$A/votacoes?ordem=DESC&ordenarPor=dataHoraRegistro&itens=100" | python3 -c 'import sys, json; v = [x for x in json.load(sys.stdin)["dados"] if x["siglaOrgao"] == "PLEN"][0]; print("siglaOrgao PLEN newest:", v["id"], v["dataHoraRegistro"])'; sleep 1
 curl -sS -A "$UA" -o /dev/null -w 'robots.txt -> HTTP %{http_code} %{content_type}\n' https://dadosabertos.camara.leg.br/robots.txt
 echo "Source: Dados Abertos da Camara dos Deputados (API v2), accessed $(date -u '+%d %B %Y %H:%M') UTC; tallies computed here; lists cut to the rows shown."
-rm -f "$H"
 ```
 
-Output (second run, 2026-11-24 23:44 UTC; the first run at 23:43 printed the same lines apart from the first three, which a quoting error in that one-liner had turned into a Python `SyntaxError`, and the gzip size of the votes):
+Output (re-run on 2026-11-25 after the code-review fixes, 01:01 UTC; the same lines as the 23:44 UTC run on 2026-11-24 apart from the access time and the gzip size of the votes, 19,802 bytes; the first run at 23:43 had a quoting error in one Python one-liner):
 
 ```text
 PL 5928/2026 id 2658843 presented 2026-11-23T15:26: Institui normas de proteção do trabalhador frente a decisões automatizadas e à vigilância ...
 PL 5864/2026 id 2654170 presented 2026-11-16T14:30: Veda a criação e o uso comercial de réplicas de voz ou de imagem de pessoa natural geradas...
 PL 5826/2026 id 2652995 presented 2026-11-11T18:06: Altera a Lei nº 8.078, de 11 de setembro de 1990, para vedar a utilização de sistemas de i...
-HTTP/2 200 
+HTTP/2 200
 content-type: application/json
 x-total-count: 105
 cache-control: public, max-age=360
@@ -910,7 +929,7 @@ retry-after: 30
 pagina=2&itens=3>; rel="next"
 pagina=35&itens=3>; rel="last"
 latest step: 2026-11-23T15:26 MESA Apresentação de Proposição | None
-19877 bytes gzip, 0.761772 s
+19802 bytes gzip, 0.805720 s
 442 votes; PL {'Não': 80, 'Sim': 5}; PT {'Sim': 63, 'Artigo 17': 1}; UNIÃO {'Sim': 27, 'Não': 15}; PSD {'Sim': 33, 'Não': 5, 'Abstenção': 1}; PP {'Sim': 27, 'Não': 9} ...
 browser-style Accept -> HTTP 200 application/xml
 itens=200 -> 100 rows
@@ -919,7 +938,7 @@ itens=200 -> 100 rows
 idOrgao=180 newest: 2655570-60 2026-11-24T00:35:14
 siglaOrgao PLEN newest: 2332174-62 2026-11-24T17:53:39
 robots.txt -> HTTP 200 text/html; charset=utf-8
-Source: Dados Abertos da Camara dos Deputados (API v2), accessed 24 November 2026 23:44 UTC; tallies computed here; lists cut to the rows shown.
+Source: Dados Abertos da Camara dos Deputados (API v2), accessed 25 November 2026 01:01 UTC; tallies computed here; lists cut to the rows shown.
 ```
 
 ## Fields

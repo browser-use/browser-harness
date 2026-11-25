@@ -1,6 +1,6 @@
 # Statistics Denmark StatBank API via api.statbank.dk - Get Denmark's Latest Quarterly Population (Table FOLK1A) for the Whole Country and the 5 Largest Municipalities: Read the Table Info, Pull the Newest Quarters as Tidy Rows, Stream BULK Past the 1,000,000-Cell Limit (JSON-stat/CSV API, no key)
 
-Field-tested against api.statbank.dk on 2026-11-24 (US Pacific afternoon; 2026-11-25 00:00 UTC to 00:14 UTC) using a fresh Browser Use cloud browser (logged out; one session, 00:04-00:11 UTC, stopped and confirmed `stopped` afterwards) plus Python `urllib` and `curl` from a Linux machine. 11 browser page loads (block 1 opened one API answer in each of its two runs; block 2 loaded two robots.txt files, the StatBank API help page and an API answer in each of its two runs; one more load read where "429" sat on the help page) and 44 in-page `fetch()` calls (block 1: 3 per run; block 2: 19 per run), 14 urllib calls (block 3 ran twice: 2 robots.txt files and 5 API calls each) and 67 curl calls (41 while exploring, five of them www.dst.dk or www.statbank.dk pages; 13 in each of block 4's two runs), all serial and at least 1 s apart in the blocks. Every data call was HTTP 200 except the deliberate HTTP 400 and 500 probes of mistakes and the HTTP 404 of the API host's robots.txt. No 403 or 429, no challenge, no key, no login, no cookie. Data calls took 0.7-3.5 s (JSON-stat for all 105 areas 2.6-2.9 s in curl, at most 3.5 s in the browser; error answers 0.7-1.0 s); the full newest-quarter BULK file is 3,058,022 bytes with codes and 6,038,491 with labels (the labelled one took 5.3 s). Each block below ran twice; the outputs shown come from the second run, and the first runs differed only as noted under each output. An independent re-run on 2026-11-25 00:14-00:17 UTC (a new cloud browser for blocks 1 and 2, stopped and confirmed `stopped`; urllib and curl for blocks 3 and 4) printed the same data in all four blocks; only the clock and the timings changed (slowest browser call 3.7 s).
+Field-tested against api.statbank.dk on 2026-11-24 (US Pacific afternoon; 2026-11-25 00:00 UTC to 00:14 UTC) using a fresh Browser Use cloud browser (logged out; one session, 00:04-00:11 UTC, stopped and confirmed `stopped` afterwards) plus Python `urllib` and `curl` from a Linux machine. 11 browser page loads (block 1 opened one API answer in each of its two runs; block 2 loaded two robots.txt files, the StatBank API help page and an API answer in each of its two runs; one more load read where "429" sat on the help page) and 44 in-page `fetch()` calls (block 1: 3 per run; block 2: 19 per run), 14 urllib calls (block 3 ran twice: 2 robots.txt files and 5 API calls each) and 67 curl calls (41 while exploring, five of them www.dst.dk or www.statbank.dk pages; 13 in each of block 4's two runs), all serial and at least 1 s apart in the blocks. Every data call was HTTP 200 except the deliberate HTTP 400 and 500 probes of mistakes and the HTTP 404 of the API host's robots.txt. No 403 or 429, no challenge, no key, no login, no cookie. Data calls took 0.7-3.5 s (JSON-stat for all 105 areas 2.6-2.9 s in curl, at most 3.5 s in the browser; error answers 0.7-1.0 s); the full newest-quarter BULK file is 3,058,022 bytes with codes and 6,038,491 with labels (the labelled one took 5.3 s). Each block below ran twice; the outputs shown come from the second run, and the first runs differed only as noted under each output. An independent re-run on 2026-11-25 00:14-00:17 UTC (a new cloud browser for blocks 1 and 2, stopped and confirmed `stopped`; urllib and curl for blocks 3 and 4) printed the same data in all four blocks; only the clock and the timings changed (slowest browser call 3.7 s). After a code review, blocks 1 and 3 also read a `Retry-After` given as an HTTP date; they re-ran on 2026-11-25 at 01:01 and 01:02 UTC (block 1 in a new cloud browser, stopped and confirmed `stopped`) with the same data, and the outputs shown for them come from those runs.
 
 robots.txt (checked 2026-11-25 UTC, curl, the cloud browser and `urllib.robotparser`): https://api.statbank.dk/robots.txt is HTTP 404 with a JSON body (`{"errorTypeCode":"REQUEST-NOTFOUND",...}`), so the API host has no robots rules and no named AI-agent groups; RFC 9309 section 2.3.1.3 says that for 400-499 answers "the crawler MAY access any resources on the server". https://www.dst.dk/robots.txt has two groups: `User-agent: *` (Disallow lines for `/App_*`, `/Code/`, `/Internal/`, `/sitecore*`, `/temp/`, `/upload/`, `/xsl/`, `*.axd` and 94 `/Extranet/...` paths) and `User-agent: GPTBot` with `Crawl-delay: 10` and the same non-Extranet Disallow lines; no line touches `/en/`. ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*`. Every path this skill uses is allowed for all 11 agents (block 3); GPTBot should space www.dst.dk loads 10 s apart. Terms: the StatBank API help page https://www.dst.dk/en/Statistik/hjaelp-til-statistikbanken/api says "You can use all statistical data at Statistikbanken.dk and the web page dst.dk free of charge for commercial as well as non-commercial purposes, as long as you include a source reference. This corresponds to the licence named Creative Commons, CC 4.0 BY", "You can make free use of data in the development of various services", and sets the only limit: "The maximum number of cells retrieved using "non-bulk" (e.g. CSV, px etc.) has been set to 1,000,000 cells", which "does not apply to the so-called "bulk" formats where data is streamed in smaller portions with no upper limit". Only the CATALOGUE function (a DCAT-AP list of tables) needs an API key. No AI/ML, scraping, automated-access or non-commercial-only clause (block 2 found none of the words scrap, artificial intelligence, machine learning, robot or crawl on the page, and "non-commercial" only inside "commercial as well as non-commercial"); the page states no call-rate limit. The "About the website" page https://www.dst.dk/en/OmDS/om-hjemmesiden links only a cookie policy, a privacy policy and a sitemap. Naming: this skill says "Statistics Denmark" in plain text, gives a source reference ("Source: Statistics Denmark, StatBank table FOLK1A" with the quarter, a link and the access date), uses no Statistics Denmark logo, and is not endorsed by Statistics Denmark.
 
@@ -12,7 +12,7 @@ robots.txt (checked 2026-11-25 UTC, curl, the cloud browser and `urllib.robotpar
 - **Answer (run 2026-11-25, 00:10 UTC):** Denmark's population on the first day of **2026Q4** (1 October 2026): **6,044,001** (+12,302 on 2026Q3's 6,031,699; +24,135 or +0.40% on 2025Q4). The 5 largest municipalities: **Copenhagen 674,381**, **Aarhus 381,363**, **Aalborg 227,718**, **Odense 214,064**, **Vejle 124,253** (FOLK1A, updated 2026-11-10). Men 3,004,716, women 3,039,285; 21.3% of Denmark is 65 or older, 11.2% of Copenhagen.
 - **Read `/tableinfo` first.** Variable and value codes stay Danish with `lang=en` (`OMRÅDE`, `KØN`, `ALDER`, `CIVILSTAND`, `Tid`; `000` All Denmark, `TOT` total, `IALT` all ages, quarter `2026K4` whose label is `2026Q4`). The 105 `OMRÅDE` codes are `000`, 5 regions (`081`-`085`, labels start with "Region ") and 99 other codes (the municipalities, Christiansø `411` among them). Block 1 tells them apart by label.
 - **Leave a variable out and you get its total.** No `KØN`, `ALDER` or `CIVILSTAND` means both sexes, all ages, all statuses; no `Tid` means the newest period. Here the 5 regions and the 99 municipality codes both sum exactly to the national figure, and men + women equal the total.
-- **Limits:** 1,000,000 cells per non-streaming call (CSV, JSON-stat, PX, XLSX...; HTTP 400 `REQUEST-LIMIT` above it), none for BULK and SDMX, which stream. No call-rate limit is published and no rate-limit headers came back. Blocks 1 and 3 run serially 1 s apart, wait once on 429, 5xx or a network error (`Retry-After` if it is a number of seconds, else 10 s; over 120 s they stop) and then stop. Block 2 only inspects answers (about one call a second, no retry); block 4 sleeps 1 s between calls and lets `curl --retry 1` retry once on a timeout or HTTP 408, 429, 500, 502, 503 or 504.
+- **Limits:** 1,000,000 cells per non-streaming call (CSV, JSON-stat, PX, XLSX...; HTTP 400 `REQUEST-LIMIT` above it), none for BULK and SDMX, which stream. No call-rate limit is published and no rate-limit headers came back. Blocks 1 and 3 run serially 1 s apart, wait once on 429, 5xx or a network error (`Retry-After` as seconds or as an HTTP date, else 10 s; over 120 s they stop) and then stop. Block 2 only inspects answers (about one call a second, no retry); block 4 sleeps 1 s between calls and lets `curl --retry 1` retry once on a timeout or HTTP 408, 429, 500, 502, 503 or 504.
 
 ## What works
 
@@ -21,7 +21,7 @@ robots.txt (checked 2026-11-25 UTC, curl, the cloud browser and `urllib.robotpar
 `on_statbank_tab()` opens one logged-out api.statbank.dk answer so `fetch()` runs same-origin (cross-origin works too, see block 2). `get()` returns parsed JSON on HTTP 200, waits once on 429/5xx or a network error and otherwise raises with Statistics Denmark's `errorTypeCode` and message. 3 `fetch()` calls: `/tableinfo`, all 105 areas for the newest two quarters, and the six answer areas by sex. Change `TABLE` and the variable check to reuse it for another StatBank table.
 
 ```python
-import json, time
+import email.utils, json, time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
@@ -64,15 +64,24 @@ def fetch(url):
     time.sleep(PAUSE)
     return r
 
+def retry_wait(value, default=10):
+    """Retry-After as delay-seconds or an HTTP date -> seconds to wait; missing or unreadable -> default."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def get(path, **params):
-    """GET API + path -> parsed JSON. Waits once on 429, 5xx or a network error (Retry-After in seconds, else
-    10 s; over 120 s stops). Raises on anything else with Statistics Denmark's errorTypeCode and message."""
+    """GET API + path -> parsed JSON. Waits once on 429, 5xx or a network error (Retry-After in seconds or as an
+    HTTP date, else 10 s; over 120 s stops). Raises on anything else with Statistics Denmark's errorTypeCode and message."""
     url = API + path + "?" + urlencode(params)   # encodes OMRÅDE, KØN and the + in (-n+2)
     for attempt in range(2):
         r = fetch(url)
         if r["status"] in (0, 429, 500, 502, 503, 504) and attempt == 0:
-            ra = (r["headers"].get("retry-after") or "").strip()
-            wait = int(ra) if ra.isdigit() else 10
+            wait = retry_wait(r["headers"].get("retry-after"))
             if wait > 120:
                 raise RuntimeError(f"{url}: server asks to wait {wait} s: stopping")
             time.sleep(wait)
@@ -152,10 +161,10 @@ print(f"\n{len(calls)} API calls, statuses {sorted({s for s, _ in calls})}, slow
 print(f"Source: Statistics Denmark, StatBank table {TABLE} ({label_q[new]}), https://www.statbank.dk/{TABLE}, via {API}, accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (second run, 2026-11-25 00:10 UTC; the 00:05 UTC run printed the same numbers, with "(Danish time)" in place of "(no zone)" on the second line):
+Output (re-run on 2026-11-25 after the code-review fixes, 01:01 UTC, in a new cloud browser; the same numbers as the 00:05 and 00:10 UTC runs, which printed "(Danish time)" and "(no zone)" on the second line respectively):
 
 ```text
-Statistics Denmark, StatBank API, table FOLK1A, checked 2026-11-25 00:10 UTC
+Statistics Denmark, StatBank API, table FOLK1A, checked 2026-11-25 01:01 UTC
   Population at the first day of the quarter (Number), updated 2026-11-10T08:00:00 (no zone), quarters 2008K1..2026K4 (76); OMRÅDE: 105 codes = 000 'All Denmark' + 5 regions + 99 municipality codes
   dataset: 'Population at the first day of the quarter by region, Indhold and time', updated 2026-11-10T07:00:00Z, source 'Statistics Denmark'
 
@@ -177,8 +186,8 @@ by sex, 2026Q4 (KØN TOT, 1 men, 2 women):
   Odense       total   214,064  men   105,607  women   108,457  men+women = total
   Vejle        total   124,253  men    62,458  women    61,795  men+women = total
 
-3 API calls, statuses [200], slowest 3.5 s
-Source: Statistics Denmark, StatBank table FOLK1A (2026Q4), https://www.statbank.dk/FOLK1A, via https://api.statbank.dk/v1, accessed 25 November 2026 00:10 UTC.
+3 API calls, statuses [200], slowest 3.7 s
+Source: Statistics Denmark, StatBank table FOLK1A (2026Q4), https://www.statbank.dk/FOLK1A, via https://api.statbank.dk/v1, accessed 25 November 2026 01:01 UTC.
 ```
 
 ### 2. robots.txt, the StatBank API help page, CORS, what the API does with mistakes, the table list (browser)
@@ -355,7 +364,7 @@ Source: Statistics Denmark, StatBank, via https://api.statbank.dk/v1.
 Sends a descriptive User-Agent. The API sends `Cache-Control: no-cache` and no `ETag`, `Last-Modified` or gzip (`/tableinfo/FOLK1A` is 10,779 bytes with or without `Accept-Encoding: gzip`), so there is nothing to revalidate; compare `updated` from `/tableinfo` before re-downloading. Section 4 asks for every cell of the newest quarter as CSV, gets `REQUEST-LIMIT` and streams the same selection as BULK line by line instead.
 
 ```python
-import csv, io, json, sys, time, urllib.error, urllib.request, urllib.robotparser
+import csv, email.utils, io, json, sys, time, urllib.error, urllib.request, urllib.robotparser
 from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -369,12 +378,22 @@ PAUSE = 1.0   # no published call-rate limit; one call a second
 UTC = timezone.utc
 stats = Counter()
 
+def retry_wait(value, default=10):
+    """Retry-After as delay-seconds or an HTTP date -> seconds to wait; missing or unreadable -> default."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 class StatbankError(Exception):
     """HTTP 400/404 with Statistics Denmark's {"errorTypeCode", "message"} body."""
 
 def call(path, params, stream=False):
-    """GET API + path. Serial, PAUSE apart. Waits once on 429, 5xx or a network error (Retry-After in seconds,
-    else 10 s; over 120 s exits). Raises StatbankError on a 4xx with an errorTypeCode; exits on anything else.
+    """GET API + path. Serial, PAUSE apart. Waits once on 429, 5xx or a network error (Retry-After in seconds or
+    as an HTTP date, else 10 s; over 120 s exits). Raises StatbankError on a 4xx with an errorTypeCode; exits on anything else.
     stream=True returns the open response (read it line by line, then close it)."""
     url = API + path + "?" + urlencode(params)   # percent-encodes OMRÅDE, KØN and the + in (-n+5)
     for attempt in range(2):
@@ -392,8 +411,7 @@ def call(path, params, stream=False):
             stats["calls"] += 1
             body = e.read().decode("utf-8", "replace")
             if attempt == 0 and e.code in (429, 500, 502, 503, 504):
-                ra = (e.headers.get("Retry-After") or "").strip()
-                wait = int(ra) if ra.isdigit() else 10
+                wait = retry_wait(e.headers.get("Retry-After"))
                 if wait > 120:
                     sys.exit(f"{url}: server asks to wait {wait} s: stopping")
                 time.sleep(wait)
@@ -510,7 +528,7 @@ print(f"Source: Statistics Denmark, StatBank table {TABLE} ({newest['text']}), h
       f"accessed {now:%d %B %Y %H:%M} UTC.")
 ```
 
-Output (second run, 2026-11-25 00:08 UTC; the first run, half a minute earlier, printed the same rows but counted 4 API calls because the refused CSV call was not counted, and said "rows with that value are left out"):
+Output (re-run on 2026-11-25 after the code-review fixes, 01:02 UTC; the same rows, counts and bytes as the 00:08 UTC run apart from the clock; the first run, at 00:08 UTC too, counted 4 API calls because the refused CSV call was not counted, and said "rows with that value are left out"):
 
 ```text
 https://api.statbank.dk/robots.txt: HTTP 404 application/json; charset=utf-8: no robots file, so no rules
@@ -522,7 +540,7 @@ https://api.statbank.dk/robots.txt: HTTP 404 application/json; charset=utf-8: no
 https://www.dst.dk/robots.txt: HTTP 200 text/plain, 128 lines, groups ['User-agent: *', 'User-agent: GPTBot']
   robots /en/Statistik/hjaelp-til-statistikbanken/api   allowed for all 11 agents; crawl-delay {'GPTBot': 10}
 
-Statistics Denmark, StatBank API, table FOLK1A, checked 2026-11-25 00:08 UTC
+Statistics Denmark, StatBank API, table FOLK1A, checked 2026-11-25 01:02 UTC
 Population at the first day of the quarter, newest 2026Q4 (code 2026K4), updated 2026-11-10T08:00:00: Denmark 6,044,001; largest 5 of 99 municipality codes: Copenhagen 674,381, Aarhus 381,363, Aalborg 227,718, Odense 214,064, Vejle 124,253
 
 CSV columns ['OMRÅDE', 'TID', 'INDHOLD']; one year of quarters (valuePresentation=CodeAndValue):
@@ -545,7 +563,7 @@ BULK: HTTP 200 text/csv; charset=utf-8, header ['OMRÅDE', 'KØN', 'ALDER', 'CIV
   Vejle           20.6%    59.1%    20.3%  (sum 124,253 = total)
 
 totals: 5 API calls, 3,074,098 bytes
-Source: Statistics Denmark, StatBank table FOLK1A (2026Q4), https://www.statbank.dk/FOLK1A, via https://api.statbank.dk/v1, accessed 25 November 2026 00:08 UTC.
+Source: Statistics Denmark, StatBank table FOLK1A (2026Q4), https://www.statbank.dk/FOLK1A, via https://api.statbank.dk/v1, accessed 25 November 2026 01:02 UTC.
 ```
 
 ### 4. curl: table info, every area, CSV, POST, headers, mistakes, BULK
@@ -637,7 +655,7 @@ All Denmark;Women;2026Q4;3039285
 Copenhagen;Men;2026Q4;330938
 Copenhagen;Women;2026Q4;343443
 
-HTTP/2 200 
+HTTP/2 200
 cache-control: no-cache
 content-type: text/json; charset=utf-8
 access-control-allow-origin: *

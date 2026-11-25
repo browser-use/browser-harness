@@ -1,14 +1,14 @@
-# GeoNet - List the Quakes Possibly Felt in New Zealand at MMI 4+ Over the Last Year (UTC Time, Magnitude, MMI, Locality, Link) and the Current Volcanic Alert Level for Every Monitored Volcano (REST GeoJSON, no key)
+# GeoNet - List the Newest Quakes Possibly Felt in New Zealand at MMI 4+ (Up to 100, Within the Last Year; UTC Time, Magnitude, MMI, Locality, Link) and the Current Volcanic Alert Level for Every Monitored Volcano (REST GeoJSON, no key)
 
-Field-tested against the GeoNet API (api.geonet.org.nz) and www.geonet.org.nz on 2026-11-24 (US Pacific afternoon; 23:31-23:42 UTC on 24 November, which was 12:31-12:42 on Wednesday 25 November in New Zealand, NZDT = UTC+13) using a fresh Browser Use cloud browser (logged out; one session, 23:33-23:38 UTC) plus Python `urllib` and `curl` from a Linux machine. 16 browser page loads (1 smoke test, 7 in each of block 2's two runs, 1 while reading the quake page's text) and 31 in-page `fetch()` calls (1 smoke test, 3 in each of block 1's three runs, 10 and 11 in block 2's two runs), 52 urllib calls (block 3's five commands ran four times, 12 calls each, as the last one is refused before any call, plus one default run of 4 calls) and 43 curl calls (27 while exploring, 8 in each of block 4's two runs), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes: HTTP 400 for `MMI=9`, a missing `MMI`, `Accept: ...;version=1`, an unknown volcano and `/quake/stats` with the geo+json `Accept` header. curl and urllib timed the API at 0.02-0.81 s; block 1 in the browser saw 0.06-0.38 s (polled every 0.2 s). No 429, no challenge, no key, no login, no cookie needed. Two exploring calls were a mistake: one FDSN query on service.geonet.org.nz and one WFS call on wfs.geonet.org.nz, sent in the same command that read those hosts' robots.txt files, which disallow those paths for every agent; their output is not used and no block calls those hosts. Block 1's output below is its third run (23:34:50 UTC; the first two listed the same 94 quakes and levels), block 2's its second (after the quake-page pattern was fixed and the `/quake/stats` probes added), block 3's its fourth (after its first command was shortened to `--days 30`, since block 1 already prints the whole year, and the deleted count was limited to the chosen days; the default run printed the same 94 quakes as block 1), block 4's its second (identical to the first). An independent verifier re-ran all four blocks verbatim at 23:42-23:46 UTC the same day (a separate cloud browser for blocks 1 and 2): the quakes, levels, robots lines, quotes and probes were the same; only the times and timings changed.
+Field-tested against the GeoNet API (api.geonet.org.nz) and www.geonet.org.nz on 2026-11-24 (US Pacific afternoon; 23:31-23:42 UTC on 24 November, which was 12:31-12:42 on Wednesday 25 November in New Zealand, NZDT = UTC+13) using a fresh Browser Use cloud browser (logged out; one session, 23:33-23:38 UTC) plus Python `urllib` and `curl` from a Linux machine. 16 browser page loads (1 smoke test, 7 in each of block 2's two runs, 1 while reading the quake page's text) and 31 in-page `fetch()` calls (1 smoke test, 3 in each of block 1's three runs, 10 and 11 in block 2's two runs), 52 urllib calls (block 3's five commands ran four times, 12 calls each, as the last one is refused before any call, plus one default run of 4 calls) and 43 curl calls (27 while exploring, 8 in each of block 4's two runs), all serial and at least 1 s apart. Every call was HTTP 200 except the deliberate probes: HTTP 400 for `MMI=9`, a missing `MMI`, `Accept: ...;version=1`, an unknown volcano and `/quake/stats` with the geo+json `Accept` header. curl and urllib timed the API at 0.02-0.81 s; block 1 in the browser saw 0.06-0.38 s (polled every 0.2 s). No 429, no challenge, no key, no login, no cookie needed. Two exploring calls were a mistake: one FDSN query on service.geonet.org.nz and one WFS call on wfs.geonet.org.nz, sent in the same command that read those hosts' robots.txt files, which disallow those paths for every agent; their output is not used and no block calls those hosts. Block 1's output below is its third run (23:34:50 UTC; the first two listed the same 94 quakes and levels), block 2's its second (after the quake-page pattern was fixed and the `/quake/stats` probes added), block 3's its fourth (after its first command was shortened to `--days 30`, since block 1 already prints the whole year, and the deleted count was limited to the chosen days; the default run printed the same 94 quakes as block 1), block 4's its second (identical to the first). An independent verifier re-ran all four blocks verbatim at 23:42-23:46 UTC the same day (a separate cloud browser for blocks 1 and 2): the quakes, levels, robots lines, quotes and probes were the same; only the times and timings changed. After a code review on 2026-11-25, blocks 1 and 3 make one `/quake` call instead of stepping up to `MMI=5` and merging (see Gotchas) and mark a full list PARTIAL; block 1 re-ran at 01:00 UTC in a new cloud browser (stopped and confirmed `stopped`) and block 3's five commands at 00:59 UTC, and the outputs shown for them come from those runs.
 
 robots.txt (checked 2026-11-24 UTC with curl, the cloud browser and blocks 3 and 4): https://api.geonet.org.nz/robots.txt is `User-agent: *` / `Disallow: /p/` / `Disallow: /news/` / `Disallow: /assets/` / `Disallow: /network/` with no named agent groups, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider may fetch `/quake?MMI=...`, `/quake/{publicID}`, `/quake/history/{publicID}`, `/quake/stats`, `/volcano/val`, `/volcano/quake/{volcanoID}` and `/intensity`, and may not fetch `/network/...` or `/news/...`, which this skill never calls (block 2 checks all 11 agents with Python's `urllib.robotparser`; block 3 checks the same 11 plus its own User-Agent before every API call and stops if the file ever disallows one). https://www.geonet.org.nz/robots.txt disallows `/p/ /news/ /assets/ /images/ /app /vabs/ /response/ /rss/ /feeds/ /mbl/` for `*`, with no named groups; `/earthquake/{publicID}`, `/volcano`, `/policy` and `/disclaimer` are allowed. Terms: the API page https://api.geonet.org.nz/ says "The GeoNet project makes all its data and images freely available. Please ensure you have read and understood our Data Policy and Disclaimer before using any of these services." and its footer "GeoNet content is copyright Earth Sciences New Zealand and is licensed under a Creative Commons Attribution 3.0 New Zealand License" (link: http://creativecommons.org/licenses/by/3.0/nz/). The data policy https://www.geonet.org.nz/policy: "All data and images are made available free of charge through the GeoNet programme to facilitate research into hazards and assessment of risk." and "Users are requested to acknowledge the GeoNet programme sponsors as the source of the data or images.", with the suggested text "We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE for providing data/images used in this study." The disclaimer https://www.geonet.org.nz/disclaimer covers no warranty ("provided without warranties of any kind") and no liability, and ends "the information on this website is made freely available to the public and may be used subject to these terms." No AI/ML, scraping, crawling, robot, automated-access, non-commercial or rate-limit wording on the API page, the policy or the disclaimer (block 2 checks the quotes and scans for the words). Naming: this skill writes "GeoNet" in plain text, shows no GeoNet or NHC logo (the site shows them as images; the CC licence covers the content), is not affiliated with or endorsed by GeoNet, Earth Sciences New Zealand or NHC, and blocks 1, 3 and 4 (the ones that list quakes and alert levels) end with the CC BY 3.0 NZ credit, the policy's acknowledgement of the sponsors and what it changed.
 
 ## Quick summary
 
 - **No scraping needed.** Open JSON (GeoJSON) API, no key, no login. Felt quakes: `GET https://api.geonet.org.nz/quake?MMI=4` with `Accept: application/vnd.geo+json;version=2` -> `features[]`, each with `properties.publicID`, `time` (UTC), `magnitude`, `mmi`, `depth`, `locality`, `quality`; the page for a quake is `https://www.geonet.org.nz/earthquake/{publicID}`. Alert levels: `GET /volcano/val` -> one feature per monitored volcano with `volcanoTitle`, `level`, `acc` (aviation colour code), `activity`, `hazards`. `Access-Control-Allow-Origin: *`, so `fetch()` works from any https page.
-- **Answers (24 November 2026, 23:34 UTC):** 94 quakes possibly felt at MMI 4+ were listed (66 at MMI 4, 20 at 5, 7 at 6, 1 at 7), newest **M4.5 MMI 4, 20 km north-east of Hanmer Springs, 2026-11-21 07:59 UTC** (2026p876575). The strongest shaking: **2026p553250, M5.9, MMI 7, 5 km south of Taumarunui, 2026-07-24 16:51 UTC**; the biggest magnitude: M6.3 (MMI 6) 45 km south-west of Milford Sound on 2026-07-16. **Volcanic Alert Levels:** **White Island 2** (Yellow, "Moderate to heightened volcanic unrest."), **Ruapehu 1** (Green, "Minor volcanic unrest."), the other 10 volcanoes **0**.
-- **One call is not a year.** `/quake?MMI=n` returns "up to a maximum of 100 quakes" (API page) and has no date parameter. `MMI=4` hit the cap: its oldest quake was 2026-06-10, and 18 of its 100 were `quality: "deleted"`. `MMI=5` gave 33, back to 2025-12-03, so MMI 5+ is complete for the 365 days, but MMI 4 quakes from before 2026-06-10 are not in any answer. Blocks 1 and 3 step up one MMI level while the list is full, merge by `publicID`, drop deleted ones and print where the cut is.
+- **Answers (25 November 2026, 01:00 UTC):** the API's newest 100 quakes possibly felt at MMI 4+ reach back to 2026-06-10 06:02 UTC, so this is a PARTIAL year: 82 after dropping 18 deleted ones (66 at MMI 4, 11 at 5, 4 at 6, 1 at 7), newest **M4.5 MMI 4, 20 km north-east of Hanmer Springs, 2026-11-21 07:59 UTC** (2026p876575). The strongest shaking: **2026p553250, M5.9, MMI 7, 5 km south of Taumarunui, 2026-07-24 16:51 UTC**; the biggest magnitude: M6.3 (MMI 6) 45 km south-west of Milford Sound on 2026-07-16. **Volcanic Alert Levels:** **White Island 2** (Yellow, "Moderate to heightened volcanic unrest."), **Ruapehu 1** (Green, "Minor volcanic unrest."), the other 10 volcanoes **0**.
+- **One call is not a year.** `/quake?MMI=n` returns "up to a maximum of 100 quakes" (API page) and has no date or page parameter. `MMI=4` hit the cap: its oldest quake was 2026-06-10, and 18 of its 100 were `quality: "deleted"`, so MMI 4+ quakes from before 2026-06-10 are not in the answer. Blocks 1 and 3 make one call, drop deleted ones, and mark a full list PARTIAL with the date it reaches back to. A higher `MMI` is a different question (stronger shaking) with its own newest 100: `MMI=5` gave 33, back to 2025-12-03.
 - **The filter is shaking, not magnitude.** `MMI=4` means "may have caused shaking greater than or equal to the MMI value in the New Zealand region" (API page). The list ran from M2.6 (MMI 4, within 5 km of Mount Cook, depth 0 km) to M6.3.
 - **Rate limits:** none published (the API page, the policy and the disclaimer have no rate-limit wording; block 2 scans for it) and no rate-limit headers. Answers carry `cache-control: max-age=10`. The blocks run serially at 1 call a second; blocks 1 and 3 retry once after 10 s on a 429, a 5xx or a network error, then stop.
 
@@ -16,7 +16,7 @@ robots.txt (checked 2026-11-24 UTC with curl, the cloud browser and blocks 3 and
 
 ### 1. Quakes possibly felt at MMI 4+ over the last year, and every volcano's alert level (browser)
 
-`on_geonet_tab()` opens the logged-out www.geonet.org.nz volcano page. Its Content-Security-Policy allows `connect-src https://*.geonet.org.nz` and the API answers `Access-Control-Allow-Origin: *`, so in-page `fetch()` works. `call()` returns parsed JSON on HTTP 200, retries once after 10 s on a 429, a 5xx or a network error, and stops on anything else. 3 calls today: `MMI=4` (full), `MMI=5` (not full), `/volcano/val`. Change `MIN_MMI` for other levels.
+`on_geonet_tab()` opens the logged-out www.geonet.org.nz volcano page. Its Content-Security-Policy allows `connect-src https://*.geonet.org.nz` and the API answers `Access-Control-Allow-Origin: *`, so in-page `fetch()` works. `call()` returns parsed JSON on HTTP 200, retries once after 10 s on a 429, a 5xx or a network error, and stops on anything else. 2 calls: `MMI=4` (full today, so PARTIAL) and `/volcano/val`. Change `MIN_MMI` for other levels.
 
 ```python
 import json, time
@@ -73,44 +73,36 @@ on_geonet_tab()
 now = datetime.now(timezone.utc)
 print(f"GeoNet API, checked {now:%Y-%m-%d %H:%M} UTC")
 
-# /quake?MMI=n gives at most 100 quakes, newest first, deleted ones included. When the list is full,
-# ask again with n+1: each higher level reaches further back, until a list has room to spare.
-quakes, reach = {}, {}
-for mmi in range(MIN_MMI, 9):
-    feats = call(f"/quake?MMI={mmi}")["features"]
-    for f in feats:
-        p = f["properties"]
-        quakes.setdefault(p["publicID"], {**p, "lon": f["geometry"]["coordinates"][0], "lat": f["geometry"]["coordinates"][1]})
-    oldest = min((f["properties"]["time"] for f in feats), default=None)
-    reach[mmi] = (len(feats), oldest)
-    if len(feats) < 100:
-        break
-
+# /quake?MMI=n gives at most 100 quakes, newest first, deleted ones included, with no date or page parameter.
+# One call. A full list (100) is the newest 100 only, so it is marked PARTIAL with the date it reaches back to.
+feats = call(f"/quake?MMI={MIN_MMI}")["features"]
+quakes = [f["properties"] for f in feats]
+oldest = min((q["time"] for q in quakes), default=None)
 year_ago = now - timedelta(days=365)
-for mmi, (n, oldest) in reach.items():
-    full = n == 100
-    print(f"  MMI>={mmi}: {n} quakes" + (f" (the 100 cap: complete only back to {oldest[:16]} UTC)" if full
-                                          else f" (under the cap: the whole 365 days since {year_ago:%Y-%m-%d})"))
+partial = len(feats) == 100
+if partial:
+    print(f"  MMI>={MIN_MMI}: 100 quakes = the API's cap. PARTIAL: they reach back only to {oldest[:16]} UTC, not the "
+          f"whole 365 days since {year_ago:%Y-%m-%d}; older MMI {MIN_MMI}+ quakes are not in this answer")
+else:
+    print(f"  MMI>={MIN_MMI}: {len(feats)} quakes (under the cap: the whole 365 days since {year_ago:%Y-%m-%d})")
 
-capped = [(m, o) for m, (n, o) in reach.items() if n == 100]
-if capped:
-    m, o = capped[-1]
-    lv = f"MMI {m}" if m == MIN_MMI else f"MMI {MIN_MMI}-{m}"
-    print(f"  so before {o[:16]} UTC the list below has MMI {m + 1}+ only; {lv} quakes from then "
-          f"are past the API's 100 cap (no date filter on /quake)")
-
-rows = sorted((q for q in quakes.values() if q["mmi"] >= MIN_MMI), key=lambda q: q["time"], reverse=True)
+rows = sorted(quakes, key=lambda q: q["time"], reverse=True)
 deleted = [q for q in rows if q["quality"] == "deleted"]
 rows = [q for q in rows if q["quality"] != "deleted"]
-print(f"\n{len(rows)} quakes possibly felt at MMI {MIN_MMI}+ (dropped {len(deleted)} marked quality=deleted), newest first:")
+span = f"since {oldest[:10]} (PARTIAL year)" if partial else "in the last 365 days"
+print(f"\n{len(rows)} quakes possibly felt at MMI {MIN_MMI}+ {span} (dropped {len(deleted)} marked quality=deleted), newest first:")
 print(f"  {'time (UTC)':<17} {'mag':>4} {'MMI':>3} {'depth':>6}  {'quality':<11} {'locality':<38} link")
 for q in rows:
     t = datetime.fromisoformat(q["time"].replace("Z", "+00:00"))
     print(f"  {t:%Y-%m-%d %H:%M} {q['magnitude']:>4.1f} {q['mmi']:>3} {q['depth']:>4.0f}km  {q['quality']:<11} "
           f"{q['locality']:<38} https://www.geonet.org.nz/earthquake/{q['publicID']}")
 
-top = max(rows, key=lambda q: (q["mmi"], q["magnitude"]))
-print(f"\nStrongest shaking: {top['publicID']} M{top['magnitude']:.1f} MMI {top['mmi']} {top['locality']} ({top['time'][:16]} UTC)")
+if rows:   # MMI=8 had no quake this year: an empty list is HTTP 200
+    top = max(rows, key=lambda q: (q["mmi"], q["magnitude"]))
+    print(f"\nStrongest shaking in this list: {top['publicID']} M{top['magnitude']:.1f} MMI {top['mmi']} {top['locality']} "
+          f"({top['time'][:16]} UTC)")
+else:
+    print(f"\nNo quake at MMI {MIN_MMI}+ in the answer")
 
 val = call("/volcano/val")["features"]
 val.sort(key=lambda f: (-f["properties"]["level"], f["properties"]["volcanoTitle"]))
@@ -123,18 +115,16 @@ for f in val:
 print(f"\n{len(calls)} API calls: " + ", ".join(f"{p} {s} {t}s" for p, s, t in calls))
 print("Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.org/licenses/by/3.0/nz/). "
       "We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE "
-      "for providing the data. Changed: lists merged, deleted quakes dropped, magnitudes rounded, sorted.")
+      "for providing the data. Changed: deleted quakes dropped, magnitudes rounded, sorted.")
 ```
 
-Output (third run, 2026-11-24 23:34:50 UTC; the 23:34:18 and 23:34:38 UTC runs listed the same quakes and levels):
+Output (re-run on 2026-11-25 after the code-review fixes, 01:00 UTC, in a new cloud browser; the three runs on 2026-11-24 at 23:34 UTC, which also asked `MMI=5` and merged it in, listed the same 82 quakes from 2026-06-10 on, plus 12 older MMI 5+ ones, and the same levels):
 
 ```text
-GeoNet API, checked 2026-11-24 23:34 UTC
-  MMI>=4: 100 quakes (the 100 cap: complete only back to 2026-06-10T06:02 UTC)
-  MMI>=5: 33 quakes (under the cap: the whole 365 days since 2025-11-24)
-  so before 2026-06-10T06:02 UTC the list below has MMI 5+ only; MMI 4 quakes from then are past the API's 100 cap (no date filter on /quake)
+GeoNet API, checked 2026-11-25 01:00 UTC
+  MMI>=4: 100 quakes = the API's cap. PARTIAL: they reach back only to 2026-06-10T06:02 UTC, not the whole 365 days since 2025-11-25; older MMI 4+ quakes are not in this answer
 
-94 quakes possibly felt at MMI 4+ (dropped 18 marked quality=deleted), newest first:
+82 quakes possibly felt at MMI 4+ since 2026-06-10 (PARTIAL year) (dropped 18 marked quality=deleted), newest first:
   time (UTC)         mag MMI  depth  quality     locality                               link
   2026-11-21 07:59  4.5   4    5km  best        20 km north-east of Hanmer Springs     https://www.geonet.org.nz/earthquake/2026p876575
   2026-11-17 10:30  5.4   6    5km  best        15 km south-east of Arthur's Pass      https://www.geonet.org.nz/earthquake/2026p866048
@@ -218,20 +208,8 @@ GeoNet API, checked 2026-11-24 23:34 UTC
   2026-06-16 14:33  4.0   4   46km  best        30 km west of Porirua                  https://www.geonet.org.nz/earthquake/2026p450287
   2026-06-16 11:42  3.7   4   16km  best        20 km north-east of Pongaroa           https://www.geonet.org.nz/earthquake/2026p449966
   2026-06-12 01:54  4.4   4   45km  best        25 km north-west of Blenheim           https://www.geonet.org.nz/earthquake/2026p438052
-  2026-05-29 22:56  4.7   6   12km  best        10 km east of Seddon                   https://www.geonet.org.nz/earthquake/2026p402583
-  2026-05-16 06:34  4.4   5   10km  best        10 km south-east of Seddon             https://www.geonet.org.nz/earthquake/2026p365604
-  2026-05-10 00:44  4.1   5   17km  best        10 km north-west of Porangahau         https://www.geonet.org.nz/earthquake/2026p348732
-  2026-05-02 21:19  5.3   5   32km  best        25 km west of Te Araroa                https://www.geonet.org.nz/earthquake/2026p329428
-  2026-03-24 00:36  4.3   5    9km  best        15 km east of Seddon                   https://www.geonet.org.nz/earthquake/2026p221690
-  2026-03-22 05:54  4.0   5    7km  best        5 km east of Kaikoura                  https://www.geonet.org.nz/earthquake/2026p216882
-  2026-02-03 23:35  4.4   5    8km  best        15 km east of Seddon                   https://www.geonet.org.nz/earthquake/2026p091845
-  2026-01-13 10:21  4.6   6   13km  best        5 km west of Pongaroa                  https://www.geonet.org.nz/earthquake/2026p033598
-  2025-12-25 18:16  4.7   6   15km  best        10 km south-west of Pongaroa           https://www.geonet.org.nz/earthquake/2025p969626
-  2025-12-15 12:05  4.4   5   23km  best        20 km east of Palmerston North         https://www.geonet.org.nz/earthquake/2025p941901
-  2025-12-03 23:17  4.3   5    9km  best        15 km north-east of Pongaroa           https://www.geonet.org.nz/earthquake/2025p910731
-  2025-12-03 22:47  4.8   5    7km  best        10 km north-east of Pongaroa           https://www.geonet.org.nz/earthquake/2025p910674
 
-Strongest shaking: 2026p553250 M5.9 MMI 7 5 km south of Taumarunui (2026-07-24T16:51 UTC)
+Strongest shaking in this list: 2026p553250 M5.9 MMI 7 5 km south of Taumarunui (2026-07-24T16:51 UTC)
 
 Volcanic Alert Levels, 12 monitored volcanoes (highest first):
   level  aviation volcano                      activity
@@ -248,8 +226,8 @@ Volcanic Alert Levels, 12 monitored volcanoes (highest first):
       0  Green    Taupo                        No volcanic unrest. Hazards: Volcanic environment hazards.
       0  Green    Tongariro                    No volcanic unrest. Hazards: Volcanic environment hazards.
 
-3 API calls: /quake?MMI=4 200 0.38s, /quake?MMI=5 200 0.32s, /volcano/val 200 0.32s
-Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.org/licenses/by/3.0/nz/). We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE for providing the data. Changed: lists merged, deleted quakes dropped, magnitudes rounded, sorted.
+2 API calls: /quake?MMI=4 200 1.3s, /volcano/val 200 0.33s
+Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.org/licenses/by/3.0/nz/). We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE for providing the data. Changed: deleted quakes dropped, magnitudes rounded, sorted.
 ```
 
 ### 2. robots.txt, the terms quotes, the web pages against the API, and what the API does with mistakes (browser)
@@ -443,7 +421,7 @@ headers visible to fetch(): ['cache-control', 'content-length', 'content-type']
 
 ### 3. The same with Python urllib, as a command-line tool: robots check for every agent, felt quakes, alert levels, one quake's history (no browser)
 
-Standard library only. It runs with `python3 -I`. Save it as `geonet.py`. A list run makes 1 robots.txt call, 1 `/quake?MMI=n` call per level until a list is under 100 (2 today for MMI 4), and 1 `/volcano/val` call. `--quake` reads `/quake/{publicID}` and `/quake/history/{publicID}`. urllib does not ask for gzip, so the answers come uncompressed (27.6 KB for `MMI=4`).
+Standard library only. It runs with `python3 -I`. Save it as `geonet.py`. A list run makes 1 robots.txt call, 1 `/quake?MMI=n` call (marked PARTIAL when it returns the full 100 and the oldest is newer than `--days` allows), and 1 `/volcano/val` call. `--quake` reads `/quake/{publicID}` and `/quake/history/{publicID}`. urllib does not ask for gzip, so the answers come uncompressed (27.6 KB for `MMI=4`).
 
 ```python
 """Quakes possibly felt in New Zealand at a given MMI and up, and the current Volcanic Alert Levels
@@ -554,25 +532,21 @@ if args.quake:
     else:
         print("  history: none (not all quakes have a location history)")
 else:
-    quakes, reach = {}, {}
-    for mmi in range(args.mmi, 9):               # at most 100 per call: step up until a list is not full
-        feats = call(f"/quake?MMI={mmi}")["features"]
-        for f in feats:
-            quakes.setdefault(f["properties"]["publicID"], f["properties"])
-        reach[mmi] = (len(feats), min((f["properties"]["time"] for f in feats), default=None))
-        if len(feats) < 100:
-            break
+    feats = call(f"/quake?MMI={args.mmi}")["features"]   # at most 100, newest first; no date or page parameter
+    quakes = [f["properties"] for f in feats]
+    oldest = min((q["time"] for q in quakes), default=None)
     since = now - timedelta(days=args.days)
-    inside = [q for q in quakes.values() if q["mmi"] >= args.mmi and utc(q["time"]) >= since]
+    inside = [q for q in quakes if utc(q["time"]) >= since]
     rows = sorted((q for q in inside if q["quality"] != "deleted"), key=lambda q: q["time"], reverse=True)
     n_del = len(inside) - len(rows)
-    full = [(m, o) for m, (n, o) in reach.items() if n == 100]
-    print(f"MMI {args.mmi}+ since {since:%Y-%m-%d %H:%M} UTC: {len(rows)} quakes ({n_del} quality=deleted dropped)")
-    for m, (n, o) in reach.items():
-        print(f"  /quake?MMI={m}: {n} returned, oldest {o[:16] if o else '-'}" + ("  <- 100 cap" if n == 100 else ""))
-    if full and utc(full[-1][1]) > since:
-        m, o = full[-1]
-        print(f"  NOTE: before {o[:16]} UTC only MMI {m + 1}+ quakes are listed; lower ones from then are past the cap")
+    partial = len(feats) == 100 and utc(oldest) > since
+    print(f"MMI {args.mmi}+ since {since:%Y-%m-%d %H:%M} UTC: {len(rows)} quakes ({n_del} quality=deleted dropped)"
+          + ("  PARTIAL" if partial else ""))
+    print(f"  /quake?MMI={args.mmi}: {len(feats)} returned, oldest {oldest[:16] if oldest else '-'}"
+          + ("  <- 100 cap" if len(feats) == 100 else ""))
+    if partial:
+        print(f"  PARTIAL: the 100 cap ends at {oldest[:16]} UTC; MMI {args.mmi}+ quakes from before then are not in "
+              f"this answer (a --days that ends after that date gives a complete list)")
     print(f"  {'time (UTC)':<16}  {'mag':>4} {'MMI':>3}  {'locality':<38} link")
     for q in rows:
         print(f"  {utc(q['time']):%Y-%m-%d %H:%M}  {q['magnitude']:>4.1f} {q['mmi']:>3}  {q['locality']:<38} {link(q['publicID'])}")
@@ -585,18 +559,17 @@ else:
 
 print(f"{len(calls)} calls: " + ", ".join(f"{p} {s} {t}s {z / 1024:.1f} KB" for p, s, t, z in calls))
 print(CREDIT + (" Changed: fields picked, magnitudes rounded." if args.quake else
-                " Changed: lists merged and filtered, magnitudes rounded, sorted by this script."))
+                " Changed: list filtered, magnitudes rounded, sorted by this script."))
 ```
 
-Output (five commands, fourth run, 2026-11-24 23:41 UTC; the earlier runs listed the same quakes and levels; the third one still counted all 18 deleted quakes in the `--days 30` header):
+Output (five commands, re-run on 2026-11-25 after the code-review fixes, 00:59 UTC; the 23:41 UTC run on 2026-11-24 listed the same quakes and levels with one more call, `/quake?MMI=5`, in the `--days 30` run; the default run, 365 days, now prints 82 quakes and PARTIAL):
 
 ```text
 $ python3 -I geonet.py --days 30
-GeoNet API, checked 2026-11-24 23:41 UTC
+GeoNet API, checked 2026-11-25 00:59 UTC
 robots.txt api.geonet.org.nz: HTTP 200; each API URL is checked for all 12 agents before its call
-MMI 4+ since 2026-10-25 23:41 UTC: 9 quakes (1 quality=deleted dropped)
+MMI 4+ since 2026-10-26 00:59 UTC: 9 quakes (1 quality=deleted dropped)
   /quake?MMI=4: 100 returned, oldest 2026-06-10T06:02  <- 100 cap
-  /quake?MMI=5: 33 returned, oldest 2025-12-03T22:47
   time (UTC)         mag MMI  locality                               link
   2026-11-21 07:59   4.5   4  20 km north-east of Hanmer Springs     https://www.geonet.org.nz/earthquake/2026p876575
   2026-11-17 10:30   5.4   6  15 km south-east of Arthur's Pass      https://www.geonet.org.nz/earthquake/2026p866048
@@ -608,13 +581,13 @@ MMI 4+ since 2026-10-25 23:41 UTC: 9 quakes (1 quality=deleted dropped)
   2026-10-26 06:24   4.5   5  20 km south-west of Blenheim           https://www.geonet.org.nz/earthquake/2026p806127
   2026-10-26 02:33   4.0   4  30 km south of Whanganui               https://www.geonet.org.nz/earthquake/2026p805693
 Volcanic Alert Level, 12 volcanoes: White Island 2 (Yellow); Ruapehu 1 (Green); Auckland Volcanic Field 0 (Green); Mayor Island 0 (Green); Ngauruhoe 0 (Green); Northland 0 (Green); Okataina 0 (Green); Rangitāhua/Kermadec Islands 0 (Green); Rotorua 0 (Green); Taranaki Maunga 0 (Green); Taupo 0 (Green); Tongariro 0 (Green)
-4 calls: /robots.txt 200 0.04s 0.1 KB, /quake?MMI=4 200 0.18s 27.6 KB, /quake?MMI=5 200 0.03s 9.2 KB, /volcano/val 200 0.02s 3.0 KB
-Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.org/licenses/by/3.0/nz/). We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE for providing the data. Changed: lists merged and filtered, magnitudes rounded, sorted by this script.
+3 calls: /robots.txt 200 0.21s 0.1 KB, /quake?MMI=4 200 0.37s 27.6 KB, /volcano/val 200 0.16s 3.0 KB
+Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.org/licenses/by/3.0/nz/). We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE for providing the data. Changed: list filtered, magnitudes rounded, sorted by this script.
 
 $ python3 -I geonet.py --mmi 6 --days 180
-GeoNet API, checked 2026-11-24 23:41 UTC
+GeoNet API, checked 2026-11-25 01:00 UTC
 robots.txt api.geonet.org.nz: HTTP 200; each API URL is checked for all 12 agents before its call
-MMI 6+ since 2026-05-28 23:41 UTC: 6 quakes (0 quality=deleted dropped)
+MMI 6+ since 2026-05-29 01:00 UTC: 6 quakes (0 quality=deleted dropped)
   /quake?MMI=6: 8 returned, oldest 2025-12-25T18:16
   time (UTC)         mag MMI  locality                               link
   2026-11-17 10:30   5.4   6  15 km south-east of Arthur's Pass      https://www.geonet.org.nz/earthquake/2026p866048
@@ -624,20 +597,20 @@ MMI 6+ since 2026-05-28 23:41 UTC: 6 quakes (0 quality=deleted dropped)
   2026-07-16 09:14   6.3   6  45 km south-west of Milford Sound      https://www.geonet.org.nz/earthquake/2026p530771
   2026-05-29 22:56   4.7   6  10 km east of Seddon                   https://www.geonet.org.nz/earthquake/2026p402583
 Volcanic Alert Level, 12 volcanoes: White Island 2 (Yellow); Ruapehu 1 (Green); Auckland Volcanic Field 0 (Green); Mayor Island 0 (Green); Ngauruhoe 0 (Green); Northland 0 (Green); Okataina 0 (Green); Rangitāhua/Kermadec Islands 0 (Green); Rotorua 0 (Green); Taranaki Maunga 0 (Green); Taupo 0 (Green); Tongariro 0 (Green)
-3 calls: /robots.txt 200 0.04s 0.1 KB, /quake?MMI=6 200 0.06s 2.3 KB, /volcano/val 200 0.17s 3.0 KB
-Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.org/licenses/by/3.0/nz/). We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE for providing the data. Changed: lists merged and filtered, magnitudes rounded, sorted by this script.
+3 calls: /robots.txt 200 0.22s 0.1 KB, /quake?MMI=6 200 0.23s 2.3 KB, /volcano/val 200 0.24s 3.0 KB
+Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.org/licenses/by/3.0/nz/). We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE for providing the data. Changed: list filtered, magnitudes rounded, sorted by this script.
 
 $ python3 -I geonet.py --quake 2026p866048
-GeoNet API, checked 2026-11-24 23:41 UTC
+GeoNet API, checked 2026-11-25 01:00 UTC
 robots.txt api.geonet.org.nz: HTTP 200; each API URL is checked for all 12 agents before its call
 2026p866048: 2026-11-17T10:30:48.727Z M5.44 MMI 6 depth 5.0 km 15 km south-east of Arthur's Pass (-43.015, 171.776) quality best
   https://www.geonet.org.nz/earthquake/2026p866048
   history: 114 versions from 2026-11-17T10:31:44 to 2026-11-18T10:47:42 UTC; magnitude 5.12 first, 5.12-5.66 range, 5.44 last; qualities ['automatic', 'best']
-3 calls: /robots.txt 200 0.04s 0.1 KB, /quake/2026p866048 200 0.17s 0.3 KB, /quake/history/2026p866048 200 0.03s 38.2 KB
+3 calls: /robots.txt 200 0.11s 0.1 KB, /quake/2026p866048 200 0.18s 0.3 KB, /quake/history/2026p866048 200 0.19s 38.2 KB
 Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.org/licenses/by/3.0/nz/). We acknowledge the New Zealand GeoNet programme and its sponsors NHC, Earth Sciences NZ, LINZ, NEMA and MBIE for providing the data. Changed: fields picked, magnitudes rounded.
 
 $ python3 -I geonet.py --quake 2099p000000
-GeoNet API, checked 2026-11-24 23:41 UTC
+GeoNet API, checked 2026-11-25 01:00 UTC
 robots.txt api.geonet.org.nz: HTTP 200; each API URL is checked for all 12 agents before its call
 no quake '2099p000000' (HTTP 200, empty FeatureCollection)
 
@@ -725,7 +698,7 @@ level 0 Green | Okataina | No volcanic unrest.
 level 0 Green | Rotorua | No volcanic unrest.
 level 0 Green | Taranaki Maunga | No volcanic unrest.
 level 0 Green | Rangitāhua/Kermadec Islands | No volcanic unrest.
-HTTP/2 200 
+HTTP/2 200
 content-type: application/vnd.geo+json;version=2
 access-control-allow-origin: *
 cache-control: max-age=10
@@ -754,7 +727,7 @@ Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.
 
 ## Gotchas
 
-- **100 quakes at most, no dates.** `/quake?MMI=4` returned exactly 100, back only to 2026-06-10 06:02 UTC. Ask again with `MMI=5`, `6`, ... until a list is under 100 and merge by `publicID` (blocks 1 and 3). Today that gives every MMI 5+ quake of the 365 days, but the 12 quakes before 2026-06-10 in the merged list are all MMI 5+; MMI 4 quakes from then are missing. The other GeoNet hosts that take dates cannot fill the gap within robots.txt: service.geonet.org.nz (FDSN) and quakesearch.geonet.org.nz have `Disallow: /`, and wfs.geonet.org.nz disallows `/geonet/ows`.
+- **100 quakes at most, no dates.** `/quake?MMI=4` returned exactly 100, back only to 2026-06-10 06:02 UTC. Report such a list as partial and say where it ends (blocks 1 and 3 do); do not split or repeat queries to get past the cap. The other GeoNet hosts that take dates cannot fill the gap within robots.txt: service.geonet.org.nz (FDSN) and quakesearch.geonet.org.nz have `Disallow: /`, and wfs.geonet.org.nz disallows `/geonet/ows`.
 - **Deleted quakes take slots.** 18 of the 100 `MMI=4` features had `quality: "deleted"` (5 of 33 for `MMI=5`). Drop them; they still count toward the 100.
 - **`mmi` is lower case.** The API page writes `MMI` for `/quake/{publicID}` and `/quake/history`, but every answer on 2026-11-24 had `mmi`.
 - **Round the magnitude.** `magnitude` has up to 16 digits (`5.444425927675574`); the quake's web page shows `5.4`. The web page shows NZ local time (`Tuesday November 17, 2026 - 11:30 PM` for `2026-11-17T10:30:48.727Z`, NZDT = UTC+13) and the word `Strong` for MMI 6.
@@ -772,4 +745,4 @@ Data: GeoNet (https://www.geonet.org.nz), CC BY 3.0 NZ (https://creativecommons.
 - **A date range or more than 100 quakes from `/quake`**: there is no parameter for either.
 - **FDSN, WFS and quake search hosts**: robots.txt disallows them (see Gotchas); this skill does not use them.
 - **`/quake/stats` with the geo+json `Accept` header**: HTTP 400; use `application/json;version=2`.
-- **Not tested:** a 429 (never provoked; no limit is published), `/intensity?type=reported`, `/intensity/strong/processed/{publicID}`, the CAP feed, `preliminary` and `automatic` quakes in the list (all 94 were `best` today), and a day with a volcano at level 3 or higher.
+- **Not tested:** a 429 (never provoked; no limit is published), `/intensity?type=reported`, `/intensity/strong/processed/{publicID}`, the CAP feed, `preliminary` and `automatic` quakes in the list (all 82 were `best` today), and a day with a volcano at level 3 or higher.
