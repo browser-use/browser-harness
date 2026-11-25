@@ -1,3 +1,4 @@
+import builtins
 import json, os, sys, time, urllib.request
 from io import StringIO
 
@@ -199,32 +200,38 @@ def _exit_code(result) -> int:
     return 1
 
 _MAX_TRACED_STEPS = 500
-_MAX_STEP_ARGS_LENGTH = 300
 _helper_trace = []
 _helper_call_count = 0
 
 
-def _step_args(args, kwargs):
-    parts = [repr(a) for a in args] + [f"{k}={v!r}" for k, v in kwargs.items()]
-    return ", ".join(parts)[:_MAX_STEP_ARGS_LENGTH]
+_BUILTIN_CLASSES = {id(c): c.__name__ for c in vars(builtins).values() if isinstance(c, type)}
+
+
+def _error_class(exc):
+    """The nearest built-in class: a script's own exception names and every message stay on this machine."""
+    return next(_BUILTIN_CLASSES[id(c)] for c in type(exc).__mro__ if id(c) in _BUILTIN_CLASSES)
 
 
 def _traced(name, fn):
     import functools
 
+    from . import helpers
+
+    step_name = name if name in helpers._OWN_NAMES else "custom"  # agent_helpers.py names are the user's own
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         global _helper_call_count
         _helper_call_count += 1
-        entry = {"helper": name, "args": _step_args(args, kwargs)}
+        entry = {"helper": step_name}
         if len(_helper_trace) < _MAX_TRACED_STEPS:
             _helper_trace.append(entry)
         step_start = time.monotonic()
         try:
             result = fn(*args, **kwargs)
-        except BaseException as exc:
+        except BaseException:
             entry["duration_seconds"] = round(time.monotonic() - step_start, 3)
-            entry["error"] = str(exc)[:300]
+            entry["error"] = True
             raise
         entry["duration_seconds"] = round(time.monotonic() - step_start, 3)
         recorder.observe(name, args, kwargs, entry["duration_seconds"])
@@ -250,22 +257,16 @@ def _install_helper_trace():
             g[name] = _traced(name, fn)
 
 
-_MAX_OUTPUT_LENGTH = 20_000
+class _CountingStream:
+    """Pass-through stream wrapper that counts the characters written."""
 
-
-class _StreamTail:
-    """Pass-through stream wrapper that remembers the tail and total length."""
-
-    def __init__(self, wrapped, limit=500):
+    def __init__(self, wrapped):
         self._wrapped = wrapped
-        self._limit = limit
-        self.tail = ""
         self.length = 0
 
     def write(self, text):
         text = str(text)
         self.length += len(text)
-        self.tail = (self.tail + text)[-self._limit :]
         return self._wrapped.write(text)
 
     def __getattr__(self, name):
@@ -310,10 +311,8 @@ def main(prog=None):
     start_time = time.monotonic()
     command = _telemetry_command(args)
     task = _read_task(args)
-    stderr_tail = _StreamTail(sys.stderr)
-    stdout_tail = _StreamTail(sys.stdout, limit=_MAX_OUTPUT_LENGTH)
-    sys.stderr = stderr_tail
-    sys.stdout = stdout_tail
+    stdout = _CountingStream(sys.stdout)
+    sys.stdout = stdout
     try:
         _run(args)
     except SystemExit as exc:
@@ -321,42 +320,38 @@ def main(prog=None):
         telemetry.capture_cli_event(
             action="error" if code else "completed",
             command=command,
-            task=task,
+            task_length=len(task) if task is not None else None,
             browser=_telemetry_browser(task),
-            output=stdout_tail.tail or None,
-            output_length=stdout_tail.length or None,
+            output_length=stdout.length or None,
             steps=_traced_steps(),
             step_count=_helper_call_count or None,
             duration_seconds=time.monotonic() - start_time,
             exit_code=code,
-            error_message=str(exc.code) if isinstance(exc.code, str) else (stderr_tail.tail.strip() or None) if code else None,
+            error_message="SystemExit" if code else None,
         )
         raise
     except Exception as exc:
         telemetry.capture_cli_event(
             action="error",
             command=command,
-            task=task,
+            task_length=len(task) if task is not None else None,
             browser=_telemetry_browser(task),
-            output=stdout_tail.tail or None,
-            output_length=stdout_tail.length or None,
+            output_length=stdout.length or None,
             steps=_traced_steps(),
             step_count=_helper_call_count or None,
             duration_seconds=time.monotonic() - start_time,
             exit_code=1,
-            error_message=str(exc),
+            error_message=_error_class(exc),
         )
         raise
     finally:
-        sys.stderr = stderr_tail._wrapped
-        sys.stdout = stdout_tail._wrapped
+        sys.stdout = stdout._wrapped
     telemetry.capture_cli_event(
         action="completed",
         command=command,
-        task=task,
+        task_length=len(task) if task is not None else None,
         browser=_telemetry_browser(task),
-        output=stdout_tail.tail or None,
-        output_length=stdout_tail.length or None,
+        output_length=stdout.length or None,
         steps=_traced_steps(),
         step_count=_helper_call_count or None,
         duration_seconds=time.monotonic() - start_time,
