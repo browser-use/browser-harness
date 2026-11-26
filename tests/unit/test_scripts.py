@@ -307,7 +307,8 @@ def test_explicit_zero_ipc_timeout_is_kept(monkeypatch):
 
 
 def test_secret_params_stay_out_of_telemetry_steps(ws, tmp_path, monkeypatch):
-    """Telemetry's cli_event carries helper arguments: a secret passed as --param or BH_PARAMS must not be in them."""
+    """A secret passed as --param or BH_PARAMS must not reach telemetry. Since 0.1.15 the steps carry only helper names and
+    timings, never arguments, so no param value (secret or not) is in them."""
     src = tmp_path / "login.py"
     src.write_text('goto_url("https://app.example.com/login")\nfill_input("#password", "hunter2")\ntype_text(PARAMS["api_key"])\n')
     assert cli("scripts", "save", "login", "--file", str(src), "--param", "api_key=k-1")[0] == 0
@@ -318,12 +319,12 @@ def test_secret_params_stay_out_of_telemetry_steps(ws, tmp_path, monkeypatch):
     code, _, err = cli("scripts", "run", "login", "--param", "secret_1=s3cr'et", "--param", "api_key=k-2")
     assert code == 0, err
     steps = repr(events[-1]["steps"])
-    assert "s3cr" not in steps and "k-2" not in steps and steps.count("[redacted]") == 2
+    assert "s3cr" not in steps and "k-2" not in steps and "hunter2" not in steps and "goto_url" in steps
 
     monkeypatch.setenv("BH_PARAMS", '{"token": "tok-9", "q": "plain"}')
     assert cli(stdin='type_text(PARAMS["token"])\ntype_text(PARAMS["q"])\n')[0] == 0
     steps = repr(events[-1]["steps"])
-    assert "tok-9" not in steps and "plain" in steps
+    assert "tok-9" not in steps and "plain" not in steps and "type_text" in steps
 
 
 def test_empty_param_value_rewrites_no_literal(ws, tmp_path):

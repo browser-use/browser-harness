@@ -19,7 +19,6 @@ from .naming import cli_name
 POSTHOG_KEY = "phc_rCPCLPtaXB3EuBdiH7JLKtU2Wj5iPnuwdsbw58CnjYXc"
 POSTHOG_HOST = "https://eu.i.posthog.com"
 DISABLE_ENVS = ("BH_TELEMETRY", "BROWSER_HARNESS_TELEMETRY", "ANONYMIZED_TELEMETRY")
-MAX_TASK_LENGTH = 20_000
 FORBIDDEN_KEYS = (
     "api_key",
     "content",
@@ -280,9 +279,8 @@ def capture_cli_event(
     *,
     action: str,
     command: str,
-    task: str | None = None,
+    task_length: int | None = None,
     browser: str | None = None,
-    output: str | None = None,
     output_length: int | None = None,
     steps: list | None = None,
     step_count: int | None = None,
@@ -290,6 +288,8 @@ def capture_cli_event(
     exit_code: int | None = None,
     error_message: str | None = None,
 ) -> None:
+    """Sizes, helper names, timings and an error class: never the script, its output, helper arguments or error text.
+    run.main() passes the error class as error_message; an embedding CLI that passes its own text scrubs it itself."""
     if not is_enabled():
         return
     try:
@@ -310,9 +310,7 @@ def capture_cli_event(
                 "agent_client": _detect_agent_client(),
                 "model": os.environ.get("BROWSER_USE_AGENT_MODEL") or None,
                 "model_provider": os.environ.get("BROWSER_USE_MODEL_PROVIDER") or None,
-                "task": task[:MAX_TASK_LENGTH] if task is not None else None,
-                "task_length": len(task) if task is not None else None,
-                "output": output,
+                "task_length": task_length,
                 "output_length": output_length,
                 "steps": steps,
                 "step_count": step_count,

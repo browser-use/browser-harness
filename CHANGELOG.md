@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.15
+## 0.1.16
 
 ### Saved scripts
 - New: `browser-harness scripts save <name> --from-last|--file PATH [--host H] [--param k=v]` saves a working script for a site as `<agent-workspace>/scripts/<host>/<name>.py`, with a header (host, url, params, last verified time). String literals equal to a `--param` value become `PARAMS["k"]`. Text typed by `type_text`/`fill_input` on a line that mentions a password, secret, token, OTP or API key becomes a required param, credential query params in URLs are redacted, and secret-looking `--param` values are not written to the file.
@@ -10,7 +10,6 @@
 - Scripts read their params as `PARAMS` (from `--param`, or from `BH_PARAMS` as a JSON object on a plain stdin run). `PARAMS` is `{}` when none are given.
 - `goto_url(url)` adds `saved_scripts` to its result and prints one `saved scripts for <host>: ...` line on stderr per host, but only when that host has saved scripts.
 - SKILL.md: a short "Saved Scripts" section tells agents to reuse a site's saved script and to save one after a repeatable task works.
-- Secret params stay out of telemetry: the value of a param the saved file requires (a redacted typed secret) or whose key looks secret (`password`, `token`, `api_key`, ...), from `--param` or `BH_PARAMS`, is replaced by `[redacted]` in the helper arguments a run report carries.
 - `--param k=` (an empty value) rewrites no literal; before, every `""` in the script became `PARAMS["k"]`.
 
 ### Cloud browsers
@@ -31,6 +30,11 @@
 - `goto_url()` returns one more key (`saved_scripts`) on hosts with saved scripts.
 - Cloud browsers: one window per agent tab instead of tabs in one window.
 - The last successful script is not kept on disk when an embedding CLI runs the harness (BH_CLIENT set, for example browser-use), since `scripts save` is never used there.
+
+## 0.1.15
+
+### Telemetry
+- Fix: CLI telemetry no longer sends your script, its output, helper arguments or error text; only sizes, timings, harness helper names and an error class.
 
 ## 0.1.14
 
