@@ -140,32 +140,61 @@ def test_success_must_be_a_bool(sent):
     assert sent == []
 
 
+def _off(why):
+    return report.OFF.format(why=why)
+
+
 @pytest.mark.parametrize("env", TELEMETRY_OFF)
 def test_run_reports_send_nothing_with_telemetry_off(sent, monkeypatch, env):
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    assert report.report_run(True) == report.OFF
+    assert report.report_run(True).startswith("Not sent: telemetry is off (")
     assert sent == []
 
 
 @pytest.mark.parametrize("env", TELEMETRY_OFF)
-def test_feedback_sends_with_telemetry_off_under_a_process_id(sent, monkeypatch, env):
-    install_id = telemetry._install_id()
+def test_feedback_makes_no_network_call_with_telemetry_off(sent, monkeypatch, capsys, env):
+    spawned = []
+    monkeypatch.setattr(telemetry, "post_detached", REAL_POST_DETACHED)  # the real sender, its Popen recorded
+    monkeypatch.setattr(telemetry.subprocess, "Popen", lambda *a, **k: spawned.append(a) or pytest.fail("spawned"))
     for name, value in env.items():
         monkeypatch.setenv(name, value)
+    assert report.report_issue("goto_url hangs").startswith("Not sent: telemetry is off (")
+    with patch.object(sys, "stdin", io.StringIO("")):
+        assert report.run_feedback_cli(["docs", "are", "wrong"]) == 1
+    assert capsys.readouterr().err.startswith("Not sent: telemetry is off (")
+    assert spawned == [] and sent == []
+
+
+@pytest.mark.parametrize(
+    "env,why",
+    [
+        ({"BH_TELEMETRY": "0"}, "BH_TELEMETRY=0"),
+        ({"BROWSER_HARNESS_TELEMETRY": "off"}, "BROWSER_HARNESS_TELEMETRY=off"),
+        ({"ANONYMIZED_TELEMETRY": "false"}, "ANONYMIZED_TELEMETRY=false"),
+        ({"ANONYMIZED_TELEMETRY": "n"}, "ANONYMIZED_TELEMETRY=n"),
+    ],
+)
+def test_not_sent_names_the_switch_that_turned_telemetry_off(sent, monkeypatch, env, why):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert report.report_issue("x") == report.report_run(True) == f"Not sent: telemetry is off ({why}). Nothing left this machine."
+    assert sent == []
+
+
+def test_telemetry_disable_config_stops_run_reports_and_feedback(sent):
+    telemetry.set_enabled(False)
+    assert report.report_run(True) == _off("`browser-harness telemetry disable`")
+    assert report.report_issue("wrong docs", "docs") == _off("`browser-harness telemetry disable`")
+    assert sent == []
+
+
+def test_report_issue_sends_under_the_install_id_with_telemetry_on(sent):
     assert report.report_issue("goto_url hangs") == report.SENT_ISSUE
     with patch.object(sys, "stdin", io.StringIO("")):
         assert report.run_feedback_cli(["docs", "are", "wrong"]) == 0
     assert [p["event"] for p, _ in sent] == ["library_feedback", "library_feedback"]
-    assert {p["distinct_id"] for p, _ in sent} == {report._PROCESS_ID}
-    assert report._PROCESS_ID != install_id
-
-
-def test_telemetry_disable_config_stops_run_reports_not_feedback(sent):
-    telemetry.set_enabled(False)
-    assert report.report_run(True) == report.OFF
-    assert report.report_issue("wrong docs", "docs") == report.SENT_ISSUE
-    assert [p["event"] for p, _ in sent] == ["library_feedback"]
+    assert {p["distinct_id"] for p, _ in sent} == {telemetry._install_id()}
 
 
 @pytest.mark.parametrize("value", ["1", "true", "Yes", "y", "on"])
@@ -266,7 +295,7 @@ def test_cli_feedback_usage_names_the_wrapping_cli(sent, monkeypatch, capsys):
     with patch.object(sys, "stdin", io.StringIO("")):
         assert report.run_feedback_cli([]) == 2
     assert capsys.readouterr().err.startswith('usage: browser-use feedback "what happened"')
-    monkeypatch.setenv("BH_TELEMETRY", "0")
+    telemetry.set_enabled(False)
     assert "`browser-use telemetry disable`" in report.report_run(True)
     assert sent == []
 
@@ -315,11 +344,11 @@ def test_library_events_never_go_through_the_sink(sent, monkeypatch):
     assert via_sink == [] and [p["event"] for p, _ in sent] == ["library_judgement", "library_feedback"]
 
 
-def test_an_embedding_clis_consent_gates_run_reports_not_feedback(sent):
+def test_an_embedding_clis_consent_gates_run_reports_and_feedback(sent):
     telemetry.set_sink(lambda payload: pytest.fail("not via the sink"), enabled=lambda: False)
-    assert report.report_run(True) == report.OFF
-    assert report.report_issue("x") == report.SENT_ISSUE
-    assert [p["event"] for p, _ in sent] == ["library_feedback"]
+    assert report.report_run(True) == _off("the embedding CLI's telemetry setting")
+    assert report.report_issue("x") == _off("the embedding CLI's telemetry setting")
+    assert sent == []
 
 
 def test_detached_sender_posts_to_the_library_host(monkeypatch):

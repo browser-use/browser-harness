@@ -130,14 +130,20 @@ def test_browser_feedback_sends_harness_mcp_feedback(reports):
     assert reports[0]["properties"]["source"] == "harness-mcp"
 
 
-def test_with_telemetry_off_mcp_feedback_sends_and_run_reports_do_not(reports, monkeypatch):
+def test_with_telemetry_off_mcp_feedback_and_run_reports_send_nothing(reports, monkeypatch):
     monkeypatch.setenv("ANONYMIZED_TELEMETRY", "false")
-    assert "the run report was not sent" in _call("browser_report_run", {"success": True}).content[0].text
+    off = "Not sent: telemetry is off (ANONYMIZED_TELEMETRY=false). Nothing left this machine."
+    assert _call("browser_report_run", {"success": True}).content[0].text == off
+    assert _call("browser_feedback", {"message": "m"}).content[0].text == off
+    assert reports == []
+    assert mcp_server._reports_sent == {"run": 0, "feedback": 0}
+
+
+def test_mcp_feedback_is_capped_per_session(reports):
     texts = [_call("browser_feedback", {"message": f"m{i}"}).content[0].text for i in range(4)]
     assert texts[0] == "Reported to the Browser Use team. Thanks; carry on."
     assert texts[3].startswith("Already reported 3")
     assert [e["event"] for e in reports] == ["library_feedback"] * 3
-    assert mcp_server._reports_sent == {"run": 0, "feedback": 3}
 
 
 def test_offline_stops_both_mcp_reports(reports, monkeypatch):

@@ -58,7 +58,7 @@ on; it does not switch off a solver the browser already has on.
 Two more tools need no browser:
 
 - `browser_feedback(message, category)`: tells the Browser Use team what broke in
-  browser-harness or what would make it better. Sent even when telemetry is off.
+  browser-harness or what would make it better. Sent only when telemetry is on.
 - `browser_report_run(success, failure_reason, gotchas, bot_block)`: the agent's
   own verdict on its task, once at the end. Sent only when telemetry is on.
 

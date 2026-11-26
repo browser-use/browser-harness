@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Telemetry
+- `cli_event` no longer sends the CDP endpoint's hostname (`cdp_url`). It sends `cdp_kind` instead: `local` (loopback), `cloud` (Browser Use Cloud) or `remote`, or none without `BU_CDP_URL`/`BU_CDP_WS`. No hostname, IP or port leaves the machine.
+- Feedback (`report_issue()`, `browser-harness feedback`, MCP `browser_feedback`) now respects the telemetry opt-out like `report_run()`: with `BH_TELEMETRY=0`, `BROWSER_HARNESS_TELEMETRY=0`, `ANONYMIZED_TELEMETRY=false` or `browser-harness telemetry disable`, nothing is sent and the caller gets `Not sent: telemetry is off (<switch>). Nothing left this machine.` (`browser-harness feedback` exits 1).
+
 ## 0.1.14
 
 ### Captchas
