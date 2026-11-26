@@ -59,6 +59,8 @@ from .admin import (
     list_cloud_profiles,
     list_local_profiles,
     print_update_banner,
+    open_owned_target,
+    OwnedTargetError,
     require_existing_daemon,
     restart_daemon,
     run_doctor,
@@ -448,6 +450,27 @@ def _run(args):
     # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
     # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
     cloud_admin = code.lstrip().startswith(("start_remote_daemon(", "stop_remote_daemon("))
+    owned = os.environ.get("BH_OWNED_TARGET")
+    if owned is not None:
+        # One call, one disposable target on an existing daemon: no spawn, no tab listing.
+        if owned != "1":
+            print('browser-harness: BH_OWNED_TARGET must be unset or "1"', file=sys.stderr)
+            sys.exit(1)
+        if cloud_admin:
+            print("browser-harness: owned-target mode refuses daemon admin scripts", file=sys.stderr)
+            sys.exit(1)
+        _install_helper_trace()
+        try:
+            with open_owned_target(NAME):
+                exec(code, globals())
+        except OwnedTargetError as e:
+            print(f"browser-harness: {e}", file=sys.stderr)
+            sys.exit(1)
+        except SystemExit as e:
+            for note in getattr(e, "__notes__", ()):
+                print(note, file=sys.stderr)
+            raise
+        return
     if not cloud_admin:  # a cloud start or stop uses no local Chrome: no owner notice either
         _print_owner_alias()
         require_existing = os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1"
