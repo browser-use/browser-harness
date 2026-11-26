@@ -54,6 +54,54 @@ def browser_settings() -> dict:
     return out
 
 
+def _write_lock(path: Path):
+    """An exclusive lock on the config file, so two `config set` calls cannot
+    interleave their load/merge/replace and lose one update.
+
+    Best effort: when the lock cannot be taken the write still happens, because
+    failing to save a preference is worse than a rare lost update.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return None
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except (OSError, ImportError):
+        os.close(fd)
+        return None
+    return fd
+
+
+def _unlock(fd) -> None:
+    if fd is None:
+        return
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except (OSError, ImportError):
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def write(settings: dict) -> Path:
     """Merge ``settings`` into the browser section and save.
 
@@ -61,41 +109,58 @@ def write(settings: dict) -> Path:
     Other sections of the file are kept.
     """
     path = config_path()
-    data = load()
-    section = data.get("browser")
-    section = dict(section) if isinstance(section, dict) else {}
-    for key, value in settings.items():
-        if value is None:
-            section.pop(key, None)
-        else:
-            section[key] = value
-    data["browser"] = section
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    fd = _write_lock(path)
+    try:
+        data = load()
+        section = data.get("browser")
+        section = dict(section) if isinstance(section, dict) else {}
+        for key, value in settings.items():
+            if value is None:
+                section.pop(key, None)
+            else:
+                section[key] = value
+        data["browser"] = section
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # A process-unique temp name: two concurrent writers must never share one.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        _unlock(fd)
     return path
 
 
 def parse_assignment(text: str) -> tuple[str, object]:
-    """``key=value`` into (key, value), with booleans and known tab policies typed."""
+    """``key=value`` into (key, value), with booleans and known tab policies typed.
+
+    Each key validates its own value: a setting the daemon would ignore is
+    rejected here rather than reported as saved.
+    """
     key, sep, raw = text.partition("=")
     key = key.strip()
     if not sep or not key:
         raise ValueError(f"expected key=value, got {text!r}")
     value = raw.strip()
     if value.lower() in {"true", "yes", "on", "1"}:
-        return key, True
-    if value.lower() in {"false", "no", "off", "0"}:
-        return key, False
-    if value.lower() in {"none", "null", ""}:
-        return key, None
+        parsed = True
+    elif value.lower() in {"false", "no", "off", "0"}:
+        parsed = False
+    elif value.lower() in {"none", "null", ""}:
+        parsed = None
+    else:
+        parsed = value
     if key == "startup_tab":
-        value = value.lower()
-        if value not in STARTUP_TABS:
+        if not isinstance(parsed, str) or parsed.lower() not in STARTUP_TABS:
             raise ValueError(f"startup_tab must be one of {', '.join(STARTUP_TABS)}, got {value!r}")
-        return key, value
-    return key, value
+        parsed = parsed.lower()
+    elif key == "tab_marker":
+        if not isinstance(parsed, bool):
+            raise ValueError(f"tab_marker must be true or false, got {value!r}")
+    elif key == "preferred_browser":
+        if not isinstance(parsed, str) or not parsed.strip():
+            raise ValueError(f"preferred_browser must be a browser name or a profile path, got {value!r}")
+        parsed = parsed.strip()
+    return key, parsed
 
 
 def _cli_name():

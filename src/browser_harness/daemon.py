@@ -62,6 +62,7 @@ _LINUX_PROFILES = (
     ".config/microsoft-edge",
     ".config/microsoft-edge-beta",
     ".config/microsoft-edge-dev",
+    ".config/BraveSoftware/Brave-Browser",
     ".var/app/org.chromium.Chromium/config/chromium",
     ".var/app/com.google.Chrome/config/google-chrome",
     ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
@@ -131,7 +132,7 @@ BROWSER_KEYS = (
     ("edge sxs", "edge-canary"),
     ("edge beta", "edge-beta"),
     ("edge dev", "edge-dev"),
-    ("brave-origin", "brave-origin"),
+    ("brave origin", "brave-origin"),
     ("chrome", "chrome"),
     ("edge", "edge"),
     ("brave", "brave"),
@@ -371,8 +372,14 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
 
 
 def browser_key_for_profile(base):
-    """The stable config name of a profile dir ("brave", "chrome", ...), or None."""
+    """The stable config name of a profile dir ("brave", "chrome", ...), or None.
+
+    Channel separators differ per platform ("Chrome Canary" on macOS,
+    "microsoft-edge-beta" on Linux), so the tail is compared with hyphens and
+    spaces treated as the same character.
+    """
     tail = "/".join(part.lower() for part in Path(base).parts[-2:])
+    tail = tail.replace("-", " ")
     for fragment, key in BROWSER_KEYS:
         if fragment in tail:
             return key
@@ -407,12 +414,28 @@ def preferred_profile(preferred=None):
     return None
 
 
+class _WrongBrowser(Exception):
+    """The live port belongs to another browser, not the profile we asked for."""
+
+
+def _browser_uuid(ws_url):
+    """The browser id in a DevTools WS path, or None."""
+    if not ws_url or "/devtools/browser/" not in ws_url:
+        return None
+    tail = ws_url.split("/devtools/browser/")[-1]
+    return tail.split("?")[0] or None
+
+
 def _ws_url_for_profile(base, deadline):
     """The DevTools WS URL of one specific profile dir.
 
     Unlike the scan over every profile, this never attaches to another
     browser: an unknown or not-running preference is an error, not a
-    fall-through to whatever else happens to be running.
+    fall-through to whatever else is running.
+
+    The endpoint is checked against the profile's own DevToolsActivePort: a
+    stale file plus a port another browser has since taken would otherwise
+    connect the agent to that other browser.
     """
     while time.time() < deadline:
         try:
@@ -421,14 +444,25 @@ def _ws_url_for_profile(base, deadline):
             active = []
         port = active[0].strip() if active else ""
         ws_path = active[1].strip() if len(active) > 1 else ""
+        want_uuid = _browser_uuid(ws_path)
         if port:
             try:
-                return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
+                url = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
+                # The browser on that port must be the one this profile started.
+                if want_uuid and _browser_uuid(url) != want_uuid:
+                    raise _WrongBrowser()
+                return url
             except urllib.error.HTTPError as e:
                 if e.code == 403:
                     raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
                 if e.code == 404 and ws_path:
-                    return f"ws://127.0.0.1:{port}{ws_path}"
+                    # Chrome 147+ disables /json/* discovery on the default
+                    # user-data-dir; the path Chrome wrote still works, but only
+                    # while that port is really live.
+                    if _devtools_port_live(base):
+                        return f"ws://127.0.0.1:{port}{ws_path}"
+            except _WrongBrowser:
+                pass  # another browser took the port; keep looking
             except (OSError, KeyError, ValueError):
                 pass
         time.sleep(0.2)
@@ -782,7 +816,10 @@ class Daemon:
                 if startup_tab_policy() == "first_page":
                     adopted = self._first_page()
                     if adopted:
-                        self._own(key, adopted, created=False)
+                        # _take(), not _own(): an idle owner still holding this
+                        # tab must be released and its CDP session detached,
+                        # or two owners drive the same tab.
+                        await self._take(key, adopted, current=True, created=False)
                         return o.current
                 spare = [t for t, i in self.info.items() if REMOTE_ID and t not in self.tab_owner
                          and i.get("type") == "page" and is_blank(i.get("url", ""))]

@@ -78,9 +78,12 @@ the sheet carries its title in a heading instead of a name.
 
 ## Choosing a Browser
 
-By default the daemon attaches to whichever Chromium-family browser has a live
-DevTools port first. On a machine with more than one installed, say which one
-you want in the config file instead of exporting `BU_CDP_URL` in every shell:
+By default the daemon attaches to the first browser in its fixed profile list
+that has a live DevTools port — Chrome, then Chrome Canary, Chromium, Edge,
+Brave, and the rest, in that order. The choice does not depend on which
+browser happens to start first. On a machine with more than one installed, say
+which one you want in the config file instead of exporting `BU_CDP_URL` in every
+shell:
 
 ```bash
 browser-harness config set preferred_browser=brave
@@ -89,19 +92,29 @@ browser-harness config set tab_marker=false
 browser-harness config show
 ```
 
-`preferred_browser` takes a browser name (`chrome`, `chrome-canary`,
-`chromium`, `brave`, `brave-origin`, `edge`, `arc`, `dia`, `comet`) or a path to
-a profile directory. The daemon attaches to that browser only — it never falls
-through to another one — and reports an error when that browser is not
-installed or not running.
+`preferred_browser` takes a browser name or a path to a profile directory. The
+names are `chrome`, `chrome-canary`, `chrome-beta`, `chrome-dev`, `chromium`,
+`edge`, `edge-canary`, `edge-beta`, `edge-dev`, `brave`, `brave-origin`, `arc`,
+`dia` and `comet`; `browser-harness config show` lists the ones this machine
+has. The daemon attaches to that browser only — it never falls through to
+another one — and reports an error when that browser is not installed or not
+running.
 
 `startup_tab` is `new` (the agent gets its own background tab and never adopts
-one of your tabs) or `first_page` (the agent starts on the first page the
-browser lists). `tab_marker` toggles the 🐴 title marker.
+one of your tabs) or `first_page` (the agent starts on the first free real page
+the browser lists — a tab another agent holds is skipped, and the agent gets
+its own tab when every page is taken). `tab_marker` toggles the 🐴 title
+marker.
 
-The file lives in `~/.config/browser-harness/config.json`. `BU_CDP_URL` and
-`BU_CDP_WS` still win over it, and `BH_TAB_MARKER` still wins over
-`tab_marker`.
+The file lives in `$XDG_CONFIG_HOME/browser-harness/config.json`, which is
+`~/.config/browser-harness/config.json` by default. `BH_CONFIG_DIR`,
+`BH_HOME` and `BROWSER_HARNESS_HOME` move that directory.
+`BU_CDP_URL` and `BU_CDP_WS` still win over it, and `BH_TAB_MARKER` still wins
+over `tab_marker`.
+
+A running daemon keeps the browser it attached to. Run
+`browser-harness --reload` after changing `preferred_browser`, so the next call
+attaches to the browser you selected.
 
 ## Cloud Browsers
 

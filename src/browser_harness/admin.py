@@ -1383,11 +1383,21 @@ def _chrome_running():
 
 _BROWSER_LAUNCH = (
     # (profile-dir fragment, macOS app name, POSIX commands, Windows `start` target)
+    # Most specific first: a channel's profile dir also contains the stable
+    # browser's name ("Google/Chrome Beta" contains "chrome"), so the channel
+    # has to be matched before the stable browser.
     ("chrome canary", "Google Chrome Canary", ("google-chrome-canary",), "chrome"),
+    ("chrome sxs", "Google Chrome Canary", ("google-chrome-canary",), "chrome"),
+    ("chrome beta", "Google Chrome Beta", ("google-chrome-beta",), "chrome"),
+    ("chrome dev", "Google Chrome Dev", ("google-chrome-unstable",), "chrome"),
+    ("edge canary", "Microsoft Edge Canary", ("microsoft-edge-canary",), "msedge"),
+    ("edge sxs", "Microsoft Edge Canary", ("microsoft-edge-canary",), "msedge"),
+    ("edge beta", "Microsoft Edge Beta", ("microsoft-edge-beta",), "msedge"),
+    ("edge dev", "Microsoft Edge Dev", ("microsoft-edge-dev",), "msedge"),
     ("chromium", "Chromium", ("chromium", "chromium-browser"), "chromium"),
     ("chrome", "Google Chrome", ("google-chrome-stable", "google-chrome"), "chrome"),
     ("edge", "Microsoft Edge", ("microsoft-edge", "microsoft-edge-stable"), "msedge"),
-    ("brave-origin", "Brave Origin", (), None),
+    ("brave origin", "Brave Origin", (), None),
     ("brave", "Brave Browser", ("brave-browser", "brave"), "brave"),
     ("arc", "Arc", (), None),
     ("dia", "Dia", (), None),
@@ -1401,8 +1411,12 @@ _DEFAULT_LAUNCH = (
 
 
 def _browser_launch_spec(base):
-    """(mac app, posix commands, windows target) for the browser w profile dir"""
-    tail = "/".join(p.lower() for p in Path(base).parts[-2:])
+    """(mac app, posix commands, windows target) for the browser w profile dir
+
+    Hyphens and spaces are treated as the same separator, so the Linux profile
+    dir "microsoft-edge-beta" matches the "edge beta" entry.
+    """
+    tail = "/".join(p.lower() for p in Path(base).parts[-2:]).replace("-", " ")
     for frag, mac_app, posix_cmds, win_target in _BROWSER_LAUNCH:
         if frag in tail:
             return (mac_app, posix_cmds, win_target)
@@ -1434,6 +1448,24 @@ def _profile_directory_args(base):
     if not isinstance(last, str) or not (Path(base) / last).is_dir():
         return []
     return [f"--profile-directory={last}"]
+
+
+def _user_data_dir_args(base):
+    """--user-data-dir for a profile dir the config names by path.
+
+    A browser started without it uses its own default profile, so the daemon
+    would wait on a DevTools port that never appears in the configured dir.
+    """
+    if not base:
+        return []
+    path = Path(base)
+    if not path.is_dir():
+        return []
+    # A real browser's own profile dir: the browser already uses it, and
+    # passing it again would relaunch the browser with a fresh copy.
+    if (path / "Local State").exists():
+        return []
+    return [f"--user-data-dir={path}"]
 
 
 def _preenable_remote_debugging(base):
@@ -1547,7 +1579,7 @@ def _launch_browser():
     if base is not None and not enabled:
         _preenable_remote_debugging(base)
     mac_app, posix_cmds, win_target = _browser_launch_spec(base) if base else _DEFAULT_LAUNCH
-    profile_args = _profile_directory_args(base)
+    profile_args = _profile_directory_args(base) + _user_data_dir_args(base)
     try:
         if system == "Darwin":
             # `-g`: launch in the background. Chrome's own "Allow remote debugging?"
@@ -1718,8 +1750,11 @@ def _print_browser_config():
     else:
         print("  preferred browser  (not set — the first live browser wins)")
     print(f"  startup tab        {settings['startup_tab']}")
-    marker = settings["tab_marker"]
-    print(f"  tab marker         {'on' if marker else 'off' if marker is False else '(environment default)'}")
+    # The effective value, with the same precedence the daemon uses: the
+    # environment wins over the file.
+    from .daemon import tab_marker_enabled
+
+    print(f"  tab marker         {'on' if tab_marker_enabled() else 'off'}")
 
 
 def run_doctor_json(require_existing_daemon=False):

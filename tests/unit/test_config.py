@@ -1,6 +1,7 @@
 """The persistent browser config: which browser, which startup tab, tab marker."""
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -257,7 +258,10 @@ def test_startup_tab_first_page_never_takes_a_tab_another_owner_holds(monkeypatc
     assert tid == "tab-1"
 
 
-def test_doctor_reports_the_resolved_browser_config(monkeypatch, config_dir, capsys):
+def test_doctor_reports_the_resolved_browser_config(monkeypatch, config_dir, capsys, tmp_path):
+    brave = tmp_path / "BraveSoftware/Brave-Browser"
+    brave.mkdir(parents=True)
+    monkeypatch.setattr(daemon, "PROFILES", [brave])
     browser_config.write({"preferred_browser": "brave", "startup_tab": "first_page"})
     monkeypatch.setattr(admin, "_chrome_running", lambda: True)
     monkeypatch.setattr(admin, "daemon_alive", lambda *a, **k: True)
@@ -271,4 +275,116 @@ def test_doctor_reports_the_resolved_browser_config(monkeypatch, config_dir, cap
 
     out = capsys.readouterr().out
     assert "startup tab        first_page" in out
-    assert "preferred browser  brave" in out
+    # The resolved profile dir, not just the name.
+    assert f"preferred browser  brave — {brave}" in out
+
+
+def test_config_set_rejects_a_value_the_daemon_would_ignore(config_dir, capsys):
+    assert browser_config.run_config_cli(["set", "startup_tab=true"]) == 2
+    assert "startup_tab" in capsys.readouterr().err
+    assert browser_config.run_config_cli(["set", "tab_marker=maybe"]) == 2
+    assert "tab_marker" in capsys.readouterr().err
+    # Nothing was written.
+    assert not (config_dir / "config.json").exists()
+
+
+def test_a_concurrent_config_set_never_loses_an_update(config_dir):
+    """Two writers must not share one temp file and lose one update."""
+    import threading
+
+    errors = []
+
+    def set_key(key):
+        try:
+            browser_config.write({key: "brave" if key == "preferred_browser" else "first_page"})
+        except OSError as e:  # a lost update raises FileNotFoundError here
+            errors.append(e)
+
+    threads = [threading.Thread(target=set_key, args=(k,)) for k in ("preferred_browser", "startup_tab")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    settings = browser_config.browser_settings()
+    assert settings["preferred_browser"] == "brave"
+    assert settings["startup_tab"] == "first_page"
+
+
+def test_a_stale_devtools_port_of_another_browser_is_rejected(monkeypatch, tmp_path, config_dir):
+    """A DevToolsActivePort left behind by another browser must not be used."""
+    brave = tmp_path / "BraveSoftware/Brave-Browser"
+    brave.mkdir(parents=True)
+    (brave / "DevToolsActivePort").write_text("9222\n/devtools/browser/brave-uuid\n")
+    monkeypatch.setattr(daemon, "PROFILES", [brave])
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    browser_config.write({"preferred_browser": "brave"})
+
+    def urlopen(url, **kwargs):
+        # Another browser now owns that port: its browser id differs.
+        return type("Response", (), {"read": lambda self: b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/someone-else"}'})()
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(daemon, "_devtools_port_live", lambda base: True)
+
+    with pytest.raises(RuntimeError, match="preferred-browser-not-running"):
+        daemon._ws_url_for_profile(brave, time.time() + 0.2)
+
+
+def test_first_page_releases_an_idle_owner_of_that_tab(monkeypatch, config_dir):
+    """Adopting a page must go through _take(): the old owner loses the tab
+    and its CDP session is detached."""
+    browser_config.write({"startup_tab": "first_page"})
+    d = daemon.Daemon()
+    d.cdp = _FakeBrowser()
+    d.info = {"person-tab": d.cdp.info("person-tab")}
+    d.owner("old-owner")
+    d.tab_owner["person-tab"] = "old-owner"
+    d.owners["old-owner"].tabs["person-tab"] = "s-old"
+    # The owner is idle past OWNER_IDLE, so the tab counts as free to take.
+    d.owners["old-owner"].seen = time.time() - daemon.OWNER_IDLE - 1
+
+    tid = asyncio.run(d._current("a", d.owner("a")))
+
+    assert tid == "person-tab"
+    assert d.tab_owner["person-tab"] == "a"
+    assert "s-old" not in d.owners["old-owner"].tabs
+    assert [p for m, p, _s in d.cdp.calls if m == "Target.detachFromTarget"] == [{"sessionId": "s-old"}]
+
+
+def test_doctor_reports_the_effective_tab_marker(monkeypatch, config_dir, capsys, tmp_path):
+    brave = tmp_path / "BraveSoftware/Brave-Browser"
+    brave.mkdir(parents=True)
+    monkeypatch.setattr(daemon, "PROFILES", [brave])
+    monkeypatch.setenv("BH_TAB_MARKER", "0")
+    browser_config.write({"preferred_browser": "brave", "tab_marker": True})
+    monkeypatch.setattr(admin, "_chrome_running", lambda: True)
+    monkeypatch.setattr(admin, "daemon_alive", lambda *a, **k: True)
+    monkeypatch.setattr(admin, "browser_connections", list)
+    monkeypatch.setattr(admin, "_version", lambda: "0.0.0")
+    monkeypatch.setattr(admin, "_install_mode", lambda: "pip")
+    monkeypatch.setattr(admin, "_latest_release_tag", lambda: None)
+    monkeypatch.setattr(admin, "auth", type("A", (), {"auth_status": staticmethod(lambda: {"status": "none", "source": None})}))
+
+    admin.run_doctor()
+
+    # The environment wins over the file, and doctor prints the effective value.
+    assert "tab marker         off" in capsys.readouterr().out
+
+
+def test_a_channel_profile_resolves_on_linux_style_names(tmp_path):
+    """Linux names its channels with hyphens ("microsoft-edge-beta")."""
+    from pathlib import Path
+
+    assert daemon.browser_key_for_profile(Path("/home/u/.config/microsoft-edge-beta")) == "edge-beta"
+    assert daemon.browser_key_for_profile(Path("/home/u/.config/microsoft-edge-dev")) == "edge-dev"
+
+
+def test_a_channel_profile_launches_the_channel_browser(tmp_path):
+    from pathlib import Path
+
+    spec = admin._browser_launch_spec(Path("/home/u/.config/microsoft-edge-beta"))
+    assert spec[0] == "Microsoft Edge Beta"
+    assert "microsoft-edge-beta" in spec[1]

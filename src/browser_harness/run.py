@@ -102,7 +102,8 @@ Commands:
   browser-harness config              show the persistent browser config
   browser-harness config set key=value [key=value ...]
                                     set preferred_browser, startup_tab, tab_marker
-  browser-harness config clear key    remove one key from the config
+  browser-harness config clear key [key ...]
+                                    remove keys from the config
   browser-harness skill               print the browser-harness skill text
   browser-harness recordings          show recording status and recent sessions
   browser-harness recordings --latest   print the newest recording directory
@@ -191,7 +192,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "feedback", "skill", "mac-approve", "recordings", "telemetry", "video"}:
+    if first in {"auth", "feedback", "skill", "mac-approve", "recordings", "telemetry", "video", "config"}:
         return first
     return "usage"
 
