@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.16
+
+### Cloud browsers
+- On a Browser Use Cloud browser, each tab the daemon opens for an agent gets its own window. A screenshot of a background tab in a shared window there timed out after 60 s; now it returns at once. Local Chrome and `BU_CDP_URL` / `BU_CDP_WS` browsers keep one window (they screenshot background tabs fine).
+
+### Update banner
+- The daily "new version available" banner shows only when someone runs the `browser-harness` command itself. It stays silent inside a host that pins browser-harness as a dependency: when `BH_CLIENT` is set (browser-use's CLI and MCP set it) or the process is not the `browser-harness` command (for example `python -m browser_harness.run`, or the `./browser-harness` launcher in a git checkout). `BH_UPDATE_CHECK=0` still turns it off everywhere.
+
+### Behavior changes to know
+- Cloud browsers: one window per agent tab instead of tabs in one window. Local Chrome and `BU_CDP_URL` / `BU_CDP_WS` browsers are unchanged.
+
+## 0.1.15
+
+### Telemetry
+- Fix: CLI telemetry no longer sends your script, its output, helper arguments or error text; only sizes, timings, harness helper names and an error class.
+
 ## 0.1.14
 
 ### Captchas
