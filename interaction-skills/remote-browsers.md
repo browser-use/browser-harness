@@ -44,15 +44,6 @@ When the task is done and a cloud browser is still running, ask directly: "Shoul
 
 Do not start a remote daemon and then keep using the default daemon. Use the same name for `BU_NAME`.
 
-Blocked or rate-limited by IP? Rotate the proxy instead of starting a new browser; tabs, logins and the daemon stay:
-
-```bash
-BU_NAME=r7k2 browser-harness <<'PY'
-print(rotate_proxy())        # new exit IP, same country
-print(rotate_proxy("de"))    # new exit IP in Germany
-PY
-```
-
 A failed Cloud health check preserves the existing browser. Retry after it
 recovers; explicitly stop it when finished. Billing continues until stop or timeout.
 

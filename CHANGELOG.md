@@ -14,7 +14,6 @@
 - `--param k=` (an empty value) rewrites no literal; before, every `""` in the script became `PARAMS["k"]`.
 
 ### Cloud browsers
-- `rotate_proxy(country=None)`: gives the current name's Browser Use Cloud browser a new proxy exit IP (and optionally a new country) without restarting the browser, its tabs or the daemon. Returns `{mode, country, exitIp}`; raises on a local browser or when the cloud refuses (custom proxy, browser run by a cloud agent).
 - On a Browser Use Cloud browser, each tab the daemon opens for an agent gets its own window. A screenshot of a background tab in a shared window there timed out after 60 s; now it returns at once. Local Chrome and `BU_CDP_URL` / `BU_CDP_WS` browsers keep one window (they screenshot background tabs fine).
 
 ### Update banner
@@ -33,7 +32,6 @@
 - Cloud browsers: one window per agent tab instead of tabs in one window.
 - The last successful script is not kept on disk when an embedding CLI runs the harness (BH_CLIENT set, for example browser-use), since `scripts save` is never used there.
 
-||||||| parent of 97c3135 (Add rotate_proxy() for Browser Use Cloud browsers)
 ## 0.1.14
 
 ### Captchas

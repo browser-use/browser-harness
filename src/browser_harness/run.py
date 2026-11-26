@@ -60,7 +60,6 @@ from .admin import (
     print_update_banner,
     require_existing_daemon,
     restart_daemon,
-    rotate_proxy,
     run_doctor,
     run_doctor_fix_snap,
     run_doctor_json,
