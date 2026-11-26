@@ -76,6 +76,33 @@ macOS's consent prompt. It matches the sheet in any Chromium-family browser
 (Chrome, Canary, Beta, Dev, Chromium, Brave, Edge), including Chrome 153+ where
 the sheet carries its title in a heading instead of a name.
 
+## Choosing a Browser
+
+By default the daemon attaches to whichever Chromium-family browser has a live
+DevTools port first. On a machine with more than one installed, say which one
+you want in the config file instead of exporting `BU_CDP_URL` in every shell:
+
+```bash
+browser-harness config set preferred_browser=brave
+browser-harness config set startup_tab=new
+browser-harness config set tab_marker=false
+browser-harness config show
+```
+
+`preferred_browser` takes a browser name (`chrome`, `chrome-canary`,
+`chromium`, `brave`, `brave-origin`, `edge`, `arc`, `dia`, `comet`) or a path to
+a profile directory. The daemon attaches to that browser only — it never falls
+through to another one — and reports an error when that browser is not
+installed or not running.
+
+`startup_tab` is `new` (the agent gets its own background tab and never adopts
+one of your tabs) or `first_page` (the agent starts on the first page the
+browser lists). `tab_marker` toggles the 🐴 title marker.
+
+The file lives in `~/.config/browser-harness/config.json`. `BU_CDP_URL` and
+`BU_CDP_WS` still win over it, and `BH_TAB_MARKER` still wins over
+`tab_marker`.
+
 ## Cloud Browsers
 
 Cloud is optional. Local Chrome does not need a Browser Use API key.

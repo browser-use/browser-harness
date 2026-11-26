@@ -1487,6 +1487,21 @@ def _preenable_remote_debugging(base):
     return True
 
 
+def _preferred_profile():
+    """The profile dir the config file asks for, or None.
+
+    Only a preference that resolves to a profile dir on this machine counts:
+    an unknown browser name is reported, not silently ignored, so a typo never
+    attaches the agent to a different browser than the user asked for.
+    """
+    from .daemon import preferred_profile
+
+    try:
+        return preferred_profile()
+    except Exception:
+        return None
+
+
 def _launch_browser():
     """Prefers the browser whose profile already has perm box checked.
 
@@ -1523,6 +1538,12 @@ def _launch_browser():
                 continue
 
     base = enabled[0] if enabled else next((b for b in PROFILES if (b / "Local State").exists()), None)
+    preferred = _preferred_profile()
+    if preferred is not None:
+        # The config asks for one browser: launch that one, never another.
+        base = preferred
+        if base not in enabled:
+            _preenable_remote_debugging(base)
     if base is not None and not enabled:
         _preenable_remote_debugging(base)
     mac_app, posix_cmds, win_target = _browser_launch_spec(base) if base else _DEFAULT_LAUNCH
@@ -1677,8 +1698,28 @@ def run_doctor():
         else:
             print(f"        {conn['name']} — active page: (no real page)")
     row("Browser Use cloud auth", cloud_auth, auth_state.get("source") or auth_state.get("reason") or f"optional: {cli_name()} auth login")
+    _print_browser_config()
     # Core health = chrome + daemon. Cloud auth is optional.
     return 0 if (chrome and daemon) else 1
+
+
+def _print_browser_config():
+    """Print the resolved browser preferences, so the user can see what the daemon will do."""
+    from . import config as browser_config
+
+    settings = browser_config.browser_settings()
+    preferred = settings["preferred_browser"]
+    if preferred:
+        base = _preferred_profile()
+        if base is None:
+            print(f"  preferred browser  {preferred} — NOT INSTALLED here")
+        else:
+            print(f"  preferred browser  {preferred} — {base}")
+    else:
+        print("  preferred browser  (not set — the first live browser wins)")
+    print(f"  startup tab        {settings['startup_tab']}")
+    marker = settings["tab_marker"]
+    print(f"  tab marker         {'on' if marker else 'off' if marker is False else '(environment default)'}")
 
 
 def run_doctor_json(require_existing_daemon=False):
