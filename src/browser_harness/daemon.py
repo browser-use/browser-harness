@@ -8,6 +8,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from . import pointer as _pointer
 from cdp_use.client import CDPClient
 
 
@@ -40,6 +41,8 @@ BUF = 500
 CAPTCHA_LOST_S = 150  # the solver gives up within 120 s: a solve open longer has no finish coming
 CAPTCHA_FRESH_S = 60  # a finish older than this when solve_captcha() starts belongs to an earlier challenge
 CAPTCHA_OFF = "BU_CAPTCHA_SOLVER=off turned it off; handle the captcha yourself"
+MOUSE_ACK_S = 3.0  # Chrome answers a mouse event to a hidden tab only after ~5 s: return without those answers
+VIEWPORT_JS = "[innerWidth, innerHeight, devicePixelRatio]"
 GUARDED = ("Target.attachToTarget", "Target.closeTarget", "Target.activateTarget")  # never on another owner's tab
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
@@ -528,6 +531,13 @@ class Daemon:
         self.idle_exit = False
         self.own_targets = set()  # every targetId this daemon attached (Target.getTargets shows them attached)
         self.browser_sessions = set()  # sessions from Target.attachToBrowserTarget: browser-wide, like no session
+        # BH_HUMAN_MOUSE=1 (meta=mouse), per tab session:
+        self.pointer = {}  # sessionId -> last (x, y) of Input.dispatchMouseEvent there
+        self.viewport = {}  # sessionId -> [width, height, devicePixelRatio], refreshed after each meta=mouse
+        self.drawn = {}  # sessionId -> quad of the arrow drawn on that tab's overlay
+        self._overlay_on = set()  # sessions with Overlay.enable sent
+        self._tails = {}  # sessionId -> (task drawing the press pulse after a meta=mouse's input, quad it ends on)
+        self._hide_at = None  # timer that hides the drawn arrow after pointer.IDLE
 
     def owner(self, key):
         o = self.owners.setdefault(key, Owner())
@@ -860,6 +870,7 @@ class Daemon:
             if o.current == tid:
                 o.gone = f"tab-crashed: your tab {tid} {self.info.get(tid, {}).get('url', '')} crashed. Nothing was sent. Call goto_url(url) to reload it or new_tab(url)."
         elif method == "Target.detachedFromTarget":
+            self._forget_pointer(p.get("sessionId"))
             o = self.owners.get(self.session_owner.pop(p.get("sessionId"), None))
             if o and o.tabs.get(tid) == p.get("sessionId"):
                 o.tabs[tid] = None  # reattached on next use
@@ -958,6 +969,123 @@ class Daemon:
             return {"finished": finish}
         solving = [where for key, (_, where) in self.captcha_active.items() if mine(key)]
         return {"solving": solving[-1] if solving else None}
+
+    # --- BH_HUMAN_MOUSE=1: mouse travel and the drawn arrow ---
+    async def mouse(self, sid, end, press=None):
+        """Move tab session sid's pointer to end as a hand does (pointer.path), drawing the arrow on its overlay,
+        then press and release when press=(button, clicks). Events go out at their times without waiting for each
+        answer: one at a time, every move waited a cloud round trip (~80 ms) and a click took ~1.8 s. Chrome
+        queues them in order. Then wait for all answers (MOUSE_ACK_S at most)."""
+        if sid not in self.viewport:
+            try:
+                self.viewport[sid] = (await self.cdp.send_raw(
+                    "Runtime.evaluate", {"expression": VIEWPORT_JS, "returnByValue": True}, session_id=sid))["result"]["value"]
+            except Exception:
+                pass  # path() then bounds the move by the target
+        events = _pointer.path(self.pointer.get(sid), end, self.viewport.get(sid), press)
+        loop = asyncio.get_running_loop()
+        t0, sent = loop.time(), []
+        tail = self._tails.pop(sid, None)
+        if tail:  # only this tab's pulse: another owner's tab keeps its own
+            tail[0].cancel()
+        # Draw-only events after the last input (the press pulse) run on after this returns: they must not slow the click.
+        last = max((i for i, e in enumerate(events) if "type" in e), default=-1)
+        for e in events[:last + 1]:
+            if any(f.done() and not f.cancelled() and f.exception() for f in sent):
+                break  # an event failed (say the tab's session went stale): fail now, not after the schedule
+            e = dict(e)
+            delay = t0 + e.pop("at") - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            quad = e.pop("quad", None)
+            if "type" in e:
+                sent.append(asyncio.ensure_future(self.cdp.send_raw("Input.dispatchMouseEvent", e, session_id=sid)))
+                self.pointer[sid] = (e["x"], e["y"])
+            if quad:
+                self.draw(sid, quad)
+        if events[last + 1:]:
+            self._tails[sid] = (asyncio.ensure_future(self._draw_later(sid, t0, events[last + 1:])), events[-1]["quad"])
+        if not sent:
+            return {"sent": 0, "late": 0}
+        # Refresh the viewport for the next path's bounds, alongside the events (costs no wall time).
+        view = asyncio.ensure_future(self.cdp.send_raw(
+            "Runtime.evaluate", {"expression": VIEWPORT_JS, "returnByValue": True}, session_id=sid))
+
+        def keep_view(f):
+            try:
+                if sid in self.viewport:  # not a session that detached meanwhile
+                    self.viewport[sid] = f.result()["result"]["value"]
+            except BaseException:
+                pass
+        view.add_done_callback(keep_view)
+        done, late = await asyncio.wait(sent, timeout=MOUSE_ACK_S)
+        for f in late:  # answered after we returned: retrieve it so it is not logged as unhandled
+            f.add_done_callback(lambda f: f.cancelled() or f.exception())
+        errors = [str(f.exception()) for f in done if f.exception()]
+        if errors:
+            return {"error": errors[0]}
+        return {"sent": len(sent), "late": len(late)}
+
+    def _fire(self, method, params, sid):
+        """Send without waiting; an error (say the tab went away) is only logged."""
+        f = asyncio.ensure_future(self.cdp.send_raw(method, params, session_id=sid))
+        f.add_done_callback(lambda f: f.cancelled() or not f.exception() or log(f"{method}: {f.exception()}"))
+
+    def draw(self, sid, quad):
+        """Draw the arrow on the tab's DevTools overlay: Chrome paints it above the page and into the
+        screencast a live view shows, outside the page's DOM, so no page script can see it."""
+        if sid not in self._overlay_on:
+            self._overlay_on.add(sid)
+            self._fire("Overlay.enable", {}, sid)
+        self._paint(sid, quad)
+        self.drawn[sid] = quad
+        if self._hide_at:
+            self._hide_at.cancel()
+        self._hide_at = asyncio.get_running_loop().call_later(_pointer.IDLE, self.hide)
+
+    def _paint(self, sid, quad):
+        self._fire("Overlay.highlightQuad", {"quad": quad, "color": _pointer.COLOR, "outlineColor": _pointer.RIM_COLOR}, sid)
+
+    def hide(self):
+        """Hide the arrow on every tab that shows one (pointer.IDLE after the last move)."""
+        while self.drawn:
+            self._fire("Overlay.hideHighlight", {}, self.drawn.popitem()[0])
+
+    async def _draw_later(self, sid, t0, events):
+        loop = asyncio.get_running_loop()
+        for e in events:
+            await asyncio.sleep(max(0.0, t0 + e["at"] - loop.time()))
+            self.draw(sid, e["quad"])
+
+    def _forget_pointer(self, sid):
+        for per_session in (self.pointer, self.viewport, self.drawn):
+            per_session.pop(sid, None)
+        self._overlay_on.discard(sid)
+        tail = self._tails.pop(sid, None)
+        if tail:
+            tail[0].cancel()  # its press pulse would draw on the gone session again
+
+    async def _tab_send(self, method, params, sid):
+        """send_raw on a tab session; keeps the pointer for meta=mouse and its drawn arrow out of screenshots."""
+        if method == "Input.dispatchMouseEvent" and "x" in params:
+            self.pointer[sid] = (params["x"], params.get("y", 0))
+        if method != "Page.captureScreenshot" or not self.drawn:
+            return await self.cdp.send_raw(method, params, session_id=sid)
+        tail = self._tails.pop(sid, None)
+        if tail and not tail[0].done():
+            # this tab's press pulse still drawing would paint the arrow into the screenshot: jump to its end
+            tail[0].cancel()
+            if sid in self.drawn:
+                self.drawn[sid] = tail[1]
+        quad = self.drawn.get(sid)
+        if not quad:
+            return await self.cdp.send_raw(method, params, session_id=sid)
+        self._fire("Overlay.hideHighlight", {}, sid)  # hide, capture, draw again
+        try:  # a task like the hide, so the two leave in order
+            return await asyncio.ensure_future(self.cdp.send_raw(method, params, session_id=sid))
+        finally:
+            if self.drawn.get(sid) is quad:
+                self._paint(sid, quad)
 
     async def _start_cdp_retrying_early_denials(self, url):
         """Open the CDP WebSocket; on local Chrome, retry a 403 that arrives at once.
@@ -1196,7 +1324,7 @@ class Daemon:
                 "Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
             self._own(key, tid, current=False, created=not reuse)
             return {"target_id": tid, "session_id": await self._switch(key, o, tid)}
-        if meta not in ("session", "current_tab"):
+        if meta not in ("session", "current_tab", "mouse"):
             return {"error": f"unknown request {meta!r}: this daemon speaks protocol {ipc.PROTOCOL}; update browser-harness"}
         if o.gone:
             gone, o.gone = o.gone, None
@@ -1204,6 +1332,17 @@ class Daemon:
         tid = await self._current(key, o)
         if meta == "session":
             return {"session_id": await self._session(key, o, tid)}
+        if meta == "mouse":  # BH_HUMAN_MOUSE=1 click_at_xy
+            press = tuple(req["press"]) if req.get("press") else None
+            sid = await self._session(key, o, tid)
+            r = await self.mouse(sid, (req["x"], req["y"]), press)
+            if "Session with given id not found" not in r.get("error", ""):
+                return r
+            log(f"stale session {sid}, re-attaching {tid}")  # no event reached the old session: send them all again
+            async with o.lock:
+                if o.tabs.get(tid) == sid:
+                    o.tabs[tid] = None
+            return await self.mouse(await self._session(key, o, tid), (req["x"], req["y"]), press)
         info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": tid}))["targetInfo"]
         return {"targetId": tid, "url": info.get("url", ""), "title": info.get("title", "")}
 
@@ -1241,7 +1380,7 @@ class Daemon:
         if method in ("Page.navigate", "Page.reload"):
             self.captcha_finished.pop(tid, None)  # the agent left that page: its solve is no answer
         try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            return {"result": await self._tab_send(method, params, sid)}
         except Exception as e:
             if "Session with given id not found" not in str(e):
                 raise
@@ -1250,7 +1389,7 @@ class Daemon:
             if o.tabs.get(tid) == sid:
                 o.tabs[tid] = None
         sid = await self._session(key, o, tid)  # raises tab-closed when the tab is gone
-        return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+        return {"result": await self._tab_send(method, params, sid)}
 
 
 def _ipc_handler(d):
