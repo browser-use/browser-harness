@@ -391,7 +391,7 @@ def browser_report_run(
         "Tell the Browser Use team what went wrong with browser-harness itself or what would make it better: a tool "
         "that failed or misbehaved, docs or instructions that are wrong, a tool that is missing. Not for ordinary "
         "website problems. Say what you ran and what happened; never include secrets, keys, passwords or personal "
-        "data. category: bug, docs, missing or other. Sent even when telemetry is off; at most 3 per session."
+        "data. category: bug, docs, missing or other. Sends nothing when telemetry is off; at most 3 per session."
     ),
 )
 def browser_feedback(message: str, category: str = "bug") -> str:
