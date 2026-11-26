@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Unreleased (0.1.16)
 
 ### Cloud browsers
 - `rotate_proxy(country=None)`: gives the current name's Browser Use Cloud browser a new proxy exit IP (and optionally a new country) without restarting the browser, its tabs or the daemon. Returns `{mode, country, exitIp}`; raises on a local browser or when the cloud refuses (custom proxy, browser run by a cloud agent).

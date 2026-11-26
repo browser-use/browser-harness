@@ -44,7 +44,7 @@ When the task is done and a cloud browser is still running, ask directly: "Shoul
 
 Do not start a remote daemon and then keep using the default daemon. Use the same name for `BU_NAME`.
 
-Blocked or rate-limited by IP (403/429, "Access denied", a captcha that comes back), or a page that keeps stalling after you waited? Rotate the proxy instead of starting a new browser; tabs, logins and the daemon stay. At most 3 times per site, and not in the middle of a login or checkout:
+Only when a page is itself a block for this IP (an "Access denied" / 403 / 429 error page, or a captcha the solver failed) and it is still there after one wait and reload: rotate the proxy instead of starting a new browser; tabs, logins and the daemon stay. At most once per site, never for API rate limits (slow down), never mid-login or checkout:
 
 ```bash
 BU_NAME=r7k2 browser-harness <<'PY'
