@@ -119,8 +119,9 @@ curl -s -X POST https://api.browser-use.com/api/v4/feedback \
   -d '{"message":"kind: integration_report\nBuilt: ...\nTested: ...\nWorked: ...\nProblems: ...\nMissing: ..."}'
 ```
 
-Without a key, send it anonymously from the harness itself. It is sent even when telemetry is off
-(only `BROWSER_USE_OFFLINE=1` stops it), at most 3 times per hour:
+Without a key, send it anonymously from the harness itself. It is sent only when telemetry is on (otherwise it
+prints `Not sent: telemetry is off (...)`; with `BROWSER_USE_OFFLINE=1` it prints `BROWSER_USE_OFFLINE=1: nothing was
+sent.`), at most 3 times per hour:
 
 ```bash
 browser-harness feedback --category other "kind: integration_report

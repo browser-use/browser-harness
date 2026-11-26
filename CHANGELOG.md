@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased (0.1.17)
+## Unreleased
 
 ### Cloud browsers
 - `rotate_proxy(country=None)`: gives the current name's Browser Use Cloud browser a new proxy exit IP (and optionally a new country) without restarting the browser, its tabs or the daemon. Returns `{mode, country, exitIp}`; uses the browser's own `BrowserUse.setProxy` over CDP (no API key; also for `BU_CDP_URL` daemons) and falls back to the API; raises on a local browser or when the cloud refuses (custom proxy, browser run by a cloud agent).
+
+### Telemetry
+- `cli_event` no longer sends the CDP endpoint's hostname (`cdp_url`). It sends `cdp_kind` instead: `local` (loopback), `cloud` (Browser Use Cloud) or `remote`, or none without `BU_CDP_URL`/`BU_CDP_WS`. No hostname, IP or port leaves the machine.
+- Feedback (`report_issue()`, `browser-harness feedback`, MCP `browser_feedback`) now respects the telemetry opt-out like `report_run()`: with `BH_TELEMETRY=0`, `BROWSER_HARNESS_TELEMETRY=0`, `ANONYMIZED_TELEMETRY=false` or `browser-harness telemetry disable`, nothing is sent and the caller gets `Not sent: telemetry is off (<switch>). Nothing left this machine.` (`browser-harness feedback` exits 1).
 
 ## 0.1.14
 
