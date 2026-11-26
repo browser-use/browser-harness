@@ -264,7 +264,8 @@ def _cdp_kind() -> str | None:
     if host == "localhost" or host.endswith(".localhost"):
         return "local"
     try:
-        if ipaddress.ip_address(host).is_loopback:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_unspecified:  # 0.0.0.0 / :: reach this machine, as the daemon treats them
             return "local"
     except ValueError:
         pass

@@ -69,6 +69,7 @@ CDP_URLS = [
     ("http://localhost:49321", "local"),
     ("http://[::1]:49321", "local"),
     ("127.0.0.2:49321", "local"),
+    ("http://0.0.0.0:49321", "local"),
     ("wss://0123abcd-session.cdp.browser-use.com/devtools/browser/uuid", "cloud"),
     ("wss://chrome-box.corp-internal.example:49321/devtools/browser/abc", "remote"),
     ("http://10.20.30.40:49321", "remote"),
@@ -94,7 +95,7 @@ def test_cli_event_sends_the_cdp_kind_never_its_host_ip_or_port(monkeypatch, env
     props = jobs[0]["payload"]["properties"]
     assert props["cdp_kind"] == kind and "cdp_url" not in props
     sent = json.dumps(jobs[0]["payload"])
-    for part in ("127.0.0", "localhost", "::1", "0123abcd", "browser-use.com", "chrome-box", "corp-internal",
+    for part in ("127.0.0", "0.0.0.0", "localhost", "::1", "0123abcd", "browser-use.com", "chrome-box", "corp-internal",
                  "10.20.30.40", "tailnet-x", "49321"):
         assert part not in sent
 
