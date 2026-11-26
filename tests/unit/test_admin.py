@@ -1991,6 +1991,7 @@ def test_require_existing_daemon_refuses_unprotected_daemon(monkeypatch):
 
     with pytest.raises(RuntimeError, match="running without BH_CDP_DENY=tokens"):
         admin.require_existing_daemon("scoped")
+||||||| parent of 97c3135 (Add rotate_proxy() for Browser Use Cloud browsers)
 
 
 

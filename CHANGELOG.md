@@ -33,6 +33,7 @@
 - Cloud browsers: one window per agent tab instead of tabs in one window.
 - The last successful script is not kept on disk when an embedding CLI runs the harness (BH_CLIENT set, for example browser-use), since `scripts save` is never used there.
 
+||||||| parent of 97c3135 (Add rotate_proxy() for Browser Use Cloud browsers)
 ## 0.1.14
 
 ### Captchas
