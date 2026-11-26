@@ -5,6 +5,7 @@ directory). It is read when the daemon starts, so one file applies to every
 caller — Claude Code, Codex, a plain terminal — unlike ``BU_CDP_URL``, which is
 per process and has to be exported again in every shell.
 """
+
 from __future__ import annotations
 
 import json
@@ -123,7 +124,9 @@ def write(settings: dict) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         # A process-unique temp name: two concurrent writers must never share one.
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.write_text(
+            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         os.replace(tmp, path)
     finally:
         _unlock(fd)
@@ -151,14 +154,18 @@ def parse_assignment(text: str) -> tuple[str, object]:
         parsed = value
     if key == "startup_tab":
         if not isinstance(parsed, str) or parsed.lower() not in STARTUP_TABS:
-            raise ValueError(f"startup_tab must be one of {', '.join(STARTUP_TABS)}, got {value!r}")
+            raise ValueError(
+                f"startup_tab must be one of {', '.join(STARTUP_TABS)}, got {value!r}"
+            )
         parsed = parsed.lower()
     elif key == "tab_marker":
         if not isinstance(parsed, bool):
             raise ValueError(f"tab_marker must be true or false, got {value!r}")
     elif key == "preferred_browser":
         if not isinstance(parsed, str) or not parsed.strip():
-            raise ValueError(f"preferred_browser must be a browser name or a profile path, got {value!r}")
+            raise ValueError(
+                f"preferred_browser must be a browser name or a profile path, got {value!r}"
+            )
         parsed = parsed.strip()
     return key, parsed
 
@@ -169,6 +176,37 @@ def _cli_name():
     return cli_name()
 
 
+def _print_installed_browsers() -> None:
+    """List the browsers this machine has, with the name a config file uses.
+
+    The daemon knows the profile dirs it scans; a name that resolves to one of
+    them can be set as ``preferred_browser``.
+    """
+    try:
+        from .daemon import browser_key_for_profile, profile_dirs
+    except ImportError:
+        return
+    found = []
+    seen = set()
+    for base in profile_dirs():
+        try:
+            if not base.is_dir():
+                continue
+        except OSError:
+            continue
+        key = browser_key_for_profile(base)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        found.append((key, base))
+    if not found:
+        print("  browsers found     (none of the known profiles are installed)")
+        return
+    print("  browsers found     " + ", ".join(key for key, _base in found))
+    for key, base in found:
+        print(f"    {key:<14} {base}")
+
+
 def run_config_cli(args) -> int:
     """``config show`` / ``config set key=value ...`` / ``config clear key ...``."""
     args = list(args)
@@ -176,14 +214,22 @@ def run_config_cli(args) -> int:
         path = config_path()
         print(f"config file: {path}" + ("" if path.exists() else " (not created yet)"))
         settings = browser_settings()
-        print(f"  preferred_browser  {settings['preferred_browser'] or '(not set — first live browser wins)'}")
+        print(
+            f"  preferred_browser  {settings['preferred_browser'] or '(not set — first live browser wins)'}"
+        )
         print(f"  startup_tab        {settings['startup_tab']}")
-        print(f"  tab_marker         {'on' if settings['tab_marker'] else 'off' if settings['tab_marker'] is False else '(environment default)'}")
+        print(
+            f"  tab_marker         {'on' if settings['tab_marker'] else 'off' if settings['tab_marker'] is False else '(environment default)'}"
+        )
+        _print_installed_browsers()
         return 0
     action = args[0]
     if action == "set":
         if len(args) < 2:
-            print(f"usage: {_cli_name()} config set key=value [key=value ...]", file=os.sys.stderr)
+            print(
+                f"usage: {_cli_name()} config set key=value [key=value ...]",
+                file=os.sys.stderr,
+            )
             return 2
         settings = {}
         for item in args[1:]:
@@ -193,7 +239,10 @@ def run_config_cli(args) -> int:
                 print(f"{_cli_name()} config: {e}", file=os.sys.stderr)
                 return 2
             if key not in BROWSER_KEYS:
-                print(f"{_cli_name()} config: unknown key {key!r} (known: {', '.join(BROWSER_KEYS)})", file=os.sys.stderr)
+                print(
+                    f"{_cli_name()} config: unknown key {key!r} (known: {', '.join(BROWSER_KEYS)})",
+                    file=os.sys.stderr,
+                )
                 return 2
             settings[key] = value
         path = write(settings)
@@ -208,11 +257,17 @@ def run_config_cli(args) -> int:
         settings = {}
         for key in args[1:]:
             if key not in BROWSER_KEYS:
-                print(f"{_cli_name()} config: unknown key {key!r} (known: {', '.join(BROWSER_KEYS)})", file=os.sys.stderr)
+                print(
+                    f"{_cli_name()} config: unknown key {key!r} (known: {', '.join(BROWSER_KEYS)})",
+                    file=os.sys.stderr,
+                )
                 return 2
             settings[key] = None
         path = write(settings)
         print(f"saved {path}")
         return 0
-    print(f"usage: {_cli_name()} config [show|set key=value|clear key]", file=os.sys.stderr)
+    print(
+        f"usage: {_cli_name()} config [show|set key=value|clear key]",
+        file=os.sys.stderr,
+    )
     return 2

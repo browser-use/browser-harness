@@ -1,7 +1,10 @@
 """The persistent browser config: which browser, which startup tab, tab marker."""
+
 import asyncio
 import json
+import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -43,7 +46,11 @@ def config_dir(tmp_path, monkeypatch):
 def test_missing_config_reads_as_defaults(config_dir):
     settings = browser_config.browser_settings()
 
-    assert settings == {"preferred_browser": None, "startup_tab": "new", "tab_marker": None}
+    assert settings == {
+        "preferred_browser": None,
+        "startup_tab": "new",
+        "tab_marker": None,
+    }
 
 
 def test_damaged_config_never_breaks_the_daemon(config_dir):
@@ -73,7 +80,15 @@ def test_clear_removes_a_key(config_dir):
 
 def test_invalid_values_are_ignored_not_fatal(config_dir):
     (config_dir / "config.json").write_text(
-        json.dumps({"browser": {"startup_tab": "whatever", "tab_marker": "yes", "preferred_browser": 7}})
+        json.dumps(
+            {
+                "browser": {
+                    "startup_tab": "whatever",
+                    "tab_marker": "yes",
+                    "preferred_browser": 7,
+                }
+            }
+        )
     )
 
     settings = browser_config.browser_settings()
@@ -162,7 +177,9 @@ def test_preferred_profile_accepts_a_path(monkeypatch, tmp_path):
     assert daemon.preferred_profile(str(profile)) == profile
 
 
-def test_a_preferred_browser_never_falls_through_to_another_one(monkeypatch, tmp_path, config_dir):
+def test_a_preferred_browser_never_falls_through_to_another_one(
+    monkeypatch, tmp_path, config_dir
+):
     """A config that names a browser this machine does not have is an error, not a
     silent attach to whatever else is running."""
     brave = tmp_path / "BraveSoftware/Brave-Browser"
@@ -177,7 +194,9 @@ def test_a_preferred_browser_never_falls_through_to_another_one(monkeypatch, tmp
         daemon.get_ws_url()
 
 
-def test_a_preferred_browser_is_the_only_one_considered(monkeypatch, tmp_path, config_dir):
+def test_a_preferred_browser_is_the_only_one_considered(
+    monkeypatch, tmp_path, config_dir
+):
     brave = tmp_path / "BraveSoftware/Brave-Browser"
     brave.mkdir(parents=True)
     (brave / "DevToolsActivePort").write_text("9333\n/devtools/browser/brave\n")
@@ -188,7 +207,15 @@ def test_a_preferred_browser_is_the_only_one_considered(monkeypatch, tmp_path, c
 
     def urlopen(url, **kwargs):
         assert url == "http://127.0.0.1:9333/json/version"
-        return type("Response", (), {"read": lambda self: b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/brave"}'})()
+        return type(
+            "Response",
+            (),
+            {
+                "read": lambda self: (
+                    b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/brave"}'
+                )
+            },
+        )()
 
     monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
 
@@ -244,7 +271,9 @@ def test_startup_tab_first_page_adopts_the_first_real_page(monkeypatch, config_d
     assert [m for m, _p, _s in d.cdp.calls if m == "Target.createTarget"] == []
 
 
-def test_startup_tab_first_page_never_takes_a_tab_another_owner_holds(monkeypatch, config_dir):
+def test_startup_tab_first_page_never_takes_a_tab_another_owner_holds(
+    monkeypatch, config_dir
+):
     monkeypatch.delenv("BH_TAB_MARKER", raising=False)
     browser_config.write({"startup_tab": "first_page"})
     d = daemon.Daemon()
@@ -258,7 +287,9 @@ def test_startup_tab_first_page_never_takes_a_tab_another_owner_holds(monkeypatc
     assert tid == "tab-1"
 
 
-def test_doctor_reports_the_resolved_browser_config(monkeypatch, config_dir, capsys, tmp_path):
+def test_doctor_reports_the_resolved_browser_config(
+    monkeypatch, config_dir, capsys, tmp_path
+):
     brave = tmp_path / "BraveSoftware/Brave-Browser"
     brave.mkdir(parents=True)
     monkeypatch.setattr(daemon, "PROFILES", [brave])
@@ -269,7 +300,15 @@ def test_doctor_reports_the_resolved_browser_config(monkeypatch, config_dir, cap
     monkeypatch.setattr(admin, "_version", lambda: "0.0.0")
     monkeypatch.setattr(admin, "_install_mode", lambda: "pip")
     monkeypatch.setattr(admin, "_latest_release_tag", lambda: None)
-    monkeypatch.setattr(admin, "auth", type("A", (), {"auth_status": staticmethod(lambda: {"status": "none", "source": None})}))
+    monkeypatch.setattr(
+        admin,
+        "auth",
+        type(
+            "A",
+            (),
+            {"auth_status": staticmethod(lambda: {"status": "none", "source": None})},
+        ),
+    )
 
     admin.run_doctor()
 
@@ -289,18 +328,29 @@ def test_config_set_rejects_a_value_the_daemon_would_ignore(config_dir, capsys):
 
 
 def test_a_concurrent_config_set_never_loses_an_update(config_dir):
-    """Two writers must not share one temp file and lose one update."""
+    """Two writers must not share one temp file and lose one update.
+
+    A barrier makes both threads reach the write at the same time, so a
+    regression in the temp-file race cannot pass just because the first
+    thread happened to finish before the second started.
+    """
     import threading
 
     errors = []
+    barrier = threading.Barrier(2)
 
     def set_key(key):
+        value = "brave" if key == "preferred_browser" else "first_page"
         try:
-            browser_config.write({key: "brave" if key == "preferred_browser" else "first_page"})
+            barrier.wait(timeout=5)
+            browser_config.write({key: value})
         except OSError as e:  # a lost update raises FileNotFoundError here
             errors.append(e)
 
-    threads = [threading.Thread(target=set_key, args=(k,)) for k in ("preferred_browser", "startup_tab")]
+    threads = [
+        threading.Thread(target=set_key, args=(k,))
+        for k in ("preferred_browser", "startup_tab")
+    ]
     for t in threads:
         t.start()
     for t in threads:
@@ -312,7 +362,44 @@ def test_a_concurrent_config_set_never_loses_an_update(config_dir):
     assert settings["startup_tab"] == "first_page"
 
 
-def test_a_stale_devtools_port_of_another_browser_is_rejected(monkeypatch, tmp_path, config_dir):
+def test_a_concurrent_config_set_across_processes_never_loses_an_update(config_dir):
+    """The same race between two separate CLI processes, not just two threads."""
+    import subprocess
+    import sys
+
+    pkg_root = str(Path(browser_config.__file__).parents[2])
+    script = (
+        "import sys;"
+        f"sys.path.insert(0, {pkg_root!r});"
+        "from browser_harness import config;"
+        "config.write({sys.argv[1]: sys.argv[2]})"
+    )
+
+    env = dict(os.environ, BH_CONFIG_DIR=str(config_dir))
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, key, value],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for key, value in (
+            ("preferred_browser", "brave"),
+            ("startup_tab", "first_page"),
+        )
+    ]
+    for proc in procs:
+        _out, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, err.decode()
+
+    settings = browser_config.browser_settings()
+    assert settings["preferred_browser"] == "brave"
+    assert settings["startup_tab"] == "first_page"
+
+
+def test_a_stale_devtools_port_of_another_browser_is_rejected(
+    monkeypatch, tmp_path, config_dir
+):
     """A DevToolsActivePort left behind by another browser must not be used."""
     brave = tmp_path / "BraveSoftware/Brave-Browser"
     brave.mkdir(parents=True)
@@ -324,7 +411,15 @@ def test_a_stale_devtools_port_of_another_browser_is_rejected(monkeypatch, tmp_p
 
     def urlopen(url, **kwargs):
         # Another browser now owns that port: its browser id differs.
-        return type("Response", (), {"read": lambda self: b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/someone-else"}'})()
+        return type(
+            "Response",
+            (),
+            {
+                "read": lambda self: (
+                    b'{"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/someone-else"}'
+                )
+            },
+        )()
 
     monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
     monkeypatch.setattr(daemon, "_devtools_port_live", lambda base: True)
@@ -351,10 +446,14 @@ def test_first_page_releases_an_idle_owner_of_that_tab(monkeypatch, config_dir):
     assert tid == "person-tab"
     assert d.tab_owner["person-tab"] == "a"
     assert "s-old" not in d.owners["old-owner"].tabs
-    assert [p for m, p, _s in d.cdp.calls if m == "Target.detachFromTarget"] == [{"sessionId": "s-old"}]
+    assert [p for m, p, _s in d.cdp.calls if m == "Target.detachFromTarget"] == [
+        {"sessionId": "s-old"}
+    ]
 
 
-def test_doctor_reports_the_effective_tab_marker(monkeypatch, config_dir, capsys, tmp_path):
+def test_doctor_reports_the_effective_tab_marker(
+    monkeypatch, config_dir, capsys, tmp_path
+):
     brave = tmp_path / "BraveSoftware/Brave-Browser"
     brave.mkdir(parents=True)
     monkeypatch.setattr(daemon, "PROFILES", [brave])
@@ -366,7 +465,15 @@ def test_doctor_reports_the_effective_tab_marker(monkeypatch, config_dir, capsys
     monkeypatch.setattr(admin, "_version", lambda: "0.0.0")
     monkeypatch.setattr(admin, "_install_mode", lambda: "pip")
     monkeypatch.setattr(admin, "_latest_release_tag", lambda: None)
-    monkeypatch.setattr(admin, "auth", type("A", (), {"auth_status": staticmethod(lambda: {"status": "none", "source": None})}))
+    monkeypatch.setattr(
+        admin,
+        "auth",
+        type(
+            "A",
+            (),
+            {"auth_status": staticmethod(lambda: {"status": "none", "source": None})},
+        ),
+    )
 
     admin.run_doctor()
 
@@ -378,8 +485,14 @@ def test_a_channel_profile_resolves_on_linux_style_names(tmp_path):
     """Linux names its channels with hyphens ("microsoft-edge-beta")."""
     from pathlib import Path
 
-    assert daemon.browser_key_for_profile(Path("/home/u/.config/microsoft-edge-beta")) == "edge-beta"
-    assert daemon.browser_key_for_profile(Path("/home/u/.config/microsoft-edge-dev")) == "edge-dev"
+    assert (
+        daemon.browser_key_for_profile(Path("/home/u/.config/microsoft-edge-beta"))
+        == "edge-beta"
+    )
+    assert (
+        daemon.browser_key_for_profile(Path("/home/u/.config/microsoft-edge-dev"))
+        == "edge-dev"
+    )
 
 
 def test_a_channel_profile_launches_the_channel_browser(tmp_path):
