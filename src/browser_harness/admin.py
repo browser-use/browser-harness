@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -1068,6 +1069,56 @@ def _stop_cloud_browser(browser_id, strict=False):
     if strict:
         raise RuntimeError(f"failed to stop remote browser {browser_id}: {last_error}")
     return False
+
+
+CDP_SET_PROXY = "BrowserUse.setProxy"  # Browser Use cloud browsers: the CDP connection is the credential, no API key
+
+
+def _daemon_cdp(name, method, **params):
+    """One raw CDP call through the named daemon (helpers.cdp is bound to this process's own daemon)."""
+    c, token = ipc.connect(name, timeout=1.0)
+    try:
+        c.settimeout(30)
+        r = ipc.request(c, token, {"method": method, "params": params, "session_id": None, "owner": ipc.owner()})
+    finally:
+        c.close()
+    if "error" in r:
+        raise RuntimeError(r["error"])
+    return r.get("result", {})
+
+
+def rotate_proxy(country=None, name=None):
+    """Give this name's cloud browser a new proxy exit IP, keeping the browser, its tabs and the daemon.
+
+    country: ISO2 code ("de", "us", ...) to also move the exit to that country; default keeps the current one.
+    Returns {"mode", "country", "exitIp"}. First asks the browser itself over CDP (BrowserUse.setProxy, no API key
+    needed, works for any daemon attached to a Browser Use cloud browser), then falls back to PATCH
+    /browsers/{id}/proxy with the stored key. Raises when there is no cloud browser (local Chrome has no Browser Use
+    proxy) or when Browser Use Cloud refuses (e.g. a custom proxy, or a browser run by a cloud agent session)."""
+    name = name or NAME
+    country = country.strip().lower() if country else None
+    try:
+        try:  # rotate is what changes the IP: a country alone keeps it when the browser is already there
+            return _daemon_cdp(name, CDP_SET_PROXY, rotate=True, **({"country": country} if country else {}))
+        except RuntimeError as e:
+            if "direct browser" not in str(e):
+                raise
+            return _daemon_cdp(name, CDP_SET_PROXY, mode="managed", **({"country": country} if country else {}))
+    except Exception as e:  # no daemon, local Chrome (no such method) or a refusal: the API may still do it
+        cdp_error = e
+    browser_id = (ipc.read_remote_marker(name) or {}).get("browser_id")
+    if not browser_id:
+        if "wasn't found" in str(cdp_error) or "-32601" in str(cdp_error) or isinstance(cdp_error, OSError):
+            raise RuntimeError(f"daemon {name!r} has no Browser Use cloud browser -- start one with start_remote_daemon({name!r})")
+        raise RuntimeError(f"rotate_proxy failed: {cdp_error}")
+    body = {"rotate": True}
+    if country:
+        body["country"] = country
+    try:
+        return _browser_use(f"/browsers/{browser_id}/proxy", "PATCH", body)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        raise RuntimeError(f"rotate_proxy failed: HTTP {e.code} {detail}") from None
 
 
 def _cdp_ws_from_url(cdp_url):
