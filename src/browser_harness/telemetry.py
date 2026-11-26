@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import platform
@@ -97,8 +98,13 @@ def _version() -> str:
         return ""
 
 
+def _env_disabled_by() -> str | None:
+    """The first DISABLE_ENVS switch set to 0/false/no/off, or None."""
+    return next((name for name in DISABLE_ENVS if (os.environ.get(name) or "").lower() in {"0", "false", "no", "off"}), None)
+
+
 def _env_disabled() -> bool:
-    return any((os.environ.get(name) or "").lower() in {"0", "false", "no", "off"} for name in DISABLE_ENVS)
+    return _env_disabled_by() is not None
 
 
 def _valid_install_id(raw) -> bool:
@@ -246,14 +252,25 @@ def _base_properties() -> dict:
     }
 
 
-def _cdp_hostname() -> str | None:
+def _cdp_kind() -> str | None:
+    """BU_CDP_WS/BU_CDP_URL as 'local' (loopback), 'cloud' (Browser Use Cloud) or 'remote': never its host, IP or port."""
     value = os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")
     if not value:
         return None
     try:
-        return urlparse(value if "://" in value else f"//{value}").hostname
+        host = (urlparse(value if "://" in value else f"//{value}").hostname or "").rstrip(".")
     except ValueError:
-        return None
+        return "remote"
+    if host == "localhost" or host.endswith(".localhost"):
+        return "local"
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return "local"
+    except ValueError:
+        pass
+    if host == "browser-use.com" or host.endswith(".browser-use.com"):
+        return "cloud"
+    return "remote"
 
 
 def capture(event: str, properties: dict | None = None) -> None:
@@ -304,7 +321,7 @@ def capture_cli_event(
                 "command": command,
                 # 'cloud' | 'cdp' | 'local'
                 "browser": browser,
-                "cdp_url": _cdp_hostname(),
+                "cdp_kind": _cdp_kind(),
                 "client": os.environ.get("BH_CLIENT") or None,
                 "client_version": os.environ.get("BH_CLIENT_VERSION") or None,
                 "agent_client": _detect_agent_client(),

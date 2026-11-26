@@ -1,15 +1,15 @@
 """library_judgement and library_feedback: the calling agent's verdict on its run, and what went wrong with
 browser-harness itself, sent to the Browser Use library PostHog project (not the harness project in telemetry.py).
 
-Consent: feedback is for everyone, run reports only with telemetry on.
-- library_feedback (report_issue(), `browser-harness feedback`, the MCP browser_feedback tool) sends even when usage
-  telemetry is off: someone chose to write it. At most 3 per hour per BU_NAME from the CLI, 3 per MCP server process.
-- library_judgement (report_run(), the MCP browser_report_run tool) sends only when usage telemetry is on (BH_TELEMETRY,
-  BROWSER_HARNESS_TELEMETRY, ANONYMIZED_TELEMETRY and `browser-harness telemetry disable` all off it). Same caps.
-- BROWSER_USE_OFFLINE=1 sends nothing at all. BROWSER_USE_ZDR=1 sends both events without their texts.
-Every text is scrubbed (scrub) before it leaves: secrets, credentials, emails, URL queries, home folders. With telemetry
-off an event goes under a random per-process id, never the stored install id. Neither event is ever routed through
-telemetry.set_sink(): they go to the library project with its own key."""
+Consent: both send only when usage telemetry is on. BH_TELEMETRY, BROWSER_HARNESS_TELEMETRY, ANONYMIZED_TELEMETRY,
+`browser-harness telemetry disable` and an embedding CLI's set_sink(enabled=...) each turn both off; the caller is told
+"Not sent: telemetry is off (<switch>)", so an agent never takes an unsent report as delivered.
+- library_feedback (report_issue(), `browser-harness feedback`, the MCP browser_feedback tool).
+- library_judgement (report_run(), the MCP browser_report_run tool).
+At most 3 of each per hour per BU_NAME from the CLI, 3 per MCP server process. BROWSER_USE_OFFLINE=1 sends nothing at
+all. BROWSER_USE_ZDR=1 sends both events without their texts. Every text is scrubbed (scrub) before it leaves: secrets,
+credentials, emails, URL queries, home folders. Neither event is ever routed through telemetry.set_sink(): they go to the
+library project with its own key."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ import os
 import re
 import sys
 import time
-import uuid
 from datetime import datetime, timezone
 
 from . import paths, telemetry
@@ -36,11 +35,9 @@ WINDOW_S = 3600
 
 SENT_RUN = "Run reported to the Browser Use team. Thanks."
 SENT_ISSUE = "Reported to the Browser Use team. Thanks; carry on."
-OFF = "Telemetry is off (BH_TELEMETRY=0, ANONYMIZED_TELEMETRY=false or `browser-harness telemetry disable`): the run report was not sent. Feedback still sends."
+OFF = "Not sent: telemetry is off ({why}). Nothing left this machine."
 OFFLINE = "BROWSER_USE_OFFLINE=1: nothing was sent."
 CAPPED = "Already reported 3 times (the limit): nothing more was sent."
-
-_PROCESS_ID = uuid.uuid4().hex  # telemetry off: the user's own feedback goes under this, never the stored install id
 
 # --- scrub: a minimal port of browser_use/telemetry/stats.py scrub() (no task or typed text: the harness has neither) ---
 
@@ -168,21 +165,28 @@ def _on(name: str) -> bool:
     return value[:1] in ("t", "y", "1") or value == "on"
 
 
-def _stats_on() -> bool:
-    """browser-harness telemetry on, and ANONYMIZED_TELEMETRY on as browser-use reads it (set: on only for 1, t..., y...;
-    browser-harness alone keeps 'false ', 'n' or '' on)."""
+def _off_reason() -> str | None:
+    """The switch that turned usage telemetry off, or None when it is on: telemetry.is_enabled(), and
+    ANONYMIZED_TELEMETRY on as browser-use reads it (set: on only for 1, t..., y...; browser-harness alone keeps
+    'false ', 'n' or '' on)."""
+    if name := telemetry._env_disabled_by():
+        return f"{name}={os.environ[name]}"
     raw = os.environ.get("ANONYMIZED_TELEMETRY")
     if raw is not None and raw.strip().lower()[:1] not in ("t", "y", "1"):
-        return False
-    return telemetry.is_enabled()
+        return f"ANONYMIZED_TELEMETRY={raw.strip()}"
+    if telemetry._load_config().get("disabled"):
+        return named("`browser-harness telemetry disable`")
+    if not telemetry.is_enabled():
+        return "the embedding CLI's telemetry setting"
+    return None
 
 
-def _blocked(event: str) -> str | None:
-    """Why `event` may not be sent, or None: OFFLINE stops both; telemetry off stops only library_judgement."""
+def _blocked() -> str | None:
+    """Why no report may be sent, or None: BROWSER_USE_OFFLINE, or usage telemetry off."""
     if _on("BROWSER_USE_OFFLINE"):
         return named(OFFLINE)
-    if event == "library_judgement" and not _stats_on():
-        return named(OFF)
+    if why := _off_reason():
+        return OFF.format(why=why)
     return None
 
 
@@ -221,7 +225,7 @@ def _send(event: str, properties: dict) -> None:
     payload = {
         "api_key": LIBRARY_POSTHOG_KEY,
         "event": event,
-        "distinct_id": telemetry._install_id() if _stats_on() else _PROCESS_ID,
+        "distinct_id": telemetry._install_id(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "properties": {
             **properties,
@@ -294,7 +298,7 @@ def send_judgement(surface, success, failure_reason=None, gotchas=(), bot_block=
     """Validate, gate and send one library_judgement; cap(): False when over the caller's limit. Returns what happened."""
     if not isinstance(success, bool):
         return "Error: success must be True or False: nothing was sent."
-    if blocked := _blocked("library_judgement"):
+    if blocked := _blocked():
         return blocked
     if cap is not None and not cap():
         return CAPPED
@@ -303,10 +307,10 @@ def send_judgement(surface, success, failure_reason=None, gotchas=(), bot_block=
 
 
 def send_feedback(source, message, category="bug", cap=None) -> str:
-    """Validate, gate and send one library_feedback (also with telemetry off). Returns what happened."""
+    """Validate, gate and send one library_feedback. Returns what happened."""
     if not isinstance(message, str) or not message.strip():
         return "Error: message must be a non-empty string: nothing was sent."
-    if blocked := _blocked("library_feedback"):
+    if blocked := _blocked():
         return blocked
     if cap is not None and not cap():
         return CAPPED
@@ -328,12 +332,12 @@ def report_run(success: bool, failure_reason: str | None = None, gotchas=(), bot
 def report_issue(message: str, category: str = "bug") -> str:
     """Tell the Browser Use team what went wrong with browser-harness itself (a helper that failed, wrong docs, a
     missing helper), not ordinary website problems. category: bug, docs, missing or other. Never include secrets or
-    personal data. Sends also when telemetry is off (only BROWSER_USE_OFFLINE=1 stops it); at most 3 per hour per
-    BU_NAME, shared with `browser-harness feedback`."""
+    personal data. Sends nothing when telemetry is off (the returned text says so); at most 3 per hour per BU_NAME,
+    shared with `browser-harness feedback`."""
     return send_feedback("harness-cli", message, category, cap=lambda: _hour_cap("feedback"))
 
 
-# --- `browser-harness feedback "<msg>"`: sent even with telemetry off ---
+# --- `browser-harness feedback "<msg>"`: sent only with telemetry on ---
 
 FEEDBACK_USAGE = 'usage: browser-harness feedback "what happened" [--category bug|docs|missing|other]'
 

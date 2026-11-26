@@ -62,3 +62,47 @@ def test_set_sink_without_arguments_restores_the_default_sender(_isolated):
     telemetry.set_sink()
     telemetry.capture("x")
     assert len(_isolated) == 1  # the detached PostHog sender ran again
+
+
+CDP_URLS = [
+    ("ws://127.0.0.1:49321/devtools/browser/abc", "local"),
+    ("http://localhost:49321", "local"),
+    ("http://[::1]:49321", "local"),
+    ("127.0.0.2:49321", "local"),
+    ("wss://0123abcd-session.cdp.browser-use.com/devtools/browser/uuid", "cloud"),
+    ("wss://chrome-box.corp-internal.example:49321/devtools/browser/abc", "remote"),
+    ("http://10.20.30.40:49321", "remote"),
+    ("my-box.tailnet-x.ts.net:49321", "remote"),
+]
+
+
+@pytest.mark.parametrize("env", ["BU_CDP_WS", "BU_CDP_URL"])
+@pytest.mark.parametrize("url,kind", CDP_URLS)
+def test_cli_event_sends_the_cdp_kind_never_its_host_ip_or_port(monkeypatch, env, url, kind):
+    jobs = []
+
+    class FakePopen:  # the detached sender's stdin is the request it would POST: nothing is spawned or sent
+        def __init__(self, *args, **kwargs):
+            self.stdin = MagicMock()
+            self.stdin.write = lambda data: jobs.append(json.loads(data))
+
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    monkeypatch.setenv(env, url)
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    telemetry.capture_cli_event(action="run", command="exec", browser="cdp", exit_code=0)
+    props = jobs[0]["payload"]["properties"]
+    assert props["cdp_kind"] == kind and "cdp_url" not in props
+    sent = json.dumps(jobs[0]["payload"])
+    for part in ("127.0.0", "localhost", "::1", "0123abcd", "browser-use.com", "chrome-box", "corp-internal",
+                 "10.20.30.40", "tailnet-x", "49321"):
+        assert part not in sent
+
+
+def test_cli_event_has_no_cdp_kind_without_a_cdp_endpoint(monkeypatch):
+    sent = []
+    telemetry.set_sink(sent.append)
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.delenv("BU_CDP_URL", raising=False)
+    telemetry.capture_cli_event(action="run", command="exec", browser="local", exit_code=0)
+    assert sent[0]["properties"]["cdp_kind"] is None
