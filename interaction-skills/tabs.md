@@ -17,6 +17,11 @@ print(current_tab())
 print(page_info())
 ```
 
+For local Chrome sessions, `list_tabs()` and `current_tab()` include
+`profile_name` and `profile_directory` when the window can be matched to a saved
+profile. Use the directory to distinguish profiles with the same display name.
+These fields can be absent, for example in private windows or remote browsers.
+
 Owners: `"you"`, `None` (the person's, free to take) or `"taken"` (another
 agent's; no title or url, and switching to, attaching, closing or activating it
 fails with `tab-taken`). A tab whose agent has been idle for 30 minutes counts as
