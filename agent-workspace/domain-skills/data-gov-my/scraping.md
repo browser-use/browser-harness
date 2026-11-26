@@ -1,6 +1,6 @@
 # data.gov.my via api.data.gov.my - Get This Week's Malaysian Pump Prices (RON95, BUDI 95, SKPS, RON97, Diesel) with the Week-on-Week Change, the MET Malaysia Weather Warnings in Force Now and a 7-Day Forecast for a Town (JSON API, no key)
 
-Field-tested against api.data.gov.my, data.gov.my, developer.data.gov.my and storage.data.gov.my on 2026-11-25 (US Pacific afternoon; 2026-11-25 23:38 UTC to 2026-11-26 00:15 UTC, which was 07:38-08:15 on Thursday 26 November in Malaysia) using fresh Browser Use cloud browsers (logged out; one session 23:49-00:05 UTC for blocks 1 and 2, a new one 00:13-00:15 UTC for block 1's last run; both stopped and confirmed `stopped` afterwards) plus Python `urllib` and `curl` from a Linux machine. 27 browser page loads (block 1 opened the fuel price dataset page in its first and fourth runs; block 2 made 12 loads in each of its two runs; one load checked the FAQ markup; one more navigation timed out on the daemon side, and block 2 now retries a navigation once) and 48 in-page `fetch()` calls (block 1: 6 per run, four runs; block 2: 12 per run, two runs), 15 urllib calls (1 while exploring; block 3 ran twice: 3 robots.txt files, 3 API calls and the CSV each) and 100 curl calls (52 while exploring; 16 in each of block 4's three runs). 114 of all these calls went to api.data.gov.my, spaced at least 16 s apart per API except one deliberate burst: 6 calls to `/opendosm/` within 24 s, whose 5th and 6th got HTTP 429 (see Limits). Every other API call was HTTP 200 except the deliberate HTTP 301, 400 and 404 probes. No 403, no challenge, no key, no login. Of the timed API calls most took 0.6-4.9 s, but four took 9.7-17.3 s (the first warnings call 17.3 s, the 4th call of the burst 16.8 s); the blocks allow 60-90 s. Each block ran at least twice; the outputs shown come from the last run of each block, and the earlier runs differed only as noted under each output. An independent re-run of all four blocks, unchanged, in a separate cloud browser and from the same Linux machine (2026-11-26 00:17-00:27 UTC) printed the same data apart from the clock, call timings and cookie expiry. Later on 2026-11-26 block 4 got a `trap ... EXIT` that removes its two temporary files even when the script stops early; that version re-ran from the same Linux machine at 01:01-01:04 UTC with the same output apart from the clock, timings and cookie expiry.
+Field-tested against api.data.gov.my, data.gov.my, developer.data.gov.my and storage.data.gov.my on 2026-11-25 (US Pacific afternoon; 2026-11-25 23:38 UTC to 2026-11-26 00:15 UTC, which was 07:38-08:15 on Thursday 26 November in Malaysia) using fresh Browser Use cloud browsers (logged out; one session 23:49-00:05 UTC for blocks 1 and 2, a new one 00:13-00:15 UTC for block 1's last run; both stopped and confirmed `stopped` afterwards) plus Python `urllib` and `curl` from a Linux machine. 27 browser page loads (block 1 opened the fuel price dataset page in its first and fourth runs; block 2 made 12 loads in each of its two runs; one load checked the FAQ markup; one more navigation timed out on the daemon side, and block 2 now retries a navigation once) and 48 in-page `fetch()` calls (block 1: 6 per run, four runs; block 2: 12 per run, two runs), 15 urllib calls (1 while exploring; block 3 ran twice: 3 robots.txt files, 3 API calls and the CSV each) and 100 curl calls (52 while exploring; 16 in each of block 4's three runs). 114 of all these calls went to api.data.gov.my, spaced at least 16 s apart per API except one deliberate burst: 6 calls to `/opendosm/` within 24 s, whose 5th and 6th got HTTP 429 (see Limits). Every other API call was HTTP 200 except the deliberate HTTP 301, 400 and 404 probes. No 403, no challenge, no key, no login. Of the timed API calls most took 0.6-4.9 s, but four took 9.7-17.3 s (the first warnings call 17.3 s, the 4th call of the burst 16.8 s); the blocks allow 60-90 s. Each block ran at least twice; the outputs shown come from the last run of each block, and the earlier runs differed only as noted under each output. An independent re-run of all four blocks, unchanged, in a separate cloud browser and from the same Linux machine (2026-11-26 00:17-00:27 UTC) printed the same data apart from the clock, call timings and cookie expiry. Later on 2026-11-26 block 4 got a `trap ... EXIT` that removes its two temporary files even when the script stops early; that version re-ran from the same Linux machine at 01:01-01:04 UTC with the same output apart from the clock, timings and cookie expiry. After review on 2026-11-26, block 1 URL-encodes the town name and prints one forecast per town id when a name matches several, block 3's docstring names the retried statuses, and block 4 adds `--retry-max-time 120`; block 1 re-ran in a new cloud browser (01:21:34-01:22:43 UTC, stopped and confirmed `stopped`), blocks 3 and 4 from the Linux machine at 01:15-01:19 UTC, with the same output apart from the clock, timings and cookie expiry.
 
 robots.txt (checked 2026-11-25 23:39 UTC to 2026-11-26 00:15 UTC, curl, the cloud browser and `urllib.robotparser`): https://api.data.gov.my/robots.txt is HTTP 404 (an HTML "Not Found" page) and https://storage.data.gov.my/robots.txt is HTTP 404 (XML), so neither host has rules or named AI-agent groups; RFC 9309 section 2.3.1.3 says that for 400-499 answers "the crawler MAY access any resources on the server". https://data.gov.my/robots.txt and https://developer.data.gov.my/robots.txt are each `User-agent: *` / `Allow: /` plus `Host` and `Sitemap` lines, nothing else. No file names an AI agent, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*`, and every path this skill uses is allowed for all 11 agents (block 3). Terms: there is no terms-of-use page. https://data.gov.my/terms-of-use, `/terms`, `/disclaimer` and `/privacy-policy` are HTTP 404 (block 2), https://developer.data.gov.my/terms is HTTP 404, and neither sitemap (54 URLs on data.gov.my, 24 on developer.data.gov.my) lists a terms, privacy or disclaimer page; the data.gov.my footer links the source code repositories, the design file, "Open Data Guiding Principles" (a document on dasar.jdn.gov.my), FAQ, OpenDOSM and KKMNOW, and none of them is a terms page. The licence statements: the developer FAQ answers "Can I really use all the data here for free?" with "This data is made open under the Creative Commons Attribution 4.0 International License (CC BY 4.0). You can use the data available on our platform for free", the developer docs footer says "License: CC BY 4.0", the Weather API page says "All weather feeds are licensed under CC BY 4.0", and the fuel price dataset page says "This data is made open under the Creative Commons Attribution 4.0 International License (CC BY 4.0)". CC BY 4.0 allows commercial use and asks for credit. The only usage rule published is the rate limit (https://developer.data.gov.my/rate-limit): "Data Catalogue 4 requests per minute", the same for OpenDOSM, Weather, GTFS Static and GTFS Realtime, and "If the limit is exceeded, subsequent requests will fail and you will receive a 429 Too Many Requests error". No AI/ML, scraping, automated-access or non-commercial-only clause on any page read (block 2 found none of the words scrap, artificial intelligence, machine learning, non-commercial, robot or crawl on the rate-limit or dataset pages). Naming: no trademark statement was found. This skill calls the site "data.gov.my (Malaysia's official open data portal)" (the developer docs' own title is "Malaysia's Official Open API"), credits the source agency each dataset names (the fuel dataset page: "Data source(s) Ministry of Finance"; the Weather API page: "The data is provided by MET Malaysia (Malaysian Meteorological Department)"), uses no coat of arms or logo, and is not endorsed by data.gov.my, the Ministry of Finance or MET Malaysia. Slug `data-gov-my`, following `data-gov-sg`.
 
@@ -12,17 +12,18 @@ robots.txt (checked 2026-11-25 23:39 UTC to 2026-11-26 00:15 UTC, curl, the clou
 - **Answer (block 1, 2026-11-26 08:13 MYT):** pump prices in effect from **Thursday 26 November 2026**, RM per litre (Ministry of Finance): **RON95 3.47** (general market, **-0.25** on 19 November's 3.72), **RON95 under BUDI 95 1.99** (+0.00), RON95 under SKPS 2.05 (+0.00), **RON97 3.75** (-0.25 from 4.00), **diesel 4.47** in Peninsular Malaysia and 4.47 in East Malaysia (both -0.25 from 4.72). Over eight weeks RON95 fell from 4.67 (8 October) to 3.47 (block 3). **MET Malaysia warnings in force (4 of 5 rows):** a first-category strong winds and rough seas warning (23-28 November) and a second one for 05:00-10:00, a thunderstorms warning for Johor (Kluang, Mersing, Kota Tinggi, Kulai) 08:00-12:00, and a continuous rain alert for Kelantan and Terengganu until 27 November 23:59; the fifth row is "No Advisory" (no tropical cyclone). **Kuala Lumpur (town Tn079), 7 days:** 24-32/33 C; thunderstorms Thursday afternoon and night and Friday, no rain Saturday, morning rain Sunday to Wednesday.
 - **"Week-on-week" is the API's own `change_weekly` row.** It is the difference to the previous price set; block 1 checks that it equals the difference of the two `level` rows and prints how many days apart they are (7 here). Prices take effect on Thursdays; 5 level rows since March 2021 fall on other days, the newest three (2024-06-10, 2025-09-30, 2026-07-01) on the dates of the subsidy changes the dataset page's caveats list (block 3). The coming Thursday's row can exist before that Thursday: the CSV already held the 2026-11-26 row at its `Last-Modified` of 25 November 10:31 UTC (18:31 MYT), so block 1 compares `date` with today in Malaysia and prints "ANNOUNCED, not yet in effect" for a future date.
 - **Weather values are Malay only** ("the above field values are currently only available in Bahasa Melayu"). Block 1 translates them with the Weather API page's 13-value table and marks anything else with `*`; the 440 locations' rows for 26 November also used 6 values the table lacks, such as `Ribut petir di kebanyakan tempat` and `Hujan menyeluruh` (see Gotchas).
-- **Limits: 4 requests per minute for each API** (Data Catalogue, Weather, OpenDOSM...). A burst of 6 `/opendosm/` calls got HTTP 429 on the 5th, 20 s after the first: `{"detail":"Request was throttled. Expected available in 37 seconds."}` with `Retry-After: 37`. Block 1 made 1 Data Catalogue and 4 Weather calls inside 60 s with no 429, which fits per-API counting. No rate-limit headers on a 200. Every block spaces calls to the same API 16 s apart and waits once on 429 (Retry-After or the body's "available in N seconds"; over 120 s it stops), 5xx or a network error (10 s), then stops; block 2 only inspects answers and never retries; block 4's curl `--retry 1` retries once (curl's man page says it "complies with the Retry-After: response header").
+- **Limits: 4 requests per minute for each API** (Data Catalogue, Weather, OpenDOSM...). A burst of 6 `/opendosm/` calls got HTTP 429 on the 5th, 20 s after the first: `{"detail":"Request was throttled. Expected available in 37 seconds."}` with `Retry-After: 37`. Block 1 made 1 Data Catalogue and 4 Weather calls inside 60 s with no 429, which fits per-API counting. No rate-limit headers on a 200. Every block spaces calls to the same API 16 s apart and waits once on 429 (Retry-After or the body's "available in N seconds"; over 120 s it stops), HTTP 500, 502, 503, 504 or a network error (10 s), then stops; block 2 only inspects answers and never retries; block 4's curl `--retry 1` retries once (curl's man page says it "complies with the Retry-After: response header"), and `--retry-max-time 120` drops that retry when Retry-After asks for longer.
 
 ## What works
 
 ### 1. This week's pump prices and change, the warnings in force, a 7-day forecast for towns (browser)
 
-`on_dgm_tab()` opens the logged-out fuel price dataset page on data.gov.my (the page the credit line names); the API is CORS-open, so `fetch()` from there needs no credentials. `get()` returns parsed JSON on HTTP 200, spaces calls to the same API 16 s apart, waits once on 429/5xx or a network error and otherwise raises with the API's `status_code` and `details`. 6 calls (1 Data Catalogue, 5 Weather; about 70 s). A town is matched by exact name in any case; a near miss costs one more Weather call and prints the closest MET Malaysia town names instead of guessing.
+`on_dgm_tab()` opens the logged-out fuel price dataset page on data.gov.my (the page the credit line names); the API is CORS-open, so `fetch()` from there needs no credentials. `get()` returns parsed JSON on HTTP 200, spaces calls to the same API 16 s apart, waits once on 429, 500, 502, 503, 504 or a network error and otherwise raises with the API's `status_code` and `details`. 6 calls (1 Data Catalogue, 5 Weather; about 70 s). A town is matched by exact name in any case (URL-encoded, so `&`, `#` or non-ASCII text stays in the value); a name that matches several town ids gets one forecast per id; a near miss costs one more Weather call and prints the closest MET Malaysia town names instead of guessing.
 
 ```python
 import difflib, json, re, time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 # Towns as a person types them: any case. A near miss prints the closest MET Malaysia town names instead of guessing.
 TOWNS = ["Kuala Lumpur", "kota kinabalu", "Johor Baru"]
@@ -86,7 +87,7 @@ def fetch(url):
 
 def get(path, **params):
     """GET API + path (trailing slash included) -> parsed JSON. Waits once on 429 (the body says "Expected available in
-    N seconds"; a cross-origin fetch() cannot read Retry-After), 5xx or a network error (10 s); over 120 s it stops.
+    N seconds"; a cross-origin fetch() cannot read Retry-After), 500, 502, 503, 504 or a network error (10 s); over 120 s it stops.
     Raises on anything else with the API's status_code and details."""
     q = "&".join(f"{k}={v}" for k, v in params.items())   # values below are already URL-safe; @ and , may stay raw
     url = f"{API}{path}?{q}"
@@ -170,7 +171,7 @@ for w in other:
 
 # 3. 7-day forecast for each town: exact name, any case (ifilter), Town ids only (Tn...), sorted by date
 def forecast(town):
-    rows = get("/weather/forecast/", ifilter=town.replace(" ", "%20") + "@location__location_name",
+    rows = get("/weather/forecast/", ifilter=quote(town, safe="") + "@location__location_name",
                contains="Tn@location__location_id", sort="date")
     if rows:
         return rows
@@ -181,19 +182,21 @@ def forecast(town):
     return []
 
 for town in TOWNS:
-    rows = forecast(town)
-    if not rows:
-        continue
-    loc = rows[0]["location"]
-    if len({r["location"]["location_id"] for r in rows}) != 1 or len(rows) != 7:
-        print(f"  {town!r}: {len(rows)} rows for {sorted({r['location']['location_id'] for r in rows})}; check the name")
-    print(f"\n7-day forecast, {loc['location_name']} ({loc['location_id']}), MET Malaysia:")
-    for r in rows:
-        print(f"  {datetime.fromisoformat(r['date']):%a %d %b}  {r['min_temp']}-{r['max_temp']} C  {en(r['summary_forecast'])}"
-              f" ({WHEN.get((r['summary_when'] or '').lower(), r['summary_when'])}); morning {en(r['morning_forecast'])}, "
-              f"afternoon {en(r['afternoon_forecast'])}, night {en(r['night_forecast'])}")
-    hits = [w["warning_issue"]["title_en"] for w in active if loc["location_name"].lower() in (w["text_en"] or "").lower()]
-    print(f"  active warnings naming {loc['location_name']}: {hits or 'none'}")
+    by_id = {}
+    for r in forecast(town):
+        by_id.setdefault(r["location"]["location_id"], []).append(r)
+    if len(by_id) > 1:
+        print(f"\n{town!r} names {len(by_id)} MET Malaysia towns {sorted(by_id)}: one forecast each")
+    for lid, rows in by_id.items():
+        loc = rows[0]["location"]
+        print(f"\n7-day forecast, {loc['location_name']} ({lid}), MET Malaysia:"
+              + ("" if len(rows) == 7 else f" {len(rows)} days, not 7"))
+        for r in rows:
+            print(f"  {datetime.fromisoformat(r['date']):%a %d %b}  {r['min_temp']}-{r['max_temp']} C  {en(r['summary_forecast'])}"
+                  f" ({WHEN.get((r['summary_when'] or '').lower(), r['summary_when'])}); morning {en(r['morning_forecast'])}, "
+                  f"afternoon {en(r['afternoon_forecast'])}, night {en(r['night_forecast'])}")
+        hits = [w["warning_issue"]["title_en"] for w in active if loc["location_name"].lower() in (w["text_en"] or "").lower()]
+        print(f"  active warnings naming {loc['location_name']}: {hits or 'none'}")
 
 if starred:
     print(f"\n* not in the Weather API page's value table, Malay kept as sent: {sorted(set(starred))}")
@@ -458,7 +461,7 @@ def retry_wait(value, body, default=10):
         return default
 
 def get(path, **params):
-    """GET API + path + ?params -> parsed JSON. GAP s apart per API. Waits once on 429, 5xx or a network error
+    """GET API + path + ?params -> parsed JSON. GAP s apart per API. Waits once on 429, 500, 502, 503, 504 or a network error
     (Retry-After, else 10 s; over 120 s exits). Exits on any other non-200 with the API's status_code and details."""
     url = API + path + "?" + "&".join(f"{k}={quote(str(v), safe='@,:-')}" for k, v in params.items())
     bucket = path.strip("/").split("/")[0]
@@ -606,9 +609,10 @@ Source: Ministry of Finance (fuel) and MET Malaysia (weather) via data.gov.my, C
 ```bash
 A=https://api.data.gov.my
 UA='data-gov-my-skill-example/1.0 (+https://github.com/browser-use/browser-harness)'
-# --retry 1 retries once on a timeout or HTTP 408, 429, 500, 502, 503 or 504 (curl's man page: it "complies with the Retry-After: response header")
+# --retry 1 retries once on a timeout or HTTP 408, 429, 500, 502, 503 or 504 (curl's man page: it "complies with the Retry-After: response header");
+# --retry-max-time 120 skips the retry when Retry-After would wait past 120 s
 # 4 requests per minute per API: every call below sleeps 16 s before the next call to the same API.
-C=(curl -sS --max-time 90 --retry 1 --retry-delay 10 -A "$UA")
+C=(curl -sS --max-time 90 --retry 1 --retry-delay 10 --retry-max-time 120 -A "$UA")
 T=$(mktemp); trap 'rm -f "$T" "$T.h"' EXIT
 # 1. this week's pump prices: the newest 4 rows = level + change_weekly for the newest two dates (trailing slash required)
 "${C[@]}" --fail "$A/data-catalogue/?id=fuelprice&sort=-date&limit=4&meta=true" | python3 -c 'import json, sys

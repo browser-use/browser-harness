@@ -1,6 +1,6 @@
 # WoRMS (World Register of Marine Species) via www.marinespecies.org/rest - Turn a Marine Species Name, or a List of Names, into the Accepted Name, AphiaID, Status, Full Classification, Common Names and Recorded Distribution, with the WoRMS Citation: Fuzzy-Match Typos, Catch Homonyms, Page Synonyms (JSON REST webservice, no key)
 
-Field-tested against www.marinespecies.org/rest on 2026-11-25 (US Pacific afternoon; 2026-11-26 00:30 UTC to 00:44 UTC, 01:30-01:44 in Belgium, where WoRMS is hosted) using a fresh Browser Use cloud browser (logged out; one session `ka-worms-1125`, 00:33:54-00:43:07 UTC, stopped and confirmed `stopped` afterwards) plus Python `urllib` and `curl` from a Linux machine. 13 browser page loads (one API answer to open the tab; block 2 loaded robots.txt, the about page, the webservice page, a taxon page, example.com and an API answer in each of its two runs) and 84 in-page `fetch()` calls (blocks 1 and 2: 21 per run each), 66 urllib calls (block 3 ran twice: robots.txt and 32 API calls each) and 71 curl calls (45 while exploring, 6 of them www.marinespecies.org pages, robots.txt or a script file; 13 in each of block 4's two runs), all serial and at least 1.2 s apart in the blocks (robots.txt asks `Crawl-delay: 1`). Every call was HTTP 200 except the deliberate HTTP 204 ("Nothing found") and HTTP 400 probes and three HTTP 404s while looking for the OpenAPI file. No 403 or 429, no challenge, no key, no login. Data calls took 0.5-1.9 s; the one 50-record `like=true` search took 3.9 s (1.8 s when the verifier repeated it at 00:52 UTC). Each block ran twice; the outputs shown come from the second run, and the first runs differed only as noted under each output. An independent re-run on 2026-11-26 (blocks 1 and 2 in a new cloud browser `kv-worms-1125`, 00:47-00:49 UTC, stopped and confirmed `stopped` afterwards; blocks 3 and 4 at 00:49-00:50 UTC, block 4 again at 00:54 UTC after a comment fix) reproduced every output apart from the clock and the slowest call. Later on 2026-11-26 block 4 got a `trap ... EXIT` that removes its temporary file even when the script stops early; that version re-ran from the same Linux machine at 01:01-01:04 UTC with the same output apart from the clock and timings.
+Field-tested against www.marinespecies.org/rest on 2026-11-25 (US Pacific afternoon; 2026-11-26 00:30 UTC to 00:44 UTC, 01:30-01:44 in Belgium, where WoRMS is hosted) using a fresh Browser Use cloud browser (logged out; one session `ka-worms-1125`, 00:33:54-00:43:07 UTC, stopped and confirmed `stopped` afterwards) plus Python `urllib` and `curl` from a Linux machine. 13 browser page loads (one API answer to open the tab; block 2 loaded robots.txt, the about page, the webservice page, a taxon page, example.com and an API answer in each of its two runs) and 84 in-page `fetch()` calls (blocks 1 and 2: 21 per run each), 66 urllib calls (block 3 ran twice: robots.txt and 32 API calls each) and 71 curl calls (45 while exploring, 6 of them www.marinespecies.org pages, robots.txt or a script file; 13 in each of block 4's two runs), all serial and at least 1.2 s apart in the blocks (robots.txt asks `Crawl-delay: 1`). Every call was HTTP 200 except the deliberate HTTP 204 ("Nothing found") and HTTP 400 probes and three HTTP 404s while looking for the OpenAPI file. No 403 or 429, no challenge, no key, no login. Data calls took 0.5-1.9 s; the one 50-record `like=true` search took 3.9 s (1.8 s when the verifier repeated it at 00:52 UTC). Each block ran twice; the outputs shown come from the second run, and the first runs differed only as noted under each output. An independent re-run on 2026-11-26 (blocks 1 and 2 in a new cloud browser `kv-worms-1125`, 00:47-00:49 UTC, stopped and confirmed `stopped` afterwards; blocks 3 and 4 at 00:49-00:50 UTC, block 4 again at 00:54 UTC after a comment fix) reproduced every output apart from the clock and the slowest call. Later on 2026-11-26 block 4 got a `trap ... EXIT` that removes its temporary file even when the script stops early; that version re-ran from the same Linux machine at 01:01-01:04 UTC with the same output apart from the clock and timings. After review on 2026-11-26, block 3 stops on a result list of the wrong length or an empty HTTP 200 body and treats a record with no accepted name as unresolved, block 4 adds `--retry-max-time 120`, and the docstrings name the retried statuses; block 1 re-ran in a new cloud browser (01:22:43-01:23:33 UTC, stopped and confirmed `stopped`), blocks 3 and 4 from the Linux machine at 01:15-01:17 UTC, with the same output apart from the clock and timings.
 
 robots.txt (checked 2026-11-26 UTC, curl, the cloud browser and `urllib.robotparser`): https://www.marinespecies.org/robots.txt is four lines, `User-agent: *`, `Disallow: /structure`, `Disallow: /export`, `Crawl-delay: 1`. No group names an AI agent, so GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot and Bytespider fall under `*`; every path this skill uses (`/rest/...`, `/aphia.php?p=taxdetails`, `/about.php`) is allowed for all 11 agents, with a crawl delay of 1 s (block 3). Terms: the "Terms of use" on https://www.marinespecies.org/about.php#terms say "The text on the WoRMS pages is open-access under the terms of the Creative Commons Attribution License (CC-BY)", "This License permits unrestricted use, provided it is cited as requested on the WoRMS webpages, unless stated otherwise on the individual pages", "Images are by default open-access under the terms of the CC BY-NC-SA license" (this skill fetches no images), "Re-distribution of the entire database is not permitted, unless by prior written agreement" and "We strongly encourage the use of the on-line tools and available webservices". The webservice page https://www.marinespecies.org/aphia.php?p=webservice adds "Don't use the webservice to harvest WoRMS completely, you can request a database dump" and "Please, let us know if you are using the webservice". No AI/ML, scraping, automated-access or non-commercial-only clause for the text data (block 2 found none of the words scrap, artificial intelligence, machine learning, robot, crawl or non-commercial on the about page), and neither page states a call-rate limit. Citation (about page, "Citing WoRMS"): "WoRMS Editorial Board (2026). World Register of Marine Species. Available from https://www.marinespecies.org at VLIZ. Accessed 2026-11-26. doi:10.14284/170"; "If the data from WoRMS constitute a substantial proportion of the records used in analyses, the chief editor(s) of the database should be contacted." Naming: this skill says "WoRMS (World Register of Marine Species)", hosted by VLIZ (the Flanders Marine Institute), uses no WoRMS logo, prints the citation with every answer, looks names up one list at a time (never the whole register), and is not endorsed by WoRMS or VLIZ.
 
@@ -11,13 +11,13 @@ robots.txt (checked 2026-11-26 UTC, curl, the cloud browser and `urllib.robotpar
 - **No scraping.** All GET, JSON, no key: `GET https://www.marinespecies.org/rest/AphiaRecordsByName/{name}?like=false&marine_only=true` (one name, exact), `GET /AphiaRecordsByNames?scientificnames[]=...` (up to 500 exact names), `GET /AphiaRecordsByMatchNames?scientificnames[]=...` (up to 50 names, fuzzy TAXAMATCH), then per AphiaID `/AphiaRecordByAphiaID/{id}`, `/AphiaClassificationByAphiaID/{id}`, `/AphiaVernacularsByAphiaID/{id}`, `/AphiaDistributionsByAphiaID/{id}` and `/AphiaSynonymsByAphiaID/{id}`. The human page is `https://www.marinespecies.org/aphia.php?p=taxdetails&id={id}` (the record's `url`). The OpenAPI 3.0 description is at https://www.marinespecies.org/rest/api-docs/openapi.json (served as YAML). CORS is open (`Access-Control-Allow-Origin: *`).
 - **Answer (run 2026-11-26, 00:40 UTC):** `Delphinus delphis` = **AphiaID 137094**, accepted, *Delphinus delphis* Linnaeus, 1758, Species; Animalia > Chordata > Mammalia > Cetartiodactyla > Delphinidae (15 ranks from Biota); English names "common dolphin", "short-beaked common dolphin" and 4 more (90 names in 37 languages); 19 distribution records at 17 places, 16 of them valid (Wimereux only `doubtful`); 24 synonyms. The typo `Gadus morua` matches *Gadus morhua* (126436, `phonetic`); `Delphinus orca Linnaeus, 1758` is an unaccepted basionym of **Orcinus orca** (137102); `Delphinus orca` alone is ambiguous (two authors, two accepted species).
 - **Switch to the accepted ID first.** Only `valid_AphiaID` has common names and distribution: for unaccepted 148730 both answer HTTP 204, and its classification still ends at *Delphinus orca* under genus *Delphinus*.
-- **Limits:** none published and no rate-limit headers; robots.txt asks `Crawl-delay: 1`. Batches: 50 names per TAXAMATCH call (51 is HTTP 400), 500 per exact `AphiaRecordsByNames` call, 50 records per page with `offset=1, 51, 101...`. The blocks run serially 1.2 s apart, wait once on 429, 5xx or a network error (`Retry-After` as seconds or an HTTP date, else 10 s; over 120 s they stop) and then stop; block 2 only inspects answers (no retry); block 4 lets `curl --retry 1` retry once. Do not loop over the register: WoRMS asks you not to harvest it.
+- **Limits:** none published and no rate-limit headers; robots.txt asks `Crawl-delay: 1`. Batches: 50 names per TAXAMATCH call (51 is HTTP 400), 500 per exact `AphiaRecordsByNames` call, 50 records per page with `offset=1, 51, 101...`. The blocks run serially 1.2 s apart, wait once on 429, 500, 502, 503, 504 or a network error (`Retry-After` as seconds or an HTTP date, else 10 s; over 120 s they stop) and then stop; block 2 only inspects answers (no retry); block 4 lets `curl --retry 1` retry once, and `--retry-max-time 120` drops that retry when Retry-After asks for longer. Do not loop over the register: WoRMS asks you not to harvest it.
 
 ## What works
 
 ### 1. A list of names -> accepted name, AphiaID, status, classification, common names, distribution, synonyms, citation (browser)
 
-`on_worms_tab()` opens one logged-out API answer so `fetch()` runs same-origin (cross-origin works too, but then the page cannot read `Retry-After`, see block 2). `get()` returns parsed JSON on HTTP 200 and `None` on HTTP 204, waits once on 429/5xx or a network error and otherwise raises. One TAXAMATCH call for the whole list (up to 50 names), then 5 calls per accepted species: 21 `fetch()` calls for these 6 names. `pick()` keeps the best match class, prefers species-rank candidates for a two-word name, and refuses to guess when candidates point to more than one accepted name.
+`on_worms_tab()` opens one logged-out API answer so `fetch()` runs same-origin (cross-origin works too, but then the page cannot read `Retry-After`, see block 2). `get()` returns parsed JSON on HTTP 200 and `None` on HTTP 204, waits once on 429, 500, 502, 503, 504 or a network error and otherwise raises. One TAXAMATCH call for the whole list (up to 50 names), then 5 calls per accepted species: 21 `fetch()` calls for these 6 names. `pick()` keeps the best match class, prefers species-rank candidates for a two-word name, and refuses to guess when candidates point to more than one accepted name.
 
 ```python
 import email.utils, json, time
@@ -77,7 +77,7 @@ def retry_wait(value, default=10):
 
 def get(path):
     """GET API + path -> parsed JSON, or None on HTTP 204 ("Nothing found", empty body).
-    Waits once on 429, 5xx or a network error (Retry-After in seconds or as an HTTP date, else 10 s; over 120 s stops).
+    Waits once on 429, 500, 502, 503, 504 or a network error (Retry-After in seconds or as an HTTP date, else 10 s; over 120 s stops).
     Raises on anything else, with WoRMS's validation message for a 400."""
     url = API + path
     for attempt in range(2):
@@ -457,7 +457,7 @@ def retry_wait(value, default=10):
 
 def get(path):
     """GET API + path -> parsed JSON, or None on HTTP 204 ("Nothing found"). Serial, at least 1.2 s apart
-    (robots.txt Crawl-delay: 1). Waits once on 429, 5xx or a network error (Retry-After in seconds or as an HTTP date,
+    (robots.txt Crawl-delay: 1). Waits once on 429, 500, 502, 503, 504 or a network error (Retry-After in seconds or as an HTTP date,
     else 10 s; over 120 s exits). Exits on a 400 with WoRMS's validation message, or on anything else."""
     url = API + path
     for attempt in range(2):
@@ -468,9 +468,11 @@ def get(path):
                 stats["calls"] += 1
                 body = r.read()
                 stats["bytes"] += len(body)
-                if r.status == 204 or not body:
+                if r.status == 204:
                     stats["204"] += 1
                     return None
+                if not body:
+                    sys.exit(f"{url}: HTTP {r.status} with an empty body: stop")
                 return json.loads(body)
         except urllib.error.HTTPError as e:
             stats["calls"] += 1
@@ -498,6 +500,15 @@ def chunks(xs, n):
 def names_query(names):
     return "&".join("scientificnames[]=" + quote(n) for n in names)
 
+def per_name(path, part):
+    """One result list per name, in input order (HTTP 204 = none matched); any other shape stops."""
+    res = get(path)
+    if res is None:
+        return [[]] * len(part)
+    if not isinstance(res, list) or len(res) != len(part):
+        sys.exit(f"{path.split('?')[0]}: {len(res) if isinstance(res, list) else type(res).__name__} result lists for {len(part)} names: stop")
+    return res
+
 # 1. robots.txt: one '*' group (Disallow /structure, /export; Crawl-delay 1), no named AI-agent group
 rp = urllib.robotparser.RobotFileParser("https://www.marinespecies.org/robots.txt")
 with urllib.request.urlopen(urllib.request.Request(rp.url, headers={"User-Agent": UA}), timeout=30) as r:
@@ -524,26 +535,26 @@ print(f"\nWoRMS (World Register of Marine Species), {len(names)} names, checked 
 # 2. Exact names first (AphiaRecordsByNames, up to 500 names a call), TAXAMATCH only for the rest (up to 50 a call)
 found = {}
 for part in chunks(names, 500):
-    for n, recs in zip(part, (get(f"/AphiaRecordsByNames?{names_query(part)}&like=false&marine_only=true") or [[]] * len(part))):
+    for n, recs in zip(part, per_name(f"/AphiaRecordsByNames?{names_query(part)}&like=false&marine_only=true", part)):
         if recs:
             found[n] = ("exact", recs)
 left = [n for n in names if n not in found]
 for part in chunks(left, 50):
-    for n, recs in zip(part, (get(f"/AphiaRecordsByMatchNames?{names_query(part)}&marine_only=true") or [[]] * len(part))):
+    for n, recs in zip(part, per_name(f"/AphiaRecordsByMatchNames?{names_query(part)}&marine_only=true", part)):
         found[n] = ("fuzzy", recs or [])
 print(f"  exact: {sum(1 for v in found.values() if v[0] == 'exact')}, sent to TAXAMATCH: {len(left)}")
 
 rows, species = [], {}
 for n in names:
     how, recs = found[n]
-    targets = sorted({r["valid_AphiaID"] for r in recs if r["valid_AphiaID"]})
-    if len(targets) != 1:
-        why = "no match" if not recs else "ambiguous: " + "; ".join(
+    targets = {r["valid_AphiaID"] for r in recs}   # None = a record with no accepted name: never pick past it
+    if len(targets) != 1 or None in targets:
+        why = "no match" if not recs else ("no accepted name: " if None in targets else "ambiguous: ") + "; ".join(
             f"{r['scientificname']} {r['authority']} -> {r['valid_name']} ({r['valid_AphiaID']})" for r in recs)
         rows.append({"input": n, "match": how, "AphiaID": "", "accepted_name": "", "note": why})
         print(f"  {n!r}: {why}")
         continue
-    aid, r0 = targets[0], recs[0]
+    aid, r0 = targets.pop(), recs[0]
     rows.append({"input": n, "match": f"{how}/{r0['match_type']}", "AphiaID": aid, "accepted_name": r0["valid_name"],
                  "note": f"{r0['scientificname']} is {r0['status']}" + (f" ({r0['unacceptreason']})" if r0["unacceptreason"] else "")})
     species.setdefault(aid, None)
@@ -648,8 +659,9 @@ Cite: WoRMS Editorial Board (2026). World Register of Marine Species. Available 
 ```bash
 B=https://www.marinespecies.org/rest
 UA="worms-skill-example/1.0 (+https://github.com/browser-use/browser-harness)"
-# --retry 1 retries once on a timeout or HTTP 408, 429, 500, 502, 503 or 504, 10 s later (or after the server's Retry-After); robots.txt asks Crawl-delay: 1, so 1.2 s apart
-C=(curl -sS -A "$UA" --max-time 90 --retry 1 --retry-delay 10)
+# --retry 1 retries once on a timeout or HTTP 408, 429, 500, 502, 503 or 504, 10 s later (or after the server's Retry-After);
+# --retry-max-time 120 skips the retry when Retry-After would wait past 120 s. robots.txt asks Crawl-delay: 1, so 1.2 s apart
+C=(curl -sS -A "$UA" --max-time 90 --retry 1 --retry-delay 10 --retry-max-time 120)
 T=$(mktemp); trap 'rm -f "$T"' EXIT
 # 1. a name -> AphiaRecords (like=false: exact name only; spaces as %20). HTTP 204 with an empty body = nothing found
 "${C[@]}" --fail "$B/AphiaRecordsByName/Delphinus%20delphis?like=false&marine_only=true" | python3 -c 'import json, sys

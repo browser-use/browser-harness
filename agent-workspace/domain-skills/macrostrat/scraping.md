@@ -1,6 +1,6 @@
 # Macrostrat - Find the Geologic Map Unit Under a Latitude/Longitude: Unit Name, Age in Ma and International Period, Rock Description and the Source Map to Cite (REST JSON, no key)
 
-Field-tested against the Macrostrat API v2 (macrostrat.org/api/v2) and the macrostrat.org about, brand and documentation pages on 2026-11-25 (US Pacific afternoon; 00:29-00:40 UTC on 26 November) using fresh Browser Use cloud browsers (logged out; one session 00:34:49-00:36:20 UTC for block 1's first two runs and block 2's first run, a new one 00:39:09-00:39:50 UTC for block 1's third run and block 2's second run; both stopped and confirmed `stopped` afterwards) plus Python `urllib` and `curl` from a Linux machine. 17 browser page loads (1 in each of block 1's three runs, 7 in each of block 2's two runs) and 48 in-page `fetch()` calls (8 in each of block 1's three runs, 12 in each of block 2's two runs), 28 urllib calls (block 3's seven commands ran twice, 14 calls each; the last command is refused before any call) and 94 curl calls (74 while exploring, 10 in each of block 4's two runs), all serial and at least 1 s apart. Every call was HTTP 200 except robots.txt and the other missing pages (HTTP 404) and the deliberate probes: HTTP 400 (no `z`), HTTP 404 (a longitude of exactly 0, see Gotchas) and HTTP 500 (a word for `lat`, an unknown `scale`). curl timed the API at 0.18-0.33 s for point queries at every zoom except z=0 (0.66 s) and z=2 (2.58 s), and 0.46 s for the `/changes` list (608 KB gzipped, 1.4 MB unzipped); the browser blocks poll every 0.2 s, so their times (0.06-0.32 s) are upper bounds. No 429, no challenge, no key, no login, no cookie. Each block ran at least twice; the outputs shown come from the last run of each block, and the earlier runs differed only in the timings and in output format fixed between runs (citations: `Machette. (2003)` became `Machette (2003)`; block 1's Quaternary note moved each source to its own line). An independent verifier re-ran all four blocks unchanged on 2026-11-26 00:42-00:44 UTC in a new cloud browser (stopped and confirmed `stopped` afterwards) and got the same units, ages, sources, quotes and statuses; only timings and clock minutes differed. Later on 2026-11-26 block 4 got a `trap ... EXIT` that removes its temporary directory even when the script stops early; that version re-ran from the same Linux machine at 01:01-01:04 UTC with the same output apart from the clock and timings.
+Field-tested against the Macrostrat API v2 (macrostrat.org/api/v2) and the macrostrat.org about, brand and documentation pages on 2026-11-25 (US Pacific afternoon; 00:29-00:40 UTC on 26 November) using fresh Browser Use cloud browsers (logged out; one session 00:34:49-00:36:20 UTC for block 1's first two runs and block 2's first run, a new one 00:39:09-00:39:50 UTC for block 1's third run and block 2's second run; both stopped and confirmed `stopped` afterwards) plus Python `urllib` and `curl` from a Linux machine. 17 browser page loads (1 in each of block 1's three runs, 7 in each of block 2's two runs) and 48 in-page `fetch()` calls (8 in each of block 1's three runs, 12 in each of block 2's two runs), 28 urllib calls (block 3's seven commands ran twice, 14 calls each; the last command is refused before any call) and 94 curl calls (74 while exploring, 10 in each of block 4's two runs), all serial and at least 1 s apart. Every call was HTTP 200 except robots.txt and the other missing pages (HTTP 404) and the deliberate probes: HTTP 400 (no `z`), HTTP 404 (a longitude of exactly 0, see Gotchas) and HTTP 500 (a word for `lat`, an unknown `scale`). curl timed the API at 0.18-0.33 s for point queries at every zoom except z=0 (0.66 s) and z=2 (2.58 s), and 0.46 s for the `/changes` list (608 KB gzipped, 1.4 MB unzipped); the browser blocks poll every 0.2 s, so their times (0.06-0.32 s) are upper bounds. No 429, no challenge, no key, no login, no cookie. Each block ran at least twice; the outputs shown come from the last run of each block, and the earlier runs differed only in the timings and in output format fixed between runs (citations: `Machette. (2003)` became `Machette (2003)`; block 1's Quaternary note moved each source to its own line). An independent verifier re-ran all four blocks unchanged on 2026-11-26 00:42-00:44 UTC in a new cloud browser (stopped and confirmed `stopped` afterwards) and got the same units, ages, sources, quotes and statuses; only timings and clock minutes differed. Later on 2026-11-26 block 4 got a `trap ... EXIT` that removes its temporary directory even when the script stops early; that version re-ran from the same Linux machine at 01:01-01:04 UTC with the same output apart from the clock and timings. After review on 2026-11-26, blocks 1 and 3 wait for `Retry-After` (seconds or an HTTP date, at most 120 s) before their one retry, and block 3 accepts `--z` 0-24 (curl at 01:13 UTC on Madison: z=17, 22, 23 and 24 HTTP 200, z=25, 26, 28, 29, 30 and 100 HTTP 404). Block 1 re-ran in a new cloud browser (01:23:33-01:23:48 UTC, stopped and confirmed `stopped`) and block 3's seven commands at 01:15-01:16 UTC, with the same output apart from the clock and timings; `--z 24` gave the same Wonewoc Formation unit and `--z 25` is refused before any call.
 
 robots.txt (checked 2026-11-26 00:29-00:40 UTC with curl, the cloud browser and blocks 3 and 4): https://macrostrat.org/robots.txt answers HTTP 404 with the site's HTML "Page Not Found" page, and the API lives on the same host (`/api/v2`), so there are no rules for `*` or for any named agent (GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot, Bytespider); RFC 9309 (section 2.3.1.3) says a 4xx robots.txt means "the crawler MAY access any resources on the server". Every path this skill uses (`/api/v2/mobile/map_query`, `/geologic_units/map`, `/defs/intervals`, `/meta`, `/about`, `/about/brand`, `/docs/data-services`) is allowed. Blocks 3 and 4 read robots.txt before any API call and stop if it ever returns rules that disallow a path. Terms: there is no terms page; https://macrostrat.org/terms, `/privacy` and `/sitemap.xml` are the same HTTP 404 page (block 2). The licence statements: https://macrostrat.org/about says, under its "Services" heading, "Free and public, described in the documentation." and "Data are licensed CC BY 4.0: attribute Macrostrat and the original data sources", and "Macrostrat is a shared community resource that must be credited in scientific products. Acknowledge Macrostrat as the source of any information or data." and "If specific data sets were targeted, you should also include citations to the original references."; https://macrostrat.org/docs/data-services says "Macrostrat's data are available through public web services, free to use under a CC-BY 4.0 license" and "Every response states its license, and records carry references to their original sources."; the API root answers `"license": "CC-BY 4.0. More info at /meta"` and `/meta` answers "All data are licensed under Creative Commons BY 4.0 International". CC BY 4.0 allows commercial use and asks for credit. No AI/ML, scraping, crawling, robot, automated-access, rate-limit or "commercial" wording on the about, brand or data-services pages (block 2 scans for the words). Naming: the brand page https://macrostrat.org/about/brand says "\"Macrostrat\", one word, capital M." and "When you mean the organization, \"the Macrostrat lab at the University of Wisconsin–Madison\"". It offers logos for acknowledgements ("Use these assets when you acknowledge Macrostrat in a talk, poster, paper or app", "Please do not alter the marks or recolor them"); this skill uses no logo and is not affiliated with or endorsed by Macrostrat or the University of Wisconsin-Madison. Blocks 1 and 3 print a credit line with the Macrostrat paper and the unit's own map source; block 4 prints the map source and a short Macrostrat CC BY 4.0 credit; block 2 shows no map data and prints the API's own `/meta` citation.
 
@@ -19,7 +19,7 @@ robots.txt (checked 2026-11-26 00:29-00:40 UTC with curl, the cloud browser and 
 `on_macrostrat_tab()` opens the logged-out about page; the API is on the same host and also answers `Access-Control-Allow-Origin: *`, so `fetch()` from it works. Per run: 1 call for the period list, then per point 1 `/mobile/map_query` and 1 `/defs/intervals` call, plus 1 `/geologic_units/map` call when the unit is Quaternary (8 calls here, about 13 s). Edit `POINTS` and `Z`.
 
 ```python
-import json, time
+import email.utils, json, time
 from datetime import datetime, timezone
 
 POINTS = [                                    # (label, latitude, longitude), WGS84 decimal degrees
@@ -27,7 +27,7 @@ POINTS = [                                    # (label, latitude, longitude), WG
     ("Grand Canyon, Arizona", 36.1069, -112.1129),
     ("Denver, Colorado", 39.7392, -104.9903),
 ]
-Z = 12               # map zoom: 0-2 = tiny, 3-5 = small, 6-8 = medium, 9+ = large (most detailed map there)
+Z = 12               # map zoom 0-24: 0-2 = tiny, 3-5 = small, 6-8 = medium, 9+ = large (most detailed map there)
 API = "https://macrostrat.org/api/v2"
 PAGE = "https://macrostrat.org/about"
 PAUSE = 1.0          # serial, 1 call a second (no rate limit is published)
@@ -49,14 +49,25 @@ def on_macrostrat_tab():
 # js() gives up after a few seconds, so start the fetch, then poll for it
 START_JS = """(() => { window.__m = window.__m || {}; const id = String(Math.random()).slice(2); window.__m[id] = null;
   fetch(%s, {credentials: 'omit', cache: 'no-store'})
-    .then(async r => { window.__m[id] = {status: r.status, text: await r.text()}; })
-    .catch(e => { window.__m[id] = {status: 0, text: String(e)}; });
+    .then(async r => { window.__m[id] = {status: r.status, retry: r.headers.get('retry-after'), text: await r.text()}; })
+    .catch(e => { window.__m[id] = {status: 0, retry: null, text: String(e)}; });
   return id; })()"""
 POLL_JS = """(() => { const v = window.__m[%s]; if (v) delete window.__m[%s]; return v; })()"""
 
 calls = []
+def retry_wait(value, default=10):
+    """Retry-After as delay-seconds or an HTTP date -> seconds to wait; missing or unreadable -> default."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def call(path):
-    """GET -> the 'success' object. 429/5xx/network error: one retry after 10 s; anything else not 200 stops.
+    """GET -> the 'success' object. 429, 500, 502, 503, 504 or a network error: one retry after Retry-After (seconds or an
+    HTTP date; the page is same-origin, so it can read it), else 10 s; over 120 s stops. Anything else not 200 stops.
     A 404 HTML 'Cannot GET' page means a parameter was rejected (see Gotchas: longitude exactly 0)."""
     url = API + path
     for attempt in range(2):
@@ -69,7 +80,10 @@ def call(path):
         calls.append((path.split("?")[0], r["status"], round(time.time() - t0, 2)))
         time.sleep(PAUSE)
         if attempt == 0 and r["status"] in (0, 429, 500, 502, 503, 504):
-            time.sleep(10)
+            wait = retry_wait(r.get("retry"))
+            if wait > 120:
+                raise RuntimeError(f"{url}: server asks to wait {wait} s: stopping")
+            time.sleep(wait)
             continue
         break
     if r["status"] != 200:
@@ -413,7 +427,7 @@ name, age in Ma, international period(s), rock description, lithologies and the 
   python3 macrostrat.py 39.7392 -104.9903           # Denver: Quaternary cover, lists older units below
   python3 macrostrat.py 43.0731 -89.4012 --z 6 --json   # the 1:1,000,000-style map, as JSON
 """
-import argparse, gzip, json, os, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
+import argparse, email.utils, gzip, json, os, sys, time, urllib.error, urllib.parse, urllib.request, urllib.robotparser
 from datetime import datetime, timezone
 
 HOST = "https://macrostrat.org"
@@ -429,34 +443,48 @@ CREDIT = ("Data: Macrostrat (macrostrat.org, the Macrostrat lab at the Universit
           "A Platform for Geological Data Integration and Deep-Time Earth Crust Research: Geochemistry, Geophysics, Geosystems, v. 19, p. 1393-1409, doi:10.1029/2018gc007467.")
 calls, _last, RP = [], [0.0], None
 
+def retry_wait(value, default=10):
+    """Retry-After as delay-seconds or an HTTP date -> seconds to wait; missing or unreadable -> default."""
+    v = (value or "").strip()
+    if v.isdigit():
+        return int(v)
+    try:
+        return max(0, int((email.utils.parsedate_to_datetime(v) - datetime.now(timezone.utc)).total_seconds()) + 1)
+    except (TypeError, ValueError):
+        return default
+
 def http(url):
-    """-> (status, text). Serial, at least 1 s apart; asks for gzip and unzips it (urllib does not)."""
+    """-> (status, text, Retry-After). Serial, at least 1 s apart; asks for gzip and unzips it (urllib does not)."""
     time.sleep(max(0.0, _last[0] + 1.0 - time.time()))
     t0 = time.time()
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json", "Accept-Encoding": "gzip"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
-            status, enc, body = r.status, r.headers.get("Content-Encoding"), r.read()
+            status, enc, retry, body = r.status, r.headers.get("Content-Encoding"), None, r.read()
     except urllib.error.HTTPError as e:
-        status, enc, body = e.code, e.headers.get("Content-Encoding"), e.read()
+        status, enc, retry, body = e.code, e.headers.get("Content-Encoding"), e.headers.get("Retry-After"), e.read()
     except (urllib.error.URLError, TimeoutError) as e:
-        status, enc, body = 0, None, str(e).encode()
+        status, enc, retry, body = 0, None, None, str(e).encode()
     _last[0] = time.time()
     if enc == "gzip":
         body = gzip.decompress(body)
     path = urllib.parse.urlsplit(url).path
     calls.append((path.replace("/api/v2", "") or "/", status, round(time.time() - t0, 2)))
-    return status, body.decode("utf-8", errors="replace")
+    return status, body.decode("utf-8", errors="replace"), retry
 
 def call(path):
-    """-> the 'success' object. Checks robots.txt first. 429/5xx/network error: one retry after 10 s."""
+    """-> the 'success' object. Checks robots.txt first. 429, 500, 502, 503, 504 or a network error: one retry after
+    Retry-After (seconds or an HTTP date), else 10 s; over 120 s exits."""
     url = API + path
     if RP and not all(RP.can_fetch(a, url) for a in AGENTS):
         sys.exit(f"robots.txt disallows {path}: stop")
     for attempt in range(2):
-        s, text = http(url)
+        s, text, retry = http(url)
         if attempt == 0 and s in (0, 429, 500, 502, 503, 504):
-            time.sleep(10)
+            wait = retry_wait(retry)
+            if wait > 120:
+                sys.exit(f"{url}: server asks to wait {wait} s: stopping")
+            time.sleep(wait)
             continue
         break
     if s != 200:
@@ -470,7 +498,7 @@ def robots_load():
     """macrostrat.org/robots.txt is the site's HTTP 404 page today: a 4xx other than 429 = no rules.
     429, 5xx or no answer = rules unknown, so stop."""
     global RP
-    s, text = http(HOST + "/robots.txt")
+    s, text, _ = http(HOST + "/robots.txt")
     if 400 <= s < 500 and s != 429:
         return f"robots.txt: HTTP {s}, no rules"
     if s != 200:
@@ -512,13 +540,13 @@ def cite(ref):
 ap = argparse.ArgumentParser()
 ap.add_argument("lat", type=float, help="latitude, decimal degrees, -90 to 90")
 ap.add_argument("lng", type=float, help="longitude, decimal degrees, -180 to 180")
-ap.add_argument("--z", type=int, default=12, help="zoom: 0-2 tiny, 3-5 small, 6-8 medium, 9+ large (default 12)")
+ap.add_argument("--z", type=int, default=12, help="zoom 0-24: 0-2 tiny, 3-5 small, 6-8 medium, 9-24 large (default 12)")
 ap.add_argument("--json", action="store_true", help="print one JSON object instead of text")
 args = ap.parse_args()
 if not -90 <= args.lat <= 90 or not -180 <= args.lng <= 180:
     ap.error("lat must be -90..90 and lng -180..180 (the API itself accepts lat=95 and answers 'no unit')")
-if not 0 <= args.z <= 22:
-    ap.error("--z must be 0..22")
+if not 0 <= args.z <= 24:
+    ap.error("--z must be 0..24 (the API answers HTTP 404 from z=25)")
 lat, lng, nudged = args.lat, args.lng, args.lng == 0
 if nudged:
     lng = 0.0001                               # /mobile/map_query answers HTTP 404 to a longitude of exactly 0

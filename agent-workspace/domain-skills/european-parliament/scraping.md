@@ -1,8 +1,8 @@
 # European Parliament Open Data Portal - For a Plenary Sitting Date, List What Parliament Voted On (Vote Items, Tallies, Outcomes) and the Adopted Texts (TA-10-YYYY-NNNN) They Link To, Then Look Up Current MEPs by Country and Political Group (Open Data API v2, JSON-LD, no key)
 
-Field-tested against the European Parliament Open Data Portal API v2 (data.europarl.europa.eu/api/v2) on 2026-11-25 (US Pacific afternoon; 23:38 UTC on 25 November to 00:07 UTC on 26 November, which was 00:38-01:07 on 26 November in Brussels and Strasbourg, CET = UTC+1) using a fresh Browser Use cloud browser `ka-european-par-1125` (logged out; one session, 23:44:53-00:05:22 UTC, confirmed `stopped` through the Browser Use API) plus Python `urllib` and `curl` from a Linux machine. 37 browser page loads (4 while reading the terms pages, 1 in block 1's first run, 8 in each of block 2's four runs) and 83 in-page `fetch()` calls (block 1: 4 in a first run that stopped on a bug, then 5 in each of six runs; block 2: 12, 12, 12 and 13), 71 curl calls (45 while exploring the API, its OpenAPI document and EUR-Lex's robots.txt; 13 in each of block 4's two runs) and 89 urllib calls (block 3's four runs of 6, 9, 9 and 9 commands: 15, 25, 25 and 24 calls), all serial and at least 2 s apart (the API host's robots.txt asks for `Crawl-delay: 2`), with 10 s after the one EUR-Lex page (`Crawl-delay: 10` there). Every call was HTTP 200 except the deliberate probes below: HTTP 204 with an empty body (votes of a day without a sitting, an unknown adopted text, a political-group or country filter written the wrong way, one page past the end) and HTTP 404 (`/meetings/MTG-PL-2026-11-21`, a Saturday, and three guessed paths for the OpenAPI document, which is served at `/api/v2/` itself). curl timed most answers at 0.44-3.0 s (one second page of `/vote-results` took 10.1 s); the 13 `/meps/show-current` calls with a `political-group` filter took 6.6-15.6 s, while the unfiltered list of all 720 current MEPs came back in 0.2-1.0 s. The batch's own check at 23:30 UTC timed `/meetings?year=2026&limit=50` at 36.9 s (645 KB); `limit=5` took 1.4 s here. No 429 in that session, no challenge, no key, no login, and no cookie needed (the load balancer sets `AWSALB` and `AWSALBCORS` cookies; the blocks do not send them back). Answers carry `cache-control: no-cache, no-store, max-age=0, must-revalidate` and no rate-limit header. An independent verifier re-ran all four blocks verbatim between 00:09 and 00:22 UTC on 26 November (fresh cloud browser `kv-european-par-1125`, then urllib and curl) and got the same outputs apart from times and timings; in its first block 2 run two in-page calls to `/adopted-texts/...` at about 00:11 UTC came back HTTP 429 with an empty body in 0.1 s (after 3 earlier calls to that end point in 10 minutes), and the same calls gave 200 and 204 a minute later. The outputs below are block 1's seventh run (00:04 UTC, sitting of 12 November), block 2's fourth (00:03 UTC), block 3's fourth (00:01-00:02 UTC) and block 4's second (00:02 UTC); earlier runs differ only in the fixes they led to (a crash on a list in a set, amendment ids in the report list, the 404 for a day without a sitting, the second data shape described under Gotchas) and in timings. Block 1 also ran on the sitting of 25 November (its sixth run, 23:58 UTC) and gave the same 23 vote items, 124 votes and 17 adopted texts as block 3's `votes 2026-11-25` below. Later on 2026-11-26 block 4 got a `trap ... EXIT` that removes its temporary directory even when the script stops early; that version re-ran from the same Linux machine at 01:01-01:04 UTC with the same output apart from the clock and timings.
+Field-tested against the European Parliament Open Data Portal API v2 (data.europarl.europa.eu/api/v2) on 2026-11-25 (US Pacific afternoon; 23:38 UTC on 25 November to 00:07 UTC on 26 November, which was 00:38-01:07 on 26 November in Brussels and Strasbourg, CET = UTC+1) using a fresh Browser Use cloud browser `ka-european-par-1125` (logged out; one session, 23:44:53-00:05:22 UTC, confirmed `stopped` through the Browser Use API) plus Python `urllib` and `curl` from a Linux machine. 37 browser page loads (4 while reading the terms pages, 1 in block 1's first run, 8 in each of block 2's four runs) and 83 in-page `fetch()` calls (block 1: 4 in a first run that stopped on a bug, then 5 in each of six runs; block 2: 12, 12, 12 and 13), 71 curl calls (45 while exploring the API, its OpenAPI document and EUR-Lex's robots.txt; 13 in each of block 4's two runs) and 89 urllib calls (block 3's four runs of 6, 9, 9 and 9 commands: 15, 25, 25 and 24 calls), all serial and at least 2 s apart (the API host's robots.txt asks for `Crawl-delay: 2`), with 10 s after the one EUR-Lex page (`Crawl-delay: 10` there). Every call was HTTP 200 except the deliberate probes below: HTTP 204 with an empty body (votes of a day without a sitting, an unknown adopted text, a political-group or country filter written the wrong way, one page past the end) and HTTP 404 (`/meetings/MTG-PL-2026-11-21`, a Saturday, and three guessed paths for the OpenAPI document, which is served at `/api/v2/` itself). curl timed most answers at 0.44-3.0 s (one second page of `/vote-results` took 10.1 s); the 13 `/meps/show-current` calls with a `political-group` filter took 6.6-15.6 s, while the unfiltered list of all 720 current MEPs came back in 0.2-1.0 s. The batch's own check at 23:30 UTC timed `/meetings?year=2026&limit=50` at 36.9 s (645 KB); `limit=5` took 1.4 s here. No 429 in that session, no challenge, no key, no login, and no cookie needed (the load balancer sets `AWSALB` and `AWSALBCORS` cookies; the blocks do not send them back). Answers carry `cache-control: no-cache, no-store, max-age=0, must-revalidate` and no rate-limit header. An independent verifier re-ran all four blocks verbatim between 00:09 and 00:22 UTC on 26 November (fresh cloud browser `kv-european-par-1125`, then urllib and curl) and got the same outputs apart from times and timings; in its first block 2 run two in-page calls to `/adopted-texts/...` at about 00:11 UTC came back HTTP 429 with an empty body in 0.1 s (after 3 earlier calls to that end point in 10 minutes), and the same calls gave 200 and 204 a minute later. The outputs below are block 1's seventh run (00:04 UTC, sitting of 12 November), block 2's fourth (00:03 UTC), block 3's fourth (00:01-00:02 UTC) and block 4's second (00:02 UTC); earlier runs differ only in the fixes they led to (a crash on a list in a set, amendment ids in the report list, the 404 for a day without a sitting, the second data shape described under Gotchas) and in timings. Block 1 also ran on the sitting of 25 November (its sixth run, 23:58 UTC) and gave the same 23 vote items, 124 votes and 17 adopted texts as block 3's `votes 2026-11-25` below. Later on 2026-11-26 block 4 got a `trap ... EXIT` that removes its temporary directory even when the script stops early; that version re-ran from the same Linux machine at 01:01-01:04 UTC with the same output apart from the clock and timings. After review on 2026-11-26, blocks 1 and 3 print an `Item URLs` line after the credit, and block 4 pages vote items and adopted texts, takes the sitting's lowest TA number instead of a fixed one and uses block 3's fallbacks for same-day answers (no `activity_order`, no outcome, `mul` labels). Block 1 re-ran in a new cloud browser (01:23:48-01:24:06 UTC, stopped and confirmed `stopped`), blocks 3 and 4 from the Linux machine at 01:15-01:20 UTC; the outputs of blocks 1, 3 and 4 below are those re-runs.
 
-robots.txt (checked 2026-11-25 23:49-00:04 UTC as pages in the cloud browser, by block 3 with `urllib.robotparser` and by block 4): https://data.europarl.europa.eu/robots.txt has three groups: `User-agent: *` with `Crawl-delay: 2` and `Allow: /`, and `facebookexternalhit` and `SemrushBot`, each with `Disallow: /api/`. It names none of GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot or Bytespider, so they fall under `*`, and every path this skill uses on the API host (`/api/v2/meetings/...`, `/api/v2/adopted-texts...`, `/api/v2/meps/...`, `/api/v2/corporate-bodies/{id}`, the Developers' corner page) is allowed for all of them. https://www.europarl.europa.eu/robots.txt has a group for `008` (only `/portal/`, `/news/`, `/ep-live/`) and a `*` group of 30 lines; the MEP lines are `Disallow: /meps/*/pdf*`, `/meps/*/xml*` and `/meps/*/eptvAjax`, so the profile pages this skill links to (`/meps/en/{id}`), the adopted-text pages (`/doceo/document/TA-...`) and the legal notice are allowed; it names no AI agent either. EUR-Lex's robots.txt (`*`, `Crawl-delay: 10`) does not disallow `/eli/`. Blocks 3 and 4 read robots.txt before any API call and stop if a path they use is ever disallowed. Terms: the Developers' corner page (https://data.europarl.europa.eu/en/developer-corner/opendata-api) says "Open Data API limits the number of requests to be made at the same end point for security reasons. Maximum number of requests 500 in 5min." and links "CC BY 4.0 - Attribution 4.0 International" and the "Rules on the European Parliament's Open Data" (Bureau Decision C/2025/341, http://data.europa.eu/eli/C/2025/341/oj), whose Article 4 says "The re-use of Parliament's open data is subject to the conditions laid down in the Creative Commons Attribution 4.0 International License (CC BY 4.0)" and that "Raw data, metadata or other documents of a comparable nature may alternatively be distributed by Parliament under the Creative Commons Universal Public Domain Dedication deed (CC0 1.0)". The legal notice (https://www.europarl.europa.eu/legal-notice/en/) says reuse of items marked "© European Union, [year(s)] – Source: European Parliament" "is authorised, for personal use or for further non-commercial or commercial dissemination, provided that the entire item is reproduced and the source is acknowledged", and "Any partial reproduction of data or multimedia items from this website must also cite the URL link of the complete item or the web page from which it was sourced". No scraping, crawling, robot, automated-access, machine-learning or text-and-data-mining wording on any of the three pages; the only "artificial intelligence" (in the Bureau Decision's recitals) is about enabling "new technologies to be used, most notably artificial intelligence", and the only "non-commercial" is the grant above (block 2 checks the quotes and scans for the words). Naming: the legal notice says "The European Parliament trademarks europarl®, europarltv®, myeuroparl®, Parlamentarium® and the European Parliament logo may not be used without the European Parliament's prior consent.", so this skill calls the source the "European Parliament Open Data Portal", uses the slug `european-parliament` (not the trademark), shows no logo, and is not affiliated with or endorsed by the European Parliament. Blocks 1, 3 and 4 print the credit line "(c) European Union, [year] - Source: European Parliament" with the portal and licence, and block 1 says what it changed.
+robots.txt (checked 2026-11-25 23:49-00:04 UTC as pages in the cloud browser, by block 3 with `urllib.robotparser` and by block 4): https://data.europarl.europa.eu/robots.txt has three groups: `User-agent: *` with `Crawl-delay: 2` and `Allow: /`, and `facebookexternalhit` and `SemrushBot`, each with `Disallow: /api/`. It names none of GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-User, anthropic-ai, Google-Extended, PerplexityBot, CCBot or Bytespider, so they fall under `*`, and every path this skill uses on the API host (`/api/v2/meetings/...`, `/api/v2/adopted-texts...`, `/api/v2/meps/...`, `/api/v2/corporate-bodies/{id}`, the Developers' corner page) is allowed for all of them. https://www.europarl.europa.eu/robots.txt has a group for `008` (only `/portal/`, `/news/`, `/ep-live/`) and a `*` group of 30 lines; the MEP lines are `Disallow: /meps/*/pdf*`, `/meps/*/xml*` and `/meps/*/eptvAjax`, so the profile pages this skill links to (`/meps/en/{id}`), the adopted-text pages (`/doceo/document/TA-...`) and the legal notice are allowed; it names no AI agent either. EUR-Lex's robots.txt (`*`, `Crawl-delay: 10`) does not disallow `/eli/`. Blocks 3 and 4 read robots.txt before any API call and stop if a path they use is ever disallowed. Terms: the Developers' corner page (https://data.europarl.europa.eu/en/developer-corner/opendata-api) says "Open Data API limits the number of requests to be made at the same end point for security reasons. Maximum number of requests 500 in 5min." and links "CC BY 4.0 - Attribution 4.0 International" and the "Rules on the European Parliament's Open Data" (Bureau Decision C/2025/341, http://data.europa.eu/eli/C/2025/341/oj), whose Article 4 says "The re-use of Parliament's open data is subject to the conditions laid down in the Creative Commons Attribution 4.0 International License (CC BY 4.0)" and that "Raw data, metadata or other documents of a comparable nature may alternatively be distributed by Parliament under the Creative Commons Universal Public Domain Dedication deed (CC0 1.0)". The legal notice (https://www.europarl.europa.eu/legal-notice/en/) says reuse of items marked "© European Union, [year(s)] – Source: European Parliament" "is authorised, for personal use or for further non-commercial or commercial dissemination, provided that the entire item is reproduced and the source is acknowledged", and "Any partial reproduction of data or multimedia items from this website must also cite the URL link of the complete item or the web page from which it was sourced". No scraping, crawling, robot, automated-access, machine-learning or text-and-data-mining wording on any of the three pages; the only "artificial intelligence" (in the Bureau Decision's recitals) is about enabling "new technologies to be used, most notably artificial intelligence", and the only "non-commercial" is the grant above (block 2 checks the quotes and scans for the words). Naming: the legal notice says "The European Parliament trademarks europarl®, europarltv®, myeuroparl®, Parlamentarium® and the European Parliament logo may not be used without the European Parliament's prior consent.", so this skill calls the source the "European Parliament Open Data Portal", uses the slug `european-parliament` (not the trademark), shows no logo, and is not affiliated with or endorsed by the European Parliament. Blocks 1, 3 and 4 print the credit line "(c) European Union, [year] - Source: European Parliament" with the portal and licence, block 1 says what it changed, and each block prints the API URLs of the items it shows (`Item URLs`), since the legal notice asks a partial reproduction to cite the URL of the complete item.
 
 ## Quick summary
 
@@ -18,7 +18,7 @@ robots.txt (checked 2026-11-25 23:49-00:04 UTC as pages in the cloud browser, by
 `on_portal_tab()` opens the logged-out Developers' corner page of the Open Data Portal; it is on the API's own origin, so in-page `fetch()` needs no CORS header. The decisions answer is 1.4-1.8 MB, so each call boils its JSON down in the page (`pick`) before it reaches Python. 5 calls: the sitting, its vote items, its votes, the adopted texts dated that day (English only), all current MEPs. Edit `SITTING_DATE`, `COUNTRY` and `GROUP`.
 
 ```python
-import json, re, time
+import json, re, time, urllib.parse
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -55,12 +55,21 @@ START_JS = """(() => { window.__ep = window.__ep || {}; const id = String(Math.r
   return id; })()"""
 POLL_JS = """(() => { const v = window.__ep[%s]; if (v) delete window.__ep[%s]; return v; })()"""
 
-calls = []
+calls, SOURCES = [], []
+def src(url):
+    """The API URL of an item, for the credit line (the legal notice asks partial reproductions to cite it):
+    the URL without format, offset and limit."""
+    u = urllib.parse.urlsplit(url)
+    q = urllib.parse.urlencode([(k, v) for k, v in urllib.parse.parse_qsl(u.query) if k not in ("format", "offset", "limit")])
+    return f"{u.scheme}://{u.netloc}{u.path}" + (f"?{q}" if q else "")
+
 def call(path, pick, empty_ok=()):
     """GET API+path -> pick(json). HTTP 204 (no content) is how this API says "nothing for that id or
     filter" (/meetings/{id} says 404 for a day without a sitting): returns None for a status in empty_ok.
-    429 or 5xx: one retry after 30 s. Anything else stops."""
+    429, 500, 502, 503 or 504: one retry after 30 s. Anything else stops."""
     url = API + path + ("&" if "?" in path else "?") + FMT
+    if src(url) not in SOURCES:
+        SOURCES.append(src(url))
     for attempt in range(2):
         rid = json.dumps(js(START_JS % (pick, json.dumps(url))))
         t0 = time.time()
@@ -179,12 +188,13 @@ print(f"\n{len(calls)} API calls: " + ", ".join(f"{p} x{len(v)} HTTP {sorted({s 
       f"{min(t for _, t, _ in v):.1f}-{max(t for _, t, _ in v):.1f}s {max(z for _, _, z in v) // 1000} KB" for p, v in by.items()))
 print(f"(c) European Union, {SITTING_DATE[:4]} - Source: European Parliament (Open Data Portal, CC BY 4.0). "
       "Changed: vote items joined to adopted texts by report number, MEPs filtered by this script.")
+print("Item URLs: " + " ".join(SOURCES))
 ```
 
-Output (seventh run, 2026-11-26 00:04 UTC, sitting of 12 November; times are CET as the API gives them, `+01:00`). The sixth run, with `SITTING_DATE = "2026-11-25"`, listed the same 23 items and 17 adopted texts as block 3's `votes 2026-11-25` below, with "no outcome field yet" and French vote labels such as 'Proposition de résolution (ensemble du texte)':
+Output (eighth run, 2026-11-26 01:24 UTC in a new cloud browser, after the `Item URLs` line was added; the seventh run at 00:04 UTC printed the same rows apart from call timings; sitting of 12 November; times are CET as the API gives them, `+01:00`). The sixth run, with `SITTING_DATE = "2026-11-25"`, listed the same 23 items and 17 adopted texts as block 3's `votes 2026-11-25` below, with "no outcome field yet" and French vote labels such as 'Proposition de résolution (ensemble du texte)':
 
 ```text
-European Parliament Open Data API v2, checked 2026-11-26 00:04 UTC; sitting MTG-PL-2026-11-12
+European Parliament Open Data API v2, checked 2026-11-26 01:23 UTC; sitting MTG-PL-2026-11-12
 Thursday, 12 November 2026: PLENARY_SITTING
 14 vote items, 226 votes ({'VOTE_HAND': 122, 'VOTE_ELECTRONIC_ROLLCALL': 95, 'VOTE_ELECTRONIC': 9}), 13 adopted texts dated 2026-11-12
 
@@ -255,8 +265,9 @@ Thursday, 12 November 2026: PLENARY_SITTING
   S&D       Thomas BAJADA              id 256936  https://www.europarl.europa.eu/meps/en/256936
 all groups: PPE 185, S&D 135, PfE 86, ECR 84, Renew 78, Verts/ALE 53, The Left 45, NI 27, ESN 27
 
-5 API calls: MTG-PL-2026-11-12 x1 HTTP [200] 1.9-1.9s 12 KB, vote-results x1 HTTP [200] 1.9-1.9s 1258 KB, decisions x1 HTTP [200] 0.9-0.9s 1809 KB, adopted-texts x1 HTTP [200] 2.6-2.6s 30 KB, meps x1 HTTP [200] 0.5-0.5s 162 KB
+5 API calls: MTG-PL-2026-11-12 x1 HTTP [200] 0.5-0.5s 12 KB, vote-results x1 HTTP [200] 1.5-1.5s 1258 KB, decisions x1 HTTP [200] 0.5-0.5s 1809 KB, adopted-texts x1 HTTP [200] 1.1-1.1s 30 KB, meps x1 HTTP [200] 0.5-0.5s 162 KB
 (c) European Union, 2026 - Source: European Parliament (Open Data Portal, CC BY 4.0). Changed: vote items joined to adopted texts by report number, MEPs filtered by this script.
+Item URLs: https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-12 https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-12/vote-results https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-12/decisions https://data.europarl.europa.eu/api/v2/adopted-texts?sitting-date=2026-11-12&language=en https://data.europarl.europa.eu/api/v2/meps/show-current
 ```
 
 ### 2. robots.txt, the API docs, the Open Data rules and legal notice, and what the API does with odd requests (browser)
@@ -490,11 +501,18 @@ API = HOST + "/api/v2"
 UA = "bh-skill-example-prd-1.0.0 (+https://github.com/browser-use/browser-harness)"   # format the API docs suggest
 AGENTS = ["*", "GPTBot", "ChatGPT-User", "OAI-SearchBot", "ClaudeBot", "Claude-User", "anthropic-ai",
           "Google-Extended", "PerplexityBot", "CCBot", "Bytespider", "bh-skill-example-prd-1.0.0"]
-calls, _last, RP, GAP = [], [0.0], None, [2.0]
+calls, _last, RP, GAP, SOURCES = [], [0.0], None, [2.0], []
 
-def credit(year):
+def credit(year, note=""):
     return (f"(c) European Union, {year} - Source: European Parliament (Open Data Portal, "
-            "https://data.europarl.europa.eu, CC BY 4.0).")
+            f"https://data.europarl.europa.eu, CC BY 4.0).{note}\nItem URLs: " + " ".join(SOURCES))
+
+def src(url):
+    """The API URL of an item, for the credit line (the legal notice asks partial reproductions to cite it):
+    the URL without format, offset and limit."""
+    u = urllib.parse.urlsplit(url)
+    q = urllib.parse.urlencode([(k, v) for k, v in urllib.parse.parse_qsl(u.query) if k not in ("format", "offset", "limit")])
+    return f"{u.scheme}://{u.netloc}{u.path}" + (f"?{q}" if q else "")
 
 def http(url):
     """-> (status, text). Serial, at least GAP s apart (robots.txt Crawl-delay; 500 requests per 5 min)."""
@@ -517,9 +535,11 @@ def http(url):
 def call(path, missing=(204,), **params):
     """-> parsed JSON-LD, or None for a status in `missing`: HTTP 204 is this API's "nothing for that id or
     filter"; /meetings/{id} answers 404 for a day without a sitting.
-    Checks robots.txt first. 429/5xx/network error: one retry after 30 s. Anything else: exit."""
+    Checks robots.txt first. 429, 500, 502, 503, 504 or a network error: one retry after 30 s. Anything else: exit."""
     params["format"] = "application/ld+json"
     url = API + path + "?" + urllib.parse.urlencode(params)
+    if src(url) not in SOURCES:
+        SOURCES.append(src(url))
     if RP and not all(RP.can_fetch(a, url) for a in AGENTS):
         sys.exit(f"robots.txt disallows {path}: stop")
     for attempt in range(2):
@@ -616,7 +636,7 @@ def votes(day):
     loose = sorted(set(title) - {t for r in rows for t in r[4]})
     if loose:
         print(f"\nadopted texts dated {day} not linked to a vote item: " + ", ".join(f"{t} {title[t][:60]}" for t in loose))
-    print("\n" + credit(day[:4]) + " Joined by report number by this script.")
+    print("\n" + credit(day[:4], " Joined by report number by this script."))
     return 0
 
 def gkey(s):
@@ -678,11 +698,11 @@ print(f"{len(calls)} calls: " + ", ".join(f"{p} x{len(v)} {sorted(set(v))}" for 
 sys.exit(rc)
 ```
 
-Output (nine commands, 2026-11-26 00:01-00:02 UTC; the sitting answers were the same in the third run at 23:58 UTC):
+Output (nine commands, 2026-11-26 01:15-01:16 UTC, after the `Item URLs` line was added; the run at 00:01-00:02 UTC printed the same lines apart from timings, and the sitting answers were the same in the third run at 23:58 UTC):
 
 ```text
 $ python3 -I ep.py votes 2026-11-12
-European Parliament Open Data API v2, checked 2026-11-26 00:01 UTC
+European Parliament Open Data API v2, checked 2026-11-26 01:15 UTC
 robots.txt: HTTP 200, crawl-delay 2; /api/v2 allowed for 12 of 12 agents
 Thursday, 12 November 2026 (MTG-PL-2026-11-12)
 14 vote items, 226 votes (VOTE_HAND 122, VOTE_ELECTRONIC_ROLLCALL 95, VOTE_ELECTRONIC 9), 13 adopted texts
@@ -717,11 +737,12 @@ Thursday, 12 November 2026 (MTG-PL-2026-11-12)
        A-10-2026-0284: 1 vote(s) (ADOPTED 1); last ADOPTED no tally -> TA-10-2026-0369
 
 (c) European Union, 2026 - Source: European Parliament (Open Data Portal, https://data.europarl.europa.eu, CC BY 4.0). Joined by report number by this script.
+Item URLs: https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-12 https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-12/vote-results https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-12/decisions https://data.europarl.europa.eu/api/v2/adopted-texts?sitting-date=2026-11-12&language=en
 5 calls: /robots.txt x1 [200], /meetings/{sitting} x1 [200], /meetings/{sitting}/vote-results x1 [200], /meetings/{sitting}/decisions x1 [200], /adopted-texts x1 [200]
 [exit 0]
 
 $ python3 -I ep.py votes 2026-11-25
-European Parliament Open Data API v2, checked 2026-11-26 00:01 UTC
+European Parliament Open Data API v2, checked 2026-11-26 01:16 UTC
 robots.txt: HTTP 200, crawl-delay 2; /api/v2 allowed for 12 of 12 agents
 Wednesday, 25 November 2026 (MTG-PL-2026-11-25)
 23 vote items, 124 votes (VOTE_ELECTRONIC_ROLLCALL 124), 17 adopted texts
@@ -774,62 +795,68 @@ Wednesday, 25 November 2026 (MTG-PL-2026-11-25)
        B-10-2026-0505: 1 vote(s) (no outcome field yet); last vote +377 -214 =24 -> TA-10-2026-0405
 
 (c) European Union, 2026 - Source: European Parliament (Open Data Portal, https://data.europarl.europa.eu, CC BY 4.0). Joined by report number by this script.
+Item URLs: https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-25 https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-25/vote-results https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-25/decisions https://data.europarl.europa.eu/api/v2/adopted-texts?sitting-date=2026-11-25&language=en
 5 calls: /robots.txt x1 [200], /meetings/{sitting} x1 [200], /meetings/{sitting}/vote-results x1 [200], /meetings/{sitting}/decisions x1 [200], /adopted-texts x1 [200]
 [exit 0]
 
 $ python3 -I ep.py meps MT
-European Parliament Open Data API v2, checked 2026-11-26 00:02 UTC
+European Parliament Open Data API v2, checked 2026-11-26 01:16 UTC
 robots.txt: HTTP 200, crawl-delay 2; /api/v2 allowed for 12 of 12 agents
 720 current MEPs; MT: 6
   S&D (3): Alex AGIUS SALIBA, Daniel ATTARD, Thomas BAJADA
   PPE (3): Peter AGIUS, David CASA, Roberta METSOLA
 
 (c) European Union, 2026 - Source: European Parliament (Open Data Portal, https://data.europarl.europa.eu, CC BY 4.0).
+Item URLs: https://data.europarl.europa.eu/api/v2/meps/show-current
 2 calls: /robots.txt x1 [200], /meps/show-current x1 [200]
 [exit 0]
 
 $ python3 -I ep.py meps FR --group PfE
-European Parliament Open Data API v2, checked 2026-11-26 00:02 UTC
+European Parliament Open Data API v2, checked 2026-11-26 01:16 UTC
 robots.txt: HTTP 200, crawl-delay 2; /api/v2 allowed for 12 of 12 agents
 720 current MEPs; FR PfE: 29
   PfE (29): Mathilde ANDROUËT, Jordan BARDELLA, Christophe BAY, Marie-Luce BRASIER-CLAIN, Marie DAUCHY, Valérie DELOGE, Mélanie DISDIER, Anne-Sophie FRIGOUT, Angéline FURET, Jean-Paul GARRAUD, Catherine GRISET, France JAMET, Virginie JORON, Fabrice LEGGERI, Julien LEONARDELLI, Thierry MARIANI, Aleksandar NIKOLIC, Philippe OLIVIER, Gilles PENNELLE, Pascale PIERA, Pierre PIMPIE, Julie RECHAGNEUX, André ROUGÉ, Julien SANCHEZ, Pierre-Romain THIONNET, Rody TOLASSY, Matthieu VALET, Alexandre VARAUT, Séverine WERBROUCK
 
 (c) European Union, 2026 - Source: European Parliament (Open Data Portal, https://data.europarl.europa.eu, CC BY 4.0).
+Item URLs: https://data.europarl.europa.eu/api/v2/meps/show-current
 2 calls: /robots.txt x1 [200], /meps/show-current x1 [200]
 [exit 0]
 
 $ python3 -I ep.py meps GR --group S-D
-European Parliament Open Data API v2, checked 2026-11-26 00:02 UTC
+European Parliament Open Data API v2, checked 2026-11-26 01:16 UTC
 robots.txt: HTTP 200, crawl-delay 2; /api/v2 allowed for 12 of 12 agents
 720 current MEPs; GR S-D: 4
   S&D (4): Sakis ARNAOUTOGLOU, Nikolas FARANTOURIS, Yannis MANIATIS, Nikos PAPANDREOU
 
 (c) European Union, 2026 - Source: European Parliament (Open Data Portal, https://data.europarl.europa.eu, CC BY 4.0).
+Item URLs: https://data.europarl.europa.eu/api/v2/meps/show-current
 2 calls: /robots.txt x1 [200], /meps/show-current x1 [200]
 [exit 0]
 
 $ python3 -I ep.py mep 113523
-European Parliament Open Data API v2, checked 2026-11-26 00:02 UTC
+European Parliament Open Data API v2, checked 2026-11-26 01:16 UTC
 robots.txt: HTTP 200, crawl-delay 2; /api/v2 allowed for 12 of 12 agents
 Peter AGIUS (id 113523), current member of the 10th term: yes; profile https://www.europarl.europa.eu/meps/en/113523
   eu political group: PPE = Group of the European People's Party (Christian Democrats) (since 2024-07-16, role MEMBER)
   national political group: PN = Partit Nazzjonalista (since 2024-07-16, role MEMBER)
 
 (c) European Union, 2026 - Source: European Parliament (Open Data Portal, https://data.europarl.europa.eu, CC BY 4.0).
+Item URLs: https://data.europarl.europa.eu/api/v2/meps/113523 https://data.europarl.europa.eu/api/v2/corporate-bodies/7018?language=en https://data.europarl.europa.eu/api/v2/corporate-bodies/6690?language=en
 4 calls: /robots.txt x1 [200], /meps/{id} x1 [200], /corporate-bodies/{id} x2 [200]
 [exit 0]
 
 $ python3 -I ep.py mep 1
-European Parliament Open Data API v2, checked 2026-11-26 00:02 UTC
+European Parliament Open Data API v2, checked 2026-11-26 01:16 UTC
 robots.txt: HTTP 200, crawl-delay 2; /api/v2 allowed for 12 of 12 agents
 Georg JARZEMBOWSKI (id 1), current member of the 10th term: no; profile https://www.europarl.europa.eu/meps/en/1
 
 (c) European Union, 2026 - Source: European Parliament (Open Data Portal, https://data.europarl.europa.eu, CC BY 4.0).
+Item URLs: https://data.europarl.europa.eu/api/v2/meps/1
 2 calls: /robots.txt x1 [200], /meps/{id} x1 [200]
 [exit 0]
 
 $ python3 -I ep.py votes 2026-11-21
-European Parliament Open Data API v2, checked 2026-11-26 00:02 UTC
+European Parliament Open Data API v2, checked 2026-11-26 01:16 UTC
 robots.txt: HTTP 200, crawl-delay 2; /api/v2 allowed for 12 of 12 agents
 MTG-PL-2026-11-21: no plenary sitting that day (HTTP 404)
 2 calls: /robots.txt x1 [200], /meetings/{sitting} x1 [404]
@@ -851,7 +878,7 @@ set -euo pipefail
 A=https://data.europarl.europa.eu/api/v2
 F='format=application%2Fld%2Bjson'
 C=(curl -sS --max-time 120 --compressed -A 'bh-skill-example-prd-1.0.0 (+https://github.com/browser-use/browser-harness)')
-DAY=2026-11-12; COUNTRY=MT; MEP=113523
+DAY=2026-11-12; COUNTRY=MT; MEP=113523   # any sitting day, country code, MEP id
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # 0. robots.txt first: '*' Allow: / and Crawl-delay: 2 today; stop if a path we use is disallowed
 code=$("${C[@]}" -o "$T/robots" -w '%{http_code}' https://data.europarl.europa.eu/robots.txt)
@@ -866,29 +893,61 @@ agents = ("*", "GPTBot", "ClaudeBot", "Claude-User", "PerplexityBot", "CCBot", "
 if not all(rp.can_fetch(a, "https://data.europarl.europa.eu" + p) for a in agents for p in paths): sys.exit("robots.txt disallows a path: stop")
 print("robots: paths allowed; crawl-delay", rp.crawl_delay("*"))' "$code" "$T/robots"
 sleep 2
+# offset/limit pages until a short page or HTTP 204, one JSON row per line; $3 = the activity type that limit counts
+pages() {
+  local off=0 code n; : > "$2"
+  while :; do
+    code=$("${C[@]}" -o "$T/p" -w '%{http_code}' "$A/$1&offset=$off&limit=50"); sleep 2
+    [ "$code" = 204 ] && return 0
+    [ "$code" = 200 ] || { echo "$1: HTTP $code, stop" >&2; return 1; }
+    n=$(python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))["data"]
+with open(sys.argv[2], "a") as f: f.writelines(json.dumps(x) + "\n" for x in d)
+print(sum(1 for x in d if x.get("had_activity_type", "").endswith(sys.argv[3])))' "$T/p" "$2" "${3:-}")
+    [ "$n" -lt 50 ] && return 0
+    off=$((off + 50))
+  done
+}
 # 1. the sitting's vote items (limit counts vote items; the answer also holds split/separate requests)
-"${C[@]}" --fail "$A/meetings/MTG-PL-$DAY/vote-results?$F&offset=0&limit=50" -o "$T/items"; sleep 2
+pages "meetings/MTG-PL-$DAY/vote-results?$F" "$T/items" PLENARY_VOTE_RESULTS
 # 2. every vote of the sitting in one answer (1.8 MB here; offset and limit are ignored)
 "${C[@]}" --fail "$A/meetings/MTG-PL-$DAY/decisions?$F" -o "$T/decs"; sleep 2
 # 3. adopted texts with that sitting date, English only (25 Nov: 35 KB instead of 618 KB)
-"${C[@]}" --fail "$A/adopted-texts?sitting-date=$DAY&language=en&$F&offset=0&limit=50" -o "$T/tas"; sleep 2
+pages "adopted-texts?sitting-date=$DAY&language=en&$F" "$T/tas"
+# same fallbacks as blocks 1 and 3: a same-day answer has no activity_order, no outcome and only "mul" labels
 python3 -c 'import json, re, sys
-items = [x for x in json.load(open(sys.argv[1]))["data"] if x["had_activity_type"].endswith("PLENARY_VOTE_RESULTS")]
-decs = json.load(open(sys.argv[2]))["data"]; tas = json.load(open(sys.argv[3]))["data"]
-ta = {a.split("/")[-1]: w["identifier"] for w in tas for a in w["adopts"]}
+rows = lambda p: [json.loads(l) for l in open(p)]
+items = [x for x in rows(sys.argv[1]) if x["had_activity_type"].endswith("PLENARY_VOTE_RESULTS")]
+decs = json.load(open(sys.argv[2]))["data"]; tas = rows(sys.argv[3])
+ta = {}
+for w in tas:
+    for a in w.get("adopts", []): ta.setdefault(a.split("/")[-1], set()).add(w["identifier"])
+lab = lambda x: (x.get("activity_label") or {}).get("en") or (x.get("activity_label") or {}).get("mul") or (x.get("referenceText") or {}).get("en", "")
+def doc_ref(s):   # "A10-0310/2026 - ..." -> "A-10-2026-0310"
+    m = re.match(r"(RC-)?([A-C])(\d+)-(\d{4})/(\d{4})\b", s)
+    return m and ("RC" if m[1] else m[2]) + "-" + m[3] + "-" + m[5] + "-" + m[4]
 print(len(items), "vote items,", len(decs), "votes,", len(tas), "adopted texts")
 for it in items[:5]:
-    vs = sorted((d for d in decs if d["inverse_consists_of"][0] == it["id"]), key=lambda d: float(d["activity_order"]))
-    refs = [x.split("/")[-1] for x in it.get("based_on_a_realization_of", [])]
-    last = vs[-1]
-    print(" ", it["activity_label"]["en"][:60], "|", ",".join(refs), "|", len(vs), "votes | last:",
-          re.split(" [-\u2013] ", last.get("activity_label", last["referenceText"])["en"])[-1][:40], last["decision_outcome"].split("/")[-1],
-          last.get("number_of_votes_favor", "-"), "|", ",".join(sorted({ta[r] for r in refs if r in ta})) or "no TA")' "$T/items" "$T/decs" "$T/tas"
-# 4. one adopted text: title, the report it adopts, the procedure
-"${C[@]}" --fail "$A/adopted-texts/TA-10-2026-0376?$F&language=en" | python3 -c 'import json, sys
+    vs = sorted((d for d in decs if (d.get("inverse_consists_of") or [""])[0] == it["id"]),
+                key=lambda d: (float(d.get("activity_order", 0)), d.get("activity_start_date", ""), int(d["notation_votingId"])))
+    refs = {x.split("/")[-1] for x in it.get("based_on_a_realization_of", [])}
+    refs |= {r for d in vs for r in [doc_ref(lab(d))] + [x.split("/")[-1] for x in d.get("decided_on_a_realization_of", [])] if r}
+    refs = sorted(r for r in refs if re.fullmatch(r"(A|B|C|RC)-\d+-\d{4}-\d{4}", r))
+    last = vs[-1] if vs else {}
+    print(" ", lab(it)[:60], "|", ",".join(refs) or "-", "|", len(vs), "votes | last:", re.split(" [-\u2013] ", lab(last))[-1][:40] or "-",
+          (last.get("decision_outcome") or "no-outcome-yet").split("/")[-1], last.get("number_of_votes_favor", "-"), "|",
+          ",".join(sorted({t for r in refs for t in ta.get(r, ())})) or "no TA")
+open(sys.argv[4], "w").write(min((w["identifier"] for w in tas), default=""))' "$T/items" "$T/decs" "$T/tas" "$T/ta1"
+# 4. one adopted text of that sitting (the lowest TA number): title, the report it adopts, the procedure
+TA=$(cat "$T/ta1")
+if [ -n "$TA" ]; then
+  "${C[@]}" --fail "$A/adopted-texts/$TA?$F&language=en" | python3 -c 'import json, sys
 w = json.load(sys.stdin)["data"][0]
 print(w["identifier"], w["label"], w["document_date"], "|", w["title_dcterms"]["en"], "| adopts", [a.split("/")[-1] for a in w["adopts"]], "|", w["inverse_created_a_realization_of"])'
-sleep 2
+  sleep 2
+else
+  echo "no adopted text dated $DAY"
+fi
 # 5. current MEPs: one call for all 720, then filter on country (filtered calls took 7-15 s)
 "${C[@]}" --fail "$A/meps/show-current?$F&offset=0&limit=1000" | python3 -c 'import json, sys, collections
 m = json.load(sys.stdin)["data"]; c = sys.argv[1]
@@ -917,20 +976,21 @@ for p in "meetings/MTG-PL-2026-11-21?$F" "meetings/MTG-PL-2026-11-21/vote-result
   "${C[@]}" -o "$T/m" -w "${p%%\?*}: HTTP %{http_code} %{content_type} %{time_total}s | " "$A/$p"; head -c 60 "$T/m" | tr '\n' ' '; echo; sleep 2
 done
 echo "(c) European Union, $(date -u +%Y) - Source: European Parliament (Open Data Portal, CC BY 4.0). Accessed $(date -u '+%d %B %Y %H:%M') UTC."
+echo "Item URLs: $A/meetings/MTG-PL-$DAY/vote-results $A/meetings/MTG-PL-$DAY/decisions $A/adopted-texts?sitting-date=$DAY&language=en${TA:+ $A/adopted-texts/$TA} $A/meps/show-current $A/meps/$MEP $A/corporate-bodies/$org"
 ```
 
-Output (second run, 2026-11-26 00:02 UTC; the first run at 00:00 UTC printed the same rows with the vote labels cut from the wrong end, which is what changed):
+Output (2026-11-26 01:17 UTC, after block 4 started paging, picking the sitting's lowest TA number and using block 3's fallbacks; the run at 00:02 UTC printed the same vote rows except that the Ukrainian children row listed its B-10 reports in API order and without RC-10-2026-0497, and step 4 showed a fixed TA-10-2026-0376. With `DAY=2026-11-25` (01:20 UTC) it printed 23 vote items, 124 votes and 17 adopted texts, French labels and `no-outcome-yet`, and TA-10-2026-0389):
 
 ```text
 robots.txt HTTP 200: User-agent: * Crawl-delay: 2 Allow: /  User-agent: facebookexternalhit Disallow: /api/  User-agent: SemrushBot Disallow:
 robots: paths allowed; crawl-delay 2
 14 vote items, 226 votes, 13 adopted texts
   Europe’s Beating Cancer Plan | A-10-2026-0261 | 61 votes | last: Motion for a resolution (as a whole) ADOPTED 447 | TA-10-2026-0376
-  Ukrainian children forcibly deported to Russia or living in  | B-10-2026-0500,B-10-2026-0498,B-10-2026-0496,B-10-2026-0499,B-10-2026-0497,B-10-2026-0501 | 18 votes | last: B10-0501/2026 LAPSED - | TA-10-2026-0380
+  Ukrainian children forcibly deported to Russia or living in  | B-10-2026-0496,B-10-2026-0497,B-10-2026-0498,B-10-2026-0499,B-10-2026-0500,B-10-2026-0501,RC-10-2026-0497 | 18 votes | last: B10-0501/2026 LAPSED - | TA-10-2026-0380
   Request for the waiver of the immunity of Afroditi Latinopou | A-10-2026-0284 | 1 votes | last: Proposal for a decision ADOPTED - | TA-10-2026-0369
   Association of the overseas countries and territories with t | A-10-2026-0275 | 19 votes | last: Commission proposal to the Council ADOPTED 460 | TA-10-2026-0375
   EU agri-food promotion policy | A-10-2026-0269 | 22 votes | last: Motion for a resolution (as a whole) ADOPTED 476 | TA-10-2026-0377
-TA-10-2026-0376 T10-0376/2026 2026-11-12 | Europe’s Beating Cancer Plan | adopts ['A-10-2026-0261'] | ['eli/dl/event/MTG-PL-2026-11-12-PVCRE-ITM-6-11', 'eli/dl/proc/2025-2139']
+TA-10-2026-0368 T10-0368/2026 2026-11-12 | Request for the waiver of the immunity of András Tivadar Kulja | adopts ['A-10-2026-0283'] | ['eli/dl/event/MTG-PL-2026-11-12-PVCRE-ITM-6-2', 'eli/dl/proc/2026-2016']
 720 current MEPs; MT 6 {'PPE': 3, 'S&D': 3}
   113523 Peter AGIUS PPE
   197403 Alex AGIUS SALIBA S&D
@@ -942,11 +1002,12 @@ MEP 113523 group org 7018 PPE = Group of the European People's Party (Christian 
 HTTP/2 200
 content-type: application/ld+json;charset=UTF-8
 cache-control: no-cache, no-store, max-age=0, must-revalidate
-meetings/MTG-PL-2026-11-21: HTTP 404  0.472994s |
-meetings/MTG-PL-2026-11-21/vote-results: HTTP 204  0.628252s |
-meps/show-current: HTTP 204  15.558183s |
-meetings/MTG-PL-2026-11-12: HTTP 200 application/rdf+xml;charset=UTF-8 0.846122s | <?xml version="1.0"?> <rdf:RDF     xmlns:eli-dl="http://data
-(c) European Union, 2026 - Source: European Parliament (Open Data Portal, CC BY 4.0). Accessed 26 November 2026 00:03 UTC.
+meetings/MTG-PL-2026-11-21: HTTP 404  0.482274s |
+meetings/MTG-PL-2026-11-21/vote-results: HTTP 204  0.809663s |
+meps/show-current: HTTP 204  10.224755s |
+meetings/MTG-PL-2026-11-12: HTTP 200 application/rdf+xml;charset=UTF-8 0.786870s | <?xml version="1.0"?> <rdf:RDF     xmlns:eli-dl="http://data
+(c) European Union, 2026 - Source: European Parliament (Open Data Portal, CC BY 4.0). Accessed 26 November 2026 01:17 UTC.
+Item URLs: https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-12/vote-results https://data.europarl.europa.eu/api/v2/meetings/MTG-PL-2026-11-12/decisions https://data.europarl.europa.eu/api/v2/adopted-texts?sitting-date=2026-11-12&language=en https://data.europarl.europa.eu/api/v2/adopted-texts/TA-10-2026-0368 https://data.europarl.europa.eu/api/v2/meps/show-current https://data.europarl.europa.eu/api/v2/meps/113523 https://data.europarl.europa.eu/api/v2/corporate-bodies/7018
 ```
 
 ## Fields
