@@ -99,6 +99,11 @@ Commands:
   browser-harness auth login --device-code   sign in from SSH/headless environments
   browser-harness auth status         show Browser Use Cloud auth state
   browser-harness auth logout         remove stored Browser Use Cloud auth
+  browser-harness config              show the persistent browser config
+  browser-harness config set key=value [key=value ...]
+                                    set preferred_browser, startup_tab, tab_marker
+  browser-harness config clear key [key ...]
+                                    remove keys from the config
   browser-harness skill               print the browser-harness skill text
   browser-harness recordings          show recording status and recent sessions
   browser-harness recordings --latest   print the newest recording directory
@@ -187,7 +192,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "feedback", "skill", "mac-approve", "recordings", "telemetry", "video"}:
+    if first in {"auth", "feedback", "skill", "mac-approve", "recordings", "telemetry", "video", "config"}:
         return first
     return "usage"
 
@@ -381,6 +386,10 @@ def _run(args):
         sys.exit(run_doctor())
     if args and args[0] == "auth":
         sys.exit(auth.run_auth_cli(args[1:]))
+    if args and args[0] == "config":
+        from . import config as browser_config
+
+        sys.exit(browser_config.run_config_cli(args[1:]))
     if args and args[0] == "feedback":
         from . import report
 

@@ -1,0 +1,273 @@
+"""Persistent browser preferences: which browser, which startup tab, tab marker.
+
+The file is ``~/.config/browser-harness/config.json`` (``BH_CONFIG_DIR`` moves the
+directory). It is read when the daemon starts, so one file applies to every
+caller — Claude Code, Codex, a plain terminal — unlike ``BU_CDP_URL``, which is
+per process and has to be exported again in every shell.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from . import paths
+
+CONFIG_FILE = "config.json"
+STARTUP_TABS = ("new", "first_page")
+BROWSER_KEYS = ("preferred_browser", "startup_tab", "tab_marker")
+
+
+def config_path() -> Path:
+    return paths.config_dir() / CONFIG_FILE
+
+
+def load() -> dict:
+    """The whole config file. A missing or damaged file reads as empty."""
+    try:
+        data = json.loads(config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def browser_settings() -> dict:
+    """The browser section, validated.
+
+    Unknown keys and invalid values are ignored rather than fatal: a typo must
+    not stop the daemon from starting. ``startup_tab`` defaults to ``new``;
+    ``tab_marker`` stays None when unset, so the environment keeps the last word.
+    """
+    section = load().get("browser")
+    out = {"preferred_browser": None, "startup_tab": "new", "tab_marker": None}
+    if not isinstance(section, dict):
+        return out
+    preferred = section.get("preferred_browser")
+    if isinstance(preferred, str) and preferred.strip():
+        out["preferred_browser"] = preferred.strip()
+    startup_tab = section.get("startup_tab")
+    if isinstance(startup_tab, str) and startup_tab.strip().lower() in STARTUP_TABS:
+        out["startup_tab"] = startup_tab.strip().lower()
+    tab_marker = section.get("tab_marker")
+    if isinstance(tab_marker, bool):
+        out["tab_marker"] = tab_marker
+    return out
+
+
+def _write_lock(path: Path):
+    """An exclusive lock on the config file, so two `config set` calls cannot
+    interleave their load/merge/replace and lose one update.
+
+    Best effort: when the lock cannot be taken the write still happens, because
+    failing to save a preference is worse than a rare lost update.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return None
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except (OSError, ImportError):
+        os.close(fd)
+        return None
+    return fd
+
+
+def _unlock(fd) -> None:
+    if fd is None:
+        return
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except (OSError, ImportError):
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def write(settings: dict) -> Path:
+    """Merge ``settings`` into the browser section and save.
+
+    A None value removes the key, so ``config clear`` is the same code path.
+    Other sections of the file are kept.
+    """
+    path = config_path()
+    fd = _write_lock(path)
+    try:
+        data = load()
+        section = data.get("browser")
+        section = dict(section) if isinstance(section, dict) else {}
+        for key, value in settings.items():
+            if value is None:
+                section.pop(key, None)
+            else:
+                section[key] = value
+        data["browser"] = section
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # A process-unique temp name: two concurrent writers must never share one.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(
+            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    finally:
+        _unlock(fd)
+    return path
+
+
+def parse_assignment(text: str) -> tuple[str, object]:
+    """``key=value`` into (key, value), with booleans and known tab policies typed.
+
+    Each key validates its own value: a setting the daemon would ignore is
+    rejected here rather than reported as saved.
+    """
+    key, sep, raw = text.partition("=")
+    key = key.strip()
+    if not sep or not key:
+        raise ValueError(f"expected key=value, got {text!r}")
+    value = raw.strip()
+    if value.lower() in {"true", "yes", "on", "1"}:
+        parsed = True
+    elif value.lower() in {"false", "no", "off", "0"}:
+        parsed = False
+    elif value.lower() in {"none", "null", ""}:
+        parsed = None
+    else:
+        parsed = value
+    if key == "startup_tab":
+        if not isinstance(parsed, str) or parsed.lower() not in STARTUP_TABS:
+            raise ValueError(
+                f"startup_tab must be one of {', '.join(STARTUP_TABS)}, got {value!r}"
+            )
+        parsed = parsed.lower()
+    elif key == "tab_marker":
+        if not isinstance(parsed, bool):
+            raise ValueError(f"tab_marker must be true or false, got {value!r}")
+    elif key == "preferred_browser":
+        if not isinstance(parsed, str) or not parsed.strip():
+            raise ValueError(
+                f"preferred_browser must be a browser name or a profile path, got {value!r}"
+            )
+        parsed = parsed.strip()
+    return key, parsed
+
+
+def _cli_name():
+    from .naming import cli_name
+
+    return cli_name()
+
+
+def _print_installed_browsers() -> None:
+    """List the browsers this machine has, with the name a config file uses.
+
+    The daemon knows the profile dirs it scans; a name that resolves to one of
+    them can be set as ``preferred_browser``.
+    """
+    try:
+        from .daemon import browser_key_for_profile, profile_dirs
+    except ImportError:
+        return
+    found = []
+    seen = set()
+    for base in profile_dirs():
+        try:
+            if not base.is_dir():
+                continue
+        except OSError:
+            continue
+        key = browser_key_for_profile(base)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        found.append((key, base))
+    if not found:
+        print("  browsers found     (none of the known profiles are installed)")
+        return
+    print("  browsers found     " + ", ".join(key for key, _base in found))
+    for key, base in found:
+        print(f"    {key:<14} {base}")
+
+
+def run_config_cli(args) -> int:
+    """``config show`` / ``config set key=value ...`` / ``config clear key ...``."""
+    args = list(args)
+    if not args or args[0] in {"show", "get"}:
+        path = config_path()
+        print(f"config file: {path}" + ("" if path.exists() else " (not created yet)"))
+        settings = browser_settings()
+        print(
+            f"  preferred_browser  {settings['preferred_browser'] or '(not set — first live browser wins)'}"
+        )
+        print(f"  startup_tab        {settings['startup_tab']}")
+        print(
+            f"  tab_marker         {'on' if settings['tab_marker'] else 'off' if settings['tab_marker'] is False else '(environment default)'}"
+        )
+        _print_installed_browsers()
+        return 0
+    action = args[0]
+    if action == "set":
+        if len(args) < 2:
+            print(
+                f"usage: {_cli_name()} config set key=value [key=value ...]",
+                file=os.sys.stderr,
+            )
+            return 2
+        settings = {}
+        for item in args[1:]:
+            try:
+                key, value = parse_assignment(item)
+            except ValueError as e:
+                print(f"{_cli_name()} config: {e}", file=os.sys.stderr)
+                return 2
+            if key not in BROWSER_KEYS:
+                print(
+                    f"{_cli_name()} config: unknown key {key!r} (known: {', '.join(BROWSER_KEYS)})",
+                    file=os.sys.stderr,
+                )
+                return 2
+            settings[key] = value
+        path = write(settings)
+        print(f"saved {path}")
+        for key, value in settings.items():
+            print(f"  {key} = {value}")
+        return 0
+    if action == "clear":
+        if not args[1:]:
+            print(f"usage: {_cli_name()} config clear [key ...]", file=os.sys.stderr)
+            return 2
+        settings = {}
+        for key in args[1:]:
+            if key not in BROWSER_KEYS:
+                print(
+                    f"{_cli_name()} config: unknown key {key!r} (known: {', '.join(BROWSER_KEYS)})",
+                    file=os.sys.stderr,
+                )
+                return 2
+            settings[key] = None
+        path = write(settings)
+        print(f"saved {path}")
+        return 0
+    print(
+        f"usage: {_cli_name()} config [show|set key=value|clear key]",
+        file=os.sys.stderr,
+    )
+    return 2

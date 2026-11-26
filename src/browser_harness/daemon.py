@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import _ipc as ipc
 from . import auth
+from . import config as browser_config
 from . import paths
 from cdp_use.client import CDPClient
 
@@ -61,6 +62,7 @@ _LINUX_PROFILES = (
     ".config/microsoft-edge",
     ".config/microsoft-edge-beta",
     ".config/microsoft-edge-dev",
+    ".config/BraveSoftware/Brave-Browser",
     ".var/app/org.chromium.Chromium/config/chromium",
     ".var/app/com.google.Chrome/config/google-chrome",
     ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
@@ -117,6 +119,27 @@ def profile_dirs(system=None):
 
 PROFILES = profile_dirs()
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+# Stable config names for the Chromium-family browsers the harness knows, so a
+# config file can say "brave" instead of a path. The tail of a profile dir
+# decides; the order is most specific first.
+BROWSER_KEYS = (
+    ("chrome canary", "chrome-canary"),
+    ("chrome sxs", "chrome-canary"),
+    ("chrome beta", "chrome-beta"),
+    ("chrome dev", "chrome-dev"),
+    ("chromium", "chromium"),
+    ("edge canary", "edge-canary"),
+    ("edge sxs", "edge-canary"),
+    ("edge beta", "edge-beta"),
+    ("edge dev", "edge-dev"),
+    ("brave origin", "brave-origin"),
+    ("chrome", "chrome"),
+    ("edge", "edge"),
+    ("brave", "brave"),
+    ("arc", "arc"),
+    ("dia", "dia"),
+    ("comet", "comet"),
+)
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
 _REMOTE_STOPPED = False
@@ -153,9 +176,24 @@ GONE = {  # why an owner lost a tab -> (typed error, what happened)
 MARKS = {"deliverable": "\U0001F4CC", "handoff": "✋"}  # pin: stays for the person; raised hand: person acts now
 
 
+def startup_tab_policy():
+    """Which tab a fresh owner starts on: "new" (own background tab) or "first_page"."""
+    return browser_config.browser_settings()["startup_tab"]
+
+
 def tab_marker_enabled():
-    """Whether the cosmetic controlled-tab title marker should be added."""
-    return os.environ.get("BH_TAB_MARKER", "").strip().lower() not in {"0", "false", "no", "off"}
+    """Whether the cosmetic controlled-tab title marker should be added.
+
+    BH_TAB_MARKER wins over the config file: the environment is the more
+    specific, per-shell instruction.
+    """
+    env = os.environ.get("BH_TAB_MARKER", "").strip().lower()
+    if env:
+        return env not in {"0", "false", "no", "off"}
+    marker = browser_config.browser_settings()["tab_marker"]
+    if marker is not None:
+        return marker
+    return True
 
 
 REQUEST_HOLD = 120.0  # > the longest client wait (60 s screenshot)
@@ -333,6 +371,108 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     return None
 
 
+def browser_key_for_profile(base):
+    """The stable config name of a profile dir ("brave", "chrome", ...), or None.
+
+    Channel separators differ per platform ("Chrome Canary" on macOS,
+    "microsoft-edge-beta" on Linux), so the tail is compared with hyphens and
+    spaces treated as the same character.
+    """
+    tail = "/".join(part.lower() for part in Path(base).parts[-2:])
+    tail = tail.replace("-", " ")
+    for fragment, key in BROWSER_KEYS:
+        if fragment in tail:
+            return key
+    return None
+
+
+def known_browser_keys():
+    """Every browser name the config accepts, in a stable order."""
+    seen = []
+    for _fragment, key in BROWSER_KEYS:
+        if key not in seen:
+            seen.append(key)
+    return seen
+
+
+def preferred_profile(preferred=None):
+    """The profile dir the config asks for, or None.
+
+    ``preferred`` may be a browser key ("brave") or a path to a profile dir.
+    A path wins when it exists; an unknown key never silently falls back to
+    another browser, it reports itself as unknown.
+    """
+    preferred = preferred if preferred is not None else browser_config.browser_settings()["preferred_browser"]
+    if not preferred:
+        return None
+    candidate = Path(preferred).expanduser()
+    if candidate.is_absolute() or os.sep in preferred:
+        return candidate if candidate.exists() else None
+    for base in PROFILES:
+        if browser_key_for_profile(base) == preferred.lower():
+            return base
+    return None
+
+
+class _WrongBrowser(Exception):
+    """The live port belongs to another browser, not the profile we asked for."""
+
+
+def _browser_uuid(ws_url):
+    """The browser id in a DevTools WS path, or None."""
+    if not ws_url or "/devtools/browser/" not in ws_url:
+        return None
+    tail = ws_url.split("/devtools/browser/")[-1]
+    return tail.split("?")[0] or None
+
+
+def _ws_url_for_profile(base, deadline):
+    """The DevTools WS URL of one specific profile dir.
+
+    Unlike the scan over every profile, this never attaches to another
+    browser: an unknown or not-running preference is an error, not a
+    fall-through to whatever else is running.
+
+    The endpoint is checked against the profile's own DevToolsActivePort: a
+    stale file plus a port another browser has since taken would otherwise
+    connect the agent to that other browser.
+    """
+    while time.time() < deadline:
+        try:
+            active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
+        except (FileNotFoundError, NotADirectoryError, OSError):
+            active = []
+        port = active[0].strip() if active else ""
+        ws_path = active[1].strip() if len(active) > 1 else ""
+        want_uuid = _browser_uuid(ws_path)
+        if port:
+            try:
+                url = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
+                # The browser on that port must be the one this profile started.
+                if want_uuid and _browser_uuid(url) != want_uuid:
+                    raise _WrongBrowser()
+                return url
+            except urllib.error.HTTPError as e:
+                if e.code == 403:
+                    raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
+                if e.code == 404 and ws_path:
+                    # Chrome 147+ disables /json/* discovery on the default
+                    # user-data-dir; the path Chrome wrote still works, but only
+                    # while that port is really live.
+                    if _devtools_port_live(base):
+                        return f"ws://127.0.0.1:{port}{ws_path}"
+            except _WrongBrowser:
+                pass  # another browser took the port; keep looking
+            except (OSError, KeyError, ValueError):
+                pass
+        time.sleep(0.2)
+    raise RuntimeError(
+        f"preferred-browser-not-running: the config asks for {browser_key_for_profile(base) or base}, but it has no live "
+        f"DevTools port in {base} -- start that browser (and allow remote debugging), or clear the preference with "
+        f"`browser-harness config clear preferred_browser`"
+    )
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -360,6 +500,16 @@ def get_ws_url():
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
         raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
+    preferred = browser_config.browser_settings()["preferred_browser"]
+    if preferred:
+        base = preferred_profile(preferred)
+        if base is None:
+            raise RuntimeError(
+                f"preferred-browser-not-found: the config asks for browser {preferred!r}, which is not installed here "
+                f"(known browsers: {', '.join(known_browser_keys())}) -- set it with `browser-harness config set "
+                f"preferred_browser=<name>`, or clear it to let the first live browser win"
+            )
+        return _ws_url_for_profile(base, time.time() + 30)
     deadline = time.time() + 30
     next_liveness_check = 0.0
     while time.time() < deadline:
@@ -663,12 +813,34 @@ class Daemon:
         """The owner's current tab. A fresh owner gets its own background tab, never the person's."""
         async with o.lock:
             if o.current is None:
+                if startup_tab_policy() == "first_page":
+                    adopted = self._first_page()
+                    if adopted:
+                        # _take(), not _own(): an idle owner still holding this
+                        # tab must be released and its CDP session detached,
+                        # or two owners drive the same tab.
+                        await self._take(key, adopted, current=True, created=False)
+                        return o.current
                 spare = [t for t, i in self.info.items() if REMOTE_ID and t not in self.tab_owner
                          and i.get("type") == "page" and is_blank(i.get("url", ""))]
                 tid = spare[0] if spare else (await self.cdp.send_raw(
                     "Target.createTarget", {"url": "about:blank", "background": True}))["targetId"]
                 self._own(key, tid, created=not spare)
             return o.current
+
+    def _first_page(self):
+        """The first real page the browser lists, when the config asks for it.
+
+        Only a free tab is adopted: a tab another owner holds is never taken
+        silently.
+        """
+        for tid, info in self.info.items():
+            if info.get("type") != "page" or not is_real_page(info):
+                continue
+            if self._holder(tid) is not None:
+                continue
+            return tid
+        return None
 
     async def _session(self, key, o, tid):
         """The owner's session on its tab, attached once on first use. A gone tab raises tab-closed."""
