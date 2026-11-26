@@ -1872,7 +1872,44 @@ def test_a_remote_daemon_that_was_still_exiting_is_replaced_not_reported(tmp_pat
     assert len(spawned) == 1
 
 
-def test_rotate_proxy_patches_the_names_cloud_browser(monkeypatch):
+def _no_set_proxy(name, method, **params):
+    raise RuntimeError("'BrowserUse.setProxy' wasn't found")  # local Chrome or an older cloud browser
+
+
+def test_rotate_proxy_asks_the_browser_over_cdp_without_a_key(monkeypatch):
+    sent = []
+
+    def daemon_cdp(name, method, **params):
+        sent.append((name, method, params))
+        return {"mode": "managed", "country": params.get("country", "us"), "exitIp": "1.2.3.4"}
+
+    monkeypatch.setattr(admin, "_daemon_cdp", daemon_cdp)
+    monkeypatch.setattr(admin.auth, "get_browser_use_api_key", lambda: pytest.fail("the CDP path needs no key"))
+    monkeypatch.setattr(admin.urllib.request, "urlopen", lambda *a, **k: pytest.fail("no API call when CDP answers"))
+    assert admin.rotate_proxy(" DE ", name="work") == {"mode": "managed", "country": "de", "exitIp": "1.2.3.4"}
+    admin.rotate_proxy(name="work")
+    assert sent == [
+        ("work", "BrowserUse.setProxy", {"rotate": True, "country": "de"}),  # a country alone keeps the IP
+        ("work", "BrowserUse.setProxy", {"rotate": True}),
+    ]
+
+
+def test_rotate_proxy_turns_the_proxy_on_for_a_direct_browser(monkeypatch):
+    sent = []
+
+    def daemon_cdp(name, method, **params):
+        sent.append(params)
+        if params.get("rotate"):
+            raise RuntimeError("BrowserUse.setProxy: invalid proxy change: a direct browser takes no country, provider, or rotate; send mode managed to turn the proxy on")
+        return {"mode": "managed", "country": "us", "exitIp": "5.6.7.8"}
+
+    monkeypatch.setattr(admin, "_daemon_cdp", daemon_cdp)
+    assert admin.rotate_proxy(name="work")["exitIp"] == "5.6.7.8"
+    assert sent == [{"rotate": True}, {"mode": "managed"}]
+
+
+def test_rotate_proxy_falls_back_to_the_api_when_the_browser_lacks_the_method(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_cdp", _no_set_proxy)
     monkeypatch.setattr(admin.ipc, "read_remote_marker", lambda name: {"kind": "cloud", "browser_id": f"b-{name}"})
     monkeypatch.setattr(admin.auth, "get_browser_use_api_key", lambda: "k")
     sent = []
@@ -1891,6 +1928,7 @@ def test_rotate_proxy_patches_the_names_cloud_browser(monkeypatch):
 
 
 def test_rotate_proxy_without_a_cloud_browser_raises_before_any_request(monkeypatch):
+    monkeypatch.setattr(admin, "_daemon_cdp", _no_set_proxy)
     monkeypatch.setattr(admin.ipc, "read_remote_marker", lambda name: None)
     monkeypatch.setattr(admin.urllib.request, "urlopen", lambda *a, **k: pytest.fail("no request without a cloud browser"))
     with pytest.raises(RuntimeError, match="no Browser Use cloud browser"):
@@ -1901,6 +1939,7 @@ def test_rotate_proxy_reports_the_clouds_refusal(monkeypatch):
     import io
     import urllib.error
 
+    monkeypatch.setattr(admin, "_daemon_cdp", _no_set_proxy)
     monkeypatch.setattr(admin.ipc, "read_remote_marker", lambda name: {"browser_id": "b1"})
     monkeypatch.setattr(admin.auth, "get_browser_use_api_key", lambda: "k")
 

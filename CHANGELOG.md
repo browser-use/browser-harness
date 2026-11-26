@@ -3,7 +3,7 @@
 ## Unreleased (0.1.16)
 
 ### Cloud browsers
-- `rotate_proxy(country=None)`: gives the current name's Browser Use Cloud browser a new proxy exit IP (and optionally a new country) without restarting the browser, its tabs or the daemon. Returns `{mode, country, exitIp}`; raises on a local browser or when the cloud refuses (custom proxy, browser run by a cloud agent).
+- `rotate_proxy(country=None)`: gives the current name's Browser Use Cloud browser a new proxy exit IP (and optionally a new country) without restarting the browser, its tabs or the daemon. Returns `{mode, country, exitIp}`; uses the browser's own `BrowserUse.setProxy` over CDP (no API key; also for `BU_CDP_URL` daemons) and falls back to the API; raises on a local browser or when the cloud refuses (custom proxy, browser run by a cloud agent).
 
 ## 0.1.14
 

@@ -53,6 +53,8 @@ print(rotate_proxy("de"))    # new exit IP in Germany
 PY
 ```
 
+It asks the browser over CDP (`BrowserUse.setProxy`), so it needs no API key and also works for a daemon attached with `BU_CDP_URL` / `BU_CDP_WS` to a Browser Use cloud browser.
+
 A failed Cloud health check preserves the existing browser. Retry after it
 recovers; explicitly stop it when finished. Billing continues until stop or timeout.
 
