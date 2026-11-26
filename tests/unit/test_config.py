@@ -367,10 +367,12 @@ def test_a_concurrent_config_set_across_processes_never_loses_an_update(config_d
     import subprocess
     import sys
 
-    pkg_root = str(Path(browser_config.__file__).parents[2])
+    # The package lives under src/, so the source dir is what the child needs
+    # on sys.path — the repository root does not expose the package at all.
+    pkg_src = str(Path(browser_config.__file__).parents[1])
     script = (
         "import sys;"
-        f"sys.path.insert(0, {pkg_root!r});"
+        f"sys.path.insert(0, {pkg_src!r});"
         "from browser_harness import config;"
         "config.write({sys.argv[1]: sys.argv[2]})"
     )
