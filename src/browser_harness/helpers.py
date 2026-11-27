@@ -509,6 +509,14 @@ def switch_tab(target, activate=False):
 
 def new_tab(url="about:blank"):
     """Open a background tab you own and make it current. With a url, an empty current tab is reused."""
+    # Under an owned scope the scope's own blank target is the only tab: the
+    # first new_tab() claims it, a second one is refused (second-target).
+    if ipc.scope_bound():
+        tid = _send({"meta": "claim_owned_page"})["targetId"]
+        if url != "about:blank":
+            goto_url(url)
+        print(f"new_tab: {tid} {url}")
+        return tid
     # Always create blank, then goto: passing url to createTarget races with
     # attach, so the brief about:blank is "complete" by the time the caller
     # polls and wait_for_load() returns before navigation actually starts.

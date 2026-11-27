@@ -8,6 +8,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .owned_scope import OWNED_CAPABILITY, ScopeTable
 from cdp_use.client import CDPClient
 
 
@@ -40,6 +41,8 @@ BUF = 500
 CAPTCHA_LOST_S = 150  # the solver gives up within 120 s: a solve open longer has no finish coming
 CAPTCHA_FRESH_S = 60  # a finish older than this when solve_captcha() starts belongs to an earlier challenge
 CAPTCHA_OFF = "BU_CAPTCHA_SOLVER=off turned it off; handle the captcha yourself"
+# Holder of every owned-scope target. Never an owner key: owner keys never contain a NUL.
+SCOPE_HOLDER = "\0owned-scope"
 GUARDED = ("Target.attachToTarget", "Target.closeTarget", "Target.activateTarget")  # never on another owner's tab
 _MAC_PROFILES = (
     "Library/Application Support/Google/Chrome",
@@ -528,6 +531,13 @@ class Daemon:
         self.idle_exit = False
         self.own_targets = set()  # every targetId this daemon attached (Target.getTargets shows them attached)
         self.browser_sessions = set()  # sessions from Target.attachToBrowserTarget: browser-wide, like no session
+        # Owned-target scopes (BH_OWNED_TARGET=1): built from send_raw only, never from owner state.
+        self.scopes = ScopeTable(lambda *a, **k: self.cdp.send_raw(*a, **k), self._scope_ping_reply())
+
+    def _scope_ping_reply(self):
+        """Ping reply for a scoped client: identity only, no owner or browser counts."""
+        return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND, "endpoint": ipc.endpoint_label(),
+                "protocol": ipc.PROTOCOL, "capabilities": [OWNED_CAPABILITY]}
 
     def owner(self, key):
         o = self.owners.setdefault(key, Owner())
@@ -549,7 +559,9 @@ class Daemon:
 
     def _holder(self, tid):
         """Who holds the tab now; an iframe or worker counts as its tab. A tab whose owner has
-        been idle for OWNER_IDLE is free to take."""
+        been idle for OWNER_IDLE is free to take. An owned-scope target is always held."""
+        if self.scopes.holds_target(self._root(tid)):
+            return SCOPE_HOLDER
         key = self.tab_owner.get(self._root(tid))
         return key if key and time.time() - self.owners[key].seen <= OWNER_IDLE else None
 
@@ -558,7 +570,7 @@ class Daemon:
         to sit in one of this owner's tabs, keeps its keys but shows an empty url and title."""
         tid = info.get("targetId")
         if info.get("type") == "iframe":
-            hidden = self.tab_owner.get(self._root(tid)) != key
+            hidden = self.scopes.holds_target(self._root(tid)) or self.tab_owner.get(self._root(tid)) != key
         else:
             hidden = self._holder(tid) not in (None, key)
         return {**info, "url": "", "title": ""} if hidden else info
@@ -810,6 +822,8 @@ class Daemon:
 
     def _record_event(self, method, params, session_id=None):
         try:  # an error here would end the websocket reader and with it the daemon
+            if self.scopes.absorb_event(method, params, session_id):
+                return
             self._route_event(method, params, session_id)
         except Exception as e:
             log(f"event {method}: {e!r}")
@@ -1061,6 +1075,8 @@ class Daemon:
         expected = ipc.expected_token()
         if expected is not None and req.get("token") != expected:
             return {"error": "unauthorized"}
+        if "scope" in req:  # owned-target scope: never reaches owner state
+            return await self.scopes.handle(req)
         meta = req.get("meta")
         # Liveness probe — lets clients confirm the listener is actually this
         # daemon and not an unrelated process that reused our port post-crash.
@@ -1074,8 +1090,12 @@ class Daemon:
             urls = [u for u in (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL"), self.cdp_ws) if u]
             cdp = {"label": _safe_connection_label(urls[0]) if urls else None, "keys": sorted({k for u in urls for k in _cdp_keys(u)})}
             return {"pong": True, "pid": os.getpid(), "browser_kind": BROWSER_KIND, "endpoint": ipc.endpoint_label(),
-                    "protocol": ipc.PROTOCOL, "active": active, "cdp": cdp}
+                    "protocol": ipc.PROTOCOL, "active": active, "cdp": cdp, "capabilities": [OWNED_CAPABILITY]}
         self.last = time.time()
+        if meta == "begin_owned_target":
+            if self.stop is not None and self.stop.is_set():
+                return {"error": "daemon is shutting down"}
+            return await self.scopes.begin()
         if meta == "shutdown":
             try:
                 stop_remote(strict=True)  # a failed Cloud stop keeps the daemon so a retry can stop billing
@@ -1230,7 +1250,7 @@ class Daemon:
                 result = {**result, "targetInfo": self._visible(key, result.get("targetInfo", {}))}
             return {"result": result}
         if sid:  # an explicit session gets exactly that session, never a redirect
-            if self.session_owner.get(sid, key) != key:
+            if self.scopes.holds_session(sid) or self.session_owner.get(sid, key) != key:
                 return self._taken(o, sid, "session")
             return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
         if o.gone:
@@ -1295,6 +1315,12 @@ async def serve(d):
             t.cancel()
             try: await t
             except (asyncio.CancelledError, Exception): pass
+        if d.cdp:
+            try:
+                for err in await d.scopes.close_all():
+                    log(f"close owned scope on shutdown: {err}")
+            except Exception as e:
+                log(f"close owned scopes on shutdown: {e!r}")
         ipc.cleanup_endpoint(NAME)
 
 
