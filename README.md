@@ -1,5 +1,7 @@
 <img src="https://raw.githubusercontent.com/browser-use/media/main/browser-harness/banner-ink.svg" alt="Browser Harness" width="100%" />
 
+<p align="center">English · <a href="README.tr.md">Türkçe</a></p>
+
 > [!NOTE]
 > **Browser Harness is now the engine inside [Browser Use](https://github.com/browser-use/browser-use).** Use the `browser-use` CLI: same helpers and daemon, plus `browser-use login`, an MCP server (`browser-use --cli-mcp`) and `browser-use skill install`.
 >
