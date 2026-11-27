@@ -12,6 +12,9 @@
 ### Update banner
 - The daily "new version available" banner shows only when someone runs the `browser-harness` command itself. It stays silent inside a host that pins browser-harness as a dependency: when `BH_CLIENT` is set (browser-use's CLI and MCP set it) or the process is not the `browser-harness` command (for example `python -m browser_harness.run`, or the `./browser-harness` launcher in a git checkout). `BH_UPDATE_CHECK=0` still turns it off everywhere.
 
+### CDP deny list (opt-in, BH_CDP_DENY=tokens)
+- With `BH_CDP_DENY=tokens`, the daemon refuses CDP calls that could read or intercept browser tokens (cookies, response bodies, request interception, tracing, DevTools attach and similar), fail-closed. Off by default; nothing changes without the flag.
+
 ### Behavior changes to know
 - Cloud browsers: one window per agent tab instead of tabs in one window. Local Chrome and `BU_CDP_URL` / `BU_CDP_WS` browsers are unchanged.
 
