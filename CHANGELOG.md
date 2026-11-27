@@ -2,6 +2,10 @@
 
 ## 0.1.16
 
+### Telemetry
+- `cli_event` no longer sends the CDP endpoint's hostname (`cdp_url`). It sends `cdp_kind` instead: `local` (loopback), `cloud` (Browser Use Cloud) or `remote`, or none without `BU_CDP_URL`/`BU_CDP_WS`. No hostname, IP or port leaves the machine.
+- Feedback (`report_issue()`, `browser-harness feedback`, MCP `browser_feedback`) now respects the telemetry opt-out like `report_run()`: with `BH_TELEMETRY=0`, `BROWSER_HARNESS_TELEMETRY=0`, `ANONYMIZED_TELEMETRY=false` or `browser-harness telemetry disable`, nothing is sent and the caller gets `Not sent: telemetry is off (<switch>). Nothing left this machine.` (`browser-harness feedback` exits 1).
+
 ### Saved scripts
 - New: `browser-harness scripts save <name> --from-last|--file PATH [--host H] [--param k=v]` saves a working script for a site as `<agent-workspace>/scripts/<host>/<name>.py`, with a header (host, url, params, last verified time). String literals equal to a `--param` value become `PARAMS["k"]`. Text typed by `type_text`/`fill_input` on a line that mentions a password, secret, token, OTP or API key becomes a required param, credential query params in URLs are redacted, and secret-looking `--param` values are not written to the file.
 - New: `browser-harness scripts run <name|host/name> [--param k=v] [--accept]` replays a saved script with no LLM. Exit 0 stamps `verified_at`. A failure prints `drifted: <error>` and the file to fix, and exits 1. Replays wait up to 30 s per browser call instead of 5 s.
