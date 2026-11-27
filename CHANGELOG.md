@@ -2,6 +2,10 @@
 
 ## 0.1.16
 
+### Telemetry
+- `cli_event` no longer sends the CDP endpoint's hostname (`cdp_url`). It sends `cdp_kind` instead: `local` (loopback), `cloud` (Browser Use Cloud) or `remote`, or none without `BU_CDP_URL`/`BU_CDP_WS`. No hostname, IP or port leaves the machine.
+- Feedback (`report_issue()`, `browser-harness feedback`, MCP `browser_feedback`) now respects the telemetry opt-out like `report_run()`: with `BH_TELEMETRY=0`, `BROWSER_HARNESS_TELEMETRY=0`, `ANONYMIZED_TELEMETRY=false` or `browser-harness telemetry disable`, nothing is sent and the caller gets `Not sent: telemetry is off (<switch>). Nothing left this machine.` (`browser-harness feedback` exits 1).
+
 ### Cloud browsers
 - On a Browser Use Cloud browser, each tab the daemon opens for an agent gets its own window. A screenshot of a background tab in a shared window there timed out after 60 s; now it returns at once. Local Chrome and `BU_CDP_URL` / `BU_CDP_WS` browsers keep one window (they screenshot background tabs fine).
 
