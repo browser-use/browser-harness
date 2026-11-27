@@ -69,7 +69,7 @@ from .admin import (
     stop_remote_daemon,
     sync_local_profile,
 )
-from . import auth, recorder, telemetry
+from . import auth, helpers, recorder, scripts, telemetry
 from .helpers import *
 from .helpers import captcha_note as _captcha_note  # private name: not traced as a step of the agent's script
 from .naming import cli_name as _cli_name, named as _named
@@ -107,6 +107,11 @@ Commands:
   browser-harness video init <recording>      prepare a recording for editing
   browser-harness video review <recording>    compile and review the video
   browser-harness video export <recording> --reviewed   export a verified MP4
+  browser-harness scripts save <name> --from-last [--param k=v]
+                                    save the last successful script for replay
+  browser-harness scripts run <name> [--param k=v] [--accept]
+                                    replay a saved script; `drifted:` + exit 1 on failure
+  browser-harness scripts list [--host HOST]   list saved scripts
   browser-harness telemetry status    show anonymous telemetry opt-out state
   browser-harness feedback "what happened" [--category bug|docs|missing|other]
                                     tell the Browser Use team what broke or could be better
@@ -187,7 +192,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "feedback", "skill", "mac-approve", "recordings", "telemetry", "video"}:
+    if first in {"auth", "feedback", "skill", "mac-approve", "recordings", "scripts", "telemetry", "video"}:
         return first
     return "usage"
 
@@ -307,6 +312,7 @@ def main(prog=None):
     if args and args[0] == "telemetry":
         sys.exit(telemetry.run_telemetry_cli(args[1:]))
     _helper_trace.clear()
+    scripts.SECRET_VALUES.clear()
     _helper_call_count = 0
     start_time = time.monotonic()
     command = _telemetry_command(args)
@@ -436,10 +442,16 @@ def _run(args):
     if args and args[0] == "--debug-clicks":
         os.environ["BH_DEBUG_CLICKS"] = "1"
         args = args[1:]
-    if not args and not sys.stdin.isatty():
+    saved = None
+    if args and args[0] == "scripts":
+        if args[1:2] != ["run"]:
+            sys.exit(scripts.run_cli(args[1:]))
+        saved, code, params = scripts.prepare_run(args[2:])
+    elif not args and not sys.stdin.isatty():
         code = sys.stdin.read()
         if not code.strip():
             sys.exit(_named(USAGE))
+        params = scripts.env_params()
     else:
         sys.exit(_named(USAGE))
     print_update_banner()
@@ -470,8 +482,21 @@ def _run(args):
             sys.exit(1)
     _warn_shared_owner()
     _install_helper_trace()
+    globals()["PARAMS"] = params
+    if saved is not None:
+        # Replays run unattended, often on loaded machines: don't fail on a slow daemon reply.
+        helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = max(helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS, scripts.REPLAY_IPC_TIMEOUT_SECONDS)
+        helpers.SAVED_SCRIPT_HINTS = False
     try:
-        exec(code, globals())
+        if saved is not None:
+            sys.exit(scripts.replay(saved, code, globals()))
+        try:
+            exec(code, globals())
+        except SystemExit as e:
+            if e.code in (None, 0):  # sys.exit(0) is still a successful script
+                scripts.journal(code)
+            raise
+        scripts.journal(code)
     finally:
         if not cloud_admin:
             _print_captcha_note()

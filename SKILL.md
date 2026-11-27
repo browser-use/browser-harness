@@ -37,6 +37,7 @@ PY
 
 - Prefer to find elements with the accessibility tree, not screenshots: `cdp("Accessibility.getFullAXTree")["nodes"]` has every element's role, name, and `backendDOMNodeId` — filter in Python before printing (it is thousands of nodes). Coordinates: `q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4` (viewport px, ready for `click_at_xy`; negative/oversized means scroll first).
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
+- Akamai-protected logins and forms (403 on submit): set `BH_HUMAN_MOUSE=1` so `click_at_xy` and `fill_input` move a real mouse there first (~0.3 s more per click); never click or focus with JS there.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
@@ -102,6 +103,20 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
   that daemon or fails closed; it never auto-starts or discovers another Chrome.
 - Orchestrators that spawn a daemon can pass `BH_OWNER_PID=<pid>` in its env.
   The daemon then exits, and stops its cloud browser, when that process dies.
+- Orchestrators using browser tokens can start the daemon with `BH_CDP_DENY=tokens`.
+  The daemon then passes only allowlisted CDP domains/methods (no `Fetch`,
+  `Tracing`, `IO`, `Security`, `Target.openDevTools`, `createBrowserContext`,
+  `setAutoAttach`, and no CDP methods that return response/post bodies or
+  cookies; page JS can still read what the page can), refuses sessions on `devtools:`,
+  `chrome:`, extension and browser-UI targets, limits uploads/downloads to
+  `BH_UPLOAD_DIR`/`BH_DOWNLOAD_DIR`, and drops `*ExtraInfo` events from
+  `drain_events()`. The mode belongs to that daemon (`BU_NAME`) and covers every
+  agent (`BH_OWNER`) that shares it; it sticks for that name across respawns
+  (to clear it, stop the daemon with `--reload` and start it once with
+  `BH_CDP_DENY=off`), and a caller that requires it is refused a
+  daemon running without it. It is a speed bump, not a security boundary:
+  the real value is only safe if the swap happens outside Chrome and responses
+  never echo it.
 - Core helpers stay short. Put task-specific helper additions in `$BH_AGENT_WORKSPACE/agent_helpers.py`.
 
 ## Feedback
@@ -150,6 +165,12 @@ on.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
 - Navigation and `js()` wait up to 30 s for the browser; other calls 5 s. On a very slow remote browser set `BH_IPC_TIMEOUT=<seconds>` to raise the 30 s.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
+
+## Saved Scripts
+
+- If `goto_url` or `browser-harness scripts list --host <host>` shows a saved script for this site and task, run it: `browser-harness scripts run <host>/<name> --param k=v`. If it prints `drifted: ...`, fix that file and rerun it.
+- After a repeatable task works, save it: `browser-harness scripts save <name> --from-last --param k=v` (saves your last successful script; read params as `PARAMS["k"]`, end with an `assert`, print the result as JSON).
+- The first successful replay that prints JSON records its output shape in the file's `# expect:` line. A later replay is `drifted:` when it prints no JSON, a key goes missing, a type changes, or a value that had data comes back null or empty. If that output is actually correct (e.g. a story with no comments), rerun with `--accept` instead of loosening the script's own checks.
 
 ## Domain Skills
 

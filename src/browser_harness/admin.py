@@ -419,6 +419,38 @@ def daemon_browser_kind(name=None):
     return kind if kind in {"cloud", "cdp", "local"} else None
 
 
+def daemon_deny_mode(name=None):
+    """BH_CDP_DENY mode a live daemon reports ('tokens' or None). None also for
+    unreachable daemons and daemons from before the mode was reported."""
+    mode = _ping(name).get("cdp_deny")
+    return mode if mode == "tokens" else None
+
+
+def required_deny_mode(name=None, env=None):
+    """'tokens' when the caller's env sets BH_CDP_DENY=tokens or this daemon name
+    was last started in tokens mode (its sticky marker); BH_CDP_DENY=off opts out.
+    The marker is per BU_NAME: another name's tokens mode never applies here."""
+    v = {**os.environ, **(env or {})}.get("BH_CDP_DENY", "").strip().lower()
+    if v == "tokens":
+        return "tokens"
+    if v == "off":
+        return None
+    if v:  # a typo never reuses an unprotected daemon (the daemon refuses to start with it too)
+        raise ValueError(f"BH_CDP_DENY={v!r} is not supported; use 'tokens', 'off', or leave it unset")
+    return "tokens" if ipc.deny_path(name or NAME).exists() else None
+
+
+def check_deny_mode(name=None, env=None):
+    """Fail closed when tokens mode is required but the live daemon runs without it.
+    The mode is the daemon's, so it covers every owner that shares the daemon."""
+    required = required_deny_mode(name, env)
+    if required and daemon_deny_mode(name) != required:
+        raise RuntimeError(
+            f"daemon {name or NAME!r} is running without BH_CDP_DENY={required}; "
+            "stop it (browser-harness --reload) and retry so it restarts protected"
+        )
+
+
 def _restart_if_outdated(name=None, may_restart=True):
     """A client on the same protocol just uses the daemon. An older daemon is stopped only
     when it is a local-Chrome one nobody else uses: a CDP or Cloud daemon would come back
@@ -644,7 +676,13 @@ def _launch_and_wait_for_browser(name=None):
 def ensure_daemon(wait=None, name=None, env=None):
     """Idempotent. Self-heals stale daemon, closed Chrome (launches it), cold
     Chrome, and missing Allow on chrome://inspect. Never replaces a name bound
-    to a remote browser with a local Chrome daemon."""
+    to a remote browser with a local Chrome daemon. Refuses to hand back a daemon
+    running without a required BH_CDP_DENY mode."""
+    _ensure_daemon(wait=wait, name=name, env=env)
+    check_deny_mode(name, env)
+
+
+def _ensure_daemon(wait=None, name=None, env=None):
     daemon_name = name or NAME
     local = _is_local_chrome_mode(env)
     if daemon_alive(name):
@@ -878,6 +916,7 @@ def require_existing_daemon(name=None):
         raise RuntimeError(f"required daemon {daemon_name!r} failed its CDP health check")
     _check_same_browser(daemon_name)
     _restart_if_outdated(daemon_name, may_restart=False)
+    check_deny_mode(daemon_name)
 
 
 def stop_remote_daemon(name="remote"):
@@ -1347,10 +1386,22 @@ def check_for_update():
     return cur, latest, newer
 
 
+def _standalone_command():
+    """True when this process is the `browser-harness` console script, not an import or `python -m` from a host."""
+    import sys
+    name = os.path.basename(sys.argv[0] if sys.argv else "").lower()
+    return name in {"browser-harness", "browser-harness.exe", "browser-harness-script.py"}
+
+
 def print_update_banner(out=None):
     """Print the update banner to stderr once per day. Silent when up-to-date or offline."""
     import sys
     if os.environ.get("BH_UPDATE_CHECK", "").strip().lower() in {"0", "false", "no", "off"}:
+        return
+    # Only for someone who installed and runs the browser-harness command itself. Inside a host that pins it as a
+    # dependency (an embedding CLI sets BH_CLIENT; others run `python -m browser_harness.run`), telling the agent to
+    # run `--update -y` would upgrade a pinned package underneath that host.
+    if os.environ.get("BH_CLIENT") or not _standalone_command():
         return
     out = out or sys.stderr
     cache = _cache_read()
