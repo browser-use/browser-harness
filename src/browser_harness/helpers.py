@@ -433,6 +433,8 @@ def list_tabs(include_chrome=True):
         # another agent's tab keeps the keys 0.1.13 gave every tab, empty, so t["url"] still works
         taken = t["owner"] == "taken"
         tab.update(title="" if taken else t.get("title", ""), url="" if taken else url)
+        if not taken and "profile_directory" in t:
+            tab.update(profile_name=t.get("profile_name"), profile_directory=t["profile_directory"])
         if t.get("mark"):
             tab["mark"] = t["mark"]
         out.append(tab)
@@ -480,6 +482,7 @@ def current_tab():
     return {
         "targetId": r["targetId"],
         "target_id": r["targetId"],
+        **{k: r[k] for k in ("profile_name", "profile_directory") if k in r},
         "url": r["url"],
         "title": r["title"],
     }

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import _ipc as ipc
 from . import auth
-from . import paths
+from . import paths, tab_profiles
 from cdp_use.client import CDPClient
 
 
@@ -505,6 +505,7 @@ class Daemon:
 
     def __init__(self):
         self.cdp = None
+        self.profile_root = None
         self.cdp_ws = None
         self.owners = {}         # owner key -> Owner
         self.tab_owner = {}      # target_id -> owner key
@@ -987,6 +988,8 @@ class Daemon:
     async def start(self):
         self.stop = asyncio.Event()
         url = self.cdp_ws = get_ws_url()
+        if BROWSER_KIND == "local":
+            self.profile_root = tab_profiles.connected_root(PROFILES, url)
         log(f"connecting to {_safe_connection_label(url)}")
         self.cdp = _PatientCDPClient(url) if BROWSER_KIND == "local" else CDPClient(url)
         if BROWSER_KIND == "local":
@@ -1091,6 +1094,29 @@ class Daemon:
         except Exception as e:
             return {"error": str(e)}
 
+    async def _label_profiles(self, tabs):
+        if self.profile_root is None:
+            return
+        windows = await asyncio.to_thread(tab_profiles.window_profiles, self.profile_root)
+        if not windows:
+            return
+        contexts = {}
+        for tab in tabs:
+            if tab.get("owner") == "taken":
+                continue
+            context = tab.get("browserContextId")
+            profile = contexts.get(context)
+            if profile is None:
+                try:
+                    window = await self.cdp.send_raw("Browser.getWindowForTarget", {"targetId": tab["targetId"]})
+                except Exception:
+                    continue  # target closed or has no browser window
+                profile = windows.get(window.get("windowId"))
+                if profile and context:
+                    contexts[context] = profile
+            if profile:
+                tab["profile_name"], tab["profile_directory"] = profile
+
     async def _meta(self, key, o, meta, req):
         if meta == "drain_events":
             out = list(o.events)
@@ -1102,8 +1128,10 @@ class Daemon:
             return await self.captcha(req.get("op"), req.get("since", 0.0), req.get("caller"), req.get("lease", 0.0), tid=o.current)
         if meta == "tabs":
             pages = [t for t in (await self.cdp.send_raw("Target.getTargets"))["targetInfos"] if t["type"] == "page"]
-            return {"tabs": [{**self._visible(key, t), "owner": "you" if self.tab_owner.get(t["targetId"]) == key else "taken" if self._holder(t["targetId"]) else None,
-                              "mark": o.marks.get(t["targetId"])} for t in pages]}
+            tabs = [{**self._visible(key, t), "owner": "you" if self.tab_owner.get(t["targetId"]) == key else "taken" if self._holder(t["targetId"]) else None,
+                     "mark": o.marks.get(t["targetId"])} for t in pages]
+            await self._label_profiles(tabs)
+            return {"tabs": tabs}
         if meta == "iframe_target":
             for tid, info in list(self.info.items()):
                 if info.get("type") == "iframe" and req["url"] in info.get("url", "") \
@@ -1205,7 +1233,9 @@ class Daemon:
         if meta == "session":
             return {"session_id": await self._session(key, o, tid)}
         info = (await self.cdp.send_raw("Target.getTargetInfo", {"targetId": tid}))["targetInfo"]
-        return {"targetId": tid, "url": info.get("url", ""), "title": info.get("title", "")}
+        tab = {"targetId": tid, "url": info.get("url", ""), "title": info.get("title", "")}
+        await self._label_profiles([tab])
+        return tab
 
     async def _send(self, key, o, req):
         method, params, sid = req["method"], req.get("params") or {}, req.get("session_id")
