@@ -3,7 +3,8 @@
 ## 0.1.16
 
 ### CDP URLs
-- A `?token=...` query on `BU_CDP_URL` or a cloud browser's `cdpUrl` now stays on the `/json/version` request and on the ws URL read from `DevToolsActivePort`. Before, the `/json/version` path went after the query and the ws URL dropped the query, so the token was lost.
+- Derived CDP URLs now keep the `?token=...` query. This applies to the `/json/version` request and to the ws URL from `DevToolsActivePort`.
+- Before, text joins put `/json/version` after the query and lost the token.
 - The `BU_CDP_URL` unreachable error shows only the HTTP status or error type, not the URL or its token.
 - A new CI check (`tools/cdp-url-guard/check.py`) fails when code builds a CDP URL by text join instead of with `cdp_path()`.
 

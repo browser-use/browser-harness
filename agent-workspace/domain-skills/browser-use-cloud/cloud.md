@@ -67,9 +67,9 @@ Returns `201` with this shape (also returned by `GET /browsers/{id}`,
 }
 ```
 
-The `liveUrl` carries the cdp WebSocket as a `?wss=...` query param, so
-the URL gives full control of the browser. Share it only with people
-who may control the browser.
+The `liveUrl` holds the CDP WebSocket URL in its `?wss=...` query.
+The `liveUrl` gives full control of the browser. Share it only with
+people who may control the browser.
 
 ### `PATCH /browsers/{id}` — stop (end billing)
 
@@ -170,9 +170,9 @@ real Chrome once, then retry.
   `c or []`.
 - **`liveUrl` host is `live.browser-use.com`**, not
   `cloud.browser-use.com`. They're separate surfaces.
-- **`cdpUrl` and `liveUrl` are secrets.** They hold an access token in
-  the query, and each gives full control of the browser. Use them exactly
-  as returned, never build a CDP URL from `id`, and never drop the query.
+- **`cdpUrl` and `liveUrl` are secrets.** Each URL holds an access token.
+  Each URL gives full control of the browser. Use each URL without a
+  change. Never build a CDP URL from `id`. Never remove the query.
 - **`start_remote_daemon` overwrites `BU_CDP_WS`** in the daemon env;
   re-read from `browser["cdpUrl"]` if you need the value afterwards.
   (PR #300 stops `run.py` from clobbering an explicit `BU_CDP_URL`, but

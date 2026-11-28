@@ -3,6 +3,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 def cdp_path(url, path, scheme=None):
-    """`url` with `path` added after its own path, the query kept and the fragment dropped; `scheme` replaces the scheme when given."""
+    """Return `url` with `path` after its path, the same query, no fragment, and `scheme` when given."""
     u = urlsplit(url)
     return urlunsplit((scheme or u.scheme, u.netloc, u.path.rstrip("/") + path, u.query, ""))

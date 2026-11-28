@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fail when code outside the CDP URL helper builds a browser URL by hand, which loses the access token."""
+"""Fail when code outside the CDP URL helper joins text to make a CDP URL."""
 import re, subprocess, sys
 
 HELPERS = {"src/browser_harness/cdp_urls.py", "tools/cdp-url-guard/check.py"}
 ALLOWED = [
-    # A log label that shows only scheme, host and port, never used to connect.
+    # The daemon uses this label only in logs.
     ("src/browser_harness/daemon.py", 'return f"{parsed.scheme}://{host}{port}"'),
-    # A hashed key that matches endpoints for ping, never used to connect.
+    # The daemon uses this key only to match endpoints for ping.
     ("src/browser_harness/daemon.py", 'bare = f"{scheme}://{host}:{u.port or {\'ws\': 80, \'wss\': 443}.get(scheme, \'\')}"'),
 ]
 CODE = re.compile(r"\.(py|js|mjs|cjs|ts|sh|html)$")
@@ -15,7 +15,7 @@ RULES = [
     ("our CDP domain", re.compile(r"\.cdp\.(browser-use|eu\.browser-use|fuego)"), False),
     ("driver port joined to a URL", re.compile(r":6969\b|USE_BROWSER_API_PORT(?!\s*(:\s*)?(\w+\s*)?:?=[^=])"), False),
     ("/json path joined to a URL", re.compile(r"""(\+\s*["'`]|\}|%s|%v)/json/(version|list)|(new URL\(\s*["'`]|urljoin\(.*["'])/?json/(version|list)"""), False),
-    ("URL built from a host read", re.compile(r"""//[^"'`\n]*(\{[^}]*|%s[^"'`\n]*["'`]\s*,[^)\n]*)\b(Host|host|hostname|Hostname|netloc|origin)\b"""), True),
+    ("URL built from a host read", re.compile(r"""//[^"'`\n]*(\{[^}]*|(%s|\{\})[^"'`\n]*["'`]\s*(,|%|\.format\()[^\n]*)\b(Host|host|hostname|Hostname|netloc|origin)\b"""), True),
 ]
 
 
