@@ -68,7 +68,8 @@ Returns `201` with this shape (also returned by `GET /browsers/{id}`,
 ```
 
 The `liveUrl` carries the cdp WebSocket as a `?wss=...` query param, so
-sharing the URL alone hands off a viewable session — no extra setup.
+the URL gives full control of the browser. Share it only with people
+who may control the browser.
 
 ### `PATCH /browsers/{id}` — stop (end billing)
 
