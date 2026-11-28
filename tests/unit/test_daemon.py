@@ -74,6 +74,48 @@ def test_unreachable_cdp_url_error_omits_the_token(monkeypatch, error, detail):
     assert TOKEN not in str(e.value)
 
 
+@pytest.mark.parametrize(
+    ("cdp_url", "version_url"),
+    [
+        ("https://b.cdp.browser-use.com?token=abc", "https://b.cdp.browser-use.com/json/version?token=abc"),
+        ("https://b.cdp.browser-use.com/?token=abc#frag", "https://b.cdp.browser-use.com/json/version?token=abc"),
+        ("http://[::1]:9222/proxy/?token=abc", "http://[::1]:9222/proxy/json/version?token=abc"),
+        ("http://127.0.0.1:9333", "http://127.0.0.1:9333/json/version"),
+    ],
+)
+def test_json_version_url_keeps_the_token_query(monkeypatch, cdp_url, version_url):
+    from browser_harness import admin
+    from browser_harness.cdp_urls import cdp_path
+
+    requested = []
+
+    def urlopen(url, timeout):
+        requested.append(url)
+        return type("Response", (), {"read": lambda self: b'{"webSocketDebuggerUrl": "ws://x"}'})()
+
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setenv("BU_CDP_URL", cdp_url)
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
+
+    assert cdp_path(cdp_url, "/json/version") == version_url
+    assert daemon.get_ws_url() == admin._cdp_ws_from_url(cdp_url) == "ws://x"
+    assert requested == [version_url, version_url]
+
+
+@pytest.mark.parametrize(
+    ("cdp_url", "ws_url"),
+    [
+        ("http://[::1]:9222/?token=abc", "ws://[::1]:9222/devtools/browser/id?token=abc"),
+        ("http://127.0.0.1:9222/json/version?token=abc", "ws://127.0.0.1:9222/devtools/browser/id?token=abc"),
+    ],
+)
+def test_devtools_active_port_fallback_keeps_the_token_query(tmp_path, monkeypatch, cdp_url, ws_url):
+    (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/id\n")
+    monkeypatch.setattr(daemon, "PROFILES", [tmp_path])
+
+    assert daemon._ws_from_devtools_active_port(cdp_url) == ws_url
+
+
 def test_remote_stop_retries_and_succeeds(monkeypatch):
     attempts = []
     monkeypatch.setattr(daemon, "REMOTE_ID", "browser-1")

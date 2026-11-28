@@ -12,6 +12,7 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception: pass
 
 from . import _ipc
+from .cdp_urls import cdp_path
 
 
 def _alias_named_local_daemon_to_owner():
@@ -127,7 +128,7 @@ USAGE = """Usage:
 def _local_chrome_listening():
     for port in (9222, 9223):
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3) as response:
+            with urllib.request.urlopen(cdp_path(f"http://127.0.0.1:{port}", "/json/version"), timeout=0.3) as response:
                 version = json.loads(response.read())
             if isinstance(version, dict) and isinstance(version.get("webSocketDebuggerUrl"), str) and version["webSocketDebuggerUrl"]:
                 return True
