@@ -359,7 +359,10 @@ def get_ws_url():
         hint = "is the dedicated automation Chrome running? Launch it with --remote-debugging-port=<port> --user-data-dir=<dedicated dir>"
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
-        raise RuntimeError(f"BU_CDP_URL={_safe_connection_label(url)} unreachable after 30s: {str(last_err).replace(base_url, '<BU_CDP_URL>')} -- {hint}")
+        # The error text can echo the URL and its token, so the message keeps only the HTTP status or error type.
+        reason = getattr(last_err, "reason", None)
+        detail = f"HTTP {last_err.code}" if isinstance(last_err, urllib.error.HTTPError) else type(reason if isinstance(reason, BaseException) else last_err).__name__
+        raise RuntimeError(f"BU_CDP_URL={_safe_connection_label(url)} unreachable after 30s: {detail} -- {hint}")
     deadline = time.time() + 30
     next_liveness_check = 0.0
     while time.time() < deadline:

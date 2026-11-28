@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import time
+import urllib.error
 
 import pytest
 
@@ -46,17 +47,31 @@ def test_safe_connection_label_removes_credentials_paths_and_queries(url, label)
     assert daemon._safe_connection_label(url) == label
 
 
-@pytest.mark.parametrize("base", ["http://127.0.0.1:9", "b.cdp.browser-use.com"])
-def test_unreachable_cdp_url_error_omits_the_token(monkeypatch, base):
-    token = "A" * 41 + "-_"
+TOKEN = "A" * 41 + "-_"
+
+
+@pytest.mark.parametrize(
+    ("error", "detail"),
+    [
+        (urllib.error.URLError(ConnectionRefusedError(111, f"refused ?token={TOKEN}")), "ConnectionRefusedError"),
+        (urllib.error.URLError(f"no host ?token={TOKEN}"), "URLError"),
+        (ValueError(f"unknown url type: 'b.cdp.browser-use.com?token={TOKEN}/json/version'"), "ValueError"),
+        (urllib.error.HTTPError("u", 502, f"bad gateway ?token={TOKEN}", {}, None), "HTTP 502"),
+    ],
+)
+def test_unreachable_cdp_url_error_omits_the_token(monkeypatch, error, detail):
     monkeypatch.delenv("BU_CDP_WS", raising=False)
-    monkeypatch.setenv("BU_CDP_URL", f"{base}?token={token}")
+    monkeypatch.setenv("BU_CDP_URL", f"https://b.cdp.browser-use.com?token={TOKEN}")
     monkeypatch.setattr(daemon.time, "time", itertools.count(step=20).__next__)
     monkeypatch.setattr(daemon.time, "sleep", lambda _seconds: None)
 
-    with pytest.raises(RuntimeError, match="unreachable") as e:
+    def urlopen(_url, timeout):
+        raise error
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
+    with pytest.raises(RuntimeError, match=f"unreachable after 30s: {detail} --") as e:
         daemon.get_ws_url()
-    assert token not in str(e.value)
+    assert TOKEN not in str(e.value)
 
 
 def test_remote_stop_retries_and_succeeds(monkeypatch):
