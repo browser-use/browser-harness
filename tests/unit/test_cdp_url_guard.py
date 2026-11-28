@@ -7,7 +7,7 @@ GUARD = Path(__file__).resolve().parents[2] / "tools" / "cdp-url-guard" / "check
 spec = importlib.util.spec_from_file_location("cdp_url_guard", GUARD)
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
-HOST_READ = dict((name, pattern) for name, pattern, _ in guard.RULES)["URL built from a host read"]
+RULES = {name: pattern for name, pattern, _ in guard.RULES}
 
 
 @pytest.mark.parametrize(
@@ -17,8 +17,25 @@ HOST_READ = dict((name, pattern) for name, pattern, _ in guard.RULES)["URL built
         ('return "%s://%s" % (parsed.scheme, parsed.netloc)', True),
         ('return "{}://{}".format(u.scheme, u.netloc)', True),
         ('log("%s://%s", scheme, host)', True),
+        ('u = "wss://{}".format(cdp_host)', True),
+        ('u = f"wss://{browser_host}/x"', True),
+        ("u = 'ws://' + host + '/devtools'", True),
+        ('u = "ws://" + u.netloc', True),
+        ('u = "https://ghost.example.com/" + y', False),
         ('return "https://example.com/%s" % path', False),
     ],
 )
 def test_host_read_rule_flags_each_format_style(line, flagged):
-    assert bool(HOST_READ.search(line)) is flagged, line
+    assert bool(RULES["URL built from a host read"].search(line)) is flagged, line
+
+
+@pytest.mark.parametrize(
+    ("line", "flagged"),
+    [
+        ('url = cdp_url + "/json/version"', True),
+        ('cdp_url += "/json/version"', True),
+        ('path = "/json/version"', False),
+    ],
+)
+def test_json_path_rule_flags_each_join_style(line, flagged):
+    assert bool(RULES["/json path joined to a URL"].search(line)) is flagged, line

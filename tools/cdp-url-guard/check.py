@@ -14,8 +14,8 @@ TEST = re.compile(r"((^|/)test_[^/]*\.py|_test\.py|\.test\.\w+|\.spec\.\w+)$|(^|
 RULES = [
     ("our CDP domain", re.compile(r"\.cdp\.(browser-use|eu\.browser-use|fuego)"), False),
     ("driver port joined to a URL", re.compile(r":6969\b|USE_BROWSER_API_PORT(?!\s*(:\s*)?(\w+\s*)?:?=[^=])"), False),
-    ("/json path joined to a URL", re.compile(r"""(\+\s*["'`]|\}|%s|%v)/json/(version|list)|(new URL\(\s*["'`]|urljoin\(.*["'])/?json/(version|list)"""), False),
-    ("URL built from a host read", re.compile(r"""//[^"'`\n]*(\{[^}]*|(%s|\{\})[^"'`\n]*["'`]\s*(,|%|\.format\()[^\n]*)\b(Host|host|hostname|Hostname|netloc|origin)\b"""), True),
+    ("/json path joined to a URL", re.compile(r"""(\+=?\s*["'`]|\}|%s|%v)/json/(version|list)|(new URL\(\s*["'`]|urljoin\(.*["'])/?json/(version|list)"""), False),
+    ("URL built from a host read", re.compile(r"""//[^"'`\n]*(\{[^}]*|(%s|\{\})[^"'`\n]*["'`]\s*(,|%|\.format\()[^\n]*|["'`]\s*\+\s*[\w.\[\]()]*)(?<![A-Za-z])(Host|host|hostname|Hostname|netloc|origin)\b"""), True),
 ]
 
 
