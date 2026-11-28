@@ -149,6 +149,38 @@ def test_remote_marker_roundtrip(short_runtime):
     assert ipc.read_remote_marker("w") is None
 
 
+# --- request(): reading the reply ---
+
+class _ScriptedConn:
+    """A socket whose recv() hands back the given chunks in order, then EOF."""
+    def __init__(self, *chunks): self.chunks = list(chunks)
+    def sendall(self, data): pass
+    def recv(self, size): return self.chunks.pop(0) if self.chunks else b""
+
+
+def test_request_reads_a_large_reply_that_arrives_in_many_chunks():
+    """macOS hands an AF_UNIX reply back 8 KB per read, so an 18 MB
+    Accessibility.getFullAXTree reply arrives in about 2,200 chunks."""
+    reply = {"result": {"nodes": [{"nodeId": str(i), "name": "Order %d" % i} for i in range(50000)]}}
+    raw = (json.dumps(reply) + "\n").encode()
+    conn = _ScriptedConn(*(raw[i:i + 8192] for i in range(0, len(raw), 8192)))
+
+    assert ipc.request(conn, None, {"method": "Accessibility.getFullAXTree"}) == reply
+    assert conn.chunks == []
+
+
+def test_request_handles_a_closed_or_cut_off_reply():
+    assert ipc.request(_ScriptedConn(), None, {"meta": "ping"}) == {}  # closed before a byte arrived
+    assert ipc.request(_ScriptedConn(b'{"pong"', b": true}"), None, {"meta": "ping"}) == {"pong": True}  # no newline, then EOF
+
+
+def test_request_stops_at_the_chunk_that_ends_the_line():
+    conn = _ScriptedConn(b'{"pong": true}\n', b'{"late": 1}\n')
+
+    assert ipc.request(conn, None, {"meta": "ping"}) == {"pong": True}
+    assert conn.chunks == [b'{"late": 1}\n']
+
+
 # --- identify(): ping payload sanitation ---
 
 class _FakeConn:
