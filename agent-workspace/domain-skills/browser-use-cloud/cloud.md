@@ -169,6 +169,9 @@ real Chrome once, then retry.
   `c or []`.
 - **`liveUrl` host is `live.browser-use.com`**, not
   `cloud.browser-use.com`. They're separate surfaces.
+- **`cdpUrl` and `liveUrl` are secrets.** They hold an access token in
+  the query, and each gives full control of the browser. Use them exactly
+  as returned, never build a CDP URL from `id`, and never drop the query.
 - **`start_remote_daemon` overwrites `BU_CDP_WS`** in the daemon env;
   re-read from `browser["cdpUrl"]` if you need the value afterwards.
   (PR #300 stops `run.py` from clobbering an explicit `BU_CDP_URL`, but
