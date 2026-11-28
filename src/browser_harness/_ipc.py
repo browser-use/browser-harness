@@ -141,7 +141,7 @@ def request(c, token, req):
     Returns the parsed JSON response. Caller closes the socket."""
     if token: req = {**req, "token": token}
     c.sendall((json.dumps(req) + "\n").encode())
-    data = b""
+    data = bytearray()  # bytes += would copy the whole reply on every read
     while not data.endswith(b"\n"):
         chunk = c.recv(1 << 16)
         if not chunk: break
