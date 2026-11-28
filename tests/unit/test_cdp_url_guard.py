@@ -21,6 +21,8 @@ RULES = {name: pattern for name, pattern, _ in guard.RULES}
         ('u = f"wss://{browser_host}/x"', True),
         ("u = 'ws://' + host + '/devtools'", True),
         ('u = "ws://" + u.netloc', True),
+        ("const u = `wss://${cdpHost}/devtools`", True),
+        ("const u = 'wss://' + browserHost", True),
         ('u = "https://ghost.example.com/" + y', False),
         ('return "https://example.com/%s" % path', False),
     ],
