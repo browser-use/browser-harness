@@ -159,8 +159,8 @@ class _ScriptedConn:
 
 
 def test_request_reads_a_large_reply_that_arrives_in_many_chunks():
-    """macOS hands an AF_UNIX reply back 8 KB per read, so an 18 MB
-    Accessibility.getFullAXTree reply arrives in about 2,200 chunks."""
+    """macOS hands an AF_UNIX reply back 8 KB per read, so a large
+    Accessibility.getFullAXTree reply arrives in many chunks: this 2 MB one in about 270."""
     reply = {"result": {"nodes": [{"nodeId": str(i), "name": "Order %d" % i} for i in range(50000)]}}
     raw = (json.dumps(reply) + "\n").encode()
     conn = _ScriptedConn(*(raw[i:i + 8192] for i in range(0, len(raw), 8192)))
