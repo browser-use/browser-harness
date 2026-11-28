@@ -1392,6 +1392,7 @@ _BROWSER_LAUNCH = (
     ("arc", "Arc", (), None),
     ("dia", "Dia", (), None),
     ("comet", "Comet", (), None),
+    ("helium", "Helium", ("helium",), None),
 )
 _DEFAULT_LAUNCH = (
     "Google Chrome",

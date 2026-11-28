@@ -53,6 +53,7 @@ _MAC_PROFILES = (
     "Library/Application Support/Microsoft Edge Canary",
     "Library/Application Support/BraveSoftware/Brave-Browser",
     "Library/Application Support/BraveSoftware/Brave-Origin",
+    "Library/Application Support/net.imput.helium",
 )
 _LINUX_PROFILES = (
     ".config/google-chrome",
@@ -61,10 +62,12 @@ _LINUX_PROFILES = (
     ".config/microsoft-edge",
     ".config/microsoft-edge-beta",
     ".config/microsoft-edge-dev",
+    ".config/net.imput.helium",
     ".var/app/org.chromium.Chromium/config/chromium",
     ".var/app/com.google.Chrome/config/google-chrome",
     ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
     ".var/app/com.microsoft.Edge/config/microsoft-edge",
+    ".var/app/net.imput.helium/config/net.imput.helium",
 )
 _WINDOWS_PROFILES = (  # relative to %LOCALAPPDATA%; SxS = Canary channel
     "Google/Chrome/User Data",
@@ -77,6 +80,7 @@ _WINDOWS_PROFILES = (  # relative to %LOCALAPPDATA%; SxS = Canary channel
     "Microsoft/Edge Dev/User Data",
     "Microsoft/Edge SxS/User Data",
     "BraveSoftware/Brave-Browser/User Data",
+    "imput/Helium/User Data",
 )
 
 
