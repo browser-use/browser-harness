@@ -8,6 +8,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .cdp_urls import cdp_path
 from cdp_use.client import CDPClient
 
 
@@ -318,9 +319,6 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     want_port = str(p.port) if p.port else ""
     if not want_port:
         return None
-    host = p.hostname or "127.0.0.1"
-    if ":" in host:  # urlparse strips IPv6 brackets; restore them for the ws:// URL
-        host = f"[{host}]"
     for base in PROFILES:
         try:
             active = (base / "DevToolsActivePort").read_text(encoding="utf-8", errors="replace").splitlines()
@@ -329,7 +327,7 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
         port = active[0].strip() if active else ""
         ws_path = active[1].strip() if len(active) > 1 else ""
         if port == want_port and ws_path:
-            return f"ws://{host}:{port}{ws_path}"
+            return cdp_path(p._replace(path="", params="").geturl(), ws_path, scheme="ws")
     return None
 
 
@@ -342,10 +340,10 @@ def get_ws_url():
         # M144 "Allow remote debugging" dialog and the M136 default-profile lockdown.
         deadline = time.time() + 30
         last_err = None
-        base_url = url.rstrip("/")
+        version_url = cdp_path(url, "/json/version")
         while time.time() < deadline:
             try:
-                return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+                return json.loads(urllib.request.urlopen(version_url, timeout=5).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
                 last_err = e
                 if e.code == 403:
@@ -359,7 +357,10 @@ def get_ws_url():
         hint = "is the dedicated automation Chrome running? Launch it with --remote-debugging-port=<port> --user-data-dir=<dedicated dir>"
         if platform.system() == "Windows":
             hint += "; on Windows also check that a firewall/antivirus isn't blocking localhost connections"
-        raise RuntimeError(f"BU_CDP_URL={url} unreachable after 30s: {last_err} -- {hint}")
+        # Error text can show the URL and its token, so the message keeps only the HTTP status or error type.
+        reason = getattr(last_err, "reason", None)
+        detail = f"HTTP {last_err.code}" if isinstance(last_err, urllib.error.HTTPError) else type(reason if isinstance(reason, BaseException) else last_err).__name__
+        raise RuntimeError(f"BU_CDP_URL={_safe_connection_label(url)} unreachable after 30s: {detail} -- {hint}")
     deadline = time.time() + 30
     next_liveness_check = 0.0
     while time.time() < deadline:
@@ -377,7 +378,7 @@ def get_ws_url():
             # with a different --user-data-dir on the same port, that file is left behind
             # with a stale browser UUID and the WS upgrade returns 404.
             try:
-                return json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read())["webSocketDebuggerUrl"]
+                return json.loads(urllib.request.urlopen(cdp_path(f"http://127.0.0.1:{port}", "/json/version"), timeout=1).read())["webSocketDebuggerUrl"]
             except urllib.error.HTTPError as e:
                 if e.code == 403:
                     raise RuntimeError("permission-blocked: Chrome is reachable, but the per-session Allow remote debugging popup has not been accepted")
@@ -402,7 +403,7 @@ def get_ws_url():
         time.sleep(0.2)
     for probe_port in (9222, 9223):
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
+            with urllib.request.urlopen(cdp_path(f"http://127.0.0.1:{probe_port}", "/json/version"), timeout=1) as r:
                 return json.loads(r.read())["webSocketDebuggerUrl"]
         except urllib.error.HTTPError as e:
             if e.code == 403:

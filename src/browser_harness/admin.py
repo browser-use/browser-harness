@@ -12,6 +12,7 @@ from pathlib import Path
 from . import _ipc as ipc
 from . import auth
 from . import paths
+from .cdp_urls import cdp_path
 from .naming import cli_name
 
 
@@ -1071,7 +1072,7 @@ def _stop_cloud_browser(browser_id, strict=False):
 
 
 def _cdp_ws_from_url(cdp_url):
-    return json.loads(urllib.request.urlopen(f"{cdp_url}/json/version", timeout=15).read())["webSocketDebuggerUrl"]
+    return json.loads(urllib.request.urlopen(cdp_path(cdp_url, "/json/version"), timeout=15).read())["webSocketDebuggerUrl"]
 
 
 def _has_local_gui():

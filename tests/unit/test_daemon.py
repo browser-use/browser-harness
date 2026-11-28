@@ -1,8 +1,10 @@
 import asyncio
+import itertools
 import json
 import os
 import socket
 import time
+import urllib.error
 
 import pytest
 
@@ -43,6 +45,75 @@ def test_publish_own_pid_never_truncates_parent_record(tmp_path, monkeypatch):
 )
 def test_safe_connection_label_removes_credentials_paths_and_queries(url, label):
     assert daemon._safe_connection_label(url) == label
+
+
+TOKEN = "A" * 41 + "-_"
+
+
+@pytest.mark.parametrize(
+    ("error", "detail"),
+    [
+        (urllib.error.URLError(ConnectionRefusedError(111, f"refused ?token={TOKEN}")), "ConnectionRefusedError"),
+        (urllib.error.URLError(f"no host ?token={TOKEN}"), "URLError"),
+        (ValueError(f"unknown url type: 'b.cdp.browser-use.com?token={TOKEN}/json/version'"), "ValueError"),
+        (urllib.error.HTTPError("u", 502, f"bad gateway ?token={TOKEN}", {}, None), "HTTP 502"),
+    ],
+)
+def test_unreachable_cdp_url_error_omits_the_token(monkeypatch, error, detail):
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setenv("BU_CDP_URL", f"https://b.cdp.browser-use.com?token={TOKEN}")
+    monkeypatch.setattr(daemon.time, "time", itertools.count(step=20).__next__)
+    monkeypatch.setattr(daemon.time, "sleep", lambda _seconds: None)
+
+    def urlopen(_url, timeout):
+        raise error
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
+    with pytest.raises(RuntimeError, match=f"unreachable after 30s: {detail} --") as e:
+        daemon.get_ws_url()
+    assert TOKEN not in str(e.value)
+
+
+@pytest.mark.parametrize(
+    ("cdp_url", "version_url"),
+    [
+        ("https://b.cdp.browser-use.com?token=abc", "https://b.cdp.browser-use.com/json/version?token=abc"),
+        ("https://b.cdp.browser-use.com/?token=abc#frag", "https://b.cdp.browser-use.com/json/version?token=abc"),
+        ("http://[::1]:9222/proxy/?token=abc", "http://[::1]:9222/proxy/json/version?token=abc"),
+        ("http://127.0.0.1:9333", "http://127.0.0.1:9333/json/version"),
+    ],
+)
+def test_json_version_url_keeps_the_token_query(monkeypatch, cdp_url, version_url):
+    from browser_harness import admin
+    from browser_harness.cdp_urls import cdp_path
+
+    requested = []
+
+    def urlopen(url, timeout):
+        requested.append(url)
+        return type("Response", (), {"read": lambda self: b'{"webSocketDebuggerUrl": "ws://x"}'})()
+
+    monkeypatch.delenv("BU_CDP_WS", raising=False)
+    monkeypatch.setenv("BU_CDP_URL", cdp_url)
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
+
+    assert cdp_path(cdp_url, "/json/version") == version_url
+    assert daemon.get_ws_url() == admin._cdp_ws_from_url(cdp_url) == "ws://x"
+    assert requested == [version_url, version_url]
+
+
+@pytest.mark.parametrize(
+    ("cdp_url", "ws_url"),
+    [
+        ("http://[::1]:9222/?token=abc", "ws://[::1]:9222/devtools/browser/id?token=abc"),
+        ("http://127.0.0.1:9222/json/version?token=abc", "ws://127.0.0.1:9222/devtools/browser/id?token=abc"),
+    ],
+)
+def test_devtools_active_port_fallback_keeps_the_token_query(tmp_path, monkeypatch, cdp_url, ws_url):
+    (tmp_path / "DevToolsActivePort").write_text("9222\n/devtools/browser/id\n")
+    monkeypatch.setattr(daemon, "PROFILES", [tmp_path])
+
+    assert daemon._ws_from_devtools_active_port(cdp_url) == ws_url
 
 
 def test_remote_stop_retries_and_succeeds(monkeypatch):
