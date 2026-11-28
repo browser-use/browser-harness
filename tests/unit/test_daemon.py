@@ -46,17 +46,13 @@ def test_safe_connection_label_removes_credentials_paths_and_queries(url, label)
     assert daemon._safe_connection_label(url) == label
 
 
-def test_unreachable_cdp_url_error_omits_the_token(monkeypatch):
+@pytest.mark.parametrize("base", ["http://127.0.0.1:9", "b.cdp.browser-use.com"])
+def test_unreachable_cdp_url_error_omits_the_token(monkeypatch, base):
     token = "A" * 41 + "-_"
     monkeypatch.delenv("BU_CDP_WS", raising=False)
-    monkeypatch.setenv("BU_CDP_URL", f"https://b.cdp.browser-use.com?token={token}")
+    monkeypatch.setenv("BU_CDP_URL", f"{base}?token={token}")
     monkeypatch.setattr(daemon.time, "time", itertools.count(step=20).__next__)
     monkeypatch.setattr(daemon.time, "sleep", lambda _seconds: None)
-
-    def urlopen(url, timeout):
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(daemon.urllib.request, "urlopen", urlopen)
 
     with pytest.raises(RuntimeError, match="unreachable") as e:
         daemon.get_ws_url()
