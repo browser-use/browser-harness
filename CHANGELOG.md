@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.16
+
+### CDP URLs
+- A `?token=...` query on `BU_CDP_URL` or a cloud browser's `cdpUrl` now stays on the `/json/version` request and on the ws URL read from `DevToolsActivePort`. Before, the `/json/version` path went after the query and the ws URL dropped the query, so the token was lost.
+- The `BU_CDP_URL` unreachable error shows only the HTTP status or error type, not the URL or its token.
+- A new CI check (`tools/cdp-url-guard/check.py`) fails when code builds a CDP URL by text join instead of with `cdp_path()`.
 
 ### Telemetry
 - `cli_event` no longer sends the CDP endpoint's hostname (`cdp_url`). It sends `cdp_kind` instead: `local` (loopback), `cloud` (Browser Use Cloud) or `remote`, or none without `BU_CDP_URL`/`BU_CDP_WS`. No hostname, IP or port leaves the machine.
